@@ -771,6 +771,21 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   3. UNIX ソケット：`bind=instance listen=unix:/run/<名前>.sock connect=unix:<VM のソケット>`（ssh-agent・流れの口）。繋がった
 - 道はコンテナの設定なので、止める・起こす・VM の再起動で Incus が一緒に張り直す。中の口はコンテナの中の 127.0.0.1 にしか
   出ないので、ほかのコンテナからは届かない（アドレスで縛らなくてよい）
+- **実装の前に測った5点（2026-10-17、Backlog #365、banto-dev-vm・Incus 6.0.6。区画の設定は戻し、試したコンテナは消した）**：
+  1. **proxy device は既定で root として繋ぐ**（`connect=unix:` の先で SO_PEERCRED が uid=0）。`security.uid=1000 security.gid=1000`
+     を付けると uid=1000 で繋ぐ
+  2. **すり替えは実際に通る**：`connect=unix:` の先を `/var/lib/incus/unix.socket`（root:incus-admin 0660）への symlink にすると、
+     既定の device はコンテナの中から **Incus の管理用の口に届いた**（`GET /1.0` に 200）。`security.uid=1000` を付けた device は
+     断られた（接続を切られた）——条件4（すべての device に `security.uid/gid`）は必須
+  3. 制限された区画で `raw.idmap` の `uid 1000 1000`・`gid 1000 1000` は付けられ、ほかの uid（`uid 1500 1000`）は区画が断る
+     （`restricted.idmap.uid`）——対応させられるのは VM の SSH ユーザーの uid だけ。この VM は E2E のために `root:1000:1`（subuid・subgid）と
+     pool `banto`（btrfs）が既にあり、区画から使えた（`--storage banto`）。**subuid を書き換えたあと Incus の起こし直しが要るかは、
+     稼働中の VM なので測っていない**——準備（#367）で、まっさらな VM で測る
+  4. **`security.port_isolation=true` は制限された区画で付けられる**。隔てたコンテナどうし（B↔C）は届かない。**隔てていない
+     コンテナとは、どちら向きにも届く**（A↔B）。VM からと外へは届く——**その VM の banto のコンテナは全部隔てる**（隔てないコンテナを
+     同じブリッジに置かない。VM は banto 専用の決まりと同じ理由）
+  5. sshd は `AllowStreamLocalForwarding yes`（既定）・`StreamLocalBindUnlink no`（張る前に古いソケットを自分で消す、今の `-R` と同じ）・
+     `MaxSessions 10`
 
 **root の要る準備は core が `sudo -n` で済ませる**（決定・2026-10-17、ユーザー）：
 
@@ -846,8 +861,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     待ち受けない。外すと眠っている間にほかの Project に番号を取られる、Fable の B4）。同じ VM の Project が同じ Service のポートで
     待ち受けてもぶつからない。`exposedOnLan` は今の「別のサーバ」と同じく出す（proxy device は送り元を縛れない。準備の sudo で
     nftables を足し banto の host からだけに絞るのは任意、後で）
-- **コンテナどうしのネットワーク**（Fable の S5）：同じブリッジのコンテナどうしは直に届く。NIC に `security.port_isolation=true` を
-  付けられるか測り、付けられれば付ける。付けられなければ「縛らないもの」に書く（この機械のコンテナも同じ）
+- **コンテナどうしのネットワーク**（Fable の S5）：同じブリッジのコンテナどうしは直に届くので、**その VM の banto のコンテナは全部
+  NIC に `security.port_isolation=true` を付ける**（制限された区画で付けられ、隔てたものどうしは届かないことを測った——上の4.）
 - **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：区画の `restricted.devices.unix-char`（`/dev/kvm`）と特権の扱いを
   開けるのは**人の画面からだけ**（admin の刻印、AI の tool からは変えられない。Fable の A4）。core が sudo を流すのは「登録のとき」と
   「人がこれを押したとき」の2つだけ。区画はその VM の全 Project で共有する。開けた VM の Project は、ほかの Project から見て
