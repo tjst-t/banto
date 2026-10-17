@@ -21,5 +21,10 @@
   "allowScripts": {
     "unrs-resolver@1.12.2": true,
     "opencode-ai@1.18.32": true
+  },
+  "overrides": {
+    "@agentclientprotocol/claude-agent-acp": {
+      "@anthropic-ai/claude-agent-sdk": "0.3.281"
+    }
   }
 }

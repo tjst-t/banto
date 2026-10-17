@@ -152,7 +152,9 @@ jobs:
           for d in banto/packages/*/dist banto/packages/modules/*/dist; do [ -d "$d" ] && paths+=("$d"); done
           mkdir -p out
           out="out/${{ steps.existing.outputs.asset }}"
-          tar --exclude=banto/apps/frontend/.next/cache -cf - "${paths[@]}" | zstd -T0 -10 -q -o "$out"
+          # OpenCode の古い CPU 向け（baseline）は入れない——この版は AVX2 のある機械向けの印を付けるので使われない（約185MB）
+          tar --exclude=banto/apps/frontend/.next/cache --exclude='banto/node_modules/opencode-linux-x64-baseline*' \
+            -cf - "${paths[@]}" | zstd -T0 -10 -q -o "$out"
           (cd out && sha256sum "${{ steps.existing.outputs.asset }}" > "${{ steps.existing.outputs.asset }}.sha256")
           ls -l out
 
