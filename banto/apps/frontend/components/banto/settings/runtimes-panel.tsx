@@ -484,9 +484,11 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
             hint={
               identitiesError
                 ? `Vault の SSH 鍵を読めませんでした：${identitiesError}`
-                : identities && identities.length === 0
-                  ? `Vault のグループ「${keysGroup}」に SSH 鍵がありません。先に Vault でそのグループに SSH 鍵を置いてください（Project から使えるグループの鍵は、どの Project の AI も使えるので選べません）`
-                  : `Vault のグループ「${keysGroup}」の鍵を使います（banto だけが使い、Project の AI からは使えません）。秘密鍵はこの機械のディスクにも、向こうにも置きません`
+                : !identities || !keysGroup
+                  ? "Vault の SSH 鍵を読んでいます…"
+                  : identities.length === 0
+                    ? `Vault のグループ「${keysGroup}」に SSH 鍵がありません。先に Vault でそのグループに SSH 鍵を置いてください（Project から使えるグループの鍵は、どの Project の AI も使えるので選べません）`
+                    : `Vault のグループ「${keysGroup}」の鍵を使います（banto だけが使い、Project の AI からは使えません）。秘密鍵はこの機械のディスクにも、向こうにも置きません`
             }
           >
             <Select value={identity} onValueChange={setIdentity} disabled={!identities || identities.length === 0}>
