@@ -138,9 +138,29 @@ export async function moveProjectGroup(id: string, delta: -1 | 1): Promise<void>
   const i = groups.findIndex((g) => g.id === id);
   const j = i + delta;
   if (i < 0 || j < 0 || j >= groups.length) return;
-  const before = groups;
   const next = [...groups];
   [next[i], next[j]] = [next[j]!, next[i]!];
+  await writeGroupOrder(next);
+}
+
+/**
+ * グループを `beforeId` の前へ（null なら最後へ）。ドラッグで見出しを落とした1回だけ呼ぶ（§6.11）。並びが変わらなければ
+ * 書かない
+ */
+export async function placeProjectGroup(id: string, beforeId: string | null): Promise<void> {
+  const moving = groups.find((g) => g.id === id);
+  if (!moving || id === beforeId) return;
+  const rest = groups.filter((g) => g.id !== id);
+  const at = beforeId === null ? rest.length : rest.findIndex((g) => g.id === beforeId);
+  if (at < 0) return;
+  const next = [...rest.slice(0, at), moving, ...rest.slice(at)];
+  if (next.every((g, k) => g.id === groups[k]!.id)) return;
+  await writeGroupOrder(next);
+}
+
+/** 並び全体を先に見せてから host に書く。書けなければ元に戻して、理由は呼んだ側が出す */
+async function writeGroupOrder(next: ProjectGroup[]): Promise<void> {
+  const before = groups;
   setGroups(next);
   try {
     await setRealProjectGroupOrder(next.map((g) => g.id));

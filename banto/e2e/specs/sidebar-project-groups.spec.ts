@@ -10,6 +10,8 @@
 //   6. 畳んでも、中の「AI が動いている」と「あなたの番」の件数と数が見出しに残る
 //   7. すべて畳む／すべて開く。畳んだレールはグループの色の線で区切る
 //   8. リロードしても、別の画面（携帯の幅）でも同じ並び（host が持っている）
+//   9. グループの見出しを掴んで、ほかの見出しの上＝その前、並びの最後＝一番下へ（Backlog #374）。押すだけなら畳む／開く、
+//      運んでいる間は畳んだ高さ（人の開閉は変えない）、書けなければ元に戻して理由。Project の行のドラッグは今どおり
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,10 +30,17 @@ const C = `群C ${stamp}`;
 const DEV = `開発群 ${stamp}`;
 const DEV2 = `開発 ${stamp}`;
 const LAB = `検証群 ${stamp}`;
+const G1 = `並1 ${stamp}`;
+const G2 = `並2 ${stamp}`;
+const G3 = `並3 ${stamp}`;
+const P = `並P ${stamp}`;
+const Q = `並Q ${stamp}`;
 const OURS = [A, B, C, DEV, DEV2, LAB];
+/** 見出しの並べ替えの試験が作ったもの（前の試験の Project は数えない） */
+const REORDER = [G1, G2, G3, P, Q];
 
-/** 一覧（`sidebar-project-list`）の並び。グループの見出しは「# 名前」。この試験が作ったものだけ */
-async function layout(page: Page): Promise<string[]> {
+/** 一覧（`sidebar-project-list`）の並び。グループの見出しは「# 名前」。この試験が作ったもの（`names`）だけ */
+async function layout(page: Page, names: string[] = OURS): Promise<string[]> {
   const rows = await page
     .getByTestId("sidebar-project-list")
     .first()
@@ -43,11 +52,11 @@ async function layout(page: Page): Promise<string[]> {
         return li.querySelector('[data-testid="sidebar-project-name"]')?.textContent ?? null;
       }),
     );
-  return rows.filter((r): r is string => r !== null && OURS.some((name) => r === name || r === `# ${name}`));
+  return rows.filter((r): r is string => r !== null && names.some((name) => r === name || r === `# ${name}`));
 }
 
-function expectLayout(page: Page, expected: string[], message: string) {
-  return expect.poll(() => layout(page), { timeout: 15_000, message }).toEqual(expected);
+function expectLayout(page: Page, expected: string[], message: string, names: string[] = OURS) {
+  return expect.poll(() => layout(page, names), { timeout: 15_000, message }).toEqual(expected);
 }
 
 /** その名前の Project の行の見出し（掴む・落とす・右クリックする所） */
@@ -81,6 +90,31 @@ async function dragOnto(page: Page, name: string, target: Locator, targetMark: L
   await page.mouse.move(a.x + a.width / 2, b.y + b.height / 2, { steps: 12 });
   await expect(targetMark, "落とす先が示されていない").toHaveAttribute("data-drop-over", "");
   await page.mouse.up();
+}
+
+/**
+ * グループの見出しを掴んで `target()` の上に落とす（`target` は掴んでから探す——並びの最後の落とす先は運んでいる間だけ出る）。
+ * 落とす前に、掴めていること・運んでいる間は中の行が見えないこと・落とす先が示されていることを見る
+ */
+async function dragHeadingOnto(page: Page, name: string, target: () => Locator, hidden: string[] = []) {
+  const from = groupHeading(page, name).getByTestId("sidebar-group-name");
+  await from.scrollIntoViewIfNeeded();
+  const a = (await from.boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2 + 12, { steps: 5 });
+  await expect(groupHeading(page, name), "見出しを掴めていない").toHaveAttribute("data-dragging", "");
+  await expect(page.locator("[data-dragging]"), "見出しのほかにも掴んでいる").toHaveCount(1);
+  for (const row of hidden) {
+    await expect(page.getByTestId("sidebar-project-name").filter({ hasText: row }), "運んでいるグループが畳んだ高さになっていない").toHaveCount(0);
+  }
+  // 人の開閉の選択は変えない
+  await expect(groupHeading(page, name)).not.toHaveAttribute("data-collapsed", "");
+  const b = (await target().boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, b.y + b.height / 2, { steps: 12 });
+  await expect(target(), "落とす先が示されていない").toHaveAttribute("data-drop-over", "");
+  await page.mouse.up();
+  await expect(page.locator("[data-dragging]")).toHaveCount(0);
 }
 
 async function openProjectMenu(page: Page, name: string) {
@@ -313,5 +347,71 @@ test("グループを作る・名前と色・入れる／出す・ドラッグ�
   await page.reload();
   await expect.poll(() => layout(page), { timeout: 30_000 }).toEqual([A, C, B]);
 
+  expect(pageErrors, "画面でエラーが出た").toEqual([]);
+});
+
+test("グループの見出しを掴んで並べ替える——ほかの見出しの上＝その前・並びの最後＝一番下、押すだけなら畳む、行のドラッグは今どおり、書けなければ元に戻る（Backlog #374）", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  await openApp(page);
+  await createProject(page, P, mkdtempSync(join(tmpdir(), "banto-e2e-group-p-")));
+  await createProject(page, Q, mkdtempSync(join(tmpdir(), "banto-e2e-group-q-")));
+  await createGroup(page, G1);
+  await createGroup(page, G2);
+  await createGroup(page, G3);
+  await moveToGroupByMenu(page, P, G1);
+  await moveToGroupByMenu(page, Q, G2);
+  await expectLayout(page, [`# ${G1}`, P, `# ${G2}`, Q, `# ${G3}`], "用意した並びになっていない", REORDER);
+
+  // ---- 押すだけ（動かさない）なら畳む／開く ------------------------------------------------------------
+  await groupHeading(page, G1).getByTestId("sidebar-group-name").click();
+  await expect(groupHeading(page, G1)).toHaveAttribute("data-collapsed", "");
+  await expectLayout(page, [`# ${G1}`, `# ${G2}`, Q, `# ${G3}`], "見出しを押しても畳まない", REORDER);
+  await groupHeading(page, G1).getByTestId("sidebar-group-name").click();
+  await expect(groupHeading(page, G1)).not.toHaveAttribute("data-collapsed", "");
+  await expectLayout(page, [`# ${G1}`, P, `# ${G2}`, Q, `# ${G3}`], "見出しを押しても開かない", REORDER);
+
+  // ---- ほかの見出しの上＝その前 ----------------------------------------------------------------------
+  await dragHeadingOnto(page, G3, () => groupHeading(page, G1));
+  await expectLayout(page, [`# ${G3}`, `# ${G1}`, P, `# ${G2}`, Q], "見出しに落としてもその前へ動かない", REORDER);
+  // 落とした後のクリックで畳まない
+  await expect(groupHeading(page, G3)).not.toHaveAttribute("data-collapsed", "");
+
+  // ---- 並びの最後＝一番下（中の Project ごと。運んでいる間は中の行が見えない） --------------------------
+  await dragHeadingOnto(page, G1, () => page.getByTestId("sidebar-group-end"), [P]);
+  await expectLayout(page, [`# ${G3}`, `# ${G2}`, Q, `# ${G1}`, P], "並びの最後に落としても一番下へ動かない", REORDER);
+  await expect(page.getByTestId("sidebar-group-end"), "並びの最後の落とす先が運び終わっても残っている").toHaveCount(0);
+
+  // ---- リロードしても残る（host が持っている） --------------------------------------------------------
+  await page.reload();
+  await expectLayout(page, [`# ${G3}`, `# ${G2}`, Q, `# ${G1}`, P], "リロードしたらグループの並びが戻った", REORDER);
+  const groups = (await (await page.request.get(`${CORE_BASE_URL}/api/project-groups`, { headers })).json()) as Array<{ name: string }>;
+  expect(groups.map((g) => g.name).filter((n) => [G1, G2, G3].includes(n)), "host の並びが変わっていない").toEqual([G3, G2, G1]);
+
+  // ---- 書けなければ元に戻して理由を出す ------------------------------------------------------------------
+  await page.route("**/api/project-groups/order", (route) => route.abort("failed"));
+  await dragHeadingOnto(page, G1, () => groupHeading(page, G3));
+  await expect(page.getByText(/グループを動かせませんでした/), "書けなかった理由が出ていない").toBeVisible({ timeout: 15_000 });
+  await expectLayout(page, [`# ${G3}`, `# ${G2}`, Q, `# ${G1}`, P], "書けなかったのに元に戻らない", REORDER);
+  await page.unroute("**/api/project-groups/order");
+
+  // ---- Project の行のドラッグは今どおり（見出し＝そのグループの最後、「Project」の見出し＝外、行＝その前） ----
+  await dragOnto(page, P, groupHeading(page, G3));
+  await expectLayout(page, [`# ${G3}`, P, `# ${G2}`, Q, `# ${G1}`], "行を見出しに落としてもそのグループに入らない", REORDER);
+  await dragOnto(page, Q, page.getByTestId("sidebar-projects-heading"));
+  await expectLayout(page, [Q, `# ${G3}`, P, `# ${G2}`, `# ${G1}`], "行を「Project」の見出しに落としても外に出ない", REORDER);
+  await dragOnto(page, Q, projectHandle(page, P));
+  await expectLayout(page, [`# ${G3}`, Q, P, `# ${G2}`, `# ${G1}`], "行を行に落としてもその前に入らない", REORDER);
+  await page.reload();
+  await expectLayout(page, [`# ${G3}`, Q, P, `# ${G2}`, `# ${G1}`], "リロードしたら行の並びが戻った", REORDER);
+
+  // 片づけ：グループをなくす（中の Project は外へ）
+  for (const g of [G1, G2, G3]) {
+    await openGroupMenu(page, g);
+    await page.getByRole("menuitem", { name: "グループをなくす" }).click();
+  }
+  await expectLayout(page, [Q, P], "グループをなくしても中の Project が外に出ない", REORDER);
   expect(pageErrors, "画面でエラーが出た").toEqual([]);
 });
