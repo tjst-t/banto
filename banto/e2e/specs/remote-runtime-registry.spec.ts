@@ -183,9 +183,9 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await expect(form.getByText(`Vault のグループ「${RUNTIME_KEYS_GROUP}」の鍵を使います`)).toBeVisible({ timeout: 30_000 });
       await form.getByTestId("runtime-identity-select").click();
       // 選べるのは実行場所の鍵の置き場の鍵だけ（共通の置き場の鍵は、どの Project の AI も使えるので出ない）
-      await expect(page.getByRole("option", { name: new RegExp(`\\$${alias}\\s*（`) })).toBeVisible();
-      await expect(page.getByRole("option", { name: new RegExp(`\\$${sharedAlias}`) })).toHaveCount(0);
-      await page.getByRole("option", { name: new RegExp(`\\$${alias}\\s*（`) }).click();
+      await expect(page.getByRole("option", { name: new RegExp(`^${alias}\\s*（`) })).toBeVisible();
+      await expect(page.getByRole("option", { name: new RegExp(`^${sharedAlias}`) })).toHaveCount(0);
+      await page.getByRole("option", { name: new RegExp(`^${alias}\\s*（`) }).click();
       await expect(form.getByTestId("runtime-identity-select")).toContainText(alias);
       await form.getByTestId("runtime-connect").click();
       // 指紋：SSH の外（incus exec）で読んだ正しい鍵と同じもの
@@ -206,7 +206,7 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await expect(panel.getByTestId("runtime-add-form")).toHaveCount(0);
       // 開くと中身：鍵の alias・覚えた指紋・前提
       await openRow(row, name);
-      await expect(row.getByTestId("runtime-identity")).toHaveText(`$${alias}（Vault）`);
+      await expect(row.getByTestId("runtime-identity")).toHaveText(`${alias}（Vault）`);
       await expect(row.getByTestId("runtime-host-key")).toContainText(`ED25519 ${firstFp}`);
       expect(await checkStatuses(row.getByTestId("runtime-checks"))).toEqual(EXPECTED_CHECKS);
       // known_hosts は banto の置き場。人の ~/.ssh は触らない

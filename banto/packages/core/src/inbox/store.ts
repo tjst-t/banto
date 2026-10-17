@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
+import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, NoticeRuntimeKey, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -200,6 +200,8 @@ export class InboxStore {
     detail: string;
     /** 人が「続ける」を押せるお知らせ（追加・2026-10-05、`NoticeItem.resume`） */
     resume?: { threadId: string; turnId: string };
+    /** 実行場所の SSH 鍵が置き場の外にある（`NoticeItem.runtimeKey`） */
+    runtimeKey?: NoticeRuntimeKey;
   }): Promise<NoticeItem> {
     const open = this.listOpen().find(
       (i): i is NoticeItem =>

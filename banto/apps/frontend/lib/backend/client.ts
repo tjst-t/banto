@@ -528,6 +528,16 @@ export interface RealInboxNotice {
    * 続けるのをやめたターン。押すと `resumeRealNoticeTurn`
    */
   resume?: { threadId: string; turnId: string };
+  /**
+   * **実行場所の SSH 鍵が置き場の外にある**（追加・2026-10-17、Backlog 375 番）。`from` があれば「移す」を押せる
+   * （`moveRealRuntimeKey`）。無ければ理由と入口だけ
+   */
+  runtimeKey?: {
+    runtime: string;
+    alias: string;
+    from?: { implementation: string; group: string };
+    projectIds: string[];
+  };
   acknowledged: boolean;
   createdAt: string;
 }
@@ -814,6 +824,25 @@ export async function listRealRuntimes(): Promise<RealRemoteRuntime[]> {
 /** `failures` は読めなかった Vault（`<実装>（<理由>）`）——そこにある鍵は一覧に出ていない */
 export async function listRealSshIdentities(): Promise<{ identities: string[]; group: string; failures: string[] }> {
   return request<{ identities: string[]; group: string; failures: string[] }>("/api/runtimes/identities");
+}
+
+/**
+ * **実行場所の鍵の置き場に新しい SSH 鍵を作る**（追加・2026-10-17、Backlog 375 番）。Vault の中で作り、返るのは公開鍵だけ
+ * （向こうの `~/.ssh/authorized_keys` に足すのは人）
+ */
+export async function createRealRuntimeIdentity(name: string): Promise<{ name: string; group: string; publicKey: string }> {
+  return request<{ name: string; group: string; publicKey: string }>("/api/runtimes/identities", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+/**
+ * **受信箱のカードの「移す」**（追加・2026-10-17、Backlog 375 番）。その実行場所の鍵を Vault の中で実行場所の鍵の置き場へ移し、
+ * すぐ繋ぎ直す。移せたのに繋げなかったら `reconnectError` に理由
+ */
+export async function moveRealRuntimeKey(name: string): Promise<{ moved: true; reconnectError?: string }> {
+  return request<{ moved: true; reconnectError?: string }>(`/api/runtimes/${encodeURIComponent(name)}/move-key`, { method: "POST" });
 }
 
 export async function scanRealRuntimeHostKey(input: RealRuntimeInput): Promise<RealHostKey> {
