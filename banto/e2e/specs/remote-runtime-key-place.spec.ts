@@ -1,5 +1,5 @@
 // **実行場所の SSH 鍵が置き場（banto-runtime）の外にあるとき**（Backlog #375、`docs/specs/v4-security.md` §1「向こうとの道」・
-// `docs/specs/v4-frontend.md` §6.43）。
+// `docs/specs/v4-frontend.md` §6.44）。
 //
 // 2026-10-17 の実機：#361 を反映したら、前から登録してあった banto-dev-vm・kaggle-vm の鍵が前のグループにあったため繋がらず、
 // その2台の Module が全部消えた。人に見えたのは host のログだけだった。見るもの（規則14——出ていることだけでなく中身まで）：
