@@ -721,57 +721,94 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
     送る・Repositories の一覧で突き合わせない・ターンの途中で banto が落ちて起き直すと続く）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
-#### 別のサーバの中のコンテナ——1台に Project を複数置く（草案・2026-10-16、案A を採ることはユーザーが決定。形は Fable のレビュー（2026-10-16）で未決が多く、まだ決まっていない。未実装）
+#### 別のサーバの中のコンテナ——1台に Project を複数置く（決定・2026-10-17、ユーザー（案A・P1・core が sudo で準備）。Fable のレビュー（2026-10-16）を受けて書き直した。未実装）
 
-**別のサーバを、丸ごと 1 Project の箱ではなく、Project ごとに Incus のコンテナを立てる場所としても使えるようにする。**
-上の「段階」で後に足すとした形。今は「1つの実行場所に Project は1つ」（2026-10-08）——同じ SSH ユーザーで動くと Service の
-単位が互いを孤児として消し、ポートもぶつかり、片方の AI がもう片方を読み書きできるため。他の案（Project ごとに SSH ユーザーを
-分ける＝案C、同じユーザーで名前だけ分ける＝案B）は採らない——ポート・資源の上限・Docker を分けられない。
+**別のサーバを、丸ごと 1 Project の箱（`machine`）ではなく、Project ごとに Incus のコンテナを立てる場所（`containers`）としても
+使えるようにする。** 上の「段階」で後に足すとした形。`machine` の「1つの実行場所に Project は1つ」（2026-10-08）は、同じ SSH
+ユーザーで動くと Service の単位が互いを孤児として消し、ポートもぶつかり、片方の AI がもう片方を読み書きできるため。
+採らない案：Project ごとに SSH ユーザーを分ける（ポート・資源の上限・Docker を分けられない）、同じユーザーで名前だけ分ける、
+VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アドレスのすり替え・送り元を縛れない・転送役の一生を持つ）。
 
-**実測（2026-10-16、banto-dev-vm。試したコンテナは片づけた）**：
+**実測（2026-10-16〜17、banto-dev-vm。試したコンテナは片づけ、区画の設定は戻した）**：
 
-- SSH ユーザーが使える Incus は「制限された区画」（incus-user の `user-<uid>`、この機械の banto と同じ）。**proxy device は
-  禁止**（`Proxy devices are forbidden`）、disk device は `restricted.devices.disk.paths`（そのユーザーの home）の下だけ。
-  区画の設定を変えるには VM の root が要る——banto は別のサーバで sudo しない（「前提の確かめ」）ので、**この区画のまま
-  使える形にする**
-- 代わりに、VM の上で SSH ユーザーが動かす小さな転送役（node の TCP・UNIX ソケットの中継）で、要る道が全部通った：
-  1. **公開**：VM の `0.0.0.0:<ポート>` → コンテナの `<アドレス>:<ポート>`。そのポートを Publish して Caddy から届いた（active）
-  2. **中から banto へ**：VM の Incus のブリッジのアドレス（コンテナの既定の経路の先）`:<ポート>` → VM の
-     `127.0.0.1` の逆向きのトンネル。コンテナから Claude のログインの中継に届いた（合言葉無しで 401）
-  3. **UNIX ソケット**（Vault の ssh-agent・流れの口）：home の下のフォルダを disk device でコンテナへ見せ、転送役が
-     そこにソケットを作って VM の `/run/user/<uid>/…` のソケットへ繋ぐ。コンテナの中から繋がった
-- コンテナの中のサービスは `0.0.0.0` で待ち受ける必要がある（この機械のコンテナの Publish と同じ）
+- SSH ユーザーの Incus は制限された区画（incus-user の `user-<uid>`）。既定では **proxy device が禁止**、disk device は
+  そのユーザーの home の下だけ
+- **区画に `restricted.devices.proxy=allow` を足せば（VM の root で1回）、制限された区画のまま proxy device で道が全部通った**：
+  1. 公開：`bind=host listen=tcp:0.0.0.0:<VM のポート> connect=tcp:127.0.0.1:<Service のポート>`。LAN から 200。コンテナの中は
+     `127.0.0.1` で待ち受けてよい
+  2. 中から banto へ：`bind=instance listen=tcp:127.0.0.1:<ポート> connect=tcp:127.0.0.1:<VM の逆向きのトンネル>`。コンテナから
+     Claude のログインの中継に届いた（合言葉無しで 401）
+  3. UNIX ソケット：`bind=instance listen=unix:/run/<名前>.sock connect=unix:<VM のソケット>`（ssh-agent・流れの口）。繋がった
+- 道はコンテナの設定なので、止める・起こす・VM の再起動で Incus が一緒に張り直す。中の口はコンテナの中の 127.0.0.1 にしか
+  出ないので、ほかのコンテナからは届かない（アドレスで縛らなくてよい）
+
+**root の要る準備は core が `sudo -n` で済ませる**（決定・2026-10-17、ユーザー）：
+
+- `machine` で「banto は別のサーバで sudo しない」としたのは、VM の SSH ユーザー＝その Project の AI で、banto が sudo
+  できる＝AI が root になれるため。`containers` では **AI はコンテナの中で動き、VM の SSH ユーザーとしては動かない**。
+  sudo を使うのは core だけ
+- core が済ませる一度だけの準備：区画の `restricted.devices.proxy=allow`（入れ子の仮想化を許すなら下も）・VM の uid と
+  `/etc/subuid`・`/etc/subgid`（idmap、F3）・incus-user の区画が無ければ作らせる・土台のイメージ（下）・linger。どれも
+  「入っていれば何もしない」形（何度流しても同じ）。**`sudo -n` が通らなければ、足りないものと打つコマンドを名指しして
+  断る**（登録の前提の確かめで）。ほかの時（Module を起こす・止める等）は sudo しない
+- **条件**（Fable の S1・S8・S2。満たすまで `containers` は作らない）：
+  1. **実行場所の SSH 鍵は core だけが使える**（Backlog #361）——どの Project の AI も Vault から使えるままだと、sudo できる
+     VM のユーザーとして入れ、全コンテナに届く
+  2. **同じ VM の同じユーザーに、`machine` と `containers` を並べて登録できない**（host 鍵＋ユーザーが同じなら断る）——`machine`
+     の Project の AI は VM のユーザーそのもの
+  3. **コンテナに見せたフォルダへの書き込みは、`incus exec <c> --user <uid>` で中から行う。VM のユーザーが直接触るのは、
+     コンテナに見せていない場所だけ**——Shell のホームの写し・Module の置き場の用意・移すときの tar・rsync・ソケットの片づけ。
+     中の AI が symlink を仕込んでも、辿るのはコンテナの中の権限だけ。tar は標準入力で `incus exec … tar -x` に流す
 
 **形**：
 
-- **実行場所の種類を足す**：別のサーバの登録に「動かし方」を持たせる——`machine`（今の形、丸ごと 1 Project）か `containers`
-  （Project ごとにコンテナ、何個でも）。登録したあと変えられない（使っている Project がある間は）。前提の確かめに `containers` では
-  「incus があり、このユーザーが自分の区画でコンテナを作れる」を足す（無ければ名指しして断る、入れ方を添える）
-- **コンテナの作りと上限はこの機械のコンテナと同じ部品**（`ProjectContainers`）を、`incus` の呼び方だけ差し替えて使う
-  （SSH の接続の上で `incus` を流す）。土台のイメージ・資源の上限（既定はその VM で計算）・仕事の組（banto-work.slice）・
-  linger の印（#295）も同じ。コンテナの名前と札（`user.banto.owner`）も同じ規則
-- **banto のコードと Module の置き場**：コードは今どおり VM の塗りの置き場に送り（同じ VM の Project で共有）、
-  disk device でコンテナへ読み取り専用で見せる。Project のフォルダと Module の置き場は VM の home の下に置き
-  （disk device の制限に合わせる）、その Project のコンテナにだけ見せる
-- **Module の起こし方**：SSH の接続1本は今どおり実行場所ごと。Module は `ssh <VM> incus exec <コンテナ> -- <起動役>` で起こし、
-  起動役はコンテナの中のユーザーの systemd の単位で包む（今の「確実に止める」と同じ理由）
-- **転送役**：VM に Project ごとの転送役（SSH ユーザーの systemd の単位 `banto-fwd-<Project>`、banto のコードの中の
-  小さな node）を置き、次の道を張る：
-  - 中から banto へ：中継の専用の待ち受け・Claude のログインの中継を、ブリッジのアドレスのその Project 専用のポートで受け、
-    VM の `127.0.0.1` のトンネルへ。**送り元をその Project のコンテナのアドレスに縛る**（ほかの Project のコンテナからは断る——
-    合言葉は Project ごとだが、届く口も分ける）
-  - UNIX ソケット（ssh-agent・流れの口）：Project ごとの home の下のフォルダをそのコンテナにだけ見せ、転送役がそこにソケットを作る
-  - 公開：Publish のたびに、VM の空いているポートを選んで `0.0.0.0:<そのポート>` → コンテナの `<アドレス>:<Service のポート>`。
-    Caddy は今の「別のサーバ」と同じく VM のアドレス:そのポートへ。やめたら外す。同じ VM の Project が同じ Service のポートで
-    待ち受けてもぶつからない
-- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：制限された区画は nesting を許すが、`/dev/kvm` をコンテナへ渡す
-  unix-char device・特権コンテナは制限に入る。要る Project は VM の人が区画の設定を開けるか、`machine` の実行場所を使う。
-  どちらにするかは物理サーバを組むときに決める（未決）
-- **他の仕組みとの関係**：移す（前に居た場所へ戻す、差分で写す）・閉じたら空く・資源の画面・起こし直しの続き（#324）・
-  繋がらないお知らせ（#339）・スリープは、「実行場所」を「実行場所＋コンテナ」に読み替える。`machine` から `containers` へ
-  移すのも普通の「移す」で行う
-- **試験**：E2E の SSH の相手に Incus を入れるのは3段の入れ子になる（この機械のコンテナ→相手→中のコンテナ。AppArmor は
-  「新しいホストへのインストール」の試験と同じ手当てが要る）。できなければ実機（banto-dev-vm）で確かめる
+- **実行場所の種類**：別のサーバの登録に「動かし方」（`machine`／`containers`）を持たせる。使っている Project がある間は変えない。
+  `containers` の前提の確かめ：Incus の版（6.0.6 以降）・SSH ユーザーが自分の区画でコンテナを作れる・`sudo -n`（上の準備に）・
+  linger（**`containers` では注意でなく断る**——VM の再起動で中の Service と道を戻すため）。Docker・tmux は VM には要らない
+  （コンテナの中の話）
+- **SSH の接続は Project ごとに1本**（Fable の F1・F2・S4）：`MaxSessions`（既定 10）は 1 Project の Module 数でほぼ埋まる。
+  接続・ControlPath・逆向きのトンネル（`-R 0:…`）・host の専用の待ち受け（`relay-listener`）を Project ごとに持つ。これで
+  「その待ち受けに来たものはその Project」が今と同じく成り立つ（§2「送り元を縛る」はそのまま読める）。`RemoteSshRuntime` の
+  実行場所ごとの表（接続・待ち受け・ソケットの置き場・`release()`）を「実行場所＋Project」の層にし、Project を畳む・眠らせる・
+  閉じても同じ VM のほかの Project を落とさない。`isRemoteProject` のような2択（core/src の9ファイル・47箇所）を3つ目の種類と
+  して洗い出す
+- **コンテナの作りと上限**：この機械の `ProjectContainers` を、Incus の呼び方（`RunIncus`）を SSH 越しに差し替えて使う。
+  上限（既定はその VM で計算、上書きは実行場所ごとに持つ）・仕事の組（banto-work.slice）・linger の印（#295）・名前と札
+  （`user.banto.owner`）・アドレスは覚えず毎回 Incus に聞く（`containerAddress`）も同じ。直すところ：`hostAddress` は VM の
+  インターフェースを読む（host のを読まない、F4）・`ensureNode` は VM のコードの置き場の `bin/node` を使う・uid は VM の
+  ユーザーの uid（`userInfo()` でない）で、中のユーザーとの対応（`raw.idmap uid U 1000`）を準備で揃える（F3）
+- **土台のイメージ**：VM の上で作る（イメージの配布元から取り apt を流す——VM が外へ出られる前提、最初の1回は数分かかるので
+  コードの送り込みと同じく進み具合を出す）。VM ごとに1つ、同じ VM の Project で共有
+- **置き場と見せ方**（disk device は home の下だけ）：
+  - banto のコード：今どおり VM の塗りの置き場に送り、**`<置き場>/code` を丸ごと読み取り専用で**見せ、版はパスで選ぶ
+    （版を替えても device を付け直さない。眠っているコンテナが消えた版を指して起きられなくなるのを避ける、F6）
+  - Project のフォルダと Module の置き場：VM の home の下、Project ごとに分け、その Project のコンテナにだけ見せる
+  - **根の重なりは断る**（Fable の S6、`containers` では注意でなく断る）：Project の根が、置き場の根・ほかの Project の根（閉じた
+    ものも）・home そのものと重なれば、作る・移す・再開するときに断る——重なるとコードの塗りや他の Project が書ける形で見える
+- **Module の起こし方**：`ssh <VM> incus exec <c> --user <uid> -- <起動役>`。起動役（`remote-launcher.ts`）はほぼそのまま。
+  単位はコンテナの中のユーザーの systemd、`stopUnit` も中で。中では sudo できる（この機械のコンテナと同じ）
+- **道**（どれも proxy device。転送役は作らない）：
+  - 中から banto へ：中継の専用の待ち受け・Claude のログインの中継を、`bind=instance` でコンテナの中の `127.0.0.1:<決めたポート>` に
+    出し、その Project の逆向きのトンネルへ。Module の住所はそれを指す
+  - UNIX ソケット（ssh-agent・流れの口）：`bind=instance` で中の短いパス（`/run/banto/…`）に出し、VM の Project ごとの
+    ソケットへ。ssh-agent は窓口ができたときに足し、閉じたら外す（今の `-R` の張り外しと同じ時）
+  - 公開：Publish のたびに VM の空いているポートを選んで `bind=host` の device を足す。取り消し・Service を消す・移す・閉じる・
+    眠らせるで外す（眠りから起きたら公開中のものを足し直す）。同じ VM の Project が同じ Service のポートで待ち受けてもぶつからない。
+    `exposedOnLan` は今の「別のサーバ」と同じく出す（proxy device は送り元を縛れない）
+- **コンテナどうしのネットワーク**（Fable の S5）：同じブリッジのコンテナどうしは直に届く。NIC に `security.port_isolation=true` を
+  付けられるか測り、付けられれば付ける。付けられなければ「縛らないもの」に書く（この機械のコンテナも同じ）
+- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：準備で区画の `restricted.devices.unix-char`（`/dev/kvm`）と特権の
+  扱いを開けるかは、Project の設定で選んだときだけ（既定は開けない）。開けた VM の Project は、ほかの Project から見て
+  root 相当になりうるので、その VM に置くかを人が決める。物理サーバを組むときに測って決める（未決）
+- **他の仕組みとの関係**：移す（`runtimeUnavailableReason` の「1つに1つ」は `containers` では外す・動いているものはコンテナの中で
+  数える・元のコンテナは止めて残す——この機械と同じ）・閉じたら空く（`containers` は数えない）・眠らせる（コンテナを止める・
+  起こすだけ、`suspendAllServices` の分かれ道は外す）・資源の画面（コンテナの cgroup `lxc.payload.user-<uid>_<名前>` を読む、
+  上限に当たった知らせも）・起こし直しの続き（#324）と繋がらないお知らせ（#339）は Project ごとの接続を鍵にする。`machine`
+  から `containers` へは、先に `machine` の Project を退かせてから（条件2）
+- **ほかの節の書き分け**：「登録と選び方」「最初は作らないもの」「資源の上限は作らない」「向こうの機械は丸ごとその Project の
+  AI のもの」は `machine` の話と明記する
+- **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
+  確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
 #### Project を別の実行場所へ移す（決定・2026-10-11、ユーザー。Fable のレビュー（2026-10-11）を受けて改めた。本体は実装・2026-10-11、Backlog `runtime-move-core`。画面は `runtime-move-ui`）
 
