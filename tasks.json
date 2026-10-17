@@ -8708,7 +8708,7 @@
       "number": 361,
       "kind": "bug",
       "title": "実行場所（別のサーバ）の SSH 鍵を、どの Project の AI も Vault から使えて、ほかの Project の VM に入れる",
-      "status": "backlog",
+      "status": "ready",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8724,7 +8724,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:18:12.258Z",
-      "updatedAt": "2026-10-17T00:18:12.258Z",
+      "updatedAt": "2026-10-17T00:47:27.953Z",
       "closedAt": null,
       "extra": {}
     },
