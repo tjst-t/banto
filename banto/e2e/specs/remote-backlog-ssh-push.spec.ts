@@ -119,6 +119,9 @@ test.afterAll(async () => {
 
 test("別のサーバの Project で、設定で選んだ Vault の SSH 鍵を借りて backlog ブランチを ssh の origin へ送る", async ({ page }) => {
   const alias = `e2e-bkssh-${Date.now()}`;
+  // **送る鍵は実行場所の鍵とは別の置き場**（Backlog #361）——実行場所の鍵は core だけが使い、Project の Backlog からは選べない。
+  // 同じ鍵を、Project から使える共通の置き場に別の名前で預ける
+  const pushAlias = `${alias}-push`;
   const name = `bk-${randomBytes(3).toString("hex")}`;
   await withSshHost(
     async (host) => {
@@ -176,14 +179,15 @@ test("別のサーバの Project で、設定で選んだ Vault の SSH 鍵を�
       await expect(config.getByTestId("backlog-config-ssh-note")).not.toHaveText(/読んでいます|読めませんでした/, { timeout: 60_000 });
       const options = await select.locator("option").allTextContents();
       expect(options[0]).toBe("使わない");
-      expect(options).toContain(alias);
-      await select.selectOption(alias);
+      expect(options).toContain(pushAlias);
+      expect(options, "実行場所の鍵が Project の Backlog から選べる").not.toContain(alias);
+      await select.selectOption(pushAlias);
       await config.getByTestId("backlog-config-save").click();
-      await expect(config.getByTestId("backlog-config-note")).toHaveText(`保存しました（backlog・SSH 鍵 ${alias}）`, { timeout: 30_000 });
+      await expect(config.getByTestId("backlog-config-note")).toHaveText(`保存しました（backlog・SSH 鍵 ${pushAlias}）`, { timeout: 30_000 });
       await expect(config.getByTestId("backlog-config-branch-state")).toHaveText(/^backlog ブランチに 1 件あります。$/);
       await page.reload();
       config = await openBacklogConfig(page, projectId);
-      await expect(config.getByTestId("backlog-config-ssh")).toHaveValue(alias, { timeout: 30_000 });
+      await expect(config.getByTestId("backlog-config-ssh")).toHaveValue(pushAlias, { timeout: 30_000 });
 
       // ---- 3. 鍵を選ぶと、次の書き込みで前の分もまとめて送れる ------------------------------------------------------
       const second = await callAsAgent(conn, "createItem", { kind: "task", title: "After key" }, ctx);
@@ -209,6 +213,6 @@ test("別のサーバの Project で、設定で選んだ Vault の SSH 鍵を�
 
       await api(`/api/projects/${projectId}/close`, { method: "POST" });
     },
-    { vaultAlias: alias },
+    { vaultAlias: alias, sharedVaultAlias: pushAlias },
   );
 });

@@ -26,7 +26,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { FRONTEND_BASE_URL } from "../config.js";
 import { openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.describe.configure({ mode: "serial" });
@@ -252,6 +252,7 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
             implementation: "vault-local",
             name: alias,
             kind: "ssh-identity",
+            group: RUNTIME_KEYS_GROUP,
             value: readFileSync(sshHost.identityFile, "utf8"),
             note: "E2E の SSH の相手",
           });

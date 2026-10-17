@@ -195,6 +195,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
   function usableBy(alias: Record<string, unknown>, caller: ReturnType<typeof callerOf>): boolean {
     if (!caller) return false; // 誰のためか分からないなら見せない（規則2）
     if ("admin" in caller) return true;
+    // **core の印は窓口を通さない**（実行場所の鍵は core が backend から直接引く。2026-10-17、Backlog #361）
+    if ("host" in caller) return false;
     if (alias.scope === "shared") return true;
     // **banto 全体のための呼び出しは、共通だけ**（追加・2026-09-16）
     if ("instance" in caller) return false;

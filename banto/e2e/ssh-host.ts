@@ -16,6 +16,8 @@
 //
 // **鍵**：試験の側で鍵ペアを作り、公開鍵を相手の `authorized_keys` に置く。秘密鍵は試験の Vault（vault-local）に
 // `ssh-identity` として預けられる（`vaultAlias`）——banto はそこから使う（秘密鍵を host のディスクに出さない）。
+// 置き場は**実行場所の鍵の置き場**（`RUNTIME_KEYS_GROUP`、core だけが使える。Backlog #361）。同じ鍵を Project の AI にも
+// 使わせる試験（向こうで git push する等）は、共通の置き場に別の名前で預ける（`sharedVaultAlias`）。
 // 試験の側にも同じ鍵のファイルを残すのは、banto を通さずに「入れる」ことを試験が自分で確かめるため。
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -86,7 +88,7 @@ export interface SshHost {
   hostKey: string;
   /** 相手の host 鍵だけを入れた known_hosts */
   knownHostsFile: string;
-  /** 秘密鍵を預けた Vault の alias（預けたときだけ） */
+  /** 秘密鍵を預けた Vault の alias（預けたときだけ。実行場所の鍵の置き場） */
   vaultAlias?: string;
   /** 試験の鍵で入ってコマンドを流す（ssh の設定は固定、人の `~/.ssh` を読まない） */
   ssh(command: string, opts?: { timeoutMs?: number }): Promise<IncusResult>;
@@ -96,9 +98,17 @@ export interface SshHost {
   close(): Promise<void>;
 }
 
+/**
+ * **実行場所の SSH 鍵の置き場**（Vault のグループ。`@banto/module-contract` の `RUNTIME_KEYS_GROUP`——e2e は workspace の
+ * パッケージに依存していないので写して持つ。食い違えば `/api/runtimes/identities` の `group` を見る試験が落ちる）
+ */
+export const RUNTIME_KEYS_GROUP = "banto-runtime";
+
 export interface SshHostOptions {
-  /** 秘密鍵を試験の Vault（vault-local）にこの alias で預ける */
+  /** 秘密鍵を試験の Vault（vault-local）の実行場所の鍵の置き場にこの alias で預ける（実行場所の登録に使う） */
   vaultAlias?: string;
+  /** 同じ秘密鍵を共通の置き場（Project の AI から使える）にこの alias で預ける（向こうで Project が使う鍵の試験） */
+  sharedVaultAlias?: string;
   /** 札（既定はこの回のデータの置き場）。片づけ役の試験だけが変える */
   owner?: string;
 }
@@ -130,6 +140,7 @@ export async function startSshHost(opts: SshHostOptions = {}): Promise<SshHost> 
   const identityFile = join(keyDir, "id_ed25519");
   const knownHostsFile = join(keyDir, "known_hosts");
   let vaultAlias: string | undefined;
+  let sharedVaultAlias: string | undefined;
 
   const rootExec = (command: string) => runIncus(["exec", name, "--", "sh", "-c", command], { timeoutMs: 120_000 });
 
@@ -142,8 +153,13 @@ export async function startSshHost(opts: SshHostOptions = {}): Promise<SshHost> 
       problems.push(`コンテナ ${name} を消せません：${(err as Error).message}`);
     }
     if (vaultAlias) {
-      await vaultCall("deleteAlias", { implementation: "vault-local", name: vaultAlias }).catch((err: unknown) =>
+      await vaultCall("deleteAlias", { implementation: "vault-local", name: vaultAlias, group: RUNTIME_KEYS_GROUP }).catch((err: unknown) =>
         problems.push(`Vault の alias ${vaultAlias} を消せません：${(err as Error).message}`),
+      );
+    }
+    if (sharedVaultAlias) {
+      await vaultCall("deleteAlias", { implementation: "vault-local", name: sharedVaultAlias }).catch((err: unknown) =>
+        problems.push(`Vault の alias ${sharedVaultAlias} を消せません：${(err as Error).message}`),
       );
     }
     rmSync(keyDir, { recursive: true, force: true });
@@ -176,10 +192,21 @@ export async function startSshHost(opts: SshHostOptions = {}): Promise<SshHost> 
         implementation: "vault-local",
         name: opts.vaultAlias,
         kind: "ssh-identity",
+        group: RUNTIME_KEYS_GROUP,
         value: readFileSync(identityFile, "utf8"),
         note: `E2E の SSH の相手 ${name}`,
       });
       vaultAlias = opts.vaultAlias;
+    }
+    if (opts.sharedVaultAlias) {
+      await vaultCall("createAlias", {
+        implementation: "vault-local",
+        name: opts.sharedVaultAlias,
+        kind: "ssh-identity",
+        value: readFileSync(identityFile, "utf8"),
+        note: `E2E の SSH の相手 ${name}（Project から使う）`,
+      });
+      sharedVaultAlias = opts.sharedVaultAlias;
     }
 
     return {

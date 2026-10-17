@@ -11,6 +11,9 @@
 //      実行場所が残り、設定に読むだけで出る。設定の一覧に「使っています」が出て、外せない
 //   5. 同じ実行場所に2つ目の Project は作れない（画面で選べない・host も断る）
 //   6. その Project の Module は向こうで起こし（この機械のコンテナは作らない）、linger が無い注意を受信箱に1件出す
+//   7. 実行場所の鍵は core だけが使える（Backlog #361）：登録の画面に出る鍵は実行場所の鍵の置き場のものだけで、Project から
+//      使える（共通の置き場の）鍵は出ず、宛先に直に渡しても断る。その Project の AI は、Shell の sshIdentity でも Vault の
+//      窓口でも実行場所の鍵を使えない
 import { test, expect, type Locator, type Page } from "../test-base.js";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -19,7 +22,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
 import { openApp, openNav, clickNewProject } from "../helpers.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 
 test.describe.configure({ mode: "serial" });
 // 初めての回は SSH の相手の土台（sshd 入りのイメージ）を作る
@@ -72,6 +77,59 @@ async function openRow(row: Locator, name: string): Promise<void> {
   await expect(header).toHaveAttribute("aria-expanded", "true");
 }
 
+/**
+ * AI が通る経路そのもの（代理サーバ）で、その Project の Module の tool を呼ぶ。人の承認を待つ呼び出しは、その Project の
+ * 判断待ちを許可しながら待つ——許可しても実行場所の鍵が使えないことを見るため（承認の画面は relay-cards.spec.ts で見ている）
+ */
+async function callAsAgent(
+  connName: string,
+  tool: string,
+  args: Record<string, unknown>,
+  ctx: { projectId: string; threadId: string },
+): Promise<{ text: string; isError: boolean }> {
+  const client = new Client({ name: "e2e-runtime-registry", version: "0.0.0" }, { capabilities: {} });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/${connName}`), {
+      requestInit: { headers: { ...headers, "x-banto-project-id": ctx.projectId, "x-banto-thread-id": ctx.threadId } },
+    }),
+  );
+  let done = false;
+  const call = (
+    client.callTool({ name: tool, arguments: args }, undefined, { timeout: 300_000 }) as Promise<{
+      content: Array<{ text?: string }>;
+      isError?: boolean;
+    }>
+  ).finally(() => (done = true));
+  try {
+    const answered = new Set<string>();
+    while (!done) {
+      const inbox = (await (await fetch(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{
+        id: string;
+        kind: string;
+        liveness?: string;
+        projectId?: string;
+        threadId?: string;
+      }>;
+      for (const item of inbox) {
+        if (item.kind !== "judgment" || item.liveness !== "live" || answered.has(item.id)) continue;
+        if (item.projectId !== ctx.projectId && item.threadId !== ctx.threadId) continue;
+        answered.add(item.id);
+        const res = await fetch(`${CORE_BASE_URL}/api/inbox/${item.id}/answer`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ answer: { behavior: "allow" } }),
+        });
+        expect(res.status, await res.text()).toBeLessThan(300);
+      }
+      await Promise.race([call.catch(() => undefined), new Promise((r) => setTimeout(r, 500))]);
+    }
+    const r = await call;
+    return { text: r.content.map((c) => c.text ?? "").join(""), isError: r.isError === true };
+  } finally {
+    await client.close();
+  }
+}
+
 async function openNewProject(page: Page): Promise<Locator> {
   await openNav(page);
   await clickNewProject(page);
@@ -84,6 +142,8 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
   const alias = `e2e-rr-${Date.now()}`;
+  // 同じ鍵を Project から使える置き場（共通）にも預ける——こちらは実行場所に使えない
+  const sharedAlias = `${alias}-shared`;
   const name = `lab-${randomBytes(3).toString("hex")}`;
   const userKnownHosts = join(homedir(), ".ssh", "known_hosts");
   const userKnownHostsBefore = existsSync(userKnownHosts) ? readFileSync(userKnownHosts, "utf8") : null;
@@ -112,8 +172,13 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await form.getByLabel("名前").fill(name);
       await form.getByLabel("ホスト").fill(host.address);
       await form.getByLabel("ユーザー").fill(host.user);
+      // 鍵の置き場を画面が言う（どこに置けばよいか）
+      await expect(form.getByText(`Vault のグループ「${RUNTIME_KEYS_GROUP}」の鍵を使います`)).toBeVisible({ timeout: 30_000 });
       await form.getByTestId("runtime-identity-select").click();
-      await page.getByRole("option", { name: new RegExp(`\\$${alias}`) }).click();
+      // 選べるのは実行場所の鍵の置き場の鍵だけ（共通の置き場の鍵は、どの Project の AI も使えるので出ない）
+      await expect(page.getByRole("option", { name: new RegExp(`\\$${alias}（`) })).toBeVisible();
+      await expect(page.getByRole("option", { name: new RegExp(`\\$${sharedAlias}`) })).toHaveCount(0);
+      await page.getByRole("option", { name: new RegExp(`\\$${alias}（`) }).click();
       await expect(form.getByTestId("runtime-identity-select")).toContainText(alias);
       await form.getByTestId("runtime-connect").click();
       // 指紋：SSH の外（incus exec）で読んだ正しい鍵と同じもの
@@ -149,6 +214,28 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       expect(mine.runtime).toBe(`remote:${name}`);
       expect(mine.hostKey.fingerprint).toBe(firstFp);
       expect(mine.unavailableReason).toBeUndefined();
+
+      // ---- 7a. Project から使える鍵は、宛先に直に渡しても断る（画面の一覧に出ないだけにしない） ------------------
+      const identities = (await (await page.request.get(`${CORE_BASE_URL}/api/runtimes/identities`, { headers })).json()) as {
+        identities: string[];
+        group: string;
+      };
+      expect(identities.group).toBe(RUNTIME_KEYS_GROUP);
+      expect(identities.identities).toContain(alias);
+      expect(identities.identities).not.toContain(sharedAlias);
+      const loginsBeforeShared = await acceptedLogins(host);
+      const sharedCheck = await page.request.post(`${CORE_BASE_URL}/api/runtimes/check`, {
+        headers,
+        data: {
+          runtime: { name: `${name}-x`, host: host.address, user: host.user, port: 22, identity: sharedAlias },
+          hostKey: { type: host.hostKey.split(" ")[0], key: host.hostKey.split(" ")[1] },
+        },
+      });
+      expect(sharedCheck.status()).toBe(502);
+      expect(((await sharedCheck.json()) as { error: string }).error).toContain(
+        `"${sharedAlias}" は Vault の実行場所の SSH 鍵の置き場（グループ "${RUNTIME_KEYS_GROUP}"）にありません`,
+      );
+      expect(await acceptedLogins(host), "Project から使える鍵で sshd に入った").toBe(loginsBeforeShared);
 
       // ---- 3. host 鍵が変わったら繋がない --------------------------------------------------------
       await host.rootExec("rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && systemctl restart ssh");
@@ -300,8 +387,39 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
         )
         .toEqual([`別のサーバ「${name}」：SSH を閉じても動き続ける設定（linger）`]);
 
+      // ---- 7b. その Project の AI は、実行場所の鍵を使えない ---------------------------------------------------------
+      const threadId = ((await (await page.request.post(`${CORE_BASE_URL}/api/projects/${projectId}/threads`, { headers })).json()) as {
+        id: string;
+      }).id;
+      const ctx = { projectId, threadId };
+      const loginsBeforeAgent = await acceptedLogins(host);
+      // Shell の sshIdentity：ssh-agent を開かせて、実行場所に SSH で入ろうとする
+      const viaShell = await callAsAgent(
+        `shell-${projectId}`,
+        "runCommand",
+        {
+          command: `ssh -o BatchMode=yes -o StrictHostKeyChecking=no ${host.user}@127.0.0.1 true && echo 入れた`,
+          sshIdentity: alias,
+        },
+        ctx,
+      );
+      expect(viaShell.isError, viaShell.text).toBe(true);
+      // 読めていない Vault があると「見つかりませんでしたが…」になる（どちらも「この Project からは無い」）
+      expect(viaShell.text).toMatch(new RegExp(`alias "${alias}" (はどの Vault にもありません|は見つかりませんでした)`));
+      expect(viaShell.text).not.toContain("入れた");
+      // Vault の窓口：在りかも公開鍵も引けない。一覧（vault://aliases）にも出ない
+      for (const tool of ["lookupAlias", "getPublicKey"]) {
+        const viaVault = await callAsAgent("vault-directory", tool, { name: alias }, ctx);
+        expect(viaVault.isError, `${tool}：${viaVault.text}`).toBe(true);
+        expect(viaVault.text).toMatch(new RegExp(`alias "${alias}" (はどの Vault にもありません|は見つかりませんでした)`));
+      }
+      // 共通の置き場の鍵は、今までどおり Project から使える（絞りすぎていない）
+      const shared = await callAsAgent("vault-directory", "lookupAlias", { name: sharedAlias }, ctx);
+      expect(shared.isError, shared.text).toBe(false);
+      expect(await acceptedLogins(host), "Project の AI が実行場所の鍵で sshd に入った").toBe(loginsBeforeAgent);
+
       expect(pageErrors, "画面で例外が出た").toEqual([]);
     },
-    { vaultAlias: alias },
+    { vaultAlias: alias, sharedVaultAlias: sharedAlias },
   );
 });

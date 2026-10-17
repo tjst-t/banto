@@ -20,7 +20,7 @@ import { runIncus } from "@banto/container";
 import { FRONTEND_BASE_URL } from "../config.js";
 import { fakeTurn, openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 import { remoteOwnerDirName } from "../../packages/core/dist/runtime/remote-ssh.js";
 
@@ -83,7 +83,7 @@ test("別のサーバの待たないコマンドは、送り込みが 120 秒を
         body: {
           server: "vault-directory",
           tool: "createAlias",
-          arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", value: readFileSync(sshHost.identityFile, "utf8") },
+          arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", group: RUNTIME_KEYS_GROUP, value: readFileSync(sshHost.identityFile, "utf8") },
         },
       });
       expect(stored.status, JSON.stringify(stored.body)).toBe(200);

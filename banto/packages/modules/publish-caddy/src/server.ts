@@ -53,7 +53,7 @@ const TARGET_PROPS = {
  * 刻印が無い・banto 全体のための呼び出しは断る（どの Project か決められない——規則2）
  */
 function projectFor(stamp: CallerStamp | undefined, args: Record<string, unknown>): string {
-  if (!stamp || "instance" in stamp) throw new PublishError("どの Project のための呼び出しか決められません");
+  if (!stamp || "instance" in stamp || "host" in stamp) throw new PublishError("どの Project のための呼び出しか決められません");
   if ("admin" in stamp) {
     if (typeof args.projectId !== "string" || args.projectId === "") throw new PublishError("projectId が要ります");
     return args.projectId;
