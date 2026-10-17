@@ -27,6 +27,7 @@ import { startGithubFixture } from "./github-fixture.ts";
 import { startGithubLoginFixture } from "./github-login-fixture.ts";
 import { startInfisicalFixture } from "./infisical-fixture.ts";
 import { startOutsideRunGroup } from "./outside-group.ts";
+import { startAgentBinaryFixture } from "./agent-binary-fixture.ts";
 
 // どの core かは webServer が渡す `BANTO_E2E_CORE_INDEX`（`config.ts`）。設定の置き場もその core のものにする
 process.env.BANTO_CONFIG_PATH = CONFIG_PATH;
@@ -124,6 +125,9 @@ process.env.BANTO_SHELL_HOME_SOURCE = SHELL_HOME_SOURCE;
 // 資格情報と費用が要り、返事も毎回違う。偽の ACP エージェント（`@banto/module-subagent` の
 // `testing/fake-agent`）に差し替える——**閉じ込め・資格情報の受け渡し・再開は本物の経路**を通る
 process.env.BANTO_SUBAGENT_FAKE_AGENT = "1";
+// **偽のエージェントの本体も取ってくる**（追加・2026-10-17、アーキ仕様 §4.1「試験」）——`fake` は本物の opencode と同じく、
+// core が目録（ここで差し替える）から取ってきた本体で起きる。登録簿は偽物（`agent-binary-fixture.ts`）
+process.env.BANTO_AGENT_BINARY_CATALOG = JSON.stringify((await startAgentBinaryFixture()).catalog);
 // コンテナの上限の見張り（`container-pressure.ts`）は1分ごと——試験では2秒にする
 process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS = "2000";
 // 資源の見張り（`resources.ts`、設定の「資源」とサイドバーの印）は10秒ごと——試験では2秒にする

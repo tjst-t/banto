@@ -22,6 +22,7 @@ import {
   SELF_UPDATE_DIR,
   SELF_UPDATE_GITHUB_URL,
 } from "./config.ts";
+import { removeTree } from "./remove-tree.ts";
 
 export default function globalSetup(): void {
   // 前の回の片づけは回に1度（core は worker の数だけ同時に起きる。同じコンテナを何本もが消しに行かない）
@@ -29,7 +30,7 @@ export default function globalSetup(): void {
     removeStaleRuns();
     removeStaleContainers();
   }
-  rmSync(DATA_DIR, { recursive: true, force: true });
+  removeTree(DATA_DIR);
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
   rmSync(CLAUDE_CONFIG_DIR, { recursive: true, force: true });
   rmSync(SELF_UPDATE_DIR, { recursive: true, force: true });
@@ -86,7 +87,7 @@ function removeStaleRuns(): void {
   for (const entry of entries) {
     const path = join(runsRoot, entry);
     try {
-      if (statSync(path).mtimeMs < dayAgo) rmSync(path, { recursive: true, force: true });
+      if (statSync(path).mtimeMs < dayAgo) removeTree(path);
     } catch {
       // 消せないものは放っておく——片づけで試験を止めない
     }
