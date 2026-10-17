@@ -9014,6 +9014,29 @@
       "updatedAt": "2026-10-17T08:57:53.056Z",
       "closedAt": "2026-10-17T08:57:53.056Z",
       "extra": {}
+    },
+    {
+      "id": "project-group-drag-reorder",
+      "number": 374,
+      "kind": "bug",
+      "title": "サイドバーのグループの見出しをドラッグで並べ替えられない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "sidebar"
+      ],
+      "body": "ユーザー報告（2026-10-17）：グループの並べ替えがドラッグ＆ドロップでできない。今は見出しの「…」の「グループを上へ／下へ」だけ（#353）。Project の行は掴んで動かせる（banto/apps/frontend/components/banto/shell/project-list.tsx の DropList・DraggableRow・useDropZone、onDragEnd は 749 行あたり）。\n\n直すこと：グループの見出しも掴んで（§6.11 と同じ掴み始める条件——マウス 8px・指 250ms 押したまま）ほかのグループの見出しの上に落とすと、その前へ動く（一番下へは最後のグループの見出しの下、または「スリープ中」の見出しより上の空き）。落とした1回だけ PUT /api/project-groups/order で並び全体を書き、書けなければ元に戻して理由を出す（§6.11）。運んでいる間はそのグループを畳んだ高さで運ぶ（§6.11 の「運んでいる間は目次を畳む」と同じ、人の開閉の選択は変えない）。Project の行のドラッグ（行・見出し・「Project」・「スリープ中」への落とし先）と食い合わないこと——見出しを掴んだときはグループを動かす、行を掴んだときは今どおり Project を動かす。見出しを押すだけ（動かさない）なら今どおり畳む／開く。キーボードと携帯は今どおり「…」の上へ／下へ。仕様 v4-frontend.md §6.43「グループの見出し」に「掴んで並べ替えられる」を1行足す。",
+      "doneWhen": "E2E（sidebar-project-groups.spec.ts に足す）で：グループの見出しを別のグループの見出しの上へドラッグすると順が入れ替わり、リロードしても残る・見出しを押すだけなら畳む／開くのまま・Project の行のドラッグ（グループへ入れる／外へ出す）は今どおり、が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T08:58:21.291Z",
+      "updatedAt": "2026-10-17T08:58:21.291Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
