@@ -72,10 +72,13 @@ async function callTool(host: OwnHost, connName: string, tool: string, args: Rec
 function containerState(projectId: string): string {
   return spawnSync("incus", ["list", `banto-${projectId}`, "-f", "csv", "-c", "s"], { encoding: "utf8", input: "" }).stdout.trim();
 }
-/** コンテナの中で `pattern` に当たるプロセスの数（コンテナが止まっていれば 0） */
+/**
+ * コンテナの中で `pattern` に当たるプロセスの数（コンテナが止まっていれば 0）。**数えている sh 自身は外す**——sh のコマンド行にも
+ * `pattern` が書いてあるので、`sleep 86397` のように文字どおり当たる形だと、何も動いていなくても 1 になる（pgrep が外すのは自分だけ）
+ */
 function processesInContainer(projectId: string, pattern: string): number {
   if (containerState(projectId) !== "RUNNING") return 0;
-  const r = spawnSync("incus", ["exec", `banto-${projectId}`, "--", "sh", "-c", `pgrep -f '${pattern}' | wc -l`], { encoding: "utf8", input: "" });
+  const r = spawnSync("incus", ["exec", `banto-${projectId}`, "--", "sh", "-c", `pgrep -f '${pattern}' | grep -vx "$$" | wc -l`], { encoding: "utf8", input: "" });
   return Number(r.stdout.trim());
 }
 

@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "../config.js";
 import { createProject, currentProjectId, fakeTurn, openApp, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -285,8 +285,9 @@ test("眠りに戻す：回が人を待って終わったら起きたまま・�
   const slow = await createManualAutomation(projectId, "ゆっくりの見回り", "見回ってください。" + fakeTurn({ thinkMs: 15_000, say: "ゆっくり見回りました" }));
   const slowRun = runToEnd(projectId, slow.id, "done");
   await expect.poll(async () => (await projectOf(projectId)).sleep, { timeout: 60_000, message: "回で起きない" }).toBeUndefined();
-  // 回が走っている間に、人が画面で開く（画面が prepare を投げる——人のセッションの要求）
-  await page.goto(`/p/${projectId}`);
+  // 回が走っている間に、人が画面で開く（画面が prepare を投げる——人のセッションの要求）。この試験の文脈はまだ画面を開いて
+  // いない（`openApp` を通っていない）ので、繋ぐ先を渡す——渡さないと画面は既定の :4737 に繋ぎに行き、ログインの画面で止まる
+  await page.goto(`/p/${projectId}?bantoHost=${CORE_BROWSER_URL}`);
   await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
   await slowRun;
   const slowFork = await waitTurnEnded(page, slow.forkId, 1);
