@@ -104,7 +104,7 @@ import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./deliv
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
-import { ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
+import { DISCONNECT_WHY, ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, announceProjectsChanged, backgroundItemsOf } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import {
@@ -978,6 +978,11 @@ async function main(): Promise<void> {
     containerId?: string;
   }
   let stopping = false;
+  /**
+   * **人が止めた（畳んだ・外した）接続**（追加・2026-10-17、Backlog #362）。閉じたときの札の扱いを分ける——止めたなら今どおり
+   * 「途中で終わりました」、落ちた・切れたなら続けられる札は繋がり直すのを待つ
+   */
+  const closedOnPurpose = new WeakSet<Client>();
   const connectionOrigins = new Map<string, ConnectionOrigin>();
   const pendingRestarts = new Map<string, { timer: NodeJS.Timeout; origin: ConnectionOrigin }>();
   // **banto 本体の止まり具合を測る**（決定・2026-10-09、v4-architecture.md §5.4-0）——本体が止まっていた間の
@@ -1084,6 +1089,8 @@ async function main(): Promise<void> {
       // 畳んだ Project の Module は起こさない（畳むと台帳から Project ごと消える）
       if (!found || !projectConnections.has(origin.projectId)) {
         connectBackoff.clear(connName);
+        // 繋がり直すのを待っていた札も、もう待たない（Backlog #362）
+        await recovery?.abandonReconnect((c) => c === connName, `${DISCONNECT_WHY}（Project を畳んだので、起こし直しません）`);
         return;
       }
       project = found;
@@ -1095,6 +1102,7 @@ async function main(): Promise<void> {
     if (!declaration) {
       console.log(`[host] ${connName} は宣言から外れたので、起こし直しません`);
       connectBackoff.clear(connName);
+      await recovery?.abandonReconnect((c) => c === connName, `${DISCONNECT_WHY}（${origin.declarationName} が有効な Module から外れたので、起こし直しません）`);
       return;
     }
     if (await connectDeclaredModule(declaration, project)) {
@@ -1958,18 +1966,29 @@ async function main(): Promise<void> {
     const previousOnClose = client.onclose;
     client.onclose = () => {
       previousOnClose?.();
-      for (const [replyTo, h] of replyHandles.awaitingFor(connName)) {
-        // Module 宛ての札は下の `loseFrom` が呼んだ Module に知らせる
-        if (h.toModule) {
-          replyHandles.settle(replyTo);
-          recovery?.noteSettled(replyTo, "lost");
-          continue;
+      // **banto が止まる途中なら札に触らない**（決定・2026-10-17、Backlog #362）——Event Store の返事待ちは次に起きたときの
+      // 判定（`RestartRecovery.beforeListen`）が拾う。ここで「途中で終わりました」を届けると、続けられる仕事まで失う。
+      // **人が止めた（畳んだ・外した）のでなければ、続けられると名乗った Module の札は繋がり直すのを待つ**（経路が途切れて
+      // SSH が閉じただけで、向こうで走り続けている待たないコマンドの結果を失っていた）
+      const closed = stopping
+        ? undefined
+        : recovery
+          ? recovery.connectionClosed(connName, { onPurpose: closedOnPurpose.has(client) })
+          : { lose: replyHandles.awaitingFor(connName), waiting: new Set<string>() };
+      if (closed) {
+        for (const [replyTo, h] of closed.lose) {
+          // Module 宛ての札は下の `loseFrom` が呼んだ Module に知らせる
+          if (h.toModule) {
+            replyHandles.settle(replyTo);
+            recovery?.noteSettled(replyTo, "lost");
+            continue;
+          }
+          void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
         }
-        void deliverLostReply({ threadId: h.threadId, replyTo, moduleName: h.moduleName, hop: h.hop + 1 }, "Module が止まったため");
+        void moduleReplies
+          .loseFrom(connName, "頼んだ先の Module が止まったため", (replyTo) => closed.waiting.has(replyTo))
+          .catch((err: unknown) => console.warn(`[host] ${connName} からの返事待ちを片づけられませんでした:`, err));
       }
-      void moduleReplies
-        .loseFrom(connName, "頼んだ先の Module が止まったため")
-        .catch((err: unknown) => console.warn(`[host] ${connName} からの返事待ちを片づけられませんでした:`, err));
       void moduleLost(connName, client, origin, "接続が閉じました");
     };
     // **閉じずに黙ることもある**——定期的に確かめる（`liveness.ts`）
@@ -2032,8 +2051,15 @@ async function main(): Promise<void> {
     // subagent-from-module:153 がたまに落ちていた）。全部を先に外せば、渡せずに残り（`module-replies.ts` の「残してから渡す」）、
     // 次に繋がったときに渡る
     const clients: Array<[string, Client | undefined]> = [];
+    // 接続が切れて繋がり直すのを待っていた札も、もう待たない（Backlog #362——人が止めた）
+    await recovery?.abandonReconnect(
+      (c) => (picked ? picked.has(c) : c.endsWith(`-${projectId}`)),
+      `${DISCONNECT_WHY}（繋がり直す前に Module を畳みました）`,
+    );
     for (const connName of names) {
-      clients.push([connName, connectedModules.get(connName)]);
+      const client = connectedModules.get(connName);
+      if (client) closedOnPurpose.add(client);
+      clients.push([connName, client]);
       connectedModules.delete(connName);
       connectionOrigins.delete(connName);
       liveness.unwatch(connName);
@@ -2192,8 +2218,10 @@ async function main(): Promise<void> {
     for (const connName of [...pendingRestarts.keys()]) {
       if (connName === name || connName.startsWith(`${name}-`)) cancelRestart(connName);
     }
+    await recovery?.abandonReconnect((c) => c === name || c.startsWith(`${name}-`), `${DISCONNECT_WHY}（繋がり直す前に Module を止めました）`);
     for (const connName of targets) {
       const client = connectedModules.get(connName);
+      if (client) closedOnPurpose.add(client);
       connectedModules.delete(connName);
       connectionOrigins.delete(connName);
       liveness.unwatch(connName);
@@ -2431,7 +2459,10 @@ async function main(): Promise<void> {
         threadId: h.threadId,
         from: caller.moduleName,
         // 打ち切った札を繋がったあと覚え直したもの（Backlog #324）——頼んだ Thread にはもう「途中で終わりました」が届いている
-        title: h.afterLost ? `起こし直しで途切れたあとに終わっていました：${input.title}` : input.title,
+        // 接続が切れて打ち切った札（Backlog #362）は、起こし直しではないので言い分ける
+        title: h.afterLost
+          ? `${h.lostBy === "disconnect" ? "接続が途切れたあとに終わっていました" : "起こし直しで途切れたあとに終わっていました"}：${input.title}`
+          : input.title,
         text: input.text,
         hop: h.hop + 1,
       });
@@ -2927,8 +2958,9 @@ async function main(): Promise<void> {
           .finally(() => process.exit(0));
         return;
       }
-      // 止める途中で Module が切れても、起こし直さない
+      // 止める途中で Module が切れても、起こし直さない。札にも触らない（次に起きたときの判定に任せる、Backlog #362）
       stopping = true;
+      recovery?.stop();
       // 開いている流れは 1012（起こし直し中）で閉じる——画面は札を取り直して繋ぎ直す（§5.8）
       streamRelay.closeAll();
       liveness.stop();
@@ -3016,7 +3048,9 @@ async function main(): Promise<void> {
               ? "続けると答えた（札を覚え直した。最後の届け1回だけ）"
               : a.outcome === "settled"
                 ? `問いの答えより前に済んだ（${a.why}）`
-                : `途中で終わりました（${a.why}）`),
+                : a.outcome === "waiting"
+                  ? "問いの最中に接続が切れた（繋がり直すのを待つ）"
+                  : `途中で終わりました（${a.why}）`),
         );
       }
       logTurns(turns);

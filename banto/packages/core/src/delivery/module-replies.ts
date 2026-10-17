@@ -122,8 +122,9 @@ export class ModuleReplies {
   /**
    * **頼んだ先が止まった**——その Module からの返事待ちを全部「途中で終わりました」にして、呼んだ Module に渡す
    */
-  async loseFrom(fromConn: string, why: string): Promise<number> {
-    const lost = this.state.awaiting.filter((a) => a.fromConn === fromConn);
+  async loseFrom(fromConn: string, why: string, keep: (replyTo: string) => boolean = () => false): Promise<number> {
+    // `keep`：接続が切れただけで、繋がり直すのを待つ札（Backlog #362）
+    const lost = this.state.awaiting.filter((a) => a.fromConn === fromConn && !keep(a.replyTo));
     for (const a of lost) await this.deliverLost(a, why);
     return lost.length;
   }

@@ -231,6 +231,11 @@ export interface AwaitingReply {
    * （`reply.kept`）。画面のバックグラウンドの印に「起こし直しのあと続けています」と出す——長く届かなければ人が気づける
    */
   keptAt?: string;
+  /**
+   * **banto は動いたまま、Module との接続が切れたあと続けている**（追加・2026-10-17、アーキ仕様 §2.5「2.」の「banto は動いたまま、
+   * Module との接続だけが切れたとき」、Backlog #362）。画面は「接続が切れたあと続けています」と出す。無ければ起こし直しのあと
+   */
+  keptAfter?: "disconnect";
 }
 
 /**
@@ -248,6 +253,8 @@ export interface RedeliverableReply {
   work?: BackgroundWork;
   /** 打ち切った時刻 */
   lostAt: string;
+  /** banto は動いたまま Module との接続が切れて打ち切った（追加・2026-10-17、Backlog #362）。無ければ起こし直しで */
+  after?: "disconnect";
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */

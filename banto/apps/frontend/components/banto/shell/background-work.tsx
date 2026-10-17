@@ -102,9 +102,9 @@ function ItemBody({ item, kind, now }: { item: BackgroundItem; kind: Kind; now: 
       </span>
       {item.keptAt ? (
         // **起こし直しのあと続けている**（2026-10-05、アーキ仕様 §2.5「2.」）——続けると答えてから長く届かない
-        // ものに人が気づけるよう、いつから続けているかを出す
+        // ものに人が気づけるよう、いつから続けているかを出す。Module との接続が切れたあと（Backlog #362）は言い分ける
         <span data-testid="background-item-kept" className="text-xs text-ink-3">
-          起こし直しのあと続けています（{minutesAgo(item.keptAt, now)}から）
+          {item.keptAfter === "disconnect" ? "接続が切れたあと続けています" : "起こし直しのあと続けています"}（{minutesAgo(item.keptAt, now)}から）
         </span>
       ) : null}
     </>

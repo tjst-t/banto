@@ -86,6 +86,8 @@ export interface ReplyHandle {
    * 「途中で終わりました」を届けてあるので、この札で届いたものの題に「起こし直しで途切れたあとに終わっていました」を添える
    */
   afterLost?: boolean;
+  /** 打ち切ったのが、banto は動いたまま Module との接続が切れたため（追加・2026-10-17、Backlog #362）。題の言い方を変える */
+  lostBy?: "disconnect";
 }
 
 export class ReplyHandles {
@@ -140,7 +142,11 @@ export class ReplyHandles {
    * 札は Event Store の返事待ち（`reply.awaiting`）に残っている。使った回数は残っていないので、**使えるのは
    * 最後の届け1回だけ**。返事待ちのまま（期限で切らない）。札を渡した Module 以外は使えない確かめはそのまま効く
    */
-  restore(id: string, input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting" | "finalOnly" | "afterLost">, opts: { afterLost?: boolean } = {}): ReplyHandle {
+  restore(
+    id: string,
+    input: Omit<ReplyHandle, "expiresAt" | "usesLeft" | "awaiting" | "finalOnly" | "afterLost" | "lostBy">,
+    opts: { afterLost?: boolean; lostBy?: "disconnect" } = {},
+  ): ReplyHandle {
     const h: ReplyHandle = {
       ...input,
       expiresAt: this.now() + REPLY_LIMITS.ttlMs,
@@ -148,6 +154,7 @@ export class ReplyHandles {
       awaiting: true,
       finalOnly: true,
       ...(opts.afterLost ? { afterLost: true } : {}),
+      ...(opts.afterLost && opts.lostBy ? { lostBy: opts.lostBy } : {}),
     };
     this.handles.set(id, h);
     return h;

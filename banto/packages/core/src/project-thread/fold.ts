@@ -156,11 +156,11 @@ export type ProjectThreadEvent =
     }
   | { type: "reply.settled"; payload: { threadId: string; replyTo: string } }
   // 起こし直しのあと Module が続けると答え、札を覚え直した（追加・2026-10-05、アーキ仕様 §2.5「2.」）
-  | { type: "reply.kept"; payload: { threadId: string; replyTo: string } }
+  | { type: "reply.kept"; payload: { threadId: string; replyTo: string; after?: "disconnect" } }
   // 起こし直しで Module に繋がらないまま打ち切った札——繋がったら一度だけ届け直せる（追加・2026-10-16、Backlog #324）
   | {
       type: "reply.redeliverable";
-      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork };
+      payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork; after?: "disconnect" };
     }
   | { type: "thread.cleared"; payload: { threadId: string } }
   // **自動の要約（SDK の compact_boundary）が起きたターン**（追加・2026-10-09、アーキ仕様 §2.2）
@@ -775,7 +775,14 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "reply.kept": {
         const t = next.threads.get(event.payload.threadId);
         if (t?.awaitingReplies) {
-          t.awaitingReplies = t.awaitingReplies.map((r) => (r.replyTo === event.payload.replyTo ? { ...r, keptAt: raw.ts } : r));
+          const after = event.payload.after;
+          t.awaitingReplies = t.awaitingReplies.map((r) => {
+            if (r.replyTo !== event.payload.replyTo) return r;
+            const kept: typeof r = { ...r, keptAt: raw.ts };
+            if (after) kept.keptAfter = after;
+            else delete kept.keptAfter;
+            return kept;
+          });
         }
         return next;
       }

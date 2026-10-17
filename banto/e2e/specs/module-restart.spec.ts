@@ -11,18 +11,46 @@
 //   - 起こし直され、同じ口（AI が通る代理サーバ）から runCommand がまた通る
 //   - 黙っている間も、Command Palette の入口（ほかの Module の分）は出ている
 //   - 次のターンで AI の道具として使える
+//   - **待たないコマンドは Shell が落ちても続き、起こし直された Shell に問い直して結果が届く**（決定・2026-10-17、Backlog #362。
+//     アーキ仕様 §2.5「2.」の「banto は動いたまま、Module との接続だけが切れたとき」）——札は「途中で終わりました」に
+//     ならず、待つ間は一覧に「接続が切れたあと続けています」。結果（出力の末尾）が同じ Thread に届く
+//   - 続けられると名乗らない Module（試験用の `fixtures/ask-human-module`）は、今どおりすぐ「途中で終わりました」
 
 import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
+import { createProject, fakeTurn, openApp, waitForProjectModule, waitTurnEnded } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Module Restart";
+// 続けられると名乗らない試験用の Module（Backlog #362）
+const PLAIN_MODULE = `e2e-plain-${Date.now()}`;
+const PLAIN_SERVER = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/ask-human-module/server.js");
+
+test.afterAll(async ({ request }) => {
+  await request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(PLAIN_MODULE)}`, { headers: HEADERS });
+});
+
+interface HostThread {
+  messages: Array<{ role: string; text: string; origin?: { from: string; title: string } }>;
+  awaitingReplies?: Array<{ moduleName: string; keptAt?: string; keptAfter?: string }>;
+}
+
+async function hostThread(page: Page, threadId: string): Promise<HostThread> {
+  return (await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, { headers: HEADERS })).json()) as HostThread;
+}
+
+async function baseThreadOf(page: Page, projectId: string): Promise<string> {
+  const threads = (await (await page.request.get(`${CORE_BASE_URL}/api/projects/${projectId}/threads`, { headers: HEADERS })).json()) as {
+    id: string;
+  }[];
+  return threads[0]!.id;
+}
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -158,4 +186,94 @@ test("黙った Shell（繋がりは残ったまま答えない）も見つけ�
     )
     .toContain("AI-REACHED-SHELL");
   await expectFileLauncherInPalette(page);
+});
+
+test("待たないコマンドは Shell が落ちても続き、起こし直された Shell に問い直して結果が届く（「途中で終わりました」にしない）", async ({ page }) => {
+  const label = "Shell が落ちても続くコマンド";
+  await openApp(page);
+  const id = await projectIdOf(page);
+  await page.goto(`/p/${id}`);
+  await expect.poll(() => shellPid(id), { timeout: 60_000, intervals: [1_000] }).toMatch(/^\d+$/);
+  const threadId = await baseThreadOf(page, id);
+  const fromShell = async () => (await hostThread(page, threadId)).messages.filter((m) => m.origin?.from === "shell").map((m) => m.origin!.title);
+  const already = await fromShell();
+  const turns = (await hostThread(page, threadId)).messages.filter((m) => m.role === "assistant").length;
+
+  // 出力にだけ出る語（コマンドの文字には無い）——届いたものがコマンドの出力を運んだことを見る
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill(
+    "長いコマンドを待たずに流して。" +
+      fakeTurn({ tools: [{ server: "shell", name: "runCommand", args: { command: "sleep 30; echo after-cut-$((6*7))", runInBackground: true, label } }] }),
+  );
+  await composer.press("Enter");
+  await waitTurnEnded(page, threadId, turns + 1);
+  await expect.poll(async () => (await hostThread(page, threadId)).awaitingReplies?.map((r) => r.moduleName), { timeout: 30_000 }).toEqual(["shell"]);
+
+  // ---- Shell が落ちる（接続が閉じる）。札は待つ ------------------------------------------------------------
+  const before = await shellPid(id);
+  await signalShellItself(id, "TERM");
+  await expect
+    .poll(async () => (await hostThread(page, threadId)).awaitingReplies?.map((r) => r.keptAfter), {
+      timeout: 30_000,
+      message: "接続が切れた札が「接続が切れたあと続けています」にならない",
+    })
+    .toEqual(["disconnect"]);
+  // 画面：サイドバーの裏の仕事の行から一覧を開くと、その1件に「接続が切れたあと続けています」
+  const workLine = page.locator('[data-sidebar="sidebar"]').getByTestId("thread-background");
+  await expect(workLine).toHaveText(label, { timeout: 30_000 });
+  await workLine.click();
+  const item = page.getByTestId("background-list").getByTestId("background-item");
+  await expect(item).toHaveCount(1);
+  await expect(item).toContainText(label);
+  await expect(item.getByTestId("background-item-kept")).toHaveText(/^接続が切れたあと続けています（(いま|\d+分前)から）$/);
+  await page.keyboard.press("Escape");
+
+  await waitForNewShell(id, before);
+  // ---- 起こし直された Shell に問い、コマンドが終わると結果が届く -----------------------------------------------
+  await expect
+    .poll(fromShell, { timeout: 120_000, intervals: [2_000], message: "Shell が落ちたあと、続けたコマンドの結果が届かない" })
+    .toEqual([...already, `コマンドが終わりました：${label}`]);
+  const delivered = (await hostThread(page, threadId)).messages.filter((m) => m.origin?.from === "shell").at(-1)!;
+  expect(delivered.text).toContain("after-cut-42");
+  expect(delivered.text).toContain('"exitCode":0');
+  await expect.poll(async () => (await hostThread(page, threadId)).awaitingReplies ?? [], { timeout: 30_000 }).toEqual([]);
+  // 画面にも同じ結果が1件。「途中で終わりました」は出ない
+  const card = page.getByTestId("delivered-message").filter({ hasText: `コマンドが終わりました：${label}` });
+  await expect(card, "届いた結果が画面に出ない").toHaveCount(1, { timeout: 60_000 });
+  await expect(card.getByTestId("delivered-title")).toHaveText(`コマンドが終わりました：${label}`);
+  await card.getByRole("button", { name: "届いた中身をすべて見る" }).click();
+  await expect(card.getByTestId("delivered-body")).toContainText("after-cut-42");
+  await expect(page.getByTestId("delivered-message").filter({ hasText: "shell の仕事は途中で終わりました" })).toHaveCount(0);
+  await expect(workLine, "届いたのに裏の仕事の行が残っている").toHaveCount(0, { timeout: 30_000 });
+});
+
+test("続けられると名乗らない Module は、接続が切れたら今どおりすぐ「途中で終わりました」", async ({ page }) => {
+  const added = await page.request.post(`${CORE_BASE_URL}/api/modules`, {
+    headers: { ...HEADERS, "content-type": "application/json" },
+    data: { mcpServers: { [PLAIN_MODULE]: { command: "${nodeExec}", args: [PLAIN_SERVER] } } },
+  });
+  expect(added.status(), `試験用の Module を足せなかった：${await added.text()}`).toBeLessThan(400);
+  await openApp(page);
+  const id = await projectIdOf(page);
+  await page.goto(`/p/${id}`);
+  const threadId = await baseThreadOf(page, id);
+  const turns = (await hostThread(page, threadId)).messages.filter((m) => m.role === "assistant").length;
+  // 答えを返した1秒後に Module が自分で終わる（"exit"）
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill("承認を頼んで。" + fakeTurn({ tools: [{ server: PLAIN_MODULE, name: "askHuman", args: { what: "exit" } }] }));
+  await composer.press("Enter");
+  await waitTurnEnded(page, threadId, turns + 1);
+  const lostTitle = `${PLAIN_MODULE} の仕事は途中で終わりました`;
+  await expect
+    .poll(async () => (await hostThread(page, threadId)).messages.filter((m) => m.origin?.from === PLAIN_MODULE).map((m) => m.origin!.title), {
+      timeout: 30_000,
+      message: "名乗らない Module が止まっても「途中で終わりました」が届かない",
+    })
+    .toEqual([lostTitle]);
+  const lost = (await hostThread(page, threadId)).messages.find((m) => m.origin?.from === PLAIN_MODULE)!;
+  expect(lost.text).toContain("もう届きません——Module が止まったため");
+  expect((await hostThread(page, threadId)).awaitingReplies ?? []).toEqual([]);
+  const card = page.getByTestId("delivered-message").filter({ hasText: lostTitle });
+  await expect(card).toHaveCount(1, { timeout: 60_000 });
+  await expect(card.getByTestId("delivered-title")).toHaveText(lostTitle);
 });

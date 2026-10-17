@@ -5,6 +5,8 @@
 // 「あとで届ける」（`dev.banto/pendingReply`）と「人を待っている」（`dev.banto/waitingOn`）を載せる。
 // 公開そのものは E2E で動かせない（Service と Caddy が要る）ので、サイドバーの出し分けはこれで見る。
 // **届けはしない**——札は、この Module が止まったときに host が「途中で終わりました」を届けて片づける。
+// **「続けられる」とは名乗らない**——接続が切れたら、host は今どおりすぐ「途中で終わりました」にする（Backlog #362 の
+// E2E。`what` が "exit" なら、答えを返した1秒後に自分で終わる）。
 //
 // 依存を持たない（`mcp-npm-module` と同じ理由）。stdio の JSON-RPC を手で書く。
 
@@ -63,6 +65,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           ? { _meta: { "dev.banto/pendingReply": true, "dev.banto/waitingOn": { on: "human", title: `試験の承認：${what}` } } }
           : {}),
       });
+      if (what === "exit") setTimeout(() => process.exit(0), 1_000);
       return;
     }
     default:
