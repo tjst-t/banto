@@ -438,7 +438,14 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
       await openApp(h);
       await h.goto(threadUrl);
       const openCanvas = async () => {
-        await h.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/corners` }).getByRole("button", { name: "開く" }).click();
+        // 会話は最新の 20 件だけ描く（§6.29）——前の倍率の回で AI の呼び出しが積もると、最初の browserOpen のカードは窓の外に出る
+        const card = h.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/corners` });
+        for (let i = 0; i < 10 && (await card.count()) === 0; i += 1) {
+          const earlier = h.getByTestId("show-earlier-messages");
+          if ((await earlier.count()) === 0) break;
+          await earlier.click();
+        }
+        await card.getByRole("button", { name: "開く" }).click();
         const f = canvasFrame(h);
         await expect(f.getByTestId("browser-state"), "流れが開かない").toHaveAttribute("data-state", "open", { timeout: 60_000 });
         return f;
