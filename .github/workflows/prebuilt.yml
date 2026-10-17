@@ -12,7 +12,7 @@ name: prebuilt
 
 on:
   push:
-    branches: [release]
+    branches: [release, "prebuilt-try/**"]
   # 人が GitHub の画面から組み直すため（落ちた回の再実行は Actions の「Re-run」でもよい）
   workflow_dispatch:
 
