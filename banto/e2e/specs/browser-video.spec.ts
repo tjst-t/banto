@@ -522,14 +522,25 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
           await expect(of.getByTestId("fit"), "覚えていない端末で「画面に合わせる」が入っている").not.toBeChecked();
           await of.getByTestId("fit").check();
           await expect(of.getByTestId("viewport")).not.toContainText("1280×800", { timeout: 20_000 });
-          const otherSize = (await of.getByTestId("viewport").textContent())!;
+          // ほかの画面が合わせた大きさは（ブラウザはこの回の倍率 scale で動いているので、偶数の画素への切り下げもその倍率で）、その画面の絵を出す場所から決まる。**決まった値を1回だけ写して比べない**——
+          // 狭い Canvas では上の帯（「ページ W×H」が出ると「ブラウザの記録を消す」が次の行へ回る）の折り返しで絵を出す場所の
+          // 高さが 40px 変わり、合わせる側は正しく追いかけて大きさを替える（Backlog #372。2026-10-17 の trace で 436×488 → 436×448）
+          const otherFitted = async () => {
+            const [w, hh] = await of.locator("#stage").evaluate((e) => {
+              const r = e.getBoundingClientRect();
+              return [Math.round(r.width), Math.round(r.height)];
+            });
+            return `ページ ${fitted(w!, scale)}×${fitted(hh!, scale)}`;
+          };
+          await expect.poll(async () => { const got = await of.getByTestId("viewport").textContent(); const want = await otherFitted(); return got === want ? "ok" : `${got}・欲しい ${want}`; }, { timeout: 20_000, message: "ほかの画面がその絵を出す場所に合わない" }).toBe("ok");
           f = await openCanvas();
           await expect(f.getByTestId("viewport"), "ほかの画面が合わせていると出ない").toContainText("ほかの画面に合わせています", { timeout: 20_000 });
           await expect(f.getByTestId("fit"), "ほかの画面が合わせているのに入れ直した").not.toBeChecked();
           // 少し待っても奪わない
           await new Promise((r) => setTimeout(r, 1500));
           await expect(of.getByTestId("fit")).toBeChecked();
-          await expect(of.getByTestId("viewport")).toHaveText(otherSize);
+          // 合わせているのは今もほかの画面で、ページはその画面の絵を出す場所の大きさのまま（開き直した画面の大きさにならない）
+          await expect.poll(async () => { const got = await of.getByTestId("viewport").textContent(); const want = await otherFitted(); return got === want ? "ok" : `${got}・欲しい ${want}`; }, { timeout: 20_000, message: "開き直した画面が合わせる側を奪った・ほかの画面の大きさでない" }).toBe("ok");
           expect(await f.locator("body").evaluate(() => Object.entries(window.localStorage).filter(([k]) => k.startsWith("banto-browser-fit:")).map(([, v]) => v)), "取らなかったのに覚えを消した").toEqual(["1"]);
           await h.getByRole("button", { name: "Canvas を閉じる" }).click();
         } finally {
