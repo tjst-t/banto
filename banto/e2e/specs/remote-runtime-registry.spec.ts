@@ -123,8 +123,13 @@ async function callAsAgent(
       }
       await Promise.race([call.catch(() => undefined), new Promise((r) => setTimeout(r, 500))]);
     }
-    const r = await call;
-    return { text: r.content.map((c) => c.text ?? "").join(""), isError: r.isError === true };
+    // Module が投げた失敗は、MCP の失敗（-32603）として返ることもある——AI から見ればどちらも「失敗した」なので、同じに扱う
+    try {
+      const r = await call;
+      return { text: r.content.map((c) => c.text ?? "").join(""), isError: r.isError === true };
+    } catch (err) {
+      return { text: err instanceof Error ? err.message : String(err), isError: true };
+    }
   } finally {
     await client.close();
   }
@@ -176,9 +181,9 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await expect(form.getByText(`Vault のグループ「${RUNTIME_KEYS_GROUP}」の鍵を使います`)).toBeVisible({ timeout: 30_000 });
       await form.getByTestId("runtime-identity-select").click();
       // 選べるのは実行場所の鍵の置き場の鍵だけ（共通の置き場の鍵は、どの Project の AI も使えるので出ない）
-      await expect(page.getByRole("option", { name: new RegExp(`\\$${alias}（`) })).toBeVisible();
+      await expect(page.getByRole("option", { name: new RegExp(`\\$${alias}\\s*（`) })).toBeVisible();
       await expect(page.getByRole("option", { name: new RegExp(`\\$${sharedAlias}`) })).toHaveCount(0);
-      await page.getByRole("option", { name: new RegExp(`\\$${alias}（`) }).click();
+      await page.getByRole("option", { name: new RegExp(`\\$${alias}\\s*（`) }).click();
       await expect(form.getByTestId("runtime-identity-select")).toContainText(alias);
       await form.getByTestId("runtime-connect").click();
       // 指紋：SSH の外（incus exec）で読んだ正しい鍵と同じもの
@@ -223,7 +228,15 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       expect(identities.group).toBe(RUNTIME_KEYS_GROUP);
       expect(identities.identities).toContain(alias);
       expect(identities.identities).not.toContain(sharedAlias);
-      const loginsBeforeShared = await acceptedLogins(host);
+      // 登録したら banto が裏で繋いでコードを送っておく（#278）。その接続が数えに入らないよう、ログインの数が落ち着くまで待つ
+      // ——同じ鍵を両方の置き場に預けているので、鍵では見分けられない
+      let loginsBeforeShared = await acceptedLogins(host);
+      for (let stable = 0; stable < 3; ) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const now = await acceptedLogins(host);
+        stable = now === loginsBeforeShared ? stable + 1 : 0;
+        loginsBeforeShared = now;
+      }
       const sharedCheck = await page.request.post(`${CORE_BASE_URL}/api/runtimes/check`, {
         headers,
         data: {
@@ -407,14 +420,15 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       // 読めていない Vault があると「見つかりませんでしたが…」になる（どちらも「この Project からは無い」）
       expect(viaShell.text).toMatch(new RegExp(`alias "${alias}" (はどの Vault にもありません|は見つかりませんでした)`));
       expect(viaShell.text).not.toContain("入れた");
-      // Vault の窓口：在りかも公開鍵も引けない。一覧（vault://aliases）にも出ない
-      for (const tool of ["lookupAlias", "getPublicKey"]) {
+      // Vault の窓口：AI が呼べる道具（getPublicKey）でも引けない。在りかを引く lookupAlias は AI に見えない（Module 用）——
+      // Module からの道は上の Shell で見ている
+      for (const tool of ["getPublicKey"]) {
         const viaVault = await callAsAgent("vault-directory", tool, { name: alias }, ctx);
         expect(viaVault.isError, `${tool}：${viaVault.text}`).toBe(true);
         expect(viaVault.text).toMatch(new RegExp(`alias "${alias}" (はどの Vault にもありません|は見つかりませんでした)`));
       }
       // 共通の置き場の鍵は、今までどおり Project から使える（絞りすぎていない）
-      const shared = await callAsAgent("vault-directory", "lookupAlias", { name: sharedAlias }, ctx);
+      const shared = await callAsAgent("vault-directory", "getPublicKey", { name: sharedAlias }, ctx);
       expect(shared.isError, shared.text).toBe(false);
       expect(await acceptedLogins(host), "Project の AI が実行場所の鍵で sshd に入った").toBe(loginsBeforeAgent);
 

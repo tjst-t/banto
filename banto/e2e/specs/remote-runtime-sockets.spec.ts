@@ -106,6 +106,9 @@ test.afterAll(async () => {
 
 test("別のサーバの Project で、Vault の鍵の窓口と流れの口がソケットの転送で使える——秘密鍵は向こうに出ない", async ({ page }) => {
   const alias = `e2e-rsock-${Date.now()}`;
+  // Shell の sshIdentity に渡す鍵は Project から使える置き場（共通）のもの——実行場所の鍵（banto-runtime）は Project の AI からは
+  // 使えない（#361）。同じ鍵を両方に預ける
+  const projectAlias = `${alias}-shared`;
   const name = `rk-${randomBytes(3).toString("hex")}`;
   await withSshHost(
     async (host) => {
@@ -134,7 +137,7 @@ test("別のサーバの Project で、Vault の鍵の窓口と流れの口が�
       const loginCmd =
         'echo "sock=$SSH_AUTH_SOCK"; ssh-add -L; ' +
         `ssh -F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR ${host.user}@127.0.0.1 'echo 窓口で入れた'`;
-      const first = await runWithIdentity(ctx, loginCmd, alias);
+      const first = await runWithIdentity(ctx, loginCmd, projectAlias);
       expect(first.exitCode, first.stderr).toBe(0);
       const sock = /^sock=(.*)$/m.exec(first.stdout)?.[1] ?? "";
       expect(sock, "SSH_AUTH_SOCK が向こうの置き場の s を指していない").toMatch(new RegExp(`^${base}/s/a-[0-9a-f]{12}$`));
@@ -155,20 +158,20 @@ test("別のサーバの Project で、Vault の鍵の窓口と流れの口が�
       expect(leaked.stdout.trim(), "秘密鍵が向こうに出ている").toBe("");
 
       // 同じ窓口をもう一度頼んでも、同じ転送を使う（増やさない）
-      const again = await runWithIdentity(ctx, 'echo "sock=$SSH_AUTH_SOCK"; ssh-add -L', alias);
+      const again = await runWithIdentity(ctx, 'echo "sock=$SSH_AUTH_SOCK"; ssh-add -L', projectAlias);
       expect(again.stdout).toContain(`sock=${sock}`);
       expect(again.stdout).toContain(keyBody);
 
       // ---- 2. Vault が窓口を閉じたら、向こうの窓口も消える。頼み直せば張り直す --------------------------------------
       const replaced = await api<{ isError?: boolean; content?: Array<{ text?: string }> }>("/api/ui-tool-call", {
         method: "POST",
-        body: { server: "vault-local", tool: "replaceSecretValue", arguments: { name: alias, value: readFileSync(host.identityFile, "utf8") } },
+        body: { server: "vault-local", tool: "replaceSecretValue", arguments: { name: projectAlias, value: readFileSync(host.identityFile, "utf8") } },
       });
       expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
       expect(replaced.body.isError, JSON.stringify(replaced.body)).not.toBe(true);
       await expect.poll(() => existsSync(join(hostSocketDir, hostAgents[0]!)), { timeout: 15_000, message: "Vault が窓口を閉じない" }).toBe(false);
       await expect.poll(() => remoteKind(host, sock), { timeout: 30_000, message: "Vault が閉じたのに、向こうの窓口が残っている" }).toBe("無い");
-      const third = await runWithIdentity(ctx, loginCmd, alias);
+      const third = await runWithIdentity(ctx, loginCmd, projectAlias);
       expect(third.exitCode, third.stderr).toBe(0);
       expect(third.stdout).toContain("窓口で入れた");
       const sock3 = /^sock=(.*)$/m.exec(third.stdout)?.[1] ?? "";
@@ -216,7 +219,7 @@ test("別のサーバの Project で、Vault の鍵の窓口と流れの口が�
 
       await api(`/api/projects/${projectId}/close`, { method: "POST" });
     },
-    { vaultAlias: alias },
+    { vaultAlias: alias, sharedVaultAlias: projectAlias },
   );
 });
 
