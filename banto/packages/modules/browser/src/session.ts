@@ -15,8 +15,11 @@ export type AudioRoute = { available: true; server: string } | { available: fals
 export interface SessionDeps {
   profileDir: string;
   log: NetworkLog;
-  /** プロファイルの置き場でブラウザを起こす（入っていなければ入れる——install.ts。起こし方は chrome.ts） */
-  launch: (profileDir: string, onProgress?: (message: string) => void) => Promise<LaunchedBrowser>;
+  /**
+   * プロファイルの置き場でブラウザを起こす（入っていなければ入れる——install.ts。起こし方は chrome.ts）。最初のタブは設定の
+   * 検索エンジンのトップで開く。`blank` なら about:blank（すぐほかの URL へ行く——ensure）
+   */
+  launch: (profileDir: string, onProgress?: (message: string) => void, blank?: boolean) => Promise<LaunchedBrowser>;
   /** 使われなければ止めるまでの時間（ms）。呼ぶたびに読む——設定を変えたら次から効く */
   idleMs: () => number;
 }
@@ -99,7 +102,7 @@ export class BrowserSession {
   private currentTab: string | undefined;
   /**
    * **タブの持ち主の会話**（Thread の id。v4-modules.md §4.1「タブは会話ごと」）。人が開いたタブは入れない（持ち主なし）。
-   * ブラウザを起こし直すとタブは残らない（about:blank の1枚から起きる）ので、持ち主も止めるときに捨てる
+   * ブラウザを起こし直すとタブは残らない（最初のタブの1枚から起きる）ので、持ち主も止めるときに捨てる
    */
   private readonly owners = new Map<string, string>();
   /** 会話ごとの「いまのタブ」（タブを省いた操作が効く——その会話が最後に使った自分のタブか、select で選んだタブ） */
@@ -412,21 +415,23 @@ export class BrowserSession {
   }
 
   /**
-   * 起きていなければ起こす。同時に呼ばれても1回だけ。`thread` は起こした会話——**起こした最初のタブ（about:blank）はその
-   * 会話のもの**（会話が起こしたブラウザの空のタブを人のタブとして残し、会話は裏に新しいタブを開く、にしない）
+   * 起きていなければ起こす。同時に呼ばれても1回だけ。`thread` は起こした会話——**起こした最初のタブはその会話のもの**
+   * （会話が起こしたブラウザの最初のタブを人のタブとして残し、会話は裏に新しいタブを開く、にしない）。最初のタブは設定の
+   * 検索エンジンのトップで開く（読み込みは待たない——起動の引数。chrome.ts）。`blank` は最初のタブをすぐほかの URL へ移す
+   * 呼び出し（browserOpen）——about:blank で開く（検索エンジンを読み込んですぐ捨てない）。同時に呼ばれたら起こし始めた呼び出しのもの
    */
-  async ensure(onProgress?: (message: string) => void, thread?: string): Promise<BrowserContext> {
+  async ensure(onProgress?: (message: string) => void, thread?: string, blank = false): Promise<BrowserContext> {
     if (this.ready) return this.ready;
     if (!this.starting) this.starter = thread;
-    this.starting ??= this.start(onProgress).finally(() => {
+    this.starting ??= this.start(onProgress, blank).finally(() => {
       this.starting = undefined;
       this.starter = undefined;
     });
     return this.starting;
   }
 
-  private async start(onProgress?: (message: string) => void): Promise<BrowserContext> {
-    const launched = await this.deps.launch(this.deps.profileDir, onProgress);
+  private async start(onProgress: ((message: string) => void) | undefined, blank: boolean): Promise<BrowserContext> {
+    const launched = await this.deps.launch(this.deps.profileDir, onProgress, blank);
     const context = launched.context;
     this.launched = launched;
     // タブの id は**止めて起こし直しても続きから**振る——通信とコンソールの記録はタブの id を持って残るので、t1 から
@@ -455,7 +460,7 @@ export class BrowserSession {
     return context;
   }
 
-  /** 起こしたブラウザの最初のタブ（about:blank）が出るのを待つ。出なければ理由を残して undefined（タブの無いまま起きる） */
+  /** 起こしたブラウザの最初のタブが出るのを待つ。出なければ理由を残して undefined（タブの無いまま起きる） */
   private firstPage(context: BrowserContext): Promise<Page | undefined> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {

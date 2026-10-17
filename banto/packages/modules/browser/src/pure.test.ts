@@ -411,7 +411,7 @@ test("状態：「AI に触らせない」と設定は置き場に残り、壊�
 // ---- 起こし方・名乗りと言語 ------------------------------------------------------------------------
 
 test("起こし方：自動操作の起動の印（--enable-automation・--headless）も名乗りの上書きも付けず、言語は起動の引数と環境で本物に設定する", () => {
-  const args = chromeArgs({ profileDir: "/p", languages: acceptLanguages("ja-JP"), viewport: { width: 1280, height: 800 }, scale: 1 });
+  const args = chromeArgs({ profileDir: "/p", languages: acceptLanguages("ja-JP"), viewport: { width: 1280, height: 800 }, scale: 1, firstTab: "https://duckduckgo.com/" });
   for (const mark of ["--enable-automation", "--headless", "--user-agent", "--disable-background-networking", "--disable-component-update"]) {
     assert.ok(!args.some((a) => a.startsWith(mark)), `${mark} が付いている：${args.join(" ")}`);
   }
@@ -419,9 +419,11 @@ test("起こし方：自動操作の起動の印（--enable-automation・--headl
   assert.ok(args.includes("--accept-lang=ja-JP,ja,en-US,en"));
   assert.ok(args.includes("--remote-debugging-port=0"));
   assert.ok(args.includes("--disable-blink-features=AutomationControlled"));
+  // 最初のタブで開くページは引数の最後（v4-modules.md §4.1「新しいタブと URL 欄の検索」）
+  assert.equal(args.at(-1), "https://duckduckgo.com/");
   // 1倍では倍率の引数を付けない（人の Chrome と同じ形）。人の画面の倍率で描くときだけ付ける
   assert.ok(!args.some((a) => a.startsWith("--force-device-scale-factor")));
-  assert.ok(chromeArgs({ profileDir: "/p", languages: ["ja-JP"], viewport: { width: 1280, height: 800 }, scale: 2 }).includes("--force-device-scale-factor=2"));
+  assert.ok(chromeArgs({ profileDir: "/p", languages: ["ja-JP"], viewport: { width: 1280, height: 800 }, scale: 2, firstTab: "about:blank" }).includes("--force-device-scale-factor=2"));
   // 描く倍率：1〜2 に収め（3 は重いだけ——chrome.ts）、0.25 刻みに丸める
   assert.deepEqual([0.5, 1, 1.25, 1.6, 2, 2.625, 3].map(browserScale), [1, 1, 1.25, 1.5, 2, 2, 2]);
   assert.deepEqual(localeEnv("ja-JP"), { LANG: "ja_JP.UTF-8", LANGUAGE: "ja_JP:ja" });
