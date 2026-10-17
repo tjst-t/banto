@@ -342,7 +342,7 @@ export interface AppDeps {
   /** 実行場所を外したあと、先に送るために張った接続を閉じる */
   closeRemoteRuntime?(name: string): Promise<void>;
   /** 実行場所の登録で選べる SSH 鍵（Vault の実行場所の鍵の置き場 `RUNTIME_KEYS_GROUP` の ssh-identity の alias の名前） */
-  listSshIdentities?(): Promise<string[]>;
+  listSshIdentities?(): Promise<{ identities: string[]; failures: string[] }>;
   /** コンテナの資源の上限（決定・2026-10-02）。apply は動いているコンテナに効かせる（Project を指さなければ全部） */
   containerLimits?: {
     describe(projectId?: string): ContainerLimitsView;
@@ -1872,7 +1872,8 @@ export function createApp(deps: AppDeps) {
           if (rest === "/identities" && req.method === "GET") {
             if (!deps.listSshIdentities) return json(res, 501, { error: "Vault の SSH 鍵を引けません" });
             // 置き場の名前も返す——画面が「鍵をどこに置けばよいか」を出せるように（名前は1箇所、規則3）
-            return json(res, 200, { identities: await deps.listSshIdentities(), group: RUNTIME_KEYS_GROUP });
+            // 読めなかった Vault（`failures`）も返す——一覧が短い理由を隠さない
+            return json(res, 200, { ...(await deps.listSshIdentities()), group: RUNTIME_KEYS_GROUP });
           }
           if (rest === "/scan" && req.method === "POST") {
             const input = parseRuntimeInput(await readJsonBody(req));

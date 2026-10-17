@@ -396,14 +396,16 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   const [identities, setIdentities] = useState<string[] | null>(null);
   const [identitiesError, setIdentitiesError] = useState<string | null>(null);
   const [keysGroup, setKeysGroup] = useState<string | null>(null);
+  const [unreadVaults, setUnreadVaults] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     listRealSshIdentities().then(
-      ({ identities: list, group }) => {
+      ({ identities: list, group, failures }) => {
         if (cancelled) return;
         setIdentities(list);
         setKeysGroup(group);
+        setUnreadVaults(failures);
         setIdentity((cur) => cur || list[0] || "");
       },
       (err: unknown) => !cancelled && setIdentitiesError(describeFailure(err)),
@@ -482,13 +484,15 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
             id="rt-key"
             label="SSH 鍵"
             hint={
-              identitiesError
+              (identitiesError
                 ? `Vault の SSH 鍵を読めませんでした：${identitiesError}`
                 : !identities || !keysGroup
                   ? "Vault の SSH 鍵を読んでいます…"
                   : identities.length === 0
                     ? `Vault のグループ「${keysGroup}」に SSH 鍵がありません。先に Vault でそのグループに SSH 鍵を置いてください（Project から使えるグループの鍵は、どの Project の AI も使えるので選べません）`
-                    : `Vault のグループ「${keysGroup}」の鍵を使います（banto だけが使い、Project の AI からは使えません）。秘密鍵はこの機械のディスクにも、向こうにも置きません`
+                    : `Vault のグループ「${keysGroup}」の鍵を使います（banto だけが使い、Project の AI からは使えません）。秘密鍵はこの機械のディスクにも、向こうにも置きません`) +
+              // **読めなかった Vault を隠さない**（規則2）——そこにある鍵は一覧に出ていない
+              (identities && unreadVaults.length > 0 ? `（読めなかった Vault があり、そこにある鍵は出ていません：${unreadVaults.join("、")}）` : "")
             }
           >
             <Select value={identity} onValueChange={setIdentity} disabled={!identities || identities.length === 0}>
