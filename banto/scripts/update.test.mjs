@@ -892,7 +892,6 @@ function makePrebuilt(dir, commitSha, { marker = {}, tweak } = {}) {
       commit: commitSha,
       platform: "linux-x64",
       node: process.versions.node,
-      cpu: { avx2: false },
       builtAt: "2026-10-16T00:00:00Z",
       run: "https://github.com/o/r/actions/runs/1",
       ...marker,
@@ -1314,15 +1313,14 @@ test("組み立て済み：prebuilt.mjs が無ければその場で組み立て�
   });
 });
 
-test("組み立て済み：印の確かめ（node の major・AVX2）と origin の読み方（scripts/prebuilt.mjs を直に）", async () => {
+test("組み立て済み：印の確かめ（node の major）と origin の読み方（scripts/prebuilt.mjs を直に）", async () => {
   const m = await import(join(dirname(SCRIPT), "prebuilt.mjs"));
   const commit = "a".repeat(40);
-  const mk = { commit, platform: "linux-x64", node: "24.1.0", cpu: { avx2: true }, run: "https://github.com/o/r/actions/runs/5" };
-  assert.doesNotThrow(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: true }));
-  assert.throws(() => m.checkMarker(mk, commit, { nodeVersion: "22.1.0", avx2: true }), /major が違います/);
-  assert.throws(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: false }), /AVX2/);
-  assert.doesNotThrow(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0", avx2: undefined }), "読めないときは使う");
-  assert.doesNotThrow(() => m.checkMarker({ ...mk, cpu: { avx2: false } }, commit, { nodeVersion: "24.0.0", avx2: false }));
+  const mk = { commit, platform: "linux-x64", node: "24.1.0", run: "https://github.com/o/r/actions/runs/5" };
+  assert.doesNotThrow(() => m.checkMarker(mk, commit, { nodeVersion: "24.21.0" }));
+  assert.throws(() => m.checkMarker(mk, commit, { nodeVersion: "22.1.0" }), /major が違います/);
+  // 前の印（AVX2 の印つき）でも、CPU は見ない——AVX2 に頼っていた opencode は依存から外した
+  assert.doesNotThrow(() => m.checkMarker({ ...mk, cpu: { avx2: true } }, commit, { nodeVersion: "24.21.0" }));
   for (const [url, want] of [
     ["git@github.com:o/r.git", "o/r"],
     ["git@github.com:o/r", "o/r"],

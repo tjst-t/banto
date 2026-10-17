@@ -64,15 +64,6 @@ export function githubRepoOf(url) {
   return m ? `${m[1]}/${m[2]}` : undefined;
 }
 
-/** この機械の CPU が AVX2 を持つか（読めなければ undefined） */
-function hostHasAvx2() {
-  try {
-    return /\bavx2\b/.test(readFileSync("/proc/cpuinfo", "utf8"));
-  } catch {
-    return undefined;
-  }
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const errorText = (err) => err?.cause?.code ?? (err instanceof Error ? err.message : String(err));
 const mb = (n) => (n / 1024 / 1024).toFixed(0);
@@ -504,7 +495,7 @@ export function inspectTree(out) {
 }
 
 /** 印の中身を確かめる（6） */
-export function checkMarker(marker, commit, { nodeVersion = process.versions.node, avx2 = hostHasAvx2() } = {}) {
+export function checkMarker(marker, commit, { nodeVersion = process.versions.node } = {}) {
   if (marker?.commit !== commit) skip(`印の commit（${marker?.commit}）が組み立てる commit（${commit}）と違います`);
   if (marker.platform !== "linux-x64") skip(`印の platform が linux-x64 ではありません（${marker.platform}）`);
   if (typeof marker.run !== "string" || !/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/actions\/runs\/\d+$/.test(marker.run)) {
@@ -512,8 +503,8 @@ export function checkMarker(marker, commit, { nodeVersion = process.versions.nod
   }
   const major = (v) => String(v ?? "").split(".")[0];
   if (major(marker.node) !== major(nodeVersion)) skip(`組み立てた Node.js（${marker.node}）とこの機械の Node.js（${nodeVersion}）の major が違います`);
-  // この機械の /proc/cpuinfo が読めない（undefined）ときは使う——読めないことを理由に毎回組み立てない
-  if (marker.cpu?.avx2 === true && avx2 === false) skip("組み立てた機械は AVX2 を持ち、この機械は持ちません（opencode の部品が動かない）");
+  // CPU（AVX2）は見ない（改訂・2026-10-17）——AVX2 に頼っていたのは opencode だけで、依存から外した（使うときに core が
+  // 動かす機械の CPU で選んで取ってくる、アーキ仕様 §4.1「エージェントの本体を取ってくる」）
 }
 
 /** 移す単位（決めた場所の根）のうち、展開した木にあるもの */
