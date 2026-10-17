@@ -134,27 +134,22 @@ jobs:
         id: pack
         run: |
           set -euo pipefail
-          avx2=false
-          grep -qw avx2 /proc/cpuinfo && avx2=true
           node -e '
             const fs = require("node:fs");
             fs.writeFileSync("banto/.banto-prebuilt.json", JSON.stringify({
               commit: process.env.SHA,
               platform: "linux-x64",
               node: process.versions.node,
-              cpu: { avx2: process.argv[1] === "true" },
               builtAt: new Date().toISOString(),
               run: `${process.env.GITHUB_SERVER_URL}/${process.env.REPO}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             }, null, 2) + "\n");
-          ' "$avx2"
+          '
           # 決めた場所だけ（仕様の「生成物に入れるのは決めた場所だけ」）
           paths=(banto/node_modules banto/apps/frontend/.next banto/apps/frontend/next-env.d.ts banto/.banto-prebuilt.json)
           for d in banto/packages/*/dist banto/packages/modules/*/dist; do [ -d "$d" ] && paths+=("$d"); done
           mkdir -p out
           out="out/${{ steps.existing.outputs.asset }}"
-          # OpenCode の古い CPU 向け（baseline）は入れない——この版は AVX2 のある機械向けの印を付けるので使われない（約185MB）
-          tar --exclude=banto/apps/frontend/.next/cache --exclude='banto/node_modules/opencode-linux-x64-baseline*' \
-            -cf - "${paths[@]}" | zstd -T0 -10 -q -o "$out"
+          tar --exclude=banto/apps/frontend/.next/cache -cf - "${paths[@]}" | zstd -T0 -10 -q -o "$out"
           (cd out && sha256sum "${{ steps.existing.outputs.asset }}" > "${{ steps.existing.outputs.asset }}.sha256")
           ls -l out
 
