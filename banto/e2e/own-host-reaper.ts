@@ -12,6 +12,7 @@
 // 使い方：node own-host-reaper.ts <worker の pid> <自前の host の置き場>
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ensureIncusForReaper } from "./incus-access.ts";
 import { isAlive, isGroupAlive, listOwnedContainers, removeContainers, sleepSync } from "./containers.ts";
 import { removeTree } from "./remove-tree.ts";
 
@@ -22,6 +23,9 @@ if (!Number.isInteger(workerPid) || !dir) {
   process.exit(2);
 }
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+
+// 片づけ役を起こしたユーザーの systemd に incus グループが付いていなければ、付けて起こし直す（Backlog #363）
+ensureIncusForReaper(log);
 
 while (isAlive(workerPid) && existsSync(dir)) sleepSync(1000);
 if (!existsSync(dir)) process.exit(0);

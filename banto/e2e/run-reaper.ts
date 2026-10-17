@@ -17,6 +17,7 @@
 // 使い方：node run-reaper.ts <Playwright の pid> <core の pid> <データの置き場> <画面の port>
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ensureIncusForReaper } from "./incus-access.ts";
 import { isAlive, killProcessGroups, listOwnedContainers, removeContainers, sleepSync, waitGone } from "./containers.ts";
 
 const [playwrightPid, corePid] = [Number(process.argv[2]), Number(process.argv[3])];
@@ -29,6 +30,9 @@ if (!Number.isInteger(playwrightPid) || !Number.isInteger(corePid) || !dataDir |
 
 const logFile = join(dirname(dataDir), "reaper.log");
 const log = (line: string) => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`);
+
+// 片づけ役を起こしたユーザーの systemd に incus グループが付いていなければ、付けて起こし直す（Backlog #363）
+ensureIncusForReaper(log);
 
 log(`[e2e] 片づけ役：Playwright ${playwrightPid} の終わりを待つ（core ${corePid}）`);
 while (isAlive(playwrightPid)) sleepSync(2000);
