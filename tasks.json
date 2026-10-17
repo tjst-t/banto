@@ -9145,11 +9145,11 @@
       ],
       "body": "ユーザー要望（2026-10-17、Fork「定期実行（Cron）の検討」）。#321・#350 の試しの自動化を片づけようとしたとき、AI の道具には自動化を消す口が無く（create・update・list・pause・resume だけ）、画面からしか消せなかった。\n\n- core の会話の tool（banto-thread）に `remove_automation { id }` を足す。消すのは HTTP の DELETE /api/projects/:id/automations/:automationId と同じ処理（台帳から消す。専用の Fork とその会話は残す——画面の「消す」と同じ）\n- **消すときも、承認モードにも「承認をすべて自動で許可する」にも依らず、会話のカードで必ず人に聞く**（作る・変える・再開すると同じ扱い。`automation/tools.ts` の作る・変える・再開すると同じ聞き方、カードの選択肢は「消す」「消さない」）。カードには自動化の名前・きっかけ・届け先と「専用の Fork とその会話は残ります（要らなければ Fork を閉じてください）」を出す\n- 呼べるのはその Project の自動化だけ（ほかの Project の id は断る）。無い id は理由つきで断る\n- 自動化で起きたターンの中からも呼べるが、同じく人に聞く\n- 仕様を先に直す：v4-architecture.md §4.3「人と AI の作り方」の tool の一覧に remove_automation と「消す」を足す。マニュアル site/src/content/docs/docs/guide/automation.md の「自動化を作る」の段の確認の説明にも「消す」を足す\n- 試験：単体（tools）と E2E automation-ai-tools に、消すとカードが出て「消す」で台帳から消え・「消さない」で残る、自動許可オンでもカードが出る、を足す",
       "doneWhen": "AI が remove_automation を呼ぶと、自動許可がオンでも会話にカードが出て、「消す」で自動化が台帳から消え（専用の Fork は残る）、「消さない」で残る。ほかの Project の自動化・無い id は断られる。単体テストと E2E automation-ai-tools が通る。仕様とマニュアルに書いてある",
-      "resolution": "2026-10-17、GitHub の main に入れた（仕様とマニュアル 77b13973 系・実装と試験 26adf658 系、release はまだ）。banto-thread の remove_automation：承認モードにも自動許可にも依らず会話のカードで必ず聞く（「消す」「消さない」）、消すのは画面の DELETE と同じ（台帳から消し Webhook の鍵も捨てる、専用の Fork とその会話は残す）、ほかの Project の id・無い id はカードを出す前に同じ文で断る。カードには名前・きっかけ・届け先・「専用の Fork とその会話は残ります」（既存の会話に届ける自動化は「届け先の会話はそのまま残ります」）、Webhook なら URL が使えなくなる旨。仕様 v4-architecture.md §4.3・v4-frontend.md §6.42、マニュアル guide/automation.md。確かめ：組み立て、core の単体テスト 970件（通過968・スキップ2、TMPDIR=/tmp）、E2E automation-ai-tools・automation-canvas 通過。確かめていない：自動化で起きたターンの中から呼んだとき（作る・再開すると同じ道）、本物の Webhook の構成で鍵が捨てられるか、フル E2E。",
+      "resolution": "GitHub の main（1efeabdb・ce268cc2）と release（c8548dda・5b49ca43）に入れた。release の版で core 単体 970件（落ち0）・自動化の E2E 10本11件通過。host での反映は人。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T10:19:45.244Z",
-      "updatedAt": "2026-10-17T10:28:35.597Z",
+      "updatedAt": "2026-10-17T13:05:12.384Z",
       "closedAt": "2026-10-17T10:28:35.597Z",
       "extra": {}
     },
