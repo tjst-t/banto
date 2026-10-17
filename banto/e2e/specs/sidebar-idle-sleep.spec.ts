@@ -86,7 +86,7 @@ async function chooseAutoSleep(page: Page, current: string, next: string): Promi
   await menu.getByRole("menuitemradio", { name: next }).click();
 }
 
-test("14日開いていない Project を聞く・「今はしない」で消える・自動で眠らせる・何もしない", async ({ page }) => {
+test("14日開いていない Project を聞く・「今はしない」で消える・自動で眠らせる・何もしない・眠っている Project が無くても「＋」から変えられる", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
   const ours: string[] = [];
@@ -105,6 +105,18 @@ test("14日開いていない Project を聞く・「今はしない」で消え
     ours.push(openId);
     await expect(awakeName(page, IDLE)).toBeVisible({ timeout: 30_000 });
     await expect(suggestion(page), "時計が回る前に聞いた").toHaveCount(0);
+
+    // ---- 0. 眠っている Project が無く「スリープ中」の見出しが無くても、「Project」の見出しの「＋」から変えられる（2026-10-17、ユーザー）
+    await expect(page.getByTestId("sidebar-sleep-heading"), "眠っている Project が無いのに見出しが出た").toHaveCount(0);
+    await page.getByRole("button", { name: "Project・グループを足す" }).click();
+    await page.getByTestId("sidebar-auto-sleep-submenu").click();
+    const plusMenu = page.getByTestId("sidebar-auto-sleep-menu");
+    await expect(plusMenu.getByText("14日開いていない Project を")).toBeVisible();
+    await expect(plusMenu.getByRole("menuitemradio", { name: "スリープにするか聞く" }), "いまの選択が host の値と違う").toHaveAttribute("aria-checked", "true");
+    await plusMenu.getByRole("menuitemradio", { name: "何もしない" }).click();
+    await expect.poll(async () => (await ok<{ mode: string }>("GET", "/api/settings/auto-sleep")).mode, { message: "「＋」から変えられない" }).toBe("off");
+    await api("PUT", "/api/settings/auto-sleep", { mode: "ask" });
+    await page.keyboard.press("Escape");
 
     // ---- 1. 15日後の時刻で時計を回すと、両方が候補になる。画面はいま開いている Project を入れない ----------------
     await idleCheck([idleId, openId], 1);
