@@ -137,6 +137,10 @@ test("変換役：初めて使うときに入れ、docx・pptx・xlsx を PDF �
     const slidesPdf = await readConverted("slides.pptx");
     expect(slidesPdf.subarray(0, 5).toString()).toBe("%PDF-");
     expect(pageCount(slidesPdf), "スライドの枚数とページの数が違う").toBe(2);
+    // 日本語は日本語の字形で（2026-10-17、ユーザー報告「中華フォントになる」——C.UTF-8 のときは Noto CJK の SC だった）
+    const cjkFonts = [...new Set(slidesPdf.toString("latin1").match(/NotoS(?:ans|erif)CJK[a-z]+/g) ?? [])];
+    expect(cjkFonts.length, "スライドの日本語に Noto CJK が使われていない").toBeGreaterThan(0);
+    expect(cjkFonts.every((f) => f.endsWith("jp")), `日本語が日本語の字形で描かれていない：${cjkFonts.join("・")}`).toBe(true);
 
     const sheetPdf = await ok("convertDocument", { path: "calc.xlsx", to: "pdf" });
     expect(sheetPdf).toMatchObject({ status: "converted", target: "pdf", mimeType: "application/pdf" });

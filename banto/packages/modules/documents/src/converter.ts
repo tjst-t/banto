@@ -29,7 +29,7 @@ export const CONVERT_TIMEOUT_MS = 60_000;
 /** 囲いの中の uid・gid（nobody） */
 export const SANDBOX_ID = 65534;
 /** この Module の変換の作法の版。プロファイル・囲いの作りを変えたら上げる（FileSystem の置き場の鍵に入る） */
-export const RECIPE_VERSION = "1";
+export const RECIPE_VERSION = "2";
 
 export const TOO_LARGE_MESSAGE = "大きすぎて変換できません（7MB まで）";
 
@@ -55,6 +55,36 @@ export const PROFILE_XCU = `<?xml version="1.0" encoding="UTF-8"?>
 <item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop></item>
 <item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="ODFRecalcMode" oor:op="fuse"><value>0</value></prop></item>
 </oor:items>
+`;
+
+/**
+ * **fontconfig の設定**（囲いの中の `/work/fonts.conf`、FONTCONFIG_FILE）。システムの設定を読んだうえで、中国語・韓国語と
+ * 書かれていない文字の sans-serif・serif・monospace の先頭に Noto CJK の JP を置く——Noto CJK は既定で SC を選ぶ
+ */
+export const FONTS_CONF = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <!-- 中国語と書いていない文字は日本語の字形で（Noto CJK は既定で SC を選ぶ） -->
+  <match target="pattern">
+    <test name="lang" compare="not_contains"><string>zh</string></test>
+    <test name="lang" compare="not_contains"><string>ko</string></test>
+    <test qual="any" name="family"><string>sans-serif</string></test>
+    <edit name="family" mode="prepend" binding="strong"><string>Noto Sans CJK JP</string></edit>
+  </match>
+  <match target="pattern">
+    <test name="lang" compare="not_contains"><string>zh</string></test>
+    <test name="lang" compare="not_contains"><string>ko</string></test>
+    <test qual="any" name="family"><string>serif</string></test>
+    <edit name="family" mode="prepend" binding="strong"><string>Noto Serif CJK JP</string></edit>
+  </match>
+  <match target="pattern">
+    <test name="lang" compare="not_contains"><string>zh</string></test>
+    <test name="lang" compare="not_contains"><string>ko</string></test>
+    <test qual="any" name="family"><string>monospace</string></test>
+    <edit name="family" mode="prepend" binding="strong"><string>Noto Sans Mono CJK JP</string></edit>
+  </match>
+</fontconfig>
 `;
 
 /** 囲いの中から見える作業フォルダ */
@@ -91,7 +121,12 @@ export function sandboxArgs(workDir: string): string[] {
     "--clearenv",
     "--setenv", "HOME", WORK,
     "--setenv", "PATH", "/usr/bin",
-    "--setenv", "LANG", "C.UTF-8",
+    // **日本語の字形で描く**（2026-10-17、ユーザー報告「中華フォントになる」）。C.UTF-8 では LibreOffice が言語の無い漢字を
+    // 中国語として扱い、Noto CJK の SC の字形で描いていた（実測：pdffonts が NotoSansCJKsc）。既定の言語を日本語にし、
+    // fontconfig にも JP の字形を先に選ばせる（中国語・韓国語と書かれた文字はそのまま）。この2つの両方が要る（片方だけだと
+    // pptx・xlsx の一部が SC のまま、実測）
+    "--setenv", "LANG", "ja_JP.UTF-8",
+    "--setenv", "FONTCONFIG_FILE", `${WORK}/fonts.conf`,
     "--setenv", "TMPDIR", `${WORK}/tmp`,
   ];
 }
@@ -254,9 +289,10 @@ export async function convertOne(
     for (const sub of ["in", "out", "tmp", "profile/user"]) mkdirSync(join(dir, sub), { recursive: true });
     writeFileSync(join(dir, "in", `input.${extension}`), input);
     writeFileSync(join(dir, "profile", "user", "registrymodifications.xcu"), PROFILE_XCU);
+    writeFileSync(join(dir, "fonts.conf"), FONTS_CONF);
     const owner = opts.chownTo === undefined ? SANDBOX_ID : opts.chownTo;
     if (owner !== null) {
-      for (const p of ["", "in", "out", "tmp", "profile", "profile/user", "profile/user/registrymodifications.xcu", `in/input.${extension}`]) {
+      for (const p of ["", "in", "out", "tmp", "profile", "profile/user", "profile/user/registrymodifications.xcu", "fonts.conf", `in/input.${extension}`]) {
         chownSync(join(dir, p), owner, owner);
       }
     }
