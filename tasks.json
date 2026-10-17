@@ -9129,6 +9129,29 @@
       "updatedAt": "2026-10-17T10:28:35.597Z",
       "closedAt": "2026-10-17T10:28:35.597Z",
       "extra": {}
+    },
+    {
+      "id": "browser",
+      "number": 379,
+      "kind": "bug",
+      "title": "Browser：許可を求める吹き出し（通知など）が人の画面から押せず居座る——出さずに全部ブロックにする",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "browser"
+      ],
+      "body": "## なぜ\n2026-10-17 にユーザーから報告があった。japan.cnet.com で「通知を表示」の許可の吹き出しが出て、クリックしても反応せず、ページを見ている間ずっと邪魔になる。\n原因：人の画面のクリック・キーは CDP の Input.dispatchMouseEvent（view-stream.ts:689 付近）でページの中にだけ届く。許可の吹き出しは Chrome 本体の UI で、キオスク形なので閉じる手段もない。\n\n## 決定（ユーザー、案A）\n許可を求める吹き出しは出さず、全部ブロックにする。Chrome の普通の起動の引数 `--deny-permission-prompts` を chrome.ts の chromeArgs に足す。仮想の画面なので、カメラ・マイクはもともと無い。\n人の入力を X に入れて Chrome の UI も押せるようにする案（案B）は、別の Backlog 項目に積んだ。\n\n## 作るもの\n- chromeArgs に `--deny-permission-prompts` を足し、理由を書く（自動操作の印ではない普通の引数）。\n- 足したあと、許可を求めるページで navigator.permissions の状態と吹き出しが出ないことを実測する。試しのページは test-page.ts に、Notification.requestPermission() と geolocation を呼ぶものを足す。実測の結果は仕様に書く。\n- 仕様 v4-modules.md §4.1 に「許可を求める吹き出しは出さずブロック（人の入力はページの中にだけ届き、Chrome の UI は押せないため）」を足す。\n\n## 確かめ（全部の E2E は流さない）\nbrowser の単体・型検査（chromeArgs の試験）、browser.spec.ts か browser-view.spec.ts に「requestPermission が denied を返し、吹き出しで画面が止まらない」を足し、Browser の E2E 5本を流す。",
+      "doneWhen": "ブラウザが --deny-permission-prompts で起き、通知・位置情報の許可を求めるページで吹き出しが出ず denied になることを E2E で確かめた。browser の単体・型検査と Browser の E2E 5本が通る。§4.1 を直した。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-17T12:57:41.072Z",
+      "updatedAt": "2026-10-17T12:57:41.072Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
