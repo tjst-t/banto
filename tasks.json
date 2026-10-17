@@ -6020,7 +6020,7 @@
       "number": 360,
       "kind": "task",
       "title": "Browser：「画面に合わせる」をその端末で覚え、Canvas を開き直したら自動で入れ直す",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -6032,7 +6032,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:13:44.028Z",
-      "updatedAt": "2026-10-17T00:13:44.028Z",
+      "updatedAt": "2026-10-17T00:28:30.514Z",
       "closedAt": null,
       "extra": {}
     },
