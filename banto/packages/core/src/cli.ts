@@ -106,7 +106,7 @@ import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
 import { DISCONNECT_WHY, ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
-import { AppEventBus, announceProjectsChanged, backgroundItemsOf } from "./http/app-events.js";
+import { AppEventBus, announceProjectsChanged, backgroundItemsOf, type RuntimeUnreachableView } from "./http/app-events.js";
 import { SelfUpdate } from "./self-update/self-update.js";
 import { catalogFromEnv, hostHasAvx2 } from "./agent-binaries/agent-binaries.js";
 import { AgentBinaryStore } from "./agent-binaries/store.js";
@@ -453,8 +453,22 @@ async function main(): Promise<void> {
    * `modules/remote-outage.ts`）。3 分続いたら出し、繋がったら閉じる
    */
   const remoteOutageKey = (runtimeName: string) => `remote-unreachable:${runtimeName}`;
-  const remoteOutage = new RemoteOutageWatch({
+  /**
+   * **3 分を超えて繋がらない別のサーバとその Project を画面へ**（追加・2026-10-17、Backlog #383）——サイドバーの頭文字の「!」。
+   * 出す・理由が変わる・閉じるたびに全体を送る。鍵のカードがお知らせを肩代わりしていても送る
+   */
+  const unreachableRuntimes = (): RuntimeUnreachableView[] =>
+    remoteOutage.raised().map((o) => ({
+      runtime: o.runtimeName,
+      reason: o.reason,
+      since: new Date(o.since).toISOString(),
+      projectIds: projectsOnRuntime(o.runtimeName),
+    }));
+  const publishUnreachable = () => appEvents.publish({ type: "runtimes.unreachable", unreachable: unreachableRuntimes() });
+  const remoteOutage: RemoteOutageWatch = new RemoteOutageWatch({
+    changed: () => publishUnreachable(),
     raise: (n) => {
+      publishUnreachable();
       // 鍵が置き場の外にある実行場所は、そちらのカードが理由を言う（重ねない）
       if (runtimeKeyPlace.blocks(n.runtimeName)) return;
       const names = n.projectIds.map((id) => `「${projectThread.getProject(id)?.name ?? id}」`).join("");
@@ -467,10 +481,12 @@ async function main(): Promise<void> {
         })
         .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
     },
-    close: (runtimeName) =>
+    close: (runtimeName) => {
+      publishUnreachable();
       void inbox
         .acknowledgeNoticesByKey(remoteOutageKey(runtimeName))
-        .catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err)),
+        .catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
+    },
   });
   /**
    * **実行場所の2つ目——別のサーバ**（決定・2026-10-08、Backlog `remote-runtime-ssh`）。Project の記録の `runtime` が
@@ -2895,6 +2911,7 @@ async function main(): Promise<void> {
     // 資源（GET /api/admin/resources・hello の混んでいる印）
     resources: { snapshot: () => resourceWatch.snapshot(), busy: () => resourceWatch.busySummary() },
     // 別のサーバへコードを送っている途中のもの（hello）と、登録したあと先に送っておく口（Backlog #269）
+    unreachableRuntimes,
     codeTransfers: () => remoteSsh.codeTransfers().map((t) => ({ ...t, projectIds: projectsOnRuntime(t.runtime) })),
     // 起きたときの先送り（Backlog #278）と同じ順番に並べる——一度に1台ずつ
     warmUpRemoteRuntime: (name) => void remoteSsh.queueWarmUp(name),

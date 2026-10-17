@@ -54,6 +54,7 @@ import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
 import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
+import { UnreachableProjectMark } from "./unreachable-project-mark";
 
 /** 畳んだレールの Fork 一覧の名前。まだ開いていなければ太字（§6.33） */
 function RailForkName({ threadId, title }: { threadId: string; title: string }) {
@@ -244,6 +245,9 @@ function CollapsedRail({
                   </div>
                   )}
                 </SidebarItemMenu>
+
+                {/* 別のサーバに繋がらない印（Backlog #383）。左上——右上は Fork の印 */}
+                <UnreachableProjectMark projectId={project.id} className="-top-0.5 -left-0.5" />
 
                 {/* 開いている Fork Thread の一覧・切替口。バッジは Link の外に置く
                     ——入れ子の押せるもの（Link の中に button）は無効な HTML になるし、

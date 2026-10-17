@@ -12,6 +12,7 @@ import { onRealAppEvent, startRealAppEvents } from "@/lib/backend/app-events";
 import { wireRunningThreads } from "@/lib/backend/running-threads";
 import { wireBackgroundWork } from "@/lib/backend/background-work";
 import { wireResourcesBusy } from "@/lib/backend/resources-busy";
+import { wireUnreachableRuntimes } from "@/lib/backend/unreachable-runtimes";
 import { wireRuntimeMoves } from "@/lib/backend/runtime-moves";
 import { wireCodeTransfers } from "@/lib/backend/code-transfers";
 import { reportFailure } from "@/lib/report-failure";
@@ -29,6 +30,8 @@ export function RealProjectsBootstrap() {
     wireBackgroundWork();
     // 混んでいる Project とこの機械（§6.36）。同じ理由で読み始める前に
     wireResourcesBusy();
+    // 繋がらない別のサーバ（Backlog #383）。同じ理由で読み始める前に
+    wireUnreachableRuntimes();
     // 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。同じ理由で読み始める前に
     wireRuntimeMoves();
     // 別のサーバへコードを送っている途中のもの（Backlog #269）。同じ理由で読み始める前に
