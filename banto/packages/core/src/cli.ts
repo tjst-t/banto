@@ -45,6 +45,7 @@ import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
+import { installedAgentSdkVersion, relayRefreshDecision } from "./claude-login/refresh.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
 import { HostContainerRuntime } from "./runtime/host-container.js";
@@ -275,27 +276,43 @@ async function main(): Promise<void> {
    * 環境に住所とその Project の合言葉を入れ、コンテナの中の `claude -p`・Agent SDK・サブエージェント・Service が
    * 本体のログインで推論を呼べる。本物のトークンは中に入れない
    */
+  // 中継が本体のログインを取り直すか（§2「中継も、切れかけたら取り直す」）
+  const relayRefresh = relayRefreshDecision(process.env, installedAgentSdkVersion());
+  if (!relayRefresh.enabled) console.warn(`[host] Claude ログインの中継は取り直しません（${relayRefresh.why}）`);
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
+    refreshEnabled: relayRefresh.enabled,
     // 試験は本物のログインを読まない（E2E が置いた偽物を指す）。ふだんは本体（Runner）と同じ置き場
     credentialsPath: process.env.BANTO_CLAUDE_RELAY_CREDENTIALS ?? hostClaudeCredentialsPath(),
     ...(process.env.BANTO_CLAUDE_RELAY_UPSTREAM ? { upstream: process.env.BANTO_CLAUDE_RELAY_UPSTREAM } : {}),
+    // 取り直しの口（E2E が偽物を指す。§2「中継も、切れかけたら取り直す」）
+    ...(process.env.BANTO_CLAUDE_RELAY_TOKEN_URL ? { tokenUrl: process.env.BANTO_CLAUDE_RELAY_TOKEN_URL } : {}),
     secretsPath: join(bootstrap.dataDir, "claude-login-secrets.json"),
     enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
     // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
     // 起こし直しでもアドレスは変わらない（MAC が固定・DHCP の貸し出しは1時間）が、中の root はアドレスを足せる）。
     // 覚えずに毎回、実行場所に聞く——止まっている・無いコンテナは「違う」
     sourceMatches: (projectId, remote) => runtime.sourceMatches(projectId, remote),
-    // **本体のログインが切れたら、受信箱に1件**（同じものが開いている間は増やさない）
-    onUpstreamUnauthorized: () => {
+    // **中継が取り直しても直せなかったときだけ、受信箱に1件**（同じものが開いている間は増やさない。改訂・2026-10-16、
+    // v4-security.md §2「中継も、切れかけたら取り直す」）。以前は 401 が1回来たら出し、本体の会話が次に動いて自然に
+    // 直っても閉じなかった
+    onUpstreamUnauthorized: (_projectId, reason) => {
+      console.warn(`[host] Claude ログインの中継で直せませんでした: ${reason}`);
       void inbox
         .raiseNotice({
           dedupeKey: "claude-login-upstream-unauthorized",
-          title: "banto 本体の Claude ログインが期限切れです",
+          title: "banto 本体の Claude ログインを取り直せませんでした",
           detail:
-            "Project のコンテナからの Claude の呼び出しが、本体のログインで断られました（401）。" +
-            "banto を動かしているユーザーで `claude` を一度起こすとトークンが更新されます。切れたままなら `claude auth login` でログインし直してください",
+            `Project のコンテナからの Claude の呼び出しが通りません（${reason}）。` +
+            "banto は自分でトークンを取り直そうとしましたが、うまくいきませんでした。" +
+            "banto を動かしているユーザーで `claude auth login` でログインし直してください。通るようになれば、このカードは自動で閉じます",
         })
         .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
+    },
+    // 通ったら、出していたカードを閉じる
+    onUpstreamAuthorized: () => {
+      void inbox
+        .acknowledgeNoticesByKey("claude-login-upstream-unauthorized")
+        .catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
     },
   });
   /**

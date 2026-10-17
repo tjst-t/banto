@@ -11,12 +11,12 @@
 //   4. Project 設定に「使わせる」（既定オン）・本体のログイン（契約）・回数・最後の時刻・直近の 401 が出る
 //   5. 切ると、その時点で同じ合言葉が断られ、回数は増えない。入れ直しても古い合言葉は通らない
 import { test, expect, type Page } from "../test-base.js";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
+import { AUTH_TOKEN, CLAUDE_RELAY_CREDENTIALS, CORE_BASE_URL } from "../config.js";
 import { openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
@@ -45,8 +45,8 @@ async function run(projectId: string, command: string): Promise<Ran> {
 }
 
 /** コマンドの中から中継へ POST し、状態と本文を1行ずつ返す */
-const CALL_RELAY = (path: string) =>
-  `curl -s -o /tmp/relay-out -w '%{http_code}\\n' -X POST "$ANTHROPIC_BASE_URL${path}" ` +
+const CALL_RELAY = (path: string, extraHeader = "") =>
+  `curl -s -o /tmp/relay-out -w '%{http_code}\\n' -X POST "$ANTHROPIC_BASE_URL${path}" ${extraHeader ? `-H '${extraHeader}' ` : ""}` +
   `-H "authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -H 'content-type: application/json' -d '{}' && cat /tmp/relay-out`;
 
 async function relayState(page: Page, projectId: string) {
@@ -144,4 +144,63 @@ test("Claude のログインの中継：コンテナのコマンドから本体�
   expect(stale.stdout.split("\n")[0], "入れ直したのに古い合言葉が通った").toBe("401");
 
   expect(pageErrors).toEqual([]);
+});
+
+// **中継が取り直しても直せないときだけ受信箱に出し、直ったら自動で閉じる**（改訂・2026-10-16、v4-security.md §2
+// 「中継も、切れかけたら取り直す」）。偽の上流は見出しで 401 を返し、偽の取り直しの口はいつも invalid_grant——refresh
+// token が死んでいる＝人がログインし直すしかない。そのカードは、手元の access token で通っただけでは閉じず、置き場の
+// refresh token が替わって（人がログインし直して）から通ったときに閉じる
+test("取り直せないときだけ受信箱に出し、ログインし直して通ったら自動で閉じる", async ({ page }) => {
+  const original = readFileSync(CLAUDE_RELAY_CREDENTIALS, "utf8");
+  const writeRefreshToken = (refreshToken: string) => {
+    const creds = JSON.parse(original) as { claudeAiOauth: Record<string, unknown> };
+    creds.claudeAiOauth.refreshToken = refreshToken;
+    writeFileSync(CLAUDE_RELAY_CREDENTIALS, JSON.stringify(creds));
+  };
+  const TITLE = "banto 本体の Claude ログインを取り直せませんでした";
+  const openNotice = async () => {
+    const res = await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers });
+    const text = await res.text();
+    return text.includes(TITLE) ? text : undefined;
+  };
+  try {
+    // 取り直せる形にしておく（access token はそのまま——ほかの spec が見る値を変えない）
+    writeRefreshToken("e2e-dead-refresh");
+    const project = (await (
+      await page.request.post(`${CORE_BASE_URL}/api/projects`, {
+        headers,
+        data: { name: "E2E Claude Login Refresh", root: mkdtempSync(join(tmpdir(), "banto-e2e-claude-refresh-")) },
+      })
+    ).json()) as { id: string };
+    await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/modules/prepare`, { headers });
+          return ((await res.json()).connected ?? []) as string[];
+        },
+        { timeout: 120_000, message: "Shell が繋がるまで" },
+      )
+      .toEqual(expect.arrayContaining(["shell"]));
+    // まず通す——起こし直す前のカードが残っていても、ここで閉じる
+    expect((await run(project.id, CALL_RELAY("/v1/messages"))).stdout.split("\n")[0]).toBe("200");
+    await expect.poll(openNotice, { timeout: 15_000 }).toBeUndefined();
+
+    // 401 → 取り直す → invalid_grant：人が直すしかないので受信箱に出る（理由つき）
+    const refused = await run(project.id, CALL_RELAY("/v1/messages", "x-e2e-upstream-status: 401"));
+    expect(refused.stdout.split("\n")[0]).toBe("401");
+    await expect.poll(openNotice, { timeout: 15_000 }).toContain("refresh token が無効");
+
+    // 手元の access token で通っても、ログインが壊れたままなので閉じない
+    expect((await run(project.id, CALL_RELAY("/v1/messages"))).stdout.split("\n")[0]).toBe("200");
+    await page.waitForTimeout(1_000);
+    expect(await openNotice(), "ログインが壊れたままなのに閉じた").toBeDefined();
+
+    // 人がログインし直した（置き場の refresh token が替わった）→ 次に通ったら閉じる
+    writeRefreshToken("e2e-relogged");
+    expect((await run(project.id, CALL_RELAY("/v1/messages"))).stdout.split("\n")[0]).toBe("200");
+    await expect.poll(openNotice, { timeout: 15_000 }).toBeUndefined();
+  } finally {
+    writeFileSync(CLAUDE_RELAY_CREDENTIALS, original);
+  }
 });
