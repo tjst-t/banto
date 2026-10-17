@@ -8949,7 +8949,7 @@
       "number": 371,
       "kind": "bug",
       "title": "E2E：automation-events-ui の後に sidebar-reorder-rename を同じ core で流すと並べ替えの試験が落ちる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -8963,7 +8963,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T01:53:35.223Z",
-      "updatedAt": "2026-10-17T01:53:35.223Z",
+      "updatedAt": "2026-10-17T08:03:43.917Z",
       "closedAt": null,
       "extra": {}
     },
