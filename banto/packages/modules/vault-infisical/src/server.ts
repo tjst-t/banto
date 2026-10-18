@@ -18,7 +18,7 @@
 // **banto の宣言には書かない**——宣言は Event Store に残るため。
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createVaultModuleServer } from "@banto/vault-kit";
+import { createVaultModuleServer, type OwnerRelay } from "@banto/vault-kit";
 import { VISIBILITY_META_KEY, VALUE_FREE_META_KEY } from "@banto/module-contract";
 import { InfisicalConnection, readConfigFromEnv, type InfisicalConfig } from "./client.js";
 import { InfisicalTokenCache } from "./token-cache.js";
@@ -126,7 +126,7 @@ class LazyConnection {
  */
 const CANONICAL_NAME = "vault-infisical";
 
-export function createInfisicalVaultServer(dataDir: string, moduleName = CANONICAL_NAME) {
+export function createInfisicalVaultServer(dataDir: string, moduleName = CANONICAL_NAME, ownerRelay?: OwnerRelay) {
   const settings = new InfisicalSettingsStore(dataDir);
   // **環境変数の既定は、正規の1本にだけ効かせる**（決定・2026-09-15）。
   // `BANTO_INFISICAL_*` は**1つの接続先**を指す値なので、写しにも効かせると
@@ -156,6 +156,8 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
     },
     // グループ＝フォルダ（管理画面の「＋ 新しいグループを作る…」に添える、2026-10-07）
     groupCreateNote: "Infisical ではフォルダができます",
+    // 持ち主でない呼び元に banto のログインを渡す前に、持ち主を呼ぶ中継（2026-10-18、Backlog #405）
+    ...(ownerRelay ? { ownerRelay } : {}),
     // **未設定でも立つ**。繋がらない理由は readiness で返す
     init: () => lazy.start(),
     readiness: async () => lazy.readiness(),
@@ -211,6 +213,8 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
 if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const dataDir =
     process.env.BANTO_VAULT_INFISICAL_DATA_DIR ?? `${process.env.HOME}/.local/share/banto/vault-infisical`;
-  const server = createInfisicalVaultServer(dataDir, process.env.BANTO_MODULE_NAME ?? CANONICAL_NAME);
+  const { ownerRelayFromEnv } = await import("@banto/vault-kit");
+  const moduleName = process.env.BANTO_MODULE_NAME ?? CANONICAL_NAME;
+  const server = createInfisicalVaultServer(dataDir, moduleName, ownerRelayFromEnv(moduleName));
   await server.connect(new StdioServerTransport());
 }

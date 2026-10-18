@@ -14,10 +14,10 @@
 // ——設定画面に「Vault（ローカル）」が出ても、開いて決められることが無かった（規則13）
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createVaultModuleServer, LocalFileAliasStore } from "@banto/vault-kit";
+import { createVaultModuleServer, LocalFileAliasStore, ownerRelayFromEnv, type OwnerRelay } from "@banto/vault-kit";
 import { SopsBackend } from "./sops-backend.js";
 
-export function createVaultServer(dataDir: string) {
+export function createVaultServer(dataDir: string, ownerRelay?: OwnerRelay) {
   const backend = new SopsBackend(dataDir);
   return createVaultModuleServer({
     moduleName: "vault-local",
@@ -25,11 +25,13 @@ export function createVaultServer(dataDir: string) {
     aliasStore: new LocalFileAliasStore(dataDir),
     dataDir,
     init: () => backend.init(),
+    // 持ち主でない呼び元に banto のログインを渡す前に、持ち主を呼ぶ中継（2026-10-18、Backlog #405）
+    ...(ownerRelay ? { ownerRelay } : {}),
   });
 }
 
 if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const dataDir = process.env.BANTO_VAULT_DATA_DIR ?? `${process.env.HOME}/.local/share/banto/vault`;
-  const server = createVaultServer(dataDir);
+  const server = createVaultServer(dataDir, ownerRelayFromEnv("vault-local"));
   await server.connect(new StdioServerTransport());
 }

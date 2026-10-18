@@ -39,9 +39,9 @@ export async function setGithubLoginFixture(patch: {
   rejectPush?: { repo: string; on: boolean };
   /** その login の GitHub App のインストールを差し替える（null で既定——自分に Administration・Contents が書けるもの——に戻す） */
   installations?: { login: string; list: Array<{ account: string; administration?: "read" | "write"; contents?: "read" | "write" }> | null };
-}): Promise<{ refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }> }> {
+}): Promise<{ refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>; issued: number }> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });
   if (!res.ok) throw new Error(`偽の GitHub が振る舞いの変更を断りました（${res.status}）`);
-  return (await res.json()) as { refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }> };
+  return (await res.json()) as { refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>; issued: number };
 }

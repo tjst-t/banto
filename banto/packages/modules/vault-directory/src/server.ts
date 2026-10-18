@@ -355,9 +355,14 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     if (!meta) throw new Error(`alias "${name}" が ${fromImpl} の ${fromGroup} に見つかりません`);
     const blocked = crossVaultBlockers([meta], all.aliases);
     if (blocked.length > 0) throw new Error(`"${name}" は別の Vault へ移せません：${blocked[0]!.reason}`);
-    const value = await deps.relay.callTool(fromImpl, "resolveAlias", { name, group: fromGroup });
+    // **banto が置く秘密は `exportOwnedSecret` で丸ごと読む**（2026-10-18、Backlog #405）——`resolveAlias` は持ち主でない呼び元に
+    // 持ち主が作った値（GitHub なら access token だけ）を渡すので、移すと refresh token が消える。確かめの読みも同じ口
+    const owned = meta.kind === "oauth-token";
+    const read = (impl: string, group: string) =>
+      deps.relay.callTool(impl, owned ? "exportOwnedSecret" : "resolveAlias", { name, group });
+    const value = await read(fromImpl, fromGroup);
     const note = meta.note ? String(meta.note) : undefined;
-    if (meta.kind === "oauth-token") {
+    if (owned) {
       // **banto が置く秘密は持ち主ごと移す**（2026-10-06、レビュー）。`createAlias` は人が手で作る口で、これを受けない
       // ——写すと持ち主が消え、置いた Module が回った鍵を書き戻せなくなる（同じ Vault の中の移動は行ごと移るので保つ）
       await deps.relay.callTool(toImpl, "importOwnedSecret", {
@@ -371,7 +376,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       await deps.relay.callTool(toImpl, "createAlias", { name, kind: String(meta.kind ?? "secret"), value, note, group: toGroup });
     }
     // **確かめてから消す**——写せていないのに消したら秘密が消える
-    const copied = await deps.relay.callTool(toImpl, "resolveAlias", { name, group: toGroup });
+    const copied = await read(toImpl, toGroup);
     if (copied !== value) throw new Error(`"${name}" を写せませんでした（${fromImpl} → ${toImpl}）。元は残っています`);
     await deps.relay.callTool(fromImpl, "deleteAlias", { name, group: fromGroup });
   }

@@ -26,11 +26,12 @@
 //      ものだけを書き換える口」で残り、以後の更新も通る（Vault に最新の鍵がある）
 import { test, expect, type FrameLocator, type Page, type Route } from "../test-base.js";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, GITHUB_LOGIN_FIXTURE_FILE } from "../config.js";
-import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, waitForProjectModule, clickNewProject } from "../helpers.js";
+import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, openToolCards, waitForProjectModule, clickNewProject } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
   E2E_GITHUB_DEVICE_LOGIN,
@@ -1335,6 +1336,159 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
     } finally {
       await request.delete(`${CORE_BASE_URL}/api/modules/backlog`, { headers });
       rmSync(repoHome, { recursive: true, force: true });
+    }
+  }
+});
+
+// **AI が Vault から GitHub のログインを引くときも、Repositories が取り直してから渡す**（追加・2026-10-18、Backlog #405。
+// v4-modules.md §2.1「banto が置く秘密は、持ち主が作った値で渡す」）。本番（ansible-nas）で、Shell の envSecrets に
+// `repositories-github-<login>` を渡すと、8時間を過ぎたあとは期限の切れた access token（と refresh token 込みの JSON）が
+// 渡っていた。見るのは：
+//   1. 期限の近いログインを envSecrets で受け取ると、Repositories が取り直して Vault に書き戻し、**最新の access token の文字列
+//      だけ**が届く（JSON・refresh token ではない）。Vault → Repositories の中継は人に聞かず、理由つきで記録に残る
+//   2. 取り直せない（GitHub が更新の鍵を断る）なら、値を渡さず理由つきで断る
+//   3. 起動の差し込み `${secret:…}` には入れない（起こさず理由を出す）
+test("AI が envSecrets で GitHub のブラウザログインを受け取ると、Repositories が取り直して書き戻した access token の文字列だけが届く——取り直せなければ断り、起動の差し込みには入れない", async ({ page, request }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const login = E2E_GITHUB_DEVICE_LOGIN;
+  const alias = `repositories-github-${login}`;
+  const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-present-")));
+  const projectName = `E2E Present ${Date.now().toString(36)}`;
+  const placeholderModule = `e2e-oauth-placeholder-${Date.now()}`;
+  const sha16 = (x: string) => createHash("sha256").update(x).digest("hex").slice(0, 16);
+  let passed = false;
+  try {
+    // 出すトークンの寿命を 30 分の余裕より短くして、引くたびに取り直しが走るようにする
+    await setGithubLoginFixture({ script: ["authorized"], accessTokenTtl: 60, refreshError: null });
+    const inner = await openRepositoriesPane(page);
+    await inner.getByTestId("gh-account-add").click();
+    await expect(inner.getByTestId("gh-method-browser")).toBeChecked();
+    await inner.getByTestId("gh-account-submit").click();
+    await expect(inner.getByTestId("repo-flash")).toContainText(`${login} をブラウザでログインして登録しました`, { timeout: 30_000 });
+
+    // ---- 3. 起動の差し込みには入れない（起こさず、理由を出す） --------------------------------------------------
+    const added = await request.post(`${CORE_BASE_URL}/api/modules`, {
+      headers: { ...headers, "content-type": "application/json" },
+      data: {
+        mcpServers: {
+          [placeholderModule]: {
+            command: "${nodeExec}",
+            args: ["-e", "require('node:fs').writeFileSync(process.env.OUT, process.env.TOKEN ?? '')"],
+            env: { TOKEN: `\${secret:${alias}}`, OUT: "${moduleDataDir}/out.txt" },
+          },
+        },
+      },
+    });
+    expect(added.ok(), "Module を足せなかった").toBe(true);
+    await request.get(`${CORE_BASE_URL}/api/ui-settings`, { headers });
+    await expect
+      .poll(
+        async () =>
+          ((await (await request.get(`${CORE_BASE_URL}/api/modules`, { headers })).json()) as Array<{ name: string; error?: string }>).find(
+            (m) => m.name === placeholderModule,
+          )?.error ?? null,
+        { timeout: 60_000, message: "banto が置いたログインを差し込もうとした（か、理由が残っていない）" },
+      )
+      .toContain(`秘密 "${alias}" を引けませんでした："${alias}" は banto が置いたログインなので、起動の設定には差し込めません`);
+    expect(existsSync(join(DATA_DIR, "modules", placeholderModule, "out.txt")), "差し込んで起こした").toBe(false);
+
+    // ---- 1. envSecrets で受け取ると、取り直した最新の access token の文字列だけが届く ------------------------------
+    await openApp(page);
+    await createProject(page, projectName, projectRoot);
+    const project = ((await (await request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json()) as Array<{ id: string; name: string }>).find(
+      (p) => p.name === projectName,
+    )!;
+    // 承認は自動で——見たいのは値の中身と、Vault → Repositories の中継が承認と別に通ること
+    const auto = await request.put(`${CORE_BASE_URL}/api/projects/${project.id}/auto-approve`, {
+      headers: { ...headers, "content-type": "application/json" },
+      data: { enabled: true },
+    });
+    expect(auto.ok()).toBe(true);
+    await page.goto(`/p/${project.id}`);
+    await expect(page.getByTestId("composer-auto-approve-badge")).toHaveText("自動で許可中", { timeout: 30_000 });
+    const relayEvents = () =>
+      readFileSync(join(DATA_DIR, "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line.includes('"relay.call_recorded"'))
+        .map((line) => JSON.parse(line) as { seq: number; payload: Record<string, unknown> });
+    const sinceSeq = Math.max(0, ...relayEvents().map((e) => e.seq));
+    const before = await setGithubLoginFixture({});
+
+    // 値そのものは画面に出さない——指紋（sha256 の頭）と形だけを出す
+    const command =
+      'printf "sha=%s\\n" "$(printf %s "$GH" | sha256sum | cut -c1-16)"; ' +
+      'case "$GH" in *"{"*|*refresh*|*ghr_*) echo "shape=json";; ghu_*) echo "shape=plain";; *) echo "shape=other";; esac';
+    const composer = page.getByPlaceholder(/に送る/).first();
+    await composer.fill(
+      "GitHub のトークンを使います。" +
+        fakeTurn({ tools: [{ server: "shell", name: "runCommand", args: { command, envSecrets: { GH: alias } } }], then: "受け取りました。" }),
+    );
+    await composer.press("Enter");
+    await expect(page.locator('[data-role="assistant"]').filter({ hasText: "受け取りました。" })).toBeVisible({ timeout: 120_000 });
+    await openToolCards(page, "mcp__shell__runCommand");
+    const after = await setGithubLoginFixture({});
+    expect(after.refreshCalls, "期限が近いのに取り直していない").toBe(before.refreshCalls + 1);
+    // 届いたのは、取り直して GitHub が最後に出した access token そのもの
+    await expect(page.getByText(`sha=${sha16(`ghu_fake_access_${after.issued}`)}`).first(), "最新の access token が届いていない").toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("shape=plain").first(), "access token の文字列だけではない").toBeVisible();
+    // 書き戻し・持ち主への中継は人に聞かずに通り、理由つきで記録に残る（値は記録に出ない）
+    const mine = relayEvents().filter((e) => e.seq > sinceSeq);
+    const present = mine.filter((e) => e.payload.name === "presentOwnedSecret");
+    expect(present.map((e) => e.payload), "Vault が持ち主を呼んでいない").toEqual([
+      expect.objectContaining({
+        callerModule: "vault-local",
+        targetModule: "repositories",
+        allowed: true,
+        ok: true,
+        reason: "持ち主が、自分の置いた秘密から渡す値を作る口",
+        identifiers: { name: alias, group: "instance" },
+      }),
+    ]);
+    const writes = mine.filter((e) => e.payload.name === "putSecret");
+    expect(writes.map((e) => e.payload), "取り直した組を Vault に書き戻していない").toEqual([
+      expect.objectContaining({ callerModule: "repositories", targetModule: "vault-local", allowed: true, ok: true, reason: "呼び元の Module が持ち主のものだけを書き換える口" }),
+    ]);
+    expect(JSON.stringify(mine), "記録にトークンが出ている").not.toMatch(/gh[ur]_fake_/);
+
+    // ---- 2. 取り直せないなら、値を渡さず理由つきで断る ---------------------------------------------------------
+    const fingerprints = page.getByText(/sha=[0-9a-f]{16}/);
+    const fingerprintsBefore = await fingerprints.count();
+    await setGithubLoginFixture({ refreshError: "bad_refresh_token" });
+    await composer.fill(
+      "もう一度使います。" +
+        fakeTurn({ tools: [{ server: "shell", name: "runCommand", args: { command, envSecrets: { GH: alias } } }], then: "二度目を試しました。" }),
+    );
+    await composer.press("Enter");
+    await expect(page.locator('[data-role="assistant"]').filter({ hasText: "二度目を試しました。" })).toBeVisible({ timeout: 120_000 });
+    await openToolCards(page, "mcp__shell__runCommand");
+    await expect(
+      page.getByText(new RegExp(`"${alias}" は banto が置いたログインで、持ち主の repositories が使える値を用意できませんでした：@${login} のログインを更新できませんでした`)).first(),
+      "取り直せないのに理由つきで断っていない",
+    ).toBeVisible({ timeout: 30_000 });
+    // 断ったので、コマンドは走っていない（2回目の指紋は出ていない）
+    expect(await fingerprints.count(), "断ったはずのコマンドが走った").toBe(fingerprintsBefore);
+    for (const frame of page.frames()) expect(/gh[ur]_fake_/.test(await frame.content().catch(() => ""))).toBe(false);
+    expect(pageErrors).toEqual([]);
+    passed = true;
+  } finally {
+    try {
+      await setGithubLoginFixture({ refreshError: null });
+      const inner = await openRepositoriesPane(page);
+      const account = inner.locator(`[data-testid="gh-account"][data-login="${login}"]`);
+      if ((await account.count()) > 0) {
+        await account.getByTestId("gh-account-remove").click();
+        await account.getByTestId("gh-account-remove-confirm").click();
+        await expect(inner.getByTestId("gh-accounts-empty")).toBeVisible({ timeout: 30_000 });
+      }
+    } catch (err) {
+      if (passed) throw err;
+    } finally {
+      await request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(placeholderModule)}`, { headers });
+      rmSync(projectRoot, { recursive: true, force: true });
     }
   }
 });

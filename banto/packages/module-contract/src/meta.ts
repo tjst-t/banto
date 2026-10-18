@@ -120,6 +120,25 @@ export function isStatelessTransform(x: { _meta?: Record<string, unknown> }): bo
 }
 
 /**
+ * **その tool は、呼び元の Vault が預かっている、自分（宛先）が置いた秘密について、Vault が添えた今の値から、いま使える値を
+ * 作って返す**ことの申告（追加・2026-10-18、Backlog #405。アーキ仕様 §2.5「持ち主が、自分の置いた秘密から渡す値を作る口」）。
+ * 値は `true` だけ。自分のものでない秘密・その秘密を預かっていない呼び元には返さない——確かめは宛先がする（host は持ち主も
+ * 在りかも知らない）。
+ *
+ * host はこれを名乗る口への中継を、**宛先が同梱の banto 全体の Module で、呼び元が同梱で役割 `vault` を満たし banto 本体で
+ * 動く banto 全体の Module のとき**に限り、宣言された依存を見ず、人に聞かずに通す。**名乗りを信じるのは同梱の宛先だけ**
+ * （`valueFree` と同じ線）。
+ *
+ * **無指定は「名乗っていない」**（fail closed）。
+ */
+export const PRESENTS_OWNED_SECRET_META_KEY = `${VENDOR_PREFIX}/presentsOwnedSecret`;
+
+/** その tool が「持ち主が、自分の置いた秘密から渡す値を作る口」と名乗っているか。**`true` 以外は名乗っていない** */
+export function isPresentsOwnedSecret(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[PRESENTS_OWNED_SECRET_META_KEY] === true;
+}
+
+/**
  * **その呼び出しが、どの Project のためのものか**（決定・2026-09-13）。
  *
  * host が中継するときに刻む——**Module に自己申告させない**（申告なら詐称できる）。

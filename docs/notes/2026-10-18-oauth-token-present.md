@@ -99,3 +99,25 @@
 （`resolveAlias` のままだと持ち主でない呼び元として Repositories を呼び、在りかが違うで断られて移動が止まる）。
 `${secret:…}` の種別の確かめは差し込みの解決でだけ（共有の引き方に入れるとリモート MCP のログインが自分で断られる）。
 `exportOwnedSecret` は `oauth-token` だけを受ける。
+
+## 実装（2026-10-18）
+
+- host：`dev.banto/presentsOwnedSecret` の口への中継だけ、依存の確かめより先に宛先の tool を読み、条件（宛先は同梱の banto 全体、
+  呼び元は同梱で役割 `vault`・banto 本体・banto 全体）が揃えば「宣言された依存に含まれない」を外し、承認も聞かない
+- Vault（vault-kit）：`ownerRelay` を受け、`resolveAlias`・`resolveAliases` で持ち主でない呼び元に渡す `oauth-token` を持ち主の
+  `presentOwnedSecret` の答えに替える。持ち主の記録が無い行は値を読む前に断る（`resolveAliases` が値を読みに行かずに断れるように）。
+  vault-local・vault-infisical の宣言に中継の合言葉を足した（目録から入れた Infisical も、読むたびに目録の env に揃うので届く）
+- **「持ち主が入っていない」と「口が無い」は Vault から見分けられない**——host はどちらも「宣言された依存に含まれない」で断る。
+  仕様の理由の文を「入っていないか、渡す値を作る口を持っていません」に直した（新しい印を足して見分けることはしなかった——
+  2回目のレビューで外した `noSuchModule` を戻すことになり、第三者の呼び元に Module の有無を教える心配も戻る）
+- Repositories：「置けなかった組」（`unsaved`）を「最後に置いた組」（`latest`、置けたかの印つき）に広げ、`tokenFor` と
+  `presentOwnedSecret` が同じ列・同じ取り直しを通る。Vault で消されたら（`tokenFor` で読めなかったら）捨てる
+- 試験：単体（vault-kit・Repositories・host の中継・窓口の移動）、E2E（`repositories.spec.ts`、偽の GitHub——envSecrets で最新の
+  access token の文字列だけが届く・取り直せなければ断る・`${secret:…}` は起こさず断る）
+
+### 残したこと（人に上げる）
+
+- **本番の Vault で持ち主の無い `oauth-token` の行を数えていない**——実装したワークツリーは別の機械の実行場所で、本番の
+  Vault に届かなかった（仕様 §2.1 の 3. に書いた）
+- **git の https で GitHub App のユーザー用トークンを使うときのユーザー名**は、本物の GitHub で確かめていない（偽の GitHub は
+  Authorization の見出ししか見ない）

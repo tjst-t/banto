@@ -38,7 +38,8 @@ function relayTo(
       if (!client) throw new Error(`unknown target: ${targetModule}`);
       // **窓口が backend を呼ぶときも、host が刻む**（実運用では中継の仕事）。
       // 窓口は人の管理面として横断するので、ここは admin
-      const result = await client.callTool({ name, arguments: args, _meta: ADMIN });
+      // 呼び元の Module（窓口）も刻む——持ち主でない呼び元として扱われる（banto が置いたログインの読み、2026-10-18）
+      const result = await client.callTool({ name, arguments: args, _meta: { ...ADMIN, "dev.banto/callerModule": { name: "vault-directory", conn: "vault-directory" } } });
       return (result.content as { text: string }[])[0]!.text;
     },
   };
@@ -1499,7 +1500,7 @@ async function refused(call: Promise<unknown>): Promise<string> {
 
 test("oauth-token は Vault をまたいで移しても持ち主ごと移り、置いた Module からは置き換えられる。手では作れない", async () => {
   await withUi(
-    async ({ ui, vaults }) => {
+    async ({ ui, vaults, relayCalls }) => {
       // Repositories が中継で置いた形（host が呼び元の Module を刻む）
       const asRepositories = { "dev.banto/caller": { instance: true }, "dev.banto/callerModule": { name: "repositories", conn: "repositories" } };
       await vaults.get("vault-local")!.callTool({ name: "putSecret", arguments: { name: "oauth-github-x", value: "tok-1" }, _meta: asRepositories });
@@ -1515,6 +1516,16 @@ test("oauth-token は Vault をまたいで移しても持ち主ごと移り、�
         "移し先で種別か持ち主が変わった（か、元が残った）",
       );
       assert.equal(await valueOf(vaults, "vault-keychain", "oauth-github-x", "instance"), "tok-1");
+      // **移動の読みは、写す前も確かめも exportOwnedSecret**（2026-10-18、Backlog #405）——resolveAlias は持ち主でない窓口に
+      // 持ち主が作った値を渡す（この試験では持ち主を呼べないので断られる）
+      assert.deepEqual(
+        relayCalls.filter((c) => /resolveAlias|exportOwnedSecret/.test(c)),
+        ["vault-local exportOwnedSecret", "vault-keychain exportOwnedSecret"],
+      );
+      assert.match(
+        await refused(vaults.get("vault-keychain")!.callTool({ name: "resolveAlias", arguments: { name: "oauth-github-x", group: "instance" }, _meta: { ...ADMIN, "dev.banto/callerModule": { name: "vault-directory", conn: "vault-directory" } } })),
+        /持ち主の repositories が使える値を用意できませんでした/,
+      );
       // 移し先でも、置いた Module からは置き換えられ、ほかからは断られる
       const keychain = vaults.get("vault-keychain")!;
       await keychain.callTool({ name: "putSecret", arguments: { name: "oauth-github-x", value: "tok-2" }, _meta: asRepositories });

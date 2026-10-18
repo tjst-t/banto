@@ -36,6 +36,7 @@ import {
   isValueFree,
   isCallerOwned,
   isStatelessTransform,
+  isPresentsOwnedSecret,
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   RELAY_EMIT_EVENT_TOOL,
@@ -135,6 +136,30 @@ export interface RegisteredModule {
   toolsContainer?: true;
 }
 
+/** 宣言した依存に宛先が無いときの理由（`presentsOwnedSecret` の口だけ、これを外す） */
+const NOT_IN_DEPENDENCIES = "宣言された依存に含まれない";
+
+/**
+ * **`dev.banto/presentsOwnedSecret` の口を、依存の確かめと承認なしで呼べる組か**（追加・2026-10-18、Backlog #405。アーキ仕様
+ * §2.5「持ち主が、自分の置いた秘密から渡す値を作る口」）。
+ *
+ * - **呼び元は同梱で役割 `vault` を満たし、banto 本体で動く banto 全体の Module だけ**——役割 `vault` は同梱だけが名乗れる。
+ *   コンテナの中・道具用のコンテナ・Project ごとの Module は今までどおり（AI が合言葉を読める場所から、持ち主に値を作らせない）
+ * - **宛先も同梱の banto 全体の Module だけ**——名乗りを信じるのは同梱の宛先だけ（確かめは宛先がする。`valueFree` と同じ線）。
+ *   Project の縛りもここで保つ
+ */
+function mayPresentOwnedSecret(identity: CallerIdentity, target: RegisteredModule): boolean {
+  return (
+    target.meta.origin === "bundled" &&
+    target.projectId === undefined &&
+    identity.meta?.origin === "bundled" &&
+    identity.meta.satisfies.includes("vault") &&
+    !identity.inContainer &&
+    !identity.toolsContainer &&
+    identity.projectId === undefined
+  );
+}
+
 /**
  * 発行済みトークン→呼び出し元識別、Module名→実接続、の2つの台帳を持つ。
  * host が実 Module へ持つ「1本だけの接続」はここに集約する。
@@ -202,7 +227,7 @@ export class RelayRegistry {
   whyNotAllowed(caller: CallerIdentity, targetModule: string, onBehalfOf?: string): string | undefined {
     const target = this.modules.get(targetModule);
     if (!target || !caller.meta.dependsOn.some((d) => target.meta.satisfies.includes(d.role))) {
-      return "宣言された依存に含まれない";
+      return NOT_IN_DEPENDENCIES;
     }
     // Project ごとの呼び出し元は自分の Project に縛られる（継いだ Project では広げない）
     const project = caller.projectId ?? onBehalfOf;
@@ -510,6 +535,7 @@ async function targetTool(
       valueFree: boolean;
       callerOwned: boolean;
       statelessTransform: boolean;
+      presentsOwnedSecret: boolean;
       auditArgs: string[];
       deliversLater: boolean;
       receivesReplies: boolean;
@@ -550,6 +576,7 @@ async function targetTool(
     valueFree: isValueFree(x),
     callerOwned: isCallerOwned(x),
     statelessTransform: isStatelessTransform(x),
+    presentsOwnedSecret: isPresentsOwnedSecret(x),
     auditArgs: auditArgsOf(x),
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
@@ -977,7 +1004,17 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // 起こしたなら引き直す（繋がっていなければ undefined のまま——下で断る）
     const target = opts.registry.getModule(targetModule);
 
-    const notAllowed = opts.registry.whyNotAllowed(identity, targetModule, onBehalfOf);
+    let notAllowed = opts.registry.whyNotAllowed(identity, targetModule, onBehalfOf);
+    // **持ち主が、自分の置いた秘密から渡す値を作る口**（追加・2026-10-18、Backlog #405。アーキ仕様 §2.5）。Vault が持ち主でない
+    // 呼び元に `oauth-token` を渡す前に、置いた Module に今の値を見せる。どの Module が持ち主かは Vault の台帳が決めるので、Vault は
+    // 持ち主を依存に宣言しない——**この口に限って「宣言された依存に含まれない」を外す**。そのために、この形の呼び出しだけは
+    // 宛先の tool を依存より先に読む。Project の縛りは外さない（宛先は banto 全体の Module だけ）。名乗っていなければ今までどおり断る
+    const targetInfoEarly =
+      kind === "tool" && target && notAllowed === NOT_IN_DEPENDENCIES && mayPresentOwnedSecret(identity, target)
+        ? await targetTool(target.client, name)
+        : undefined;
+    const presentsOwnedSecretCall = targetInfoEarly?.presentsOwnedSecret === true;
+    if (presentsOwnedSecretCall) notAllowed = undefined;
     if (notAllowed) {
       await audit(false, notAllowed);
       throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません（${notAllowed}）`);
@@ -1030,7 +1067,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     //
     // **名乗った Module だけが緩む**（`dev.banto/valueFree`、無指定は「返す」）。
     const origin = opts.moduleCalls?.originFor(identity.connName ?? identity.moduleName, callId);
-    const targetInfo = kind === "tool" ? await targetTool(target.client, name) : undefined;
+    const targetInfo = targetInfoEarly ?? (kind === "tool" ? await targetTool(target.client, name) : undefined);
     // **返事の受け口は host だけが呼ぶ**（追加・2026-10-05）——他の Module が呼べると、頼んだ仕事の返事を偽られる
     if (targetInfo?.receivesReplies) {
       await audit(false, "返事の受け口は host だけが呼ぶ");
@@ -1160,6 +1197,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       !valueFreeCall &&
       !callerOwnedCall &&
       !statelessTransformCall &&
+      !presentsOwnedSecretCall &&
       progressToken !== undefined
         ? setInterval(() => {
             void extra.sendNotification({
@@ -1182,6 +1220,8 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ? Promise.resolve({ allowed: true, reason: "呼び元の Module が持ち主のものだけを書き換える口" })
       : statelessTransformCall
       ? Promise.resolve({ allowed: true, reason: "同梱の道具用のコンテナの、受けた中身を残さず変換して返すだけの口" })
+      : presentsOwnedSecretCall
+      ? Promise.resolve({ allowed: true, reason: "持ち主が、自分の置いた秘密から渡す値を作る口" })
       : opts.gate
         ? opts.gate
             .requestApproval(

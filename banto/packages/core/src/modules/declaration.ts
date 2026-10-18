@@ -452,7 +452,13 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       // 2本立てると（自前ホストと Infisical Cloud を並べるなど）**2本目が
       // 1本目の資格情報を上書きする**。`${moduleDataDir}` は banto が
       // 接続名ごとに用意するので、コピーしてもぶつからない。
-      env: { BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}" },
+      env: {
+        BANTO_VAULT_INFISICAL_DATA_DIR: "${moduleDataDir}",
+        // **中継の合言葉**（追加・2026-10-18、Backlog #405）——`oauth-token` を持ち主でない呼び元に渡す前に、持ち主の
+        // `presentOwnedSecret` を呼ぶため。依存は空のまま：呼べるのはその口を名乗る同梱の宛先だけ（アーキ仕様 §2.5）
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
     },
     meta: {
       satisfies: ["vault"],
@@ -1023,7 +1029,12 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     launch: {
       command: "${nodeExec}",
       args: ["${monorepoRoot}/packages/modules/vault-local/dist/server.js"],
-      env: { BANTO_VAULT_DATA_DIR: "${dataDir}/vault" },
+      env: {
+        BANTO_VAULT_DATA_DIR: "${dataDir}/vault",
+        // **中継の合言葉**（追加・2026-10-18、Backlog #405）——vault-infisical と同じ
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
     },
     meta: {
       satisfies: ["vault"],

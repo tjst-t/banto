@@ -2149,5 +2149,138 @@ test("エージェントの本体を取ってこさせられるのは、同梱�
     await assert.rejects(() => call(tokens.shell, "relayAgentBinaryStatus", { agent: "opencode" }), /確かめられません/);
   } finally {
     close();
+// **持ち主が、自分の置いた秘密から渡す値を作る口**（追加・2026-10-18、Backlog #405、`dev.banto/presentsOwnedSecret`）。
+//
+// Vault は持ち主でない呼び元に `oauth-token` を渡す前に、置いた Module（Repositories）に今の値を見せて渡す値を作らせる。
+// どの Module が持ち主かは Vault の台帳が決めるので、Vault は依存を宣言しない——host は**この口に限って**依存の確かめと
+// 承認を外す。見るのは：
+//   1. 同梱で役割 vault を満たし banto 本体で動く banto 全体の Module から、同梱の宛先の印つきの口へは、依存が無くても
+//      聞かずに通る（記録に理由）。宛先には host が刻んだ呼び元の Module が届く
+//   2. 同じ呼び元でも、印の無い口は今までどおり「宣言された依存に含まれない」で断る（tool が無いときも）
+//   3. 呼び元が役割 vault を満たさない・コンテナの中・Project ごと、宛先が外から入れた Module・Project ごとなら断る
+async function presentsWorld(opts: { targetExternal?: boolean; targetProject?: string } = {}) {
+  const seen: Array<{ name: string; meta: Record<string, unknown> }> = [];
+  const server = new McpServer({ name: "fake-repositories", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "presentOwnedSecret",
+        inputSchema: { type: "object" },
+        _meta: { "dev.banto/visibility": "module", "dev.banto/presentsOwnedSecret": true },
+      },
+      { name: "listRepositories", inputSchema: { type: "object" }, _meta: { "dev.banto/visibility": "module" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push({ name: req.params.name, meta: (req.params._meta ?? {}) as Record<string, unknown> });
+    return { content: [{ type: "text", text: "ghu_present" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const targetClient = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(s), targetClient.connect(c)]);
+
+  const registry = new RelayRegistry();
+  const targetMeta = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess" };
+  registry.registerModule({
+    name: "repositories",
+    client: targetClient,
+    meta: opts.targetExternal ? parseModuleMeta(targetMeta, "repositories") : bundledMeta(targetMeta, "repositories"),
+    ...(opts.targetExternal ? { codeId: "code-v1" } : {}),
+    ...(opts.targetProject ? { projectId: opts.targetProject } : {}),
+  });
+  const vaultMeta = { satisfies: ["vault"], dependsOn: [], isolation: "subprocess" };
+  const tokens = {
+    vault: registry.issueToken({ moduleName: "vault-local", meta: bundledMeta(vaultMeta, "vault-local") }),
+    // 役割 vault を満たさない同梱の Module（依存も無い）
+    other: registry.issueToken({ moduleName: "browser", meta: bundledMeta({ satisfies: ["browser"], dependsOn: [], isolation: "subprocess" }, "browser") }),
+    // 役割 vault を満たすが、コンテナの中・Project ごと（いまの起動形態には無いが、できても通さない）
+    vaultInContainer: registry.issueToken({ moduleName: "vault-x", inContainer: true, meta: bundledMeta(vaultMeta, "vault-x") }),
+    vaultProject: registry.issueToken({ moduleName: "vault-y", connName: "vault-y-p1", projectId: "p1", meta: bundledMeta(vaultMeta, "vault-y") }),
+  };
+  const asked: string[] = [];
+  const { url, audits, close } = await startTestServer(registry, {
+    moduleCalls: {
+      originFor: () => "turn",
+      threadFor: () => ({ kind: "none" }),
+      projectFor: () => undefined,
+      begin: () => () => undefined,
+    },
+    gate: {
+      async requestApproval(req) {
+        asked.push(`${req.callerModule}:${req.name}`);
+        return { allowed: false, reason: "この試験では人が答えない" };
+      },
+    },
+  });
+  const clients: Client[] = [];
+  const connect = async (token: string) => {
+    const client = await relayClient(url, token);
+    clients.push(client);
+    return client;
+  };
+  return {
+    seen,
+    asked,
+    audits,
+    tokens,
+    connect,
+    close: async () => {
+      await Promise.all(clients.map((x) => x.close().catch(() => undefined)));
+      close();
+      await targetClient.close();
+    },
+  };
+}
+
+const presentCall = (tool = "presentOwnedSecret") => ({
+  name: "relayCallTool",
+  arguments: { targetModule: "repositories", name: tool, arguments: { name: "repositories-github-x", group: "instance", value: "{}" } },
+});
+
+test("役割 vault の同梱の Module から、同梱の宛先の「持ち主が渡す値を作る口」へは、依存が無くても聞かずに通る——印の無い口・無い口は依存で断る", async () => {
+  const w = await presentsWorld();
+  try {
+    const client = await w.connect(w.tokens.vault);
+    assert.equal(textOf(await client.callTool(presentCall())), "ghu_present");
+    assert.deepEqual(w.asked, [], "持ち主の口で人を止めている");
+    assert.deepEqual(w.seen[0]?.meta["dev.banto/callerModule"], { name: "vault-local", conn: "vault-local" });
+    const audit = (w.audits as Array<{ name: string; allowed: boolean; reason?: string; ok?: boolean }>).find((a) => a.name === "presentOwnedSecret");
+    assert.deepEqual(
+      { allowed: audit?.allowed, reason: audit?.reason, ok: audit?.ok },
+      { allowed: true, reason: "持ち主が、自分の置いた秘密から渡す値を作る口", ok: true },
+    );
+    for (const tool of ["listRepositories", "noSuchTool"]) {
+      await assert.rejects(() => client.callTool(presentCall(tool)), /宣言された依存に含まれない/, `${tool} まで依存の確かめを外した`);
+    }
+    assert.deepEqual(w.asked, [], "依存で断るべきものを人に聞いた");
+    assert.deepEqual(w.seen.map((x) => x.name), ["presentOwnedSecret"]);
+  } finally {
+    await w.close();
+  }
+});
+
+test("役割 vault を満たさない・コンテナの中・Project ごとの呼び元からは、持ち主の口でも依存で断る", async () => {
+  const w = await presentsWorld();
+  try {
+    for (const token of [w.tokens.other, w.tokens.vaultInContainer, w.tokens.vaultProject]) {
+      const client = await w.connect(token);
+      await assert.rejects(() => client.callTool(presentCall()), /宣言された依存に含まれない/);
+    }
+    assert.deepEqual(w.seen, [], "通してはいけない呼び元から宛先に届いた");
+  } finally {
+    await w.close();
+  }
+});
+
+test("宛先が外から入れた Module・Project ごとの Module なら、持ち主の口を名乗っても通さない", async () => {
+  for (const opts of [{ targetExternal: true }, { targetProject: "p1" }]) {
+    const w = await presentsWorld(opts);
+    try {
+      const client = await w.connect(w.tokens.vault);
+      await assert.rejects(() => client.callTool(presentCall()), /宣言された依存に含まれない/, JSON.stringify(opts));
+      assert.deepEqual(w.seen, []);
+    } finally {
+      await w.close();
+    }
   }
 });

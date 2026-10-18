@@ -55,9 +55,11 @@ test("道具はどれも人の画面からだけ——可視性は admin、刻�
   await withServer({ listProjects: async (id) => (seen.push(id), []) }, async (client, w) => {
     const { tools } = await client.listTools();
     assert.ok(tools.length > 0);
-    // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口（branch-sync.test.ts）
+    // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口（branch-sync.test.ts）と、Vault が中継で呼ぶ
+    // 持ち主の口（presentOwnedSecret、2026-10-18——accounts.test.ts）
+    const fromRelay = ["push_branch", "fetch_branch", "presentOwnedSecret"];
     for (const t of tools) {
-      const expected = t.name === "push_branch" || t.name === "fetch_branch" ? "module" : "admin";
+      const expected = fromRelay.includes(t.name) ? "module" : "admin";
       assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], expected, t.name);
     }
 
@@ -68,6 +70,12 @@ test("道具はどれも人の画面からだけ——可視性は admin、刻�
     const turn = await client.callTool({ name: "list_repositories", arguments: {}, _meta: { [CALLER_META_KEY]: { project: "p1" } } });
     assert.ok(isError(turn));
     assert.deepEqual(seen, [], "断ったのに Project の一覧を引きに行った");
+    // 持ち主の口は、host が呼び元の Module を刻んだ中継の呼び出しからだけ
+    const unstamped = await client.callTool({ name: "presentOwnedSecret", arguments: { name: "repositories-github-x", value: "{}" }, _meta: ADMIN });
+    assert.ok(isError(unstamped));
+    assert.match(textOf(unstamped), /Vault からの中継でだけ呼べます/);
+    const presents = tools.find((t) => t.name === "presentOwnedSecret");
+    assert.equal((presents?._meta as Record<string, unknown>)["dev.banto/presentsOwnedSecret"], true);
   });
 });
 

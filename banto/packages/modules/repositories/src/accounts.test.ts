@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GithubAccounts, REFRESH_MARGIN_MS } from "./accounts.js";
+import { GithubAccounts, PRESENT_MARGIN_MS, REFRESH_MARGIN_MS } from "./accounts.js";
 import { GithubError, httpGithub } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import { FAKE_CLIENT_ID, MemoryVault, RecordingNotices, startFakeGithub, type FakeGithub } from "./test-fakes.js";
@@ -603,5 +603,92 @@ test("更新を GitHub が断ったら手元の組を捨て（無効な鍵を置
     const puts = w.vault.calls.filter((c) => c.op === "putOwned").length;
     await assert.rejects(() => accounts.tokenFor("tjst-t", "c"), /更新の鍵（refresh token）が無効になっています/);
     assert.equal(w.vault.calls.filter((c) => c.op === "putOwned").length, puts, "断られた組を Vault に置き直しに行った");
+  });
+});
+
+// **Vault が持ち主でない呼び元に渡す値**（追加・2026-10-18、Backlog #405。§2.4「AI 等が Vault から引くときも、ここで取り直して
+// から渡す」）。Vault は置いてある値を添えて呼び、Repositories は残りが30分を切っていれば取り直して書き戻し、access token の
+// 文字列だけを返す。最後に置いた組を、Vault が添えた値（列に並ぶ前に読まれて古いことがある）より優先する
+const AT = "vault-local|instance|repositories-github-tjst-t";
+const PLACE = { vault: "vault-local", name: "repositories-github-tjst-t", group: "instance" };
+
+test("Vault に渡す値：残りが30分あれば置いてある access token の文字列だけ、30分を切っていれば取り直して書き戻し、新しい access token だけ", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    await loginWithDevice(w);
+    const stored = w.vault.values.get(AT)!;
+    const first = JSON.parse(stored);
+    w.vault.calls.length = 0;
+    const far = await w.accounts.presentOwnedSecret({ ...PLACE, value: stored }, "c-1");
+    assert.equal(far, first.accessToken, "JSON ではなく access token の文字列だけを返す");
+    assert.equal(w.gh.refreshCalls, 0);
+    assert.deepEqual(w.vault.calls, [], "Vault が添えた値があるのに Vault を読みに行った・書いた");
+
+    // 残り30分を切った（自分で使うときの5分よりは長い）——取り直して Vault に書き戻す
+    w.clock.now = first.expiresAt - PRESENT_MARGIN_MS + 1;
+    assert.equal(await w.accounts.tokenFor("tjst-t", "c"), first.accessToken, "自分で使うときは5分の余裕のまま");
+    const handed = await w.accounts.presentOwnedSecret({ ...PLACE, value: stored }, "c-2");
+    assert.equal(w.gh.refreshCalls, 1);
+    const second = JSON.parse(w.vault.values.get(AT)!);
+    assert.equal(handed, second.accessToken);
+    assert.notEqual(second.refreshToken, first.refreshToken);
+    assert.ok(!handed.includes(second.refreshToken));
+    const lastCall = w.vault.calls[w.vault.calls.length - 1] as { op: string; callId?: string } | undefined;
+    assert.deepEqual(lastCall, { op: "putOwned", callId: "c-2" }, "書き戻しに受けた呼び出しの印を添えていない");
+    assert.equal(w.gh.users.get(handed), "tjst-t", "渡した token で GitHub に入れない");
+
+    // Vault が古い値（取り直す前に読んだもの）を添えてきても、最後に置いた組を使う——無効な refresh token で取り直さない
+    w.clock.now = second.expiresAt - PRESENT_MARGIN_MS + 1;
+    const third = await w.accounts.presentOwnedSecret({ ...PLACE, value: stored }, "c-3");
+    assert.equal(w.gh.refreshCalls, 2);
+    assert.equal(w.gh.users.get(third), "tjst-t");
+    assert.equal(JSON.parse(w.vault.values.get(AT)!).accessToken, third);
+    assert.deepEqual(w.notices.raised, [], "取り直しの失敗が出た");
+  });
+});
+
+test("Vault に渡す値：在りかの違う Vault・Repositories の置いたものでない・PAT のアカウントには作らない。取り直せなければ tokenFor と同じ理由で断る", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    await loginWithDevice(w);
+    const stored = w.vault.values.get(AT)!;
+    await assert.rejects(
+      () => w.accounts.presentOwnedSecret({ ...PLACE, vault: "vault-infisical", value: stored }, "c"),
+      /GitHub のログイン（@tjst-t）の在りかが Repositories の記録（vault-local）と違います。Vault の画面で移したなら、Repositories の設定でもう一度ログインしてください/,
+    );
+    await assert.rejects(
+      () => w.accounts.presentOwnedSecret({ ...PLACE, group: "other", value: stored }, "c"),
+      /repositories-github-tjst-t は Repositories がブラウザでログインして置いた GitHub のログインではありません/,
+    );
+    w.gh.users.set("ghp_pat_1", "pat-user");
+    await w.accounts.addWithPat({ pat: "ghp_pat_1" }, "c");
+    await assert.rejects(
+      () => w.accounts.presentOwnedSecret({ vault: "vault-local", name: "github-pat-user-pat", group: "instance", value: "ghp_pat_1" }, "c"),
+      /ではありません/,
+    );
+
+    w.clock.now = JSON.parse(stored).expiresAt + 1;
+    w.gh.refreshError = "bad_refresh_token";
+    await assert.rejects(() => w.accounts.presentOwnedSecret({ ...PLACE, value: stored }, "c"), (err: Error) => {
+      assert.match(err.message, /@tjst-t のログインを更新できませんでした：GitHub が更新の鍵/);
+      assertNoSecrets("断りの文言", err.message, w.gh);
+      return true;
+    });
+    assert.equal(w.notices.raised.filter((n) => n.key === "github-refresh:tjst-t").length, 1);
+  });
+});
+
+test("最後に置いた組は、Vault で消されたら捨てる——あとで置かれた別の値を古い組で上書きしない", async () => {
+  await withWorld(async (w) => {
+    await w.accounts.setAppClientId(FAKE_CLIENT_ID);
+    await loginWithDevice(w);
+    const first = JSON.parse(w.vault.values.get(AT)!);
+    // 人が Vault の画面で消した——次に使うとき、無いことをそのまま言う（メモリの組で続けない）
+    w.vault.values.delete(AT);
+    await assert.rejects(() => w.accounts.tokenFor("tjst-t", "c"), /not found/);
+    // 同じ置き場に別の組が置かれた（例：別の手段で置き直した）——メモリの古い組ではなく、それを使う
+    const replaced = { format: "github-app-user-token/1", accessToken: "ghu_fake_replaced", expiresAt: first.expiresAt, refreshToken: "ghr_fake_replaced" };
+    w.vault.values.set(AT, JSON.stringify(replaced));
+    assert.equal(await w.accounts.tokenFor("tjst-t", "c"), "ghu_fake_replaced");
   });
 });
