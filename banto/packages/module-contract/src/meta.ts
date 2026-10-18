@@ -309,6 +309,40 @@ export function auditArgsOf(x: { _meta?: Record<string, unknown> }): string[] {
 }
 
 /**
+ * **まとめて呼ぶ口**（追加・2026-10-18、`docs/specs/v4-modules.md`「秘密をまとめて引く」）。
+ *
+ * tool が `{ tool: "resolveAlias", items: "items" }` を名乗ると、「引数 `items` の1つ1つが、同じ Module の `resolveAlias`
+ * 1回ぶん」という意味になる。host は要素ごとに `tool` の識別子（`auditArgs`）を拾い、**1件ずつを `tool` の呼び出しとして**
+ * 承認の鍵を作る——今までに1件ずつ許したものがそのまま効き、まとめて許したものも1件ずつに効く。
+ * **信じるのは同梱の宛先だけ**（host が決める）
+ */
+export const BATCH_OF_META_KEY = `${VENDOR_PREFIX}/batchOf`;
+
+/** まとめて呼ぶ口の1回の上限。host と宛先（vault-kit）が同じものを数える */
+export const BATCH_MAX_ITEMS = 100;
+
+export interface BatchOf {
+  /** 要素の1つ1つが何の呼び出し1回ぶんか（同じ Module の tool の名前） */
+  tool: string;
+  /** 要素を並べる引数の名前 */
+  items: string;
+}
+
+/** `batchOf` を名乗っているか（形が正しいかは問わない——形の違う名乗りも、断るために見分ける） */
+export function declaresBatchOf(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[BATCH_OF_META_KEY] !== undefined;
+}
+
+/** 名乗った `batchOf` を読む。**形が違えば `undefined`** */
+export function batchOfMeta(x: { _meta?: Record<string, unknown> }): BatchOf | undefined {
+  const raw = x._meta?.[BATCH_OF_META_KEY];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const { tool, items } = raw as Record<string, unknown>;
+  if (typeof tool !== "string" || tool === "" || typeof items !== "string" || items === "") return undefined;
+  return { tool, items };
+}
+
+/**
  * **終わったら呼び出し元の Thread に届ける tool**（追加・2026-09-25、アーキ仕様 §4.2「返信用の札」）。
  *
  * tool がこれを `true` で名乗ると、AI がその tool を呼んだときに host が**呼び出し元の Thread に結びついた札**を

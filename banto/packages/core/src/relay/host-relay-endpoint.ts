@@ -16,6 +16,9 @@ import { ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } fr
 import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   auditArgsOf,
+  batchOfMeta,
+  declaresBatchOf,
+  BATCH_MAX_ITEMS,
   deliversLater,
   receivesReplies,
   PENDING_REPLY_META_KEY,
@@ -93,6 +96,11 @@ export interface RelayAuditRecord {
    * 記録する。名乗っていなければ付かない。
    */
   identifiers?: Record<string, string>;
+  /**
+   * **まとめて呼ぶ口の1件**（追加・2026-10-18、`dev.banto/batchOf`）。まとめた呼び出しは要素1件ごとに1行残し、
+   * `identifiers` はその1件ぶん。`size` はまとめた件数
+   */
+  batch?: { size: number };
   /** 実際に中継した結果。拒否されたときは付かない。 */
   ok?: boolean;
   ts: string;
@@ -481,6 +489,14 @@ export function mayResolveProjectAddress(identity: CallerIdentity): string | und
 }
 const PUBLISH_ROLE = "publish";
 
+/** 宛先の tool が名乗った `batchOf` と、`batchOf.tool` の識別子・required（`targetTool`） */
+interface TargetBatchOf {
+  declared: true;
+  tool?: string;
+  items?: string;
+  member?: { auditArgs: string[]; required: string[] };
+}
+
 /**
  * 宛先の tool が名乗っている可視性。**その Module が名乗っていない名前は
  * `undefined`**——知らないものを `admin` 扱いしない（fail closed）。
@@ -497,6 +513,11 @@ async function targetTool(
       auditArgs: string[];
       deliversLater: boolean;
       receivesReplies: boolean;
+      /**
+       * **まとめて呼ぶ口の名乗り**（追加・2026-10-18）。名乗っていなければ付かない。`declared` だけで中身が無いのは、
+       * 形が違うか、`batchOf.tool` が同じ宛先に無いとき（どちらも断る）
+       */
+      batchOf?: TargetBatchOf;
     }
   | undefined
 > {
@@ -504,7 +525,27 @@ async function targetTool(
   const tool = tools.find((t) => (t as { name?: string }).name === toolName);
   if (!tool) return undefined;
   const x = tool as { _meta?: Record<string, unknown> };
+  let batchOf: TargetBatchOf | undefined;
+  if (declaresBatchOf(x)) {
+    const parsed = batchOfMeta(x);
+    const memberTool = parsed ? tools.find((t) => (t as { name?: string }).name === parsed.tool) : undefined;
+    const member = memberTool as { _meta?: Record<string, unknown>; inputSchema?: { required?: unknown } } | undefined;
+    const required = member?.inputSchema?.required;
+    batchOf = {
+      declared: true,
+      ...(parsed ? { tool: parsed.tool, items: parsed.items } : {}),
+      ...(member
+        ? {
+            member: {
+              auditArgs: auditArgsOf(member),
+              required: Array.isArray(required) ? required.filter((k): k is string => typeof k === "string") : [],
+            },
+          }
+        : {}),
+    };
+  }
   return {
+    ...(batchOf ? { batchOf } : {}),
     visibility: visibilityOf(x),
     valueFree: isValueFree(x),
     callerOwned: isCallerOwned(x),
@@ -513,6 +554,53 @@ async function targetTool(
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
   };
+}
+
+/** 識別子として拾う長さの上限——識別子のつもりの欄に値が入っていたときに、記録へ流し込まないため */
+const IDENTIFIER_MAX_LENGTH = 200;
+
+function isIdentifier(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0 && v.length <= IDENTIFIER_MAX_LENGTH;
+}
+
+/**
+ * **まとめて呼ぶ口の要素を、1件ずつの識別子にする**（追加・2026-10-18、`docs/specs/v4-modules.md`「秘密をまとめて引く」の承認）。
+ * 拾えない形は**理由を返して中継ごと断る**——黙って飛ばすと、承認の鍵に入らない要素の値が出ていく（fail closed）。
+ * 戻り値の `items` は要素ごとの識別子（`batchOf.tool` が識別子を名乗らない口なら、どれも空）
+ */
+function pickBatchItems(
+  batchOf: TargetBatchOf,
+  callArgs: Record<string, unknown>,
+): { tool: string; items: Record<string, string>[] } | { refused: string } {
+  if (batchOf.tool === undefined || batchOf.items === undefined) return { refused: "まとめて呼ぶ口の名乗り（dev.banto/batchOf）の形が違います" };
+  if (!batchOf.member) return { refused: `まとめて呼ぶ口が名乗った ${batchOf.tool} が、同じ Module にありません` };
+  const itemsKey = batchOf.items;
+  const extra = Object.keys(callArgs).filter((k) => k !== itemsKey);
+  if (extra.length > 0) return { refused: `まとめて呼ぶ口には ${itemsKey} のほかの引数を渡せません（${extra.join("、")}）` };
+  const raw = callArgs[itemsKey];
+  if (!Array.isArray(raw)) return { refused: `${itemsKey} が配列ではありません` };
+  if (raw.length === 0) return { refused: `${itemsKey} が空です` };
+  if (raw.length > BATCH_MAX_ITEMS) return { refused: `${itemsKey} は ${BATCH_MAX_ITEMS} 件までです（${raw.length} 件）` };
+  const { auditArgs, required } = batchOf.member;
+  const requiredIds = auditArgs.filter((k) => required.includes(k));
+  const items: Record<string, string>[] = [];
+  for (const [i, el] of raw.entries()) {
+    if (typeof el !== "object" || el === null || Array.isArray(el)) return { refused: `${itemsKey} の ${i + 1} 件目がオブジェクトではありません` };
+    const picked: Record<string, string> = {};
+    for (const key of auditArgs) {
+      const v = (el as Record<string, unknown>)[key];
+      if (isIdentifier(v)) picked[key] = v;
+      else if (requiredIds.includes(key)) {
+        return { refused: `${itemsKey} の ${i + 1} 件目から ${key} を拾えません（無い・文字列でない・${IDENTIFIER_MAX_LENGTH} 字を超える）` };
+      }
+    }
+    // 識別子を名乗る口なのに1つも拾えない要素は、鍵が `scope: {}` に潰れる——断る
+    if (auditArgs.length > 0 && Object.keys(picked).length === 0) {
+      return { refused: `${itemsKey} の ${i + 1} 件目から識別子（${auditArgs.join("・")}）を1つも拾えません` };
+    }
+    items.push(picked);
+  }
+  return { tool: batchOf.tool, items };
 }
 
 /** その Module が返事の受け口（`dev.banto/receivesReplies`）を名乗っているか */
@@ -841,14 +929,32 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
 
     // **何を指していたか**は、宛先の tool を読むまで分からない（下で埋まる）
     let identifiers: Record<string, string> | undefined;
+    /** **まとめて呼ぶ口なら、要素ごとの識別子**（下で埋まる）。監査はこの1件ごとに1行 */
+    let batch: { tool: string; items: Record<string, string>[] } | undefined;
     const audit = async (allowed: boolean, reason?: string, ok?: boolean) => {
+      const ts = new Date().toISOString();
+      if (batch) {
+        const size = batch.items.length;
+        for (const item of batch.items) {
+          await opts.onAudit?.({
+            ...call,
+            ...(Object.keys(item).length > 0 ? { identifiers: item } : {}),
+            batch: { size },
+            allowed,
+            reason,
+            ok,
+            ts,
+          });
+        }
+        return;
+      }
       await opts.onAudit?.({
         ...call,
         ...(identifiers ? { identifiers } : {}),
         allowed,
         reason,
         ok,
-        ts: new Date().toISOString(),
+        ts,
       });
     };
 
@@ -932,14 +1038,31 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     }
     // **名乗った引数だけを拾う**（値そのものは拾わない）。長すぎるものも拾わない
     // ——識別子のつもりの欄に値が入っていたときに、記録へ流し込まないため
+    const callArgs = (args.arguments ?? {}) as Record<string, unknown>;
     if (targetInfo?.auditArgs.length) {
-      const callArgs = (args.arguments ?? {}) as Record<string, unknown>;
       const picked: Record<string, string> = {};
       for (const key of targetInfo.auditArgs) {
         const v = callArgs[key];
-        if (typeof v === "string" && v.length > 0 && v.length <= 200) picked[key] = v;
+        if (isIdentifier(v)) picked[key] = v;
       }
       if (Object.keys(picked).length > 0) identifiers = picked;
+    }
+    // **まとめて呼ぶ口**（追加・2026-10-18、`dev.banto/batchOf`）。要素の1つ1つを `batchOf.tool` の1回ぶんとして承認する。
+    // **信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。ただし信じない＝通す、ではない——第三者の口が名乗っていて呼び手が
+    // コンテナの中なら断る（普通の tool として扱うと配列から識別子が拾えず、鍵が `scope: {}` の1つに潰れる）
+    if (targetInfo?.batchOf) {
+      if (target.meta.origin === "bundled") {
+        const picked = pickBatchItems(targetInfo.batchOf, callArgs);
+        if ("refused" in picked) {
+          await audit(false, picked.refused);
+          throw new Error(`${targetModule} の ${name} への中継を断りました：${picked.refused}`);
+        }
+        batch = picked;
+      } else if (identity.inContainer) {
+        const why = "同梱でない Module のまとめて呼ぶ口は、コンテナの中からは呼べない";
+        await audit(false, why);
+        throw new Error(`${targetModule} の ${name} への中継を断りました：${why}`);
+      }
     }
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
     /**
@@ -1061,13 +1184,24 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       ? Promise.resolve({ allowed: true, reason: "同梱の道具用のコンテナの、受けた中身を残さず変換して返すだけの口" })
       : opts.gate
         ? opts.gate
-            .requestApproval({
-              ...call,
-              callerConnName: identity.connName ?? identity.moduleName,
-              ...(callId ? { callerCallId: callId } : {}),
-              // コンテナからは、何を指していたかごとに聞く（名乗った識別子。無ければ空——それでも印になる）
-              ...(identity.inContainer ? { scope: identifiers ?? {} } : {}),
-            })
+            .requestApproval(
+              batch
+                ? {
+                    // **1件ずつを `batchOf.tool` の呼び出しとして聞く**——鍵が1件ずつの口と同じになる
+                    ...call,
+                    name: batch.tool,
+                    callerConnName: identity.connName ?? identity.moduleName,
+                    ...(callId ? { callerCallId: callId } : {}),
+                    batch: { name, size: batch.items.length, ...(identity.inContainer ? { scopes: batch.items } : {}) },
+                  }
+                : {
+                    ...call,
+                    callerConnName: identity.connName ?? identity.moduleName,
+                    ...(callId ? { callerCallId: callId } : {}),
+                    // コンテナからは、何を指していたかごとに聞く（名乗った識別子。無ければ空——それでも印になる）
+                    ...(identity.inContainer ? { scope: identifiers ?? {} } : {}),
+                  },
+            )
             .finally(() => clearInterval(heartbeat))
         : Promise.resolve({ allowed: true, reason: "ゲート無し" }));
     if (!decision.allowed) {
