@@ -74,3 +74,5 @@ Factory はローカルの `main`（origin/main と分かれている）の上�
   調べてはいない）。残りの `turn-decisions.spec.ts` は間欠的に落ちる：5 回ずつ流して、このブランチ 3/5・1つ前 3/5 が落ちた
   （`inbox.review_judged` が `decided-by-automation` のあとに `deferred`・`incomplete` を余分に持つ）。この変更とは別の不具合
   として残す（規則6——直していない）
+- **origin/main の上に載せ直した版のフル E2E（2026-10-18、Project のコンテナ）**：322 件全部通過（37.5 分）。上の 12 件の落ちは
+  Factory の作業場所の環境によるものだった。#405 の上に載せ直したあと、組み立てと core の単体テスト 1035 件も通過
