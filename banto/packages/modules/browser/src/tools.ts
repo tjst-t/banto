@@ -29,7 +29,7 @@ import {
 } from "./args.js";
 import { SEARCH_ENGINES, SEARCH_ENGINE_IDS, checkSearchSettings, searchHome } from "./search.js";
 import { pageContent, truncate } from "./content.js";
-import { formatDetail, formatLine, matchesStatus, toHar, type NetworkLog } from "./network-log.js";
+import { LIST_TEXT_MAX, LIST_URL_MAX, formatDetail, formatNetworkList, matchesStatus, toHar, type NetworkLog } from "./network-log.js";
 import type { BrowserSession, TabInfo } from "./session.js";
 import type { StateFile } from "./state.js";
 import { BROWSER_VIEW_URI } from "./view-app.js";
@@ -195,7 +195,8 @@ export const TOOLS = [
     description:
       "ブラウザの通信の一覧。**新しい順**に1件1行：id・タブ・メソッド・状態・種類・大きさ・かかった時間・URL。" +
       "失敗したものは status:\"failed\"、エラー全部は status:\"error\"。1件の詳細（ヘッダ・本文・タイミング・WebSocket のフレーム）は getNetworkRequest。" +
-      "ブラウザが出した通信だけ（サーバどうしの通信は出ない）",
+      "ブラウザが出した通信だけ（サーバどうしの通信は出ない）。" +
+      `URL は ${LIST_URL_MAX} 字で切る（全部は getNetworkRequest）。一覧は全体で ${LIST_TEXT_MAX.toLocaleString("en-US")} 字までで、超えた分は出さない（件数を末尾に書く）`,
     inputSchema: { type: "object", properties: NETWORK_QUERY_PROPS },
     _meta: agent,
   },
@@ -414,16 +415,8 @@ export async function callTool(
         if (tabs.length === 0) return text(`${head}開いているタブはありません${ctx.session.running ? "" : "（最後のタブだったのでブラウザを止めました。次に開くと起こし直します）"}`);
         return text(`${head}${pageContent(...tabList(ctx, tabs, thread))}`);
       }
-      case "listNetwork": {
-        const q = parseNetworkQuery(args);
-        const rows = ctx.log.query(q);
-        const total = ctx.log.stats().records;
-        if (rows.length === 0) return text(`当てはまる通信はありません（記録は全部で ${total} 件）`);
-        return text(
-          `新しい順に ${rows.length} 件（記録は全部で ${total} 件。列：id タブ メソッド 状態 種類 大きさ 時間 URL）\n` +
-            pageContent("通信の一覧", rows.map(formatLine).join("\n")),
-        );
-      }
+      case "listNetwork":
+        return text(formatNetworkList(ctx.log.query(parseNetworkQuery(args)), ctx.log.stats().records));
       case "getNetworkRequest": {
         const a = parseNetworkRequest(args);
         const record = ctx.log.get(a.id);
