@@ -160,6 +160,22 @@ export class ClaudeAccountStore {
     this.write();
   }
 
+  /** 決めてある Project の並びの全部（設定の画面——外すと並びから消える Project を出すため） */
+  projectOrders(): Record<string, string[]> {
+    return Object.fromEntries(Object.entries(this.ledger.projectOrders ?? {}).map(([k, v]) => [k, [...v]]));
+  }
+
+  /** **表示名を変える**（既定はメールアドレス）。空にはしない */
+  setLabel(id: string, label: string): ClaudeAccount {
+    const a = this.ledger.accounts.find((x) => x.id === id);
+    if (!a) throw new Error(`Claude のアカウント ${id} は台帳にありません`);
+    const trimmed = label.trim();
+    if (!trimmed) throw new Error("名前を空にはできません");
+    a.label = trimmed;
+    this.write();
+    return this.view(a);
+  }
+
   thresholds(): UsageThresholds {
     return { ...(this.ledger.thresholds ?? DEFAULT_THRESHOLDS) };
   }
@@ -297,6 +313,25 @@ export class ClaudeAccountStore {
     this.scheduleUsageWrite();
   }
 
+  /**
+   * **`/api/oauth/usage` で読み直した使用率を覚える**（§2 の 7.——使っていないアカウントも、設定を開いたときに読み直す）。
+   * 窓の率と時刻だけを置き換え、見出しでしか分からない status（上限で断っているか）は前に読んだものを残す
+   */
+  recordUsageRead(id: string, read: { fiveHour?: UsageWindow; sevenDay?: UsageWindow }): void {
+    const a = this.ledger.accounts.find((x) => x.id === id);
+    if (!a) return;
+    const prev = a.usage;
+    a.usage = {
+      ...(read.fiveHour ? { fiveHour: read.fiveHour } : {}),
+      ...(read.sevenDay ? { sevenDay: read.sevenDay } : {}),
+      ...(prev?.status ? { status: prev.status } : {}),
+      ...(prev?.statusResetsAt ? { statusResetsAt: prev.statusResetsAt } : {}),
+      ...(prev?.representativeClaim ? { representativeClaim: prev.representativeClaim } : {}),
+      readAt: this.now().toISOString(),
+    };
+    this.scheduleUsageWrite();
+  }
+
   /** 間引いて溜めた使用率を、いま書く（止めるとき・試験） */
   flush(): void {
     if (this.usageWriteTimer) {
@@ -413,4 +448,25 @@ function loadLedger(path: string): Ledger | undefined {
     (l.thresholds === undefined || (typeof l.thresholds?.fiveHour === "number" && typeof l.thresholds?.sevenDay === "number"));
   if (!ok) throw new Error(`Claude のアカウントの台帳が壊れています：${path}`);
   return l as Ledger;
+}
+
+/**
+ * **`/api/oauth/usage` の返事を読む**（#397 の実測：`five_hour`・`seven_day` ごとに `utilization`（**0〜100**——見出しは 0〜1）と
+ * `resets_at`（ISO、使っていない窓は null））。形が違えば投げる（黙って「分からない」にしない）
+ */
+export function usageFromUsageApi(body: unknown): { fiveHour?: UsageWindow; sevenDay?: UsageWindow } {
+  if (typeof body !== "object" || body === null) throw new Error("使用率の返事が JSON のオブジェクトではありません");
+  const windowOf = (key: "five_hour" | "seven_day"): UsageWindow | undefined => {
+    const w = (body as Record<string, unknown>)[key];
+    if (w === null || w === undefined) return undefined;
+    const { utilization, resets_at } = w as { utilization?: unknown; resets_at?: unknown };
+    if (typeof utilization !== "number" || !Number.isFinite(utilization)) throw new Error(`使用率の返事の ${key}.utilization が数ではありません`);
+    // 使っていない窓（resets_at が null）は分からない扱い——率 0 を「リセットの無い値」として残すと消えない
+    if (resets_at === null || resets_at === undefined) return undefined;
+    if (typeof resets_at !== "string" || !Number.isFinite(Date.parse(resets_at))) throw new Error(`使用率の返事の ${key}.resets_at が時刻ではありません`);
+    return { utilization: utilization / 100, resetsAt: new Date(resets_at).toISOString() };
+  };
+  const fiveHour = windowOf("five_hour");
+  const sevenDay = windowOf("seven_day");
+  return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
 }

@@ -28,10 +28,13 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
-import { HOST_ACCOUNT_ID, type ClaudeAccountStore } from "./accounts.js";
+import { HOST_ACCOUNT_ID, usageFromUsageApi, type ClaudeAccountStore } from "./accounts.js";
 import { blockedBy, chooseAccount, earliestRecovery, type Blocked } from "./select.js";
 
 const UPSTREAM = "https://api.anthropic.com";
+/** アカウントの使用率を読む口（§2 の 7.。#397 で scope `user:inference user:profile` で通るのを確かめた） */
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_READ_TIMEOUT_MS = 15_000;
 /**
  * **試し直すために本文を持つ上限**（API の要求の上限 32 MB）。超えるものは持たずに流し、401 でも送り直さない
  */
@@ -236,6 +239,8 @@ export interface ClaudeLoginRelayDeps {
   upstream?: string;
   /** 取り直しの口（試験・E2E で差し替える。既定は本番） */
   tokenUrl?: string;
+  /** 使用率を読む口（試験・E2E で差し替える。既定は本番の `/api/oauth/usage`） */
+  usageUrl?: string;
   /** 中継が取り直すか（既定はする。切れば今までどおり読むだけ） */
   refreshEnabled?: boolean;
   now?: () => Date;
@@ -271,6 +276,8 @@ export class ClaudeLoginRelay {
   private readonly allOverOpen = new Map<string, boolean>();
   /** 全部越えのカードを閉じに行く時計（並びの鍵ごと） */
   private readonly recoveryTimers = new Map<string, NodeJS.Timeout>();
+  /** 最後に全部の使用率を読み直した時刻 */
+  private usageReadAt: string | undefined;
 
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
@@ -376,6 +383,45 @@ export class ClaudeLoginRelay {
   /** その Project が最後に使ったアカウント（Project 設定の観測。起こしてから1度も使っていなければ undefined） */
   currentAccountOf(projectId: string): string | undefined {
     return this.current.get(projectId);
+  }
+
+  /** いま各 Project が使っているアカウント（Project の id → アカウントの id。起こしてから返事をしたものだけ） */
+  currentAccounts(): Map<string, string> {
+    return new Map(this.current);
+  }
+
+  /**
+   * **全部のアカウントの使用率を読み直す**（§2 の 7.——使っていないアカウントも、設定を開いたときに）。中継は通さず core が
+   * 直に、そのアカウントのトークンで `/api/oauth/usage` を呼び、台帳に覚える。読めなかったものは理由を返す（黙って
+   * 前の値のままにしない）。ログインし直しが要るかどうかは中継の道（取り直し役）に任せ、ここではカードを出さない
+   */
+  async readUsage(): Promise<{ readAt: string; failures: Array<{ accountId: string; reason: string }> }> {
+    const store = this.deps.accounts;
+    const failures: Array<{ accountId: string; reason: string }> = [];
+    await Promise.all(
+      store.list().map(async ({ id }) => {
+        try {
+          const outcome = await this.refresherFor(id).ensureFresh();
+          const token = outcome.accessToken;
+          if (!token) throw new Error(outcome.kind === "failed" ? outcome.reason : "トークンがありません");
+          const res = await fetch(this.deps.usageUrl ?? CLAUDE_USAGE_URL, {
+            headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
+            signal: AbortSignal.timeout(USAGE_READ_TIMEOUT_MS),
+          });
+          if (!res.ok) throw new Error(`使用率の口が ${res.status} を返しました`);
+          store.recordUsageRead(id, usageFromUsageApi(await res.json()));
+        } catch (err) {
+          failures.push({ accountId: id, reason: err instanceof Error ? err.message : String(err) });
+        }
+      }),
+    );
+    this.usageReadAt = this.now().toISOString();
+    return { readAt: this.usageReadAt, failures };
+  }
+
+  /** 最後に全部を読み直した時刻（起こしてから。設定の「n分前に読みました」） */
+  lastUsageReadAt(): string | undefined {
+    return this.usageReadAt;
   }
 
   /** 止めるとき：全部越えのカードを閉じに行く時計を止める */

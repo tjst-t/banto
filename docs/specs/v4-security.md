@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-18（§2「Claude のアカウントを複数持つ」：5.・6. Project ごとの並びと閾値で切り替える——Backlog #401）
+> 最終更新：2026-10-18（§2「Claude のアカウントを複数持つ」：設定の画面と、画面が要る口（使用率の読み直し・名前・ログインし直しの確かめ・最近の切り替え）——Backlog #403）
 
 ## 1. セキュリティ境界
 
@@ -1381,7 +1381,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
   **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
-### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。4. の HTTP の口は実装・2026-10-18、Backlog #400（`claude-login/account-login.ts`、画面はまだ）。1.・2.（会話の本体を中継に通す・本体用の合言葉）は実装・2026-10-18、Backlog #399（`claude-login/relay.ts` の `runnerEnvFor`）——ただし 2. の「取り直せない banto で設定にその理由を出す」は画面がまだ無い。5.・6.（並びと閾値・429 の送り直し・切り替えの記録・全部越えのカード）は実装・2026-10-18、Backlog #401（`claude-login/select.ts`・`relay.ts`、画面はまだ）。ほかは未実装）
+### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。4. の HTTP の口は実装・2026-10-18、Backlog #400（`claude-login/account-login.ts`）。1.・2.（会話の本体を中継に通す・本体用の合言葉）は実装・2026-10-18、Backlog #399（`claude-login/relay.ts` の `runnerEnvFor`）。5.・6.（並びと閾値・429 の送り直し・切り替えの記録・全部越えのカード）は実装・2026-10-18、Backlog #401（`claude-login/select.ts`・`relay.ts`）。**設定の画面**（banto 全体・足すダイアログ・Project の設定、v4-frontend.md §6.46）と 7. の使用率の読み直し・2. の「取り直せない banto で設定にその理由を出す」は実装・2026-10-18、Backlog #403。ほかは未実装）
 
 **何をするか**：banto が Claude のアカウント（ブラウザでログインしたサブスクリプションのもの）を複数持ち、
 (1) 使用率が人の決めた閾値（5時間と週で別々）を超えたら次のアカウントへ切り替え、(2) Project ごとに使うアカウント
@@ -1502,6 +1502,10 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      `{ account, replaced }`）・`DELETE /api/claude-accounts/<id>`（`host` は 400）。失敗は `code` で分ける——`expired`（410）・
      `state-mismatch`／`malformed`（400、手続きは残り貼り直せる）・`exchange-failed`（502）・`unknown`（404、使い切った・起こし直した）。
      交換に行った手続きは成否によらず使い切る（認可コードは1回きり）
+   - **行の「ログインし直す」**（追加・2026-10-18、Backlog #403）：`POST /api/claude-accounts/login/<loginId>` に `accountId` を添えると、
+     返ってきたアカウントのメールアドレスがそのアカウントのものと違えば足さずに断る（`account-mismatch`、409。手続きは使い切り、
+     トークンは捨てる）。`host` には使えない（`unknown`）
+   - **表示名を変える**：`PATCH /api/claude-accounts/<id>`（`{ label }`、空は 400）。`host` も変えられる
    - 契約の種類は profile の `organization.organization_type` を CLI と同じ表（`claude_max`→`max` 等）で写し、上限の段は
      `rate_limit_tier`。置き場には CLI と同じ `claudeAiOauth`（`scopes`・`expiresAt`・`refreshTokenExpiresAt`・契約の種類）で書く
    - 同じメールアドレスの見分けは足したアカウント（`banto`）の中だけ（大文字小文字は見ない）。`~/.claude` は台帳に
@@ -1515,7 +1519,11 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    - **HTTP の口**：`PUT /api/claude-accounts/settings`（`{ defaultOrder?, thresholds?: { fiveHour, sevenDay } }`、閾値は 0〜1。
      人のセッションだけ）・`GET|PUT /api/projects/<id>/claude-accounts`（`{ order: string[] | null }`——null で既定のまま。PUT は
      人のセッションだけ。返すのは `order`・`effectiveOrder`・観測の `currentAccount`（起こしてから最後に返事をしたもの）・
-     `lastSwitch`（Event Store の最後の切り替え））。`GET /api/claude-accounts` は `thresholds` も返す
+     `lastSwitch`（Event Store の最後の切り替え）と `recentSwitches`（直近の5件、古い順。Project の読みモデルに持つ））。
+     `GET /api/claude-accounts` は `thresholds` も返す。画面のために、アカウントごとの `usedBy`（中継が起こしてから覚えた、
+     いまそのアカウントを使っている Project）・`projectOrders`（並びを決めてある Project——外すと並びから消える）・
+     `usageReadAt`（最後に全部を読み直した時刻）・`hostLogin`（`~/.claude` の契約の種類）・`noRefreshReason`（中継が取り直せない
+     banto の理由）も返す
 6. **閾値で切り替える**：閾値は **5時間と週で別々**（banto 全体の設定、**既定は5時間 95%・週 95%**。決定・2026-10-18、ユーザー）
    - 中継は返事の見出しから、そのアカウントの使用率（5時間・週の率とリセットの時刻）を台帳のメモリの写しに書く
      （ファイルへは間引いて書く）
@@ -1553,6 +1561,11 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    いまどれを使っているか。ログインが壊れた・401 が続く等のカードは今の決まりのまま**アカウントごと**に1枚
    （dedupeKey にアカウントの id を入れる）。使用率は使っていないアカウントでも、設定を開いたときに `/api/oauth/usage` で
    読み直す（中継は通さず core が直に、そのアカウントのトークンで）
+   - **口**（実装・2026-10-18、Backlog #403）：`POST /api/claude-accounts/usage`（人のセッションだけ）。全部のアカウントについて
+     取り直し役からトークンを得て `/api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）を呼び、窓（5時間・週）の率と時刻を
+     台帳に覚える（見出しでしか分からない status は前の値を残す）。使っていない窓（`resets_at: null`）は「分からない」。
+     読めなかったアカウントは `failures` に理由を返す（前の値のまま黙らない）。ログインし直しのカードはここでは出さない
+     （中継の道に任せる）。E2E は `BANTO_CLAUDE_USAGE_URL` で偽物を指す
 8. **移り方**：入れた最初の起動で `~/.claude` を1つ目として台帳に載せ、既定の並びをそれだけにする——足すまで今と同じに動く
 
 9. **上限で止まったら、リセットのあと人を待たずに続ける**（決定・2026-10-18、ユーザー）。並びの全部が上限で断られ

@@ -71,6 +71,9 @@ export const CONNECTED_FEATURES = {
   // **人のログイン**（決定・2026-10-03、v4-security.md「人のログイン」）。パスキー・端末を追加・ログイン中の端末が
   // host の `/api/auth/*` に繋がっている
   login: true,
+  // **Claude のアカウント**（決定・2026-10-18、v4-frontend.md §6.46）。一覧・使用率・閾値・既定の並び・足す（ブラウザでログイン）・
+  // Project の並びが host の `/api/claude-accounts`・`/api/projects/:id/claude-accounts` に繋がっている
+  claudeAccounts: true,
   // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。host の `/api/admin/update` に繋がっていて、
   // 組み立てと起こし直しは host の外の `banto-update.service`（`scripts/update.mjs`）が行う
   selfUpdate: true,

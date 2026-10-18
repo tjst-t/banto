@@ -186,6 +186,31 @@ test("同じメールアドレスなら足さずに置き換える（ログイ�
     assert.deepEqual(events, [`replaced:${a.id}`]);
   }));
 
+test("行の「ログインし直す」（accountId つき）：同じアカウントなら置き換え、違うアカウントが返ったら断って台帳も置き場も変えない", () =>
+  withLogin(async ({ store, login, oauth }) => {
+    const first = login.start();
+    oauth.codes.set("c1", { email: "a@example.com" });
+    const a = (await login.finish(first.loginId, `c1#${stateOf(first.url)}`)).account;
+    const before = readFileSync(store.credentialsPathOf(a.id), "utf8");
+    const wrong = login.start();
+    oauth.codes.set("c2", { email: "b@example.com" });
+    await assert.rejects(
+      login.finish(wrong.loginId, `c2#${stateOf(wrong.url)}`, { accountId: a.id }),
+      (e: ClaudeAccountLoginError) => e.code === "account-mismatch" && e.message.includes("b@example.com") && e.message.includes("a@example.com"),
+    );
+    assert.deepEqual(store.list().map((x) => x.id), [HOST_ACCOUNT_ID, a.id]);
+    assert.equal(readFileSync(store.credentialsPathOf(a.id), "utf8"), before);
+    const right = login.start();
+    oauth.codes.set("c3", { email: "A@example.com" });
+    const again = await login.finish(right.loginId, `c3#${stateOf(right.url)}`, { accountId: a.id });
+    assert.equal(again.replaced, true);
+    assert.equal(again.account.id, a.id);
+    // ~/.claude のものは banto からログインし直さない
+    const host = login.start();
+    oauth.codes.set("c4", { email: "a@example.com" });
+    await assert.rejects(login.finish(host.loginId, `c4#${stateOf(host.url)}`, { accountId: HOST_ACCOUNT_ID }), (e: ClaudeAccountLoginError) => e.code === "unknown");
+  }));
+
 test("置き換えは置き場のほかの鍵を残す", () =>
   withLogin(async ({ store, login, oauth }) => {
     const first = login.start();

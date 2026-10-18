@@ -19,6 +19,7 @@ import {
   SlidersHorizontal,
   Trash2,
   TriangleAlert,
+  UsersRound,
   Wrench,
 } from "lucide-react";
 import {
@@ -45,6 +46,7 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import { ProjectGeneralPanel } from "@/components/banto/settings/project-general-panel";
 import { ProjectMemoryPanel } from "@/components/banto/settings/project-memory-panel";
+import { ProjectClaudeAccountsPanel } from "@/components/banto/settings/project-claude-accounts-panel";
 import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import {
   SettingsShell,
@@ -95,6 +97,8 @@ const MODULES_CATEGORY: SettingsNavItem = {
 
 /** **この Project そのもの**（名前・根・危険な操作）。層のいちばん上（2026-09-11） */
 const GENERAL_CATEGORY: SettingsNavItem = { section: "project-general", label: "一般", icon: Wrench };
+/** この Project で使う Claude のアカウントの並び（2026-10-18、v4-frontend.md §6.46）。「一般」の Claude のログインの下 */
+const CLAUDE_ACCOUNTS_CATEGORY: SettingsNavItem = { section: "project-claude-accounts", label: "Claude のアカウント", icon: UsersRound };
 const MEMORY_CATEGORY: SettingsNavItem = { section: "project-memory", label: "Memory", icon: BookMarked };
 /** この Project で効かせる Skill（全体の既定の上書き、2026-09-23） */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "project-skills", label: "この Project の Skill", icon: ScrollText };
@@ -174,6 +178,9 @@ export function ProjectSettingsContent({
     if (section === "project-general") {
       // 名前・根・危険な操作（Close）は1つの面に——移したのは配置だけ（2026-09-11）
       return <ProjectGeneralPanel projectId={projectId} />;
+    }
+    if (section === "project-claude-accounts") {
+      return <ProjectClaudeAccountsPanel key={projectId} projectId={projectId} />;
     }
     if (section === "project-memory" && project) {
       return <ProjectMemoryPanel projectId={project.id} />;
@@ -351,8 +358,8 @@ export function ProjectSettingsContent({
   }
 
   // **眠っている Project**（§6.43）——Module の設定・Skills などは起こさずに「眠っています」。起きたら読み直す
-  // （起こしたのがここでも、サイドバーでも）。名前・根・閉じる（一般）と Memory は Module を通らないので出さない
-  const showAsleep = asleep && section !== "project-general" && section !== "project-memory";
+  // （起こしたのがここでも、サイドバーでも）。名前・根・閉じる（一般）と Memory・Claude のアカウントは Module を通らないので出さない
+  const showAsleep = asleep && section !== "project-general" && section !== "project-memory" && section !== "project-claude-accounts";
   return (
     <>
       {showAsleep ? <AsleepNotice projectId={projectId} className="mb-4" /> : null}
@@ -372,6 +379,7 @@ export function useProjectCategories(projectId: string): readonly SettingsNavIte
   return [
     // **いちばん上は「一般」**（名前・根・Close）——この Project が何者か、が先
     ...(project?.real ? [GENERAL_CATEGORY] : []),
+    ...(CONNECTED_FEATURES.claudeAccounts && project?.real ? [CLAUDE_ACCOUNTS_CATEGORY] : []),
     // 実 Project だけ——mock Project には対応する Project が host に無い（規則13）
     ...(CONNECTED_FEATURES.projectModules && project?.real ? [MODULES_CATEGORY] : []),
     ...(CONNECTED_FEATURES.skills && project?.real ? [SKILLS_CATEGORY] : []),

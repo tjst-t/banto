@@ -11,6 +11,8 @@
 //     （`anthropic-ratelimit-unified-*`）を付ける・上限の 429（status rejected）で断る
 //   - **ブラウザでのログイン**（`addLogin`、§2 の 4.）：`/v1/oauth/token` の authorization_code で決めたコードを交換し、
 //     `/api/oauth/profile` でそのトークンのメールアドレスを返す
+//   - **使用率の読み直し**（§2 の 7.）：`/api/oauth/usage` で、そのトークンの `setLimit` の値を本物の形（率は 0〜100、
+//     使っていない窓は `resets_at: null`）で返す
 import { createServer, type Server } from "node:http";
 
 export interface ApiRequest {
@@ -50,6 +52,8 @@ export interface FakeAnthropic {
   setLimit: (token: string, limit: FakeLimit | undefined) => void;
   /** そのコードを交換すると、そのトークン・メールアドレスのアカウントになる */
   addLogin: (code: string, account: { accessToken: string; email: string }) => void;
+  /** `/api/oauth/usage` を読みに来たトークン（来た順） */
+  usageReads: string[];
   close: () => Promise<void>;
 }
 
@@ -74,6 +78,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
   const replies: FakeAnthropic["replies"] = [];
   const limits = new Map<string, FakeLimit>();
   const logins = new Map<string, { accessToken: string; email: string }>();
+  const usageReads: string[] = [];
   let seq = 0;
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -112,6 +117,13 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
         return;
       }
       const limit = limits.get(token);
+      if (path === "/api/oauth/usage") {
+        usageReads.push(token);
+        const win = (w: { utilization: number; resetsAt: number } | undefined) =>
+          w ? { utilization: w.utilization * 100, resets_at: new Date(w.resetsAt * 1000).toISOString() } : { utilization: 0, resets_at: null };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ five_hour: win(limit?.fiveHour), seven_day: win(limit?.sevenDay), seven_day_opus: null }));
+        return;
+      }
       const rateHeaders = limit ? limitHeaders(limit) : {};
       if (path.startsWith("/v1/messages") && limit?.rejected) {
         replies.push({ token, status: 429, path });
@@ -170,6 +182,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
     replies,
     setLimit: (token, limit) => (limit ? limits.set(token, limit) : limits.delete(token)),
     addLogin: (code, account) => logins.set(code, account),
+    usageReads,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

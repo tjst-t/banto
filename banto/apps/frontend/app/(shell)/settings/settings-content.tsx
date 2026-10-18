@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, Server, SlidersHorizontal, Sparkles, SquareTerminal } from "lucide-react";
+import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, Server, SlidersHorizontal, Sparkles, SquareTerminal, UsersRound } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -14,6 +14,7 @@ import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import { ShellHomePanel } from "@/components/banto/settings/shell-home-panel";
 import { ContainerLimitsPanel } from "@/components/banto/settings/container-limits";
 import { LoginPanel } from "@/components/banto/settings/login-panel";
+import { ClaudeAccountsPanel } from "@/components/banto/settings/claude-accounts-panel";
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
 import { RuntimesPanel } from "@/components/banto/settings/runtimes-panel";
@@ -83,6 +84,9 @@ const CONTAINER_CATEGORY: SettingsNavItem = { section: "container", label: "コ�
 /** 人のログイン（2026-10-03）。パスキー・端末を追加・ログイン中の端末 */
 const LOGIN_CATEGORY: SettingsNavItem = { section: "login", label: "ログイン", icon: KeyRound };
 
+/** 会話とコンテナの中の Claude が使うアカウントと、切り替えの閾値・並び（2026-10-18、v4-frontend.md §6.46） */
+const CLAUDE_ACCOUNTS_CATEGORY: SettingsNavItem = { section: "claude-accounts", label: "Claude のアカウント", icon: UsersRound };
+
 /** banto 自身を GitHub の新しい版にする（2026-10-04、アーキ仕様 §2.5「画面から banto を更新する」） */
 const UPDATE_CATEGORY: SettingsNavItem = { section: "update", label: "更新", icon: ArrowUpCircle };
 
@@ -97,6 +101,7 @@ const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", ic
 
 const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.login ? [LOGIN_CATEGORY] : []),
+  ...(CONNECTED_FEATURES.claudeAccounts ? [CLAUDE_ACCOUNTS_CATEGORY] : []),
   ...(CONNECTED_FEATURES.settings
     ? MOCK_CATEGORIES
     : CONNECTED_FEATURES.instanceModules
@@ -201,6 +206,9 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "login") {
     return <LoginPanel />;
+  }
+  if (section === "claude-accounts") {
+    return <ClaudeAccountsPanel />;
   }
   if (section === "resources") {
     return (

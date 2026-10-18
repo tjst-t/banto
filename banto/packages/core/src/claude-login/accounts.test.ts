@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClaudeAccountStore, HOST_ACCOUNT_ID, freshUsage, usageFromHeaders } from "./accounts.js";
+import { ClaudeAccountStore, HOST_ACCOUNT_ID, freshUsage, usageFromHeaders, usageFromUsageApi } from "./accounts.js";
 
 function withDir(fn: (dir: string) => void | Promise<void>) {
   return async () => {
@@ -151,5 +151,37 @@ test(
     // 既定に戻す
     again.setProjectOrder("p1", undefined);
     assert.deepEqual(again.orderFor("p1"), [HOST_ACCOUNT_ID, c.id]);
+  }),
+);
+
+// **設定を開いたときの読み直し**（§2 の 7.）：`/api/oauth/usage` は率が 0〜100、使っていない窓は resets_at が null
+test("/api/oauth/usage の返事を読む：率は 0〜1 に直す。使っていない窓は分からない。形が違えば投げる", () => {
+  assert.deepEqual(
+    usageFromUsageApi({ five_hour: { utilization: 41, resets_at: "2026-10-18T20:28:00Z" }, seven_day: { utilization: 0, resets_at: null }, seven_day_opus: null }),
+    { fiveHour: { utilization: 0.41, resetsAt: "2026-10-18T20:28:00.000Z" } },
+  );
+  assert.throws(() => usageFromUsageApi({ five_hour: { utilization: "41", resets_at: "2026-10-18T20:28:00Z" } }), /five_hour\.utilization/);
+  assert.throws(() => usageFromUsageApi("nope"), /オブジェクトではありません/);
+});
+
+test(
+  "読み直した使用率は窓を置き換え、見出しで知った status は残す。表示名を変えられる（空は断る）",
+  withDir((dir) => {
+    let now = new Date("2026-10-18T10:00:00Z");
+    const store = new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: join(dir, "h.json"), now: () => now });
+    store.recordUsage(
+      HOST_ACCOUNT_ID,
+      new Headers({ "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String(Date.parse("2026-10-18T12:00:00Z") / 1000) }),
+    );
+    now = new Date("2026-10-18T10:05:00Z");
+    store.recordUsageRead(HOST_ACCOUNT_ID, { fiveHour: { utilization: 0.5, resetsAt: "2026-10-18T13:00:00.000Z" } });
+    const u = store.get(HOST_ACCOUNT_ID)!.usage!;
+    assert.equal(u.fiveHour?.utilization, 0.5);
+    assert.equal(u.status, "rejected");
+    assert.equal(u.readAt, "2026-10-18T10:05:00.000Z");
+    assert.equal(store.setLabel(HOST_ACCOUNT_ID, "  手元  ").label, "手元");
+    assert.throws(() => store.setLabel(HOST_ACCOUNT_ID, " "), /空/);
+    store.flush();
+    assert.equal(new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: join(dir, "h.json"), now: () => now }).get(HOST_ACCOUNT_ID)!.label, "手元");
   }),
 );
