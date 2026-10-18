@@ -2744,3 +2744,24 @@ Project を別の実行場所へ移している間（`project.runtime_move_start
   名前の右の混んでいる印とは別の場所。aria-label とツールチップは「<実行場所> に繋げません（理由）」——理由はいちばん新しい失敗
 - 広いサイドバー・畳んだレール・携帯の Drawer のどれにも出す。**いま開いている Project の行にも出す**（今どこで困っているか）
 - 押すと、その Project の設定の実行場所（全般の節）を開く（受信箱は1件のカードを指して開く口が無いので、こちら）
+
+### 6.45 「Module を追加」——banto の Module はまとめて入れる、外部の MCP はカスタムから（決定・2026-10-18、ユーザー「モックの形で実装して」。モック fork/module-bulk-add の `mock/app/add-modules` → 本実装）
+
+設定（banto 全体）の「Module」の「Module を追加」。**タブは「banto の Module」と「カスタム」の2つ**。
+
+- **外部の MCP の目録を外した**。以前は「おすすめ」に、banto が出所（registry の DNS 確認）を確かめた外部の MCP
+  （Stripe・Notion・Linear・Figma 等、`modules/registry/curated.ts`・`GET /api/modules/curated`）を並べていたが、両方消した。
+  外部の MCP は「カスタム」の「MCP Registry を探す」（と JSON を貼る・手で入れる）から入れる。経緯の記録は
+  `docs/notes/2026-09-22-curated-catalog.md` に残る
+- **「banto の Module」**（`bundled-modules-section.tsx`）は banto に入っているコード（同梱の目録）を**チェックで選んで、
+  「n 本を入れる」でまとめて入れる**（`POST /api/modules/catalog/bulk`）。上に「まだ入れていないものを全部（n）」
+- 組は3つ：**Project で使うもの**（`scope: project`。入れると全 Project に付き、使わない Project ではその Project の設定で外す、と書く）／
+  **banto 全体で1本**／**接続先ごとに入れるもの**（`perConnection`、いまは Vault（Infisical）。まとめて入れる対象にせず、
+  行の「入れる／もう1本」で名前を聞いて1本ずつ入れる。名前は既定の名前に、ぶつかれば番号を足して出す）
+- **入れてあるもの**は薄く、チェック済みで外せない（「入れてあります」）
+- **要るもの**：選んだものの `requires`（host が目録から決めたもの）のうち入っていないものは、自動でチェックが付き外せず
+  「〜に要るので一緒に入れます」と出る（例：Factory → Backlog、Publish → Publish（Caddy））。入れる口も依存を自分で決め直す
+  ——画面の言い分では足さない
+- **結果は行ごと**：入れたものに ✓、入れられなかったものに印と理由（host の文のまま）。「失敗したものをもう一度」。
+  設定が要るもの（Publish（Caddy）の基のドメインなど）は一覧の行の「設定」から入れる、と添える
+- 下の帯（入れる本数と名前・ボタン）はダイアログの下に留める。携帯の幅でも同じ形

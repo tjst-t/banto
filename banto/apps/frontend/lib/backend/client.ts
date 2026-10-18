@@ -1900,6 +1900,12 @@ export interface RealCatalogEntry {
   suggestedName: string;
   satisfies: string[];
   scope: "instance" | "project";
+  /** 一緒に入っていないと動かない目録の Module の id（host が目録から決める） */
+  requires: string[];
+  /** 接続先ごとに名前を付けて1本ずつ入れるもの（まとめて入れる対象ではない） */
+  perConnection: boolean;
+  /** いま入れてある名前（目録と同じコードを指す宣言） */
+  installed: string[];
 }
 
 export async function listRealModuleCatalog(): Promise<RealCatalogEntry[]> {
@@ -1917,6 +1923,27 @@ export async function installRealModuleFromCatalog(id: string, name: string): Pr
     method: "POST",
     body: JSON.stringify({ name }),
   });
+}
+
+/** まとめて入れた結果の1行（`installCatalogBulk`） */
+export interface RealCatalogBulkResult {
+  id: string;
+  name?: string;
+  status: "installed" | "already" | "failed";
+  requiredBy?: string[];
+  error?: string;
+}
+
+/**
+ * **目録から何本かをまとめて入れる**（追加・2026-10-18、ユーザー決定）。画面が送るのは目録の id だけ
+ * ——要るもの・名前・入れてあるかは host が決め、行ごとの結果を返す
+ */
+export async function installRealModulesFromCatalog(ids: readonly string[]): Promise<RealCatalogBulkResult[]> {
+  const res = await request<{ results: RealCatalogBulkResult[] }>("/api/modules/catalog/bulk", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+  return res.results;
 }
 
 // ---- MCP Registry（追加・2026-09-21、ユーザー要望）--------------------------
@@ -1976,20 +2003,6 @@ export interface RealRegistrySearch {
   entries: RealRegistryEntry[];
   nextCursor?: string;
   formats: Array<{ registryType: string; label: string; runtime: string; supported: boolean; reason?: string }>;
-}
-
-/** banto が選んだ目録の1件（`packages/core/src/modules/registry/curated.ts`）。 */
-export interface RealCuratedEntry {
-  id: string;
-  registryName: string;
-  label: string;
-  description: string;
-  /** **なぜ載っているか**——人が確かめた根拠。画面はこれをそのまま出す。 */
-  why: string;
-}
-
-export async function listRealCuratedModules(): Promise<RealCuratedEntry[]> {
-  return request<RealCuratedEntry[]>("/api/modules/curated");
 }
 
 export async function searchRealModuleRegistry(
