@@ -9735,7 +9735,7 @@
       "number": 404,
       "kind": "task",
       "title": "画面：会話の切り替えの1行・上限の待ちの帯・サイドバーの1行・受信箱のカード",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-switch",
@@ -9746,12 +9746,12 @@
       "labels": [],
       "body": "v4-frontend.md §6.46 の会話・サイドバー・受信箱の節。見本は mock/app/claude-accounts の「会話」「受信箱」。",
       "doneWhen": "E2E で、切り替えの1行（warn の形も）・待ちの帯の残り時間と2つのボタン・サイドバーの1行・全部越えの受信箱のカードと自動で閉じる、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-ui-thread）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T17:21:20.414Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T20:36:08.939Z",
+      "closedAt": "2026-10-18T20:36:08.939Z",
       "extra": {}
     },
     {
