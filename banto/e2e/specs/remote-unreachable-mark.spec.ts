@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { FRONTEND_BASE_URL } from "../config.js";
 import { openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { withSshHost, type SshHost } from "../ssh-host.js";
+import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.describe.configure({ mode: "serial" });
@@ -86,7 +86,7 @@ test("別のサーバの SSH が 3 分を越えて繋がらないと、その Pr
         body: {
           server: "vault-directory",
           tool: "createAlias",
-          arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", value: readFileSync(sshHost.identityFile, "utf8") },
+          arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity", group: RUNTIME_KEYS_GROUP, value: readFileSync(sshHost.identityFile, "utf8") },
         },
       });
       expect(stored.status, JSON.stringify(stored.body)).toBe(200);
@@ -102,6 +102,8 @@ test("別のサーバの SSH が 3 分を越えて繋がらないと、その Pr
       });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
       const projectId = created.body.id;
+      // API で作った Project には Base の会話がまだ無い——無いとサイドバーの一覧に出ない（sidebar-idle-sleep と同じ）
+      await api(host, `/api/projects/${projectId}/threads`, { method: "POST" });
       const shellConnected = async () =>
         (await api<Array<{ name: string; connected: boolean }>>(host, `/api/projects/${projectId}/modules`)).body.find((m) => m.name === "shell")?.connected;
       const prepared = await api<{ connected?: string[] }>(host, `/api/projects/${projectId}/modules/prepare`, { method: "POST" });
@@ -152,8 +154,9 @@ test("別のサーバの SSH が 3 分を越えて繋がらないと、その Pr
       const railMark = sidebar.getByTestId("sidebar-project-unreachable");
       await expect(railMark, "畳んだレールに印が出ない").toHaveCount(1);
       await expect(railMark).toHaveAttribute("aria-label", label);
-      const railRow = sidebar.locator("li").filter({ has: railMark });
-      await expectTopLeftOf(railMark, railRow.locator("a").first().locator("span").first(), "畳んだレール");
+      // 印はその Project の行（li）の直下に置かれる——行を印の親から辿る（グループの見出し等の外側の li を拾わない）
+      const railRow = railMark.locator("xpath=..");
+      await expectTopLeftOf(railMark, railRow.locator("a span").first(), "畳んだレール");
       await sidebar.getByRole("button", { name: "サイドバーを開く（⌘B / Ctrl-B）" }).click();
 
       await page.setViewportSize({ width: 390, height: 844 });
