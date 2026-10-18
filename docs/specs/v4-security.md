@@ -1251,7 +1251,21 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   トークンを Bearer で付ける）・`/api/event_logging/v2/batch`（付けることがある）・`/api/claude_cli/bootstrap`（合言葉だと
   401）・`/api/web/domain_info`（WebFetch の前、認証なし）・Datadog。**いまのコンテナの中の Claude も合言葉をここへ送っている**
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を付けると、直に出るのは `domain_info` だけになり、会話はそのまま通った
-- 測っていない：自動の要約（compact）・長い会話・resume。実装の最初にこれも流して、`/v1/messages` 以外が来ないことを確かめる
+- **#397 の実測（2026-10-18、同じ SDK、`tmp/claude-paths-probe/probe2.mjs`）**——env は下の 2. の形（上流の変数を外し、合言葉・
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`・`ANTHROPIC_CUSTOM_HEADERS` を足す）：
+  - resume・`/compact`・resume のあとの続きでも、来るのは `POST /v1/messages?beta=true` だけ。直に外へ出るものは1件も無かった
+    （5つの試し全部）。compact のあとも前の会話の中身を覚えていた
+  - 付随の通信を止めても `supportedModels()`（6つ）・`accountInfo()`（`tokenSource: CLAUDE_CODE_OAUTH_TOKEN`）・`getContextUsage()`
+    （`maxTokens` 1000000、`model` claude-opus-5-5[1m]）・`effort: "high"` は今までどおり動いた
+  - `ANTHROPIC_CUSTOM_HEADERS="x-banto-thread-id: …"` は `/v1/messages` の要求に付いた（resume・compact でも）
+  - **上限の 429**（見出し `anthropic-ratelimit-unified-status: rejected` つき）は、`x-should-retry: false` を**付けても付けなくても**
+    CLI は試し直さず約 0.3 秒で `error: "rate_limit"`・result の `is_error: true`（文「You've hit your session limit · resets 10:14am
+    (UTC)」）で終わった。`rate_limit_event` は `status: rejected` と、`resetsAt`＝`anthropic-ratelimit-unified-reset` を出す
+  - **合言葉と `ANTHROPIC_API_KEY` を一緒に渡すと API キーが勝つ**（`x-api-key` で送り、`Authorization` は付かない）。しかも 401 を
+    約 170 秒かけて 10 回試し直してから終わった——上流の変数を外すのは必須
+  - 本物の上流が返した見出し：`-status`・`-reset`・`-representative-claim`・`-fallback-percentage`・`-overage-status`・
+    `-overage-disabled-reason`・`-5h-utilization`・`-5h-reset`・`-5h-status`・`-7d-utilization`・`-7d-reset`・`-7d-status`・
+    `-7d-surpassed-threshold`（`-5h-`・`-7d-` の前は `anthropic-ratelimit-unified`）——**窓ごとの status もある**
 
 #### 決めたこと
 
@@ -1334,14 +1348,15 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      rejected でない**」の最初のアカウントを使う（モデル別の週の窓——`seven_day_opus` 等——が先に尽きると、7d の率が低いまま
      rejected になるため。そのときのリセットの時刻は `-representative-claim` が指す窓のもの）。値は見出しを正とする
      （SDK の `rate_limit_event` の `unifiedWindows` は公開の型に無い）。使う見出しは `anthropic-ratelimit-unified-status`・
-     `-representative-claim`・`-5h-utilization`・`-5h-reset`・`-7d-utilization`・`-7d-reset`（窓ごとの status は無い。名前は
-     実装の最初に実測のログで確かめ直す）。status もリセットの時刻を過ぎたら「分からない」に戻す。リセットの時刻を過ぎた値は「分からない」とし、分からないものは使える扱い（使えば見出しで分かる）
+     `-representative-claim`・`-5h-utilization`・`-5h-reset`・`-5h-status`・`-7d-utilization`・`-7d-reset`・`-7d-status`（#397 で
+     本物の返事から確かめた）。status もリセットの時刻を過ぎたら「分からない」に戻す。リセットの時刻を過ぎた値は「分からない」とし、分からないものは使える扱い（使えば見出しで分かる）
    - ゆえに**閾値を越えたら次の要求から次のアカウント**、リセットを過ぎれば自然に前のアカウントへ戻る。ターンの途中でも
      切り替わる（その要求はプロンプトのキャッシュが効かず一度重くなる、承知）
    - 上流が上限で断った（429、status が rejected）ときは、その要求を**並びの次のアカウントへ、使えるものが無くなるまで**
-     順に送り直す（401 の試し直しと同じく本文を持てるときだけ。持てないときは送り直さず旗も付けない）。**並びの全部が断ったら、CLI へ返す 429 に `x-should-retry: false` を付ける**——CLI の SDK は
-     429 を既定で `retry-after` に従って試し直し、そのたびに中継が並びの全部へ送り直して要求が倍々になるため。付ければ
-     CLI はすぐ上限のエラーでターンを終える（実装の最初に実測する）
+     順に送り直す（401 の試し直しと同じく本文を持てるときだけ。持てないときは送り直さず旗も付けない）。**並びの全部が断ったら、上流の 429 を見出しごとそのまま
+     CLI へ返し、`x-should-retry: false` も付ける**。#397 の実測では rejected の見出しがあれば旗が無くても CLI は試し直さず
+     すぐ上限のエラーで終わったが、見出しの無い 429（上流の別の理由）で CLI の試し直しのたびに並びの全部へ送り直して
+     要求が倍々になるのを防ぐため、旗は付けておく
    - 切り替えたら Event Store に1件（Project・前と後・理由の率）、Project 設定の観測に出す
    - **切り替えたことは会話にも薄い1行で出す**（決定・2026-10-18、ユーザー）：その Project で動いている Thread の、
      切り替えた要求のところに「Claude のアカウントを B に切り替えました（A の5時間 96%）」（Thread は上の 2. の
@@ -1388,16 +1403,14 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    - **対象は会話の本体のターン**。コンテナの中の Claude（サブエージェント・Factory の段・Shell から打った `claude`）が
      上限で落ちたときは、その結果が頼んだ Thread に届き、その Thread の AI が判断する（中継で何時間も要求を抱えない）
 
-#### 実装の最初に確かめること
+#### 実装の前に確かめること（#397）
 
-- `/v1/messages` 以外が来ないか：自動の要約（compact）・長い会話・resume
-- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` で、モデルの一覧（`supportedModels()`）・effort・`getContextUsage()` が今までどおり動くか
-- 合言葉で動く本体の CLI が `/api/oauth/usage` 等へ直に出て 401 になっても会話に響かないか
-- `x-should-retry: false` で CLI が試し直さず、すぐ `error: "rate_limit"` で終わるか（中継が 429 の `anthropic-ratelimit-unified-*` を
-  そのまま返していることも一緒に見る——CLI はそれで上限の文を作る）
-- `ANTHROPIC_CUSTOM_HEADERS` の見出しが `/v1/messages` に付くか
-- 上流を決める変数を外した env で、合言葉だけで本体が動くか
-- scope `user:inference user:profile` で token の口と `/api/oauth/profile`・`/api/oauth/usage` が通るか
+- 済み（上の「#397 の実測」）：compact・resume の道、付随の通信を止めたときのモデルの一覧・effort・文脈の量、
+  `ANTHROPIC_CUSTOM_HEADERS`、上限の 429 での終わり方、上流の変数を外した env（API キーが勝つので外すのは必須）。
+  付随の通信を止めると `/api/oauth/usage` 等へは出ないので「直に出て 401」は起きない
+- **残り**：scope `user:inference user:profile` で token の口と `/api/oauth/profile`・`/api/oauth/usage`・`/v1/messages` が通るか。
+  人がブラウザでログインする要るので、台本 `tmp/claude-paths-probe/scope-probe.mjs`（start で URL、finish で確かめ、トークンは
+  書かずに捨てる）を人と一緒に流す。CLI の setup-token は `user:inference` だけで推論が通る形（CLI の `inferenceOnly`）
 
 #### 未決（人に聞く）
 
