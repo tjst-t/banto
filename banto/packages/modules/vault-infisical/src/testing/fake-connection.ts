@@ -2,12 +2,46 @@
 // 本物と同じ向きで扱う**——「どこを読んだか」を間違えた実装が通らないように。
 //
 // 秘密の鍵は `"/g/sub\0KEY"`（既定の環境）か `"prod|/g/sub\0KEY"`（ほかの環境）。
-import type { InfisicalConnection } from "../client.js";
+import { retryOnRateLimit, type InfisicalConnection } from "../client.js";
 
 export type Stored = { secretValue: string; secretComment?: string };
 
-export function fakeConnection(opts: { environment?: string; environments?: string[] } = {}) {
+/**
+ * **回数制限**（2026-10-18、Backlog #389）。窓の中で `calls` 回を超えた secrets() の呼び出しは、本物の SDK と同じ
+ * 文言の 429 で断る（"Please try again in 13 seconds"）。**待つ（`sleep`）と窓が新しくなる**——`persistent` なら
+ * 新しくならない（ずっと断られ続ける）。待ち方は本物と同じ `retryOnRateLimit` を通す（実際には待たない）
+ */
+export type FakeRateLimit = { calls: number; persistent?: boolean };
+
+export function fakeConnection(
+  opts: { environment?: string; environments?: string[]; rateLimit?: FakeRateLimit } = {},
+) {
   const def = opts.environment ?? "dev";
+  const sleeps: number[] = [];
+  let callsInWindow = 0;
+  const sleep = async (ms: number) => {
+    sleeps.push(ms);
+    if (!opts.rateLimit?.persistent) callsInWindow = 0;
+  };
+  const limited = <T extends object>(api: T): T => {
+    const limit = opts.rateLimit;
+    if (!limit) return api;
+    const counted = new Proxy(api, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof value !== "function") return value;
+        return async (...args: unknown[]) => {
+          if (++callsInWindow > limit.calls) {
+            throw new Error(
+              "[URL=/api/v3/secrets/raw] [Method=get] [StatusCode=429] Rate limit exceeded. Please try again in 13 seconds",
+            );
+          }
+          return (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+        };
+      },
+    });
+    return retryOnRateLimit(counted, { sleep });
+  };
   const secrets = new Map<string, Stored>();
   const folders = new Set<string>(); // "/g" か "prod|/g"
   const listOptions: Array<Record<string, unknown>> = [];
@@ -40,7 +74,7 @@ export function fakeConnection(opts: { environment?: string; environments?: stri
           .map((f) => ({ name: f.path.slice(1) }));
       },
     }),
-    secrets: () => ({
+    secrets: () => limited({
       async listSecrets(o: { environment: string; secretPath: string; recursive?: boolean; viewSecretValue?: boolean }) {
         listOptions.push(o as unknown as Record<string, unknown>);
         const base = o.secretPath.replace(/\/+$/, "") || "/";
@@ -85,5 +119,10 @@ export function fakeConnection(opts: { environment?: string; environments?: stri
       },
     }),
   };
-  return { conn: conn as unknown as InfisicalConnection, secrets, folders, listOptions };
+  return { conn: conn as unknown as InfisicalConnection, secrets, folders, listOptions, sleeps,
+    /** 回数制限の窓を新しくする（試験の準備で使った回数を数えないように） */
+    resetRateWindow: () => {
+      callsInWindow = 0;
+    },
+  };
 }

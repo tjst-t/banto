@@ -35,6 +35,68 @@ async function stillUsable(sdk: InfisicalSDK, config: InfisicalConfig): Promise<
   }
 }
 
+/**
+ * **回数制限（429）に当たったら、言われた秒数だけ待って試し直す**（2026-10-18、Backlog #389）。
+ *
+ * SDK も 429 を試し直すが、待つのは 1・2・4・8 秒の決め打ちで、Infisical の言う秒数
+ * （"Please try again in 13 seconds"）を見ない——Cloud の制限は 1 分の窓なので、それでは抜けられないことがある。
+ * 待つのは**合計 `budgetMs` まで**。それでも断られたら「回数制限で読めませんでした（N 秒後に）」と言って止まる
+ * ——「読めていない Vault がある」に混ぜると、設定の壊れと見分けがつかない（規則2）
+ */
+export const RATE_LIMIT_BUDGET_MS = 30_000;
+
+export function retryOnRateLimit<T extends object>(
+  api: T,
+  opts: { sleep?: (ms: number) => Promise<void>; budgetMs?: number } = {},
+): T {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const budgetMs = opts.budgetMs ?? RATE_LIMIT_BUDGET_MS;
+  return new Proxy(api, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      if (typeof value !== "function") return value;
+      return async (...args: unknown[]) => {
+        let waited = 0;
+        for (;;) {
+          try {
+            return await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          } catch (err) {
+            if (!isRateLimited(err)) throw err;
+            const waitMs = retryAfterMs(err);
+            if (waited + waitMs > budgetMs) {
+              const reading = /^(list|get)/.test(String(prop));
+              throw new Error(
+                `Infisical の回数制限で${reading ? "読めませんでした" : "書けませんでした"}` +
+                  `（${Math.ceil(waitMs / 1000)} 秒後にもう一度試してください。` +
+                  (waited > 0
+                    ? `${Math.round(waited / 1000)} 秒待って試し直しても断られました）`
+                    : `待つと ${Math.round(budgetMs / 1000)} 秒を超えるので試し直していません）`) +
+                  `：${err instanceof Error ? err.message : String(err)}`,
+                { cause: err },
+              );
+            }
+            await sleep(waitMs);
+            waited += waitMs;
+          }
+        }
+      };
+    },
+  });
+}
+
+/** 回数制限で断られた（状態符号 429）。SDK の例外は文言に `[StatusCode=429]` を持つ */
+export function isRateLimited(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /StatusCode=429|rate limit exceeded/i.test(message);
+}
+
+/** 待つ長さ。文言の "try again in N seconds" に1秒足す。書かれていなければ 5 秒 */
+function retryAfterMs(err: unknown): number {
+  const message = err instanceof Error ? err.message : String(err);
+  const m = /try again in (\d+) seconds?/i.exec(message);
+  return m ? (Number(m[1]) + 1) * 1000 : 5_000;
+}
+
 export interface InfisicalConfig {
   /** `https://app.infisical.com`（Cloud）か、自前ホストの住所。 */
   siteUrl: string;
@@ -133,11 +195,11 @@ export class InfisicalConnection {
   // **戻り値の型を明示する**——SDK の返す無名クラスは private を持つので、
   // 推論に任せると「export できない型」になる
   secrets(): ReturnType<InfisicalSDK["secrets"]> {
-    return this.ready().secrets();
+    return retryOnRateLimit(this.ready().secrets());
   }
 
   folders(): ReturnType<InfisicalSDK["folders"]> {
-    return this.ready().folders();
+    return retryOnRateLimit(this.ready().folders());
   }
 
   /** どの Project・どの環境か。呼び出しのたびに要る共通の引数（接続設定の環境＝既定の版）。 */
