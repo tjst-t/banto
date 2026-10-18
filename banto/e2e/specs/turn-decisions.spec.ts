@@ -24,7 +24,7 @@ const CONTINUED = "判断役の答えで進めました";
 
 type Message = { seq: number; role: string; text: string; origin?: { from: string; title: string; hop: number } };
 type Thread = { messages: Message[]; lastTurn?: { turnId: string; outcome?: string } };
-type Judge = { kind: string; automation: { name: string }; answers?: Array<{ question: number; choice: number; label: string; reason: string }>; reason?: string };
+type Judge = { kind: string; automation: { id: string; name: string }; answers?: Array<{ question: number; choice: number; label: string; reason: string }>; reason?: string };
 type InboxItem = {
   kind: string;
   id: string;
@@ -139,7 +139,10 @@ test("判断役が選ぶと元の会話に答えが届いて続き、人に任�
     }, { timeout: 60_000, message: "元の会話が判断役の答えで続かない" })
     .toEqual([CONTINUED]);
   // カード：決めたターンのカードに「判断役が決めました」が付き、続いたターンのカードがそれを引き継ぐ
-  const judged = storedEvents("inbox.review_judged").map((e) => e.payload.judge as Judge);
+  // 記録は同じ core で前に流れた spec（automation-events-ui の判断役など）のものも残っているので、この試験の判断役のものだけを見る
+  const judged = storedEvents("inbox.review_judged")
+    .map((e) => e.payload.judge as Judge)
+    .filter((j) => j.automation.id === judge.id);
   expect(judged.map((j) => j.kind)).toEqual(["decided-by-automation"]);
   expect(judged[0]!.answers).toEqual([{ question: 1, choice: 2, label: "案B", reason: "案B のほうが今の画面に近い" }]);
   expect(judged[0]!.automation.name).toBe(JUDGE);
