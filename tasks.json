@@ -9299,6 +9299,31 @@
       "updatedAt": "2026-10-18T00:59:08.263Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-browser-view-266-ai-getbrowserstatus",
+      "number": 386,
+      "kind": "bug",
+      "title": "E2E browser-view:266 で「AI に触らせない」を入れた直後の getBrowserStatus の aiBlocked が時々 false",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky",
+        "browser"
+      ],
+      "body": "2026-10-18 の夜間のフル E2E（origin/main 3efe8007）で1回落ち、流し直しで2回とも通った。\n\n- specs/browser-view.spec.ts:158 の 266 行目：`ai-blocked` を check し「これは境界ではありません」の注記が出たあと、`uiCall(page, \"getBrowserStatus\")` の aiBlocked が false だった。\n- 画面の注記は出ているが、Module 側に「触らせない」が届く前に状態を読んでいる（チェックの反映を待たずに一度だけ読んでいる）見込み。試験は expect.poll で待つべきか、画面が書き込みの終わりを待ってから注記を出すべきかを確かめる。",
+      "doneWhen": "browser-view.spec.ts を10回流して落ちない、または原因が分かって直っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-18T00:59:13.812Z",
+      "updatedAt": "2026-10-18T00:59:13.812Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
