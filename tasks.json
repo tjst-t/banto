@@ -8271,7 +8271,7 @@
       "number": 337,
       "kind": "task",
       "title": "install.sh と稼働中の host で組み立て済みの更新を確かめる",
-      "status": "in-progress",
+      "status": "done",
       "parent": "prebuilt-update",
       "dependsOn": [
         "prebuilt-update-mjs",
@@ -8282,7 +8282,7 @@
       "labels": [],
       "body": "install.sh の --first が組み立て済みを使うことを入れ子のコンテナの試験（banto/scripts/install-test/run.sh）で確かめる。稼働中の host では、この仕組みを入れる更新は前の版の update.mjs が組み立てるので、その次の更新で組み立て済みが使われることを確かめる（反映は人）。",
       "doneWhen": "install-test が通り、稼働中の host の2回目の更新のログに組み立て済みを使ったことが出る",
-      "resolution": null,
+      "resolution": "稼働中の host で確かめた（2026-10-17、ユーザー）：設定の「更新」から a870b9d4 へ更新し、ログに「組み立て済みの版を重ねました」が出てすぐ終わった。Release build-a870b9d47ec9 は 229MB。install.sh の入れ子のコンテナの試験は banto-dev-vm のコンテナに loop device が無く流せなかった（install.sh の変更は prebuilt.mjs を写す1行だけ）——loop device のある機械で流すのは残り。あわせて Actions の単体テストが落ちていた件（tar が早く閉じたのを失敗と数えていた・Browser の本物のブラウザの試験）を直した（main 72d38bee、release a870b9d4）。",
       "refs": [],
       "threads": [
         {
@@ -8291,8 +8291,8 @@
         }
       ],
       "createdAt": "2026-10-16T00:13:52.933Z",
-      "updatedAt": "2026-10-16T02:41:11.964Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T01:48:04.996Z",
+      "closedAt": "2026-10-18T01:48:04.996Z",
       "extra": {}
     },
     {
