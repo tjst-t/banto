@@ -9619,7 +9619,7 @@
       "number": 399,
       "kind": "task",
       "title": "会話の本体を中継に通す（本体用の合言葉・loopback の待ち受け・env・取り直せない banto・E2E の偽 API を1つに）",
-      "status": "ready",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-relay-accounts"
@@ -9629,12 +9629,12 @@
       "labels": [],
       "body": "v4-security.md §2 の 1.・2.。Runner の query() の env を { ...process.env から上流の変数を外したもの, ANTHROPIC_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN=本体用の合言葉, 契約の種類, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, ANTHROPIC_CUSTOM_HEADERS=x-banto-thread-id } に。本体用の合言葉は別の表（enabled・revoke の対象外、観測も別）で、127.0.0.1・::ffff:127.0.0.1・::1 からだけ受ける。コンテナの env にも NONESSENTIAL を足す。取り直せない banto では本体は今の形（NONESSENTIAL だけ足す）。E2E は中継の上流を偽の API 1つにして（token の口・authorization を返す・x-e2e-upstream-status）、spec から ANTHROPIC_API_KEY を外す。",
       "doneWhen": "本体の会話が中継を通って通る E2E と、取り違えた合言葉（本体用をコンテナの口へ・逆）が断られる単体テストが通り、runtime-move-back 等の本物の CLI を使う spec が通る。フル E2E を1回流す（core の共通の道を変えるため）",
-      "resolution": null,
+      "resolution": "Factory の実装（レビュー通過）を origin/main の上に手で載せ直して GitHub の main に入れた（89a90505・e8821a91・75303827）。フル E2E 322件全部通過、core 単体 1035件通過。ローカルの main にも 6aa3af4b で入れた（Factory の土台用）。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T14:30:56.666Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T15:17:16.175Z",
+      "closedAt": "2026-10-18T15:17:16.175Z",
       "extra": {}
     },
     {
