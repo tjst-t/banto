@@ -9711,7 +9711,7 @@
       "number": 403,
       "kind": "task",
       "title": "画面：設定「Claude のアカウント」・アカウントを足す・Project 設定",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-login",
@@ -9726,7 +9726,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T17:21:18.150Z",
       "closedAt": null,
       "extra": {}
     },
