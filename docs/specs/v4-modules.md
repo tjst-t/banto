@@ -1076,7 +1076,8 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 - **host が断る形**（どれも中継ごと断る。拾えないものを黙って飛ばすと、承認の鍵に入らない alias の値が出ていく——fail closed）：
   - `batchOf.tool` が同じ宛先に無い
   - 引数に `items` 以外がある・`items` が配列でない・空・上限を超える・要素がオブジェクトでない
-  - `batchOf.tool` が識別子を名乗る口のとき：要素から識別子が1つも拾えない（無い・文字列でない・200字を超える）。
+  - `batchOf.tool` が識別子を名乗る口のとき：要素から、名乗った識別子のうち `batchOf.tool` の inputSchema で required なもの
+    （`resolveAlias` なら `name`）が拾えない（無い・文字列でない・200字を超える）。任意の識別子（`group`）は拾えれば鍵に入れる。
     `batchOf.tool` が識別子を名乗らない口（窓口の `lookupAlias`）のときは要素の形だけ確かめ、鍵は `batchOf.tool` の鍵1つ
     （今の `lookupAlias` と同じく、コンテナからは Project ごとに1回）
 - **`batchOf` を信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。ただし**信じない＝通す、ではない**：第三者の宛先の tool が
@@ -1089,8 +1090,10 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 - banto 本体で動く Module からの呼び出し（`scope` を付けない）：`batchOf.tool` の組み合わせの鍵1つ（今までどおり1回）
 - **相乗り（inFlight）**：まとめた問いは、聞いている未許可の鍵すべてで相乗りの表に載せる。後から来た呼び出し（1件ずつでも
   まとめたものでも）は、自分の未許可の鍵のどれかが載っていればその答えを待ち、許可なら `isGranted` を自分の鍵ごとに
-  引き直して、まだ残る未許可があればそれだけを聞く。聞いた呼び出しが答えの前に終わって畳んだ（`askerEnded`）ときも、
-  鍵ごとに引き直して残った未許可だけを聞き直す
+  引き直す。**相乗りした先の答えが拒否なら、相乗りした側も断る**（今の1件ずつと同じ）。まだ残る未許可の鍵が別の問いに
+  載っていればそれも待ち、これを繰り返して、どこにも載っていない未許可だけを新しく聞く（重なる2つのまとめた呼び出しで、
+  同じ alias のカードを2枚出さない）。聞いた呼び出しが答えの前に終わって畳んだ（`askerEnded`）ときも、鍵ごとに引き直して
+  残った未許可だけを聞き直す
 - **カード**：文は「shell が vault-infisical の resolveAliases（まとめて 27 件のうち、まだ許していない 3 件）を呼ぼうとしています」。
   `toolInput.対象` は要素ごとの識別子の配列。画面は配列を1行1件の表で出す（v4-frontend.md「Module 間中継の承認」）
 - 「承認をすべて自動で許可する」がオン：答え済みのカードを**1枚**残す（中に対象の一覧）。覚えない。判断役の会話には効かない
@@ -1104,7 +1107,9 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 - 1回の runCommand の `envSecrets` と `secretFiles` の alias を重複を除いて集め、窓口の `lookupAliases` を1回呼ぶ（101 件以上なら 100 件ずつ）。
   引けない名前があれば、**全部の名前と理由を1つの文で**断る（コマンドは流さない）
 - 在りかを Vault（実装）ごとに分け、Vault ごとに `resolveAliases` を1回呼ぶ（101 件以上なら 100 件ずつに分ける）。
-  宛先が `resolveAliases` を持たなければ（第三者の Vault）、今までどおり1件ずつ `resolveAlias` を呼ぶ
+  宛先が `resolveAliases` を持たなければ（第三者の Vault）、今までどおり1件ずつ `resolveAlias` を呼ぶ——Shell は宛先の
+  tool の一覧を引けないので、**まず `resolveAliases` を呼び、「その tool は無い」で断られたら1件ずつに落とす**
+  （ほかの理由で断られたら落とさずにそのまま断る）
 - `sshIdentity` は今までどおり `startSshAgent`（1件だけ・値を返さない口なので、まとめる意味が無い）
 - 進捗は Vault ごとにまとめる（「envSecrets・secretFiles：vault-infisical から 27 件を引きました」）
 - Subagent・Repositories・core の `${secret:…}` の解決は1件ずつのまま（1回に引くのが1〜2件のため）
@@ -1120,7 +1125,8 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
   「一覧で読んだ値は空かどうかを見たらすぐ捨てる」（上の「値が空の秘密」）は、`getSecrets` については
   「**頼まれた値だけを、その呼び出しの戻り値として返し、残りは捨てる**」と読み替える
 - 使った日の書き込み（`markUsedMany`）は、Infisical の一括更新（`PATCH /api/v4/secrets/batch`——`projectId`・`environment`・
-  `secretPath`・`secrets[]` の `secretKey` と `secretComment`、値は渡さない。v3 の batch/raw は非推奨で `projectSlug` を要る。
+  `secretPath`・`secrets[]` の `secretKey` と `secretComment`、値は渡さない。`mode` は既定の `failOnNotFound` のまま——消えた秘密があれば呼び出しごと失敗し、下の「1件ずつに落とす」で
+  残りを書く。v3 の batch/raw は非推奨で `projectSlug` を要る。
   SDK 5.0.2 には口が無いので、`listEnvironments` と同じ形で接続の認証を使って直に呼ぶ。429 は `retryOnRateLimit` と同じ待ち方）で
   （環境・フォルダ）ごとに1回。失敗したら1件ずつに落とす。書き込みの失敗で値を渡すのを止めない（今までどおり）
 - これで27件の runCommand は、Infisical へ一覧1〜2回・値の一覧1〜2回・使った日の書き込み1〜2回になる
