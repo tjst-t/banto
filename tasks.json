@@ -9213,18 +9213,18 @@
       "parent": null,
       "dependsOn": [],
       "milestone": null,
-      "priority": "low",
+      "priority": "normal",
       "labels": [
         "browser",
         "test"
       ],
-      "body": "## 何が起きるか\n`banto/packages/modules/browser/src/view.test.ts` の上記の試験が、`元のタブに切り替えた最初の1通がキーフレームでない`（`first.header.key` が false）で落ちることがある。\n\n## 何回中何回（2026-10-17、#379 の作業の中で、その試験だけを流して計測）\n- --deny-permission-prompts あり：38回中3回（ほかに全体の単体試験の1回でも落ちた）\n- 引数を外した写し：31回中1回\n→ 引数と関係なく落ちる（規則6：機構が壊れている合図）。\n\n## 確かめ方\n`cd banto/packages/modules/browser && npm run build && for i in $(seq 1 20); do node --test --test-name-pattern=\"静かなページのタブ（別の窓）\" dist/view.test.js | grep '^ℹ fail'; done`",
+      "body": "## 何が起きるか\n`banto/packages/modules/browser/src/view.test.ts` の上記の試験が、`元のタブに切り替えた最初の1通がキーフレームでない`（`first.header.key` が false）で落ちることがある。\n\n## 何回中何回（2026-10-17、#379 の作業の中で、その試験だけを流して計測）\n- --deny-permission-prompts あり：38回中3回（ほかに全体の単体試験の1回でも落ちた）\n- 引数を外した写し：31回中1回\n→ 引数と関係なく落ちる（規則6：機構が壊れている合図）。\n\n## 追記（2026-10-18、#388 を release に入れたとき）\n- 変更なしの origin/release（#388 を載せる前）で、view.test.js と pure.test.js をまとめて流すと **3回中2回落ちた**。#388 を載せた版でも、まとめて4回流して3回落ちた（view.test.js だけを流すと3回中2回）。落ちたのはどれもこの試験だけで、時間は約1,000ms。\n- そのときの機械は混んでいた（load average 10 前後、16コア）。負荷が高いと落ちやすい可能性がある（測っていない）。\n- 2026-10-17 の計測（約1割）より落ちる割合が大きい。\n\n## 確かめ方\n`cd banto/packages/modules/browser && npm run build && for i in $(seq 1 20); do node --test --test-name-pattern=\"静かなページのタブ（別の窓）\" dist/view.test.js | grep '^ℹ fail'; done`\n負荷をかけた状態（ほかの E2E を流しながら等）でも同じように流す。",
       "doneWhen": "落ちる原因を測って直し、その試験だけを30回流して30回とも通る。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T14:01:22.609Z",
-      "updatedAt": "2026-10-17T14:01:22.609Z",
+      "updatedAt": "2026-10-18T03:51:40.962Z",
       "closedAt": null,
       "extra": {}
     },
