@@ -9355,7 +9355,7 @@
       "number": 388,
       "kind": "bug",
       "title": "Browser の listNetwork の出力が長い URL で大きくなりすぎ、AI に返せない",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9369,7 +9369,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T01:24:11.217Z",
-      "updatedAt": "2026-10-18T01:26:57.107Z",
+      "updatedAt": "2026-10-18T01:27:05.205Z",
       "closedAt": null,
       "extra": {}
     }
