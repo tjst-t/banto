@@ -440,9 +440,12 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
       const openCanvas = async () => {
         // 会話は最新の 20 件だけ描く（§6.29）——前の倍率の回で AI の呼び出しが積もると、最初の browserOpen のカードは窓の外に出る
         const card = h.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/corners` });
-        for (let i = 0; i < 10 && (await card.count()) === 0; i += 1) {
-          const earlier = h.getByTestId("show-earlier-messages");
-          if ((await earlier.count()) === 0) break;
+        const earlier = h.getByTestId("show-earlier-messages");
+        for (let i = 0; i < 10; i += 1) {
+          // 会話の記録が届くまでは、カードも「それより前を表示」もまだ無い——どちらかが出るまで待ってから決める（出る前に数えると
+          // 「前は無い」と見て、窓の外のカードを待ち続けていた。2026-10-18、倍率 1.25 の回で）
+          await expect(card.or(earlier).first(), "会話が出ない").toBeVisible({ timeout: 30_000 });
+          if ((await card.count()) > 0) break;
           await earlier.click();
         }
         await card.getByRole("button", { name: "開く" }).click();
