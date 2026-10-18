@@ -1560,9 +1560,15 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 - 済み（上の「#397 の実測」）：compact・resume の道、付随の通信を止めたときのモデルの一覧・effort・文脈の量、
   `ANTHROPIC_CUSTOM_HEADERS`、上限の 429 での終わり方、上流の変数を外した env（API キーが勝つので外すのは必須）。
   付随の通信を止めると `/api/oauth/usage` 等へは出ないので「直に出て 401」は起きない
-- **残り**：scope `user:inference user:profile` で token の口と `/api/oauth/profile`・`/api/oauth/usage`・`/v1/messages` が通るか。
-  人がブラウザでログインする要るので、台本 `tmp/claude-paths-probe/scope-probe.mjs`（start で URL、finish で確かめ、トークンは
-  書かずに捨てる）を人と一緒に流す。CLI の setup-token は `user:inference` だけで推論が通る形（CLI の `inferenceOnly`）
+- **scope `user:inference user:profile` で全部通った**（2026-10-18、人が Max 5x のアカウントでログイン、`scope-probe.mjs`）：
+  - 認可の URL（`https://claude.com/cai/oauth/authorize`、上の 4. の形）→ 貼った `<コード>#<state>` → token の口が 200。返事の
+    `scope` は頼んだとおり `user:inference user:profile`、`expires_in` 28800（8時間）、refresh token と `refresh_token_expires_in` があり、
+    **返事そのものに `account`・`organization` が入る**
+  - `/api/oauth/profile` が 200：`account.email`・`has_claude_max`／`has_claude_pro`、`organization.organization_type`
+    （`claude_max`）・`rate_limit_tier`（`default_claude_max_5x`）——台帳の契約の種類と上限の段はここから取れる
+  - `/api/oauth/usage` が 200：`five_hour`・`seven_day`（と `seven_day_opus` 等）ごとに `utilization` と `resets_at`。**率は 0〜100**
+    （見出しは 0〜1）、使っていない窓は `resets_at: null`。設定を開いたときの読み直しはこれで足りる
+  - `/v1/messages` が 200 で、使用率の見出し（`anthropic-ratelimit-unified-*` 12個）が付いた
 
 #### 未決（人に聞く）
 
