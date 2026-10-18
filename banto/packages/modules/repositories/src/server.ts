@@ -24,7 +24,16 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { AUDIT_ARGS_META_KEY, CANVAS_META_KEY, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf, callerOf } from "@banto/module-contract";
+import {
+  AUDIT_ARGS_META_KEY,
+  CANVAS_META_KEY,
+  MODULE_META_KEY,
+  PRESENTS_OWNED_SECRET_META_KEY,
+  VISIBILITY_META_KEY,
+  callIdOf,
+  callerModuleOf,
+  callerOf,
+} from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
 import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
@@ -253,6 +262,19 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       // 名乗る——中継のゲートは、コンテナからの呼び出しをブランチごとに初回だけ人に聞く ──
       branchTool("push_branch", "呼び出し元の Project のリポジトリの、そのブランチだけを origin へ送る（force しない）"),
       branchTool("fetch_branch", "呼び出し元の Project のリポジトリの origin から、そのブランチだけを refs/remotes/origin/<branch> に取ってくる"),
+      // ── Vault が、持ち主でない呼び元に GitHub のログインを渡す前に呼ぶ口（2026-10-18、Backlog #405。§2.4）。**中継からだけ**
+      // （可視性 module）。host は役割 vault の同梱の Module からの中継を、依存を見ず人に聞かずに通す——確かめはここでする ──
+      {
+        name: "presentOwnedSecret",
+        description:
+          "Vault が預かっている、この Module が置いた GitHub のログインから、いま使える access token を作って返す（残り30分を切っていれば取り直して書き戻す）",
+        inputSchema: {
+          type: "object",
+          properties: { name: { type: "string" }, group: { type: "string" }, value: { type: "string" } },
+          required: ["name", "value"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["name", "group"], [PRESENTS_OWNED_SECRET_META_KEY]: true },
+      },
       adminTool("remove_github_account", "アカウントの登録を外す（ブラウザでログインしたものは Vault のログイン情報も消す）", {
         login: { type: "string" },
       }, ["login"]),
@@ -267,6 +289,17 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       // **人の操作だけ**。可視性で AI からは見えないが、呼び出しの刻印でも確かめる
       // ——人の画面からの呼び出しには、host が `{admin: true}` を刻む
       const caller = callerOf(meta);
+      if (name === "presentOwnedSecret") {
+        // **呼び元は host が刻んだ Module**（申告ではない）——その秘密をいま預かっている Vault のときだけ答える（accounts が見る）
+        const from = callerModuleOf(meta);
+        if (!from) throw new Error("presentOwnedSecret は Vault からの中継でだけ呼べます（呼び元の Module の刻印がありません）");
+        const group = typeof args.group === "string" && args.group !== "" ? args.group : undefined;
+        const token = await accounts.presentOwnedSecret(
+          { vault: from.name, name: str(args.name, "name"), ...(group ? { group } : {}), value: str(args.value, "value") },
+          callIdOf(meta),
+        );
+        return { content: [{ type: "text", text: token }] };
+      }
       if (name === "push_branch" || name === "fetch_branch") {
         // **Project のための呼び出しだけ**（AI のターンでも人の画面でも）。どの Project かは host に聞き、刻印と照らす
         const stamped = caller && "project" in caller ? caller.project : caller && "admin" in caller ? caller.forProject : undefined;

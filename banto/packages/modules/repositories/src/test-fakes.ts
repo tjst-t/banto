@@ -231,7 +231,8 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             else state.rejectPush.delete(reject.repo.toLowerCase());
           }
           // 作ったリポジトリも返す（E2E が、頼んだ公開範囲・持ち主で作られたかを見る）
-          return send(200, { refreshCalls: state.refreshCalls, created: state.created });
+          // 出したアクセストークンの数も返す——最後に出したものは `ghu_fake_access_<issued>`（E2E が、AI に届いたのが最新か見る）
+          return send(200, { refreshCalls: state.refreshCalls, created: state.created, issued: seq });
         }
         // ── git（smart HTTP）。GitHub と同じく、資格情報が無ければ 401、見えなければ 404 ──
         const gitPath = url.pathname.match(/^\/([^/]+)\/([^/]+?)\.git(\/.*)$/);

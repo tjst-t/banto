@@ -17,3 +17,4 @@ export type { VaultBackend, AliasKind, VariantAxis, VariantCount } from "./backe
 export { splitVariant, joinVariant, VARIANT_SEPARATOR } from "./backend.js";
 export { ALIAS_KIND_RULES, ALIAS_KIND_RULES_JS, type AliasKindRule } from "./kind-rules.js";
 export { agentSocketPath } from "./backend.js";
+export { HostOwnerRelay, ownerRelayFromEnv, type OwnerRelay } from "./owner-relay.js";

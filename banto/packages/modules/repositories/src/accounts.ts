@@ -28,6 +28,11 @@ import type { AliasEntry, AliasPlace, VaultAccess } from "./vault.js";
 
 /** 期限のこれだけ前から、使う前に取り直す（使っている途中で切れないように） */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+/**
+ * **ほかの Module に渡すときは、残りがこれを切っていたら取り直す**（2026-10-18、Backlog #405。§2.4「AI 等が Vault から引くときも、
+ * ここで取り直してから渡す」）。自分で使うとき（5分）より長いのは、受け取った側がコマンドの中でしばらく使うため
+ */
+export const PRESENT_MARGIN_MS = 30 * 60_000;
 /** Vault に置くトークンの組の形の印（読むときに確かめる） */
 const STORED_FORMAT = "github-app-user-token/1";
 
@@ -144,11 +149,14 @@ export class GithubAccounts {
   private readonly flows = new Map<string, LoginFlow>();
   private readonly refreshing = new Map<string, Promise<unknown>>();
   /**
-   * **GitHub から受け取ったが、Vault に置けなかった組**（login の小文字 → 組。追加・2026-10-06）。GitHub は前の鍵を
-   * もう無効にしているので、Vault の組より常に新しい——次に使うときはこちらを使い、まず Vault に置き直す。
-   * プロセスのメモリだけに持つ（秘密の第二の置き場をディスクに作らない）ので、置き直す前に起こし直すと失われる
+   * **自分が最後に Vault へ置いた組**（login の小文字 → 組。2026-10-18、Backlog #405。§2.4「最後に置いた組」）。ログインで
+   * 置いた組・取り直して書き戻した組・**書き戻せずに持っている組**（`saved: false`。2026-10-06 の「置けなかった組」を広げたもの）。
+   * 回すのはこの Module だけなので、これが常に一番新しい——取り直すときは Vault から読んだ値（列に並ぶ前に読まれ、前の取り直しで
+   * もう無効になっていることがある）よりこちらを使う。置けていない組は、次に使うときまず Vault に置き直す。
+   * **もう一度ログインしたら置き換え、外したら捨てる**。Vault で消されていたら（次に読めなかったら）捨てる。プロセスのメモリだけに
+   * 持つ（秘密の第二の置き場をディスクに作らない）ので、起こし直すと空になり Vault の値を使う
    */
-  private readonly unsaved = new Map<string, TokenSet>();
+  private readonly latest = new Map<string, { tokens: TokenSet; saved: boolean }>();
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -373,8 +381,8 @@ export class GithubAccounts {
         existing?.credential.alias,
         callId,
       );
-      // 置き直せていなかった前の組は、もう要らない（新しいログインのほうが新しい）
-      this.unsaved.delete(user.login.toLowerCase());
+      // 最後に置いた組を置き換える（置き直せていなかった前の組も、もう要らない——新しいログインのほうが新しい）
+      this.latest.set(user.login.toLowerCase(), { tokens, saved: true });
       return placed;
     });
     const ssh = flow.ssh ?? existing?.ssh;
@@ -407,9 +415,9 @@ export class GithubAccounts {
           await this.deps.vault.remove(alias, callId);
           loginRemoved = true;
         }
-        // 置き直せていなかった組も捨てる（外したアカウントの鍵を、あとで Vault に置き直さない）。**消せてから**——消すのに
+        // 最後に置いた組も捨てる（外したアカウントの鍵を、あとで Vault に置き直さない）。**消せてから**——消すのに
         // 失敗したら登録は残るので、手元の最新の組も残す（捨てると、Vault の無効な鍵しか残らない）
-        this.unsaved.delete(account.login.toLowerCase());
+        this.latest.delete(account.login.toLowerCase());
       });
     }
     await this.deps.store.updateAccounts((accounts) => ({
@@ -444,35 +452,91 @@ export class GithubAccounts {
     if (!account) throw new Error(`@${login} は登録されていません`);
     const credential = account.credential;
     if (credential.kind === "pat") return this.deps.vault.resolve(credential.alias, callId);
-    return this.serial(account.login, async () => {
+    return this.serial(account.login, () =>
+      this.freshAccessToken(account, credential, REFRESH_MARGIN_MS, () => this.deps.vault.resolve(credential.alias, callId), callId),
+    );
+  }
+
+  /**
+   * **Vault が持ち主でない呼び元に渡す値**（`presentOwnedSecret`、2026-10-18、Backlog #405。§2.4「AI 等が Vault から引くときも、
+   * ここで取り直してから渡す」）。`value` は Vault がいま置いている値、`vault` は host が刻んだ呼び元の Module（宣言の名前）。
+   * ブラウザでログインしたアカウントの記録した在りか（置き場・名前）と照らし、**その秘密をいま預かっている Vault から来たとき
+   * だけ**、残りが 30 分を切っていれば取り直して書き戻し、**access token の文字列だけ**を返す（refresh token・期限は渡さない）
+   */
+  async presentOwnedSecret(input: { vault: string; name: string; group?: string; value: string }, callId?: string): Promise<string> {
+    const account = (await this.deps.store.accounts()).find(
+      (a) => a.credential.kind === "app" && a.credential.alias.name === input.name && (a.credential.alias.group ?? "") === (input.group ?? ""),
+    );
+    if (!account || account.credential.kind !== "app") {
+      throw new Error(`${input.name} は Repositories がブラウザでログインして置いた GitHub のログインではありません`);
+    }
+    const credential = account.credential;
+    if (credential.alias.implementation !== input.vault) {
+      // 窓口の移動は持ち主に知らせない——`tokenFor` も古い在りかで引くので、前から同じ
+      throw new Error(
+        `GitHub のログイン（@${account.login}）の在りかが Repositories の記録（${credential.alias.implementation}）と違います。` +
+          "Vault の画面で移したなら、Repositories の設定でもう一度ログインしてください",
+      );
+    }
+    return this.serial(account.login, () =>
+      this.freshAccessToken(account, credential, PRESENT_MARGIN_MS, async () => input.value, callId),
+    );
+  }
+
+  /**
+   * **今使える access token**（`tokenFor`・`presentOwnedSecret` の中身。同じアカウントの列の中で呼ぶ）。最後に置いた組があれば
+   * それを、無ければ `readStored`（Vault の値）を今の組とし、残りが `marginMs` を切っていれば取り直して書き戻す。
+   * 更新に失敗したら、アカウントに記録し、受信箱に1件出して、投げる。**取り直した組を Vault に置けなかったら**、組を
+   * メモリに持って受信箱に1件出し、トークンは返す（GitHub が出した、使えるもの）。次に呼ばれたら、まずメモリの組を Vault に置き直す
+   */
+  private async freshAccessToken(
+    account: GithubAccount,
+    credential: Extract<AccountCredential, { kind: "app" }>,
+    marginMs: number,
+    readStored: () => Promise<string>,
+    callId?: string,
+  ): Promise<string> {
+    const key = account.login.toLowerCase();
+    const held = this.latest.get(key);
+    let current: TokenSet;
+    if (held && !held.saved) {
       // **置き直せていない組があれば、それが最新**——Vault にあるのは GitHub がもう無効にした鍵
-      const held = this.unsaved.get(account.login.toLowerCase());
-      if (held) await this.saveRotated(account.login, credential, held, callId);
-      const stored = held ?? storedTokens(await this.deps.vault.resolve(credential.alias, callId), account.login, credential.alias.name);
-      if (stored.expiresAt === undefined || stored.expiresAt - this.now() > REFRESH_MARGIN_MS) return stored.accessToken;
-      let next: TokenSet;
+      await this.saveRotated(account.login, credential, held.tokens, callId);
+      current = held.tokens;
+    } else {
+      let raw: string;
       try {
-        next = await this.refresh(credential, stored);
+        raw = await readStored();
       } catch (err) {
-        // **GitHub が鍵を断った・鍵が使えない形なら、手元の組も捨てる**（置き直し続けない）。繋がらない・返事が読めない等の
-        // 一時の失敗では残す——Vault の鍵はもう無効で、手元の組が唯一の生きた鍵かもしれない
-        const transient = err instanceof GithubError && err.code !== "incorrect_client_credentials" && err.code !== "bad_refresh_token";
-        if (!transient) this.unsaved.delete(account.login.toLowerCase());
-        let message = (err as Error).message;
-        try {
-          await this.refreshFailed(account.login, message);
-        } catch (noticeErr) {
-          // 知らせられなかったことも黙らない——更新の失敗と一緒に言う
-          message = `${message}（受信箱にも出せませんでした：${(noticeErr as Error).message}）`;
-        }
-        throw new Error(`@${account.login} のログインを更新できませんでした：${message}`);
+        // Vault で消された（か読めない）——最後に置いた組も捨てる（Vault には同じものがあったはずなので、失うものは無い）
+        this.latest.delete(key);
+        throw err;
       }
-      if (account.refreshFailure) await this.setRefreshFailure(account.login, undefined);
-      // GitHub はもう前の鍵を無効にした——置く前にメモリに持つ（置けなければ、次はこれを使って置き直す）
-      this.unsaved.set(account.login.toLowerCase(), next);
-      await this.saveRotated(account.login, credential, next, callId);
-      return next.accessToken;
-    });
+      current = held?.tokens ?? storedTokens(raw, account.login, credential.alias.name);
+    }
+    if (current.expiresAt === undefined || current.expiresAt - this.now() > marginMs) return current.accessToken;
+    let next: TokenSet;
+    try {
+      next = await this.refresh(credential, current);
+    } catch (err) {
+      // **GitHub が鍵を断った・鍵が使えない形なら、手元の組も捨てる**（置き直し続けない）。繋がらない・返事が読めない等の
+      // 一時の失敗では残す——Vault の鍵はもう無効で、手元の組が唯一の生きた鍵かもしれない
+      const transient = err instanceof GithubError && err.code !== "incorrect_client_credentials" && err.code !== "bad_refresh_token";
+      if (!transient) this.latest.delete(key);
+      let message = (err as Error).message;
+      try {
+        await this.refreshFailed(account.login, message);
+      } catch (noticeErr) {
+        // 知らせられなかったことも黙らない——更新の失敗と一緒に言う
+        message = `${message}（受信箱にも出せませんでした：${(noticeErr as Error).message}）`;
+      }
+      throw new Error(`@${account.login} のログインを更新できませんでした：${message}`);
+    }
+    if (account.refreshFailure) await this.setRefreshFailure(account.login, undefined);
+    // GitHub はもう前の鍵を無効にした——置く前にメモリに持つ（置けなければ、次はこれを使って置き直す）
+    this.latest.set(key, { tokens: next, saved: false });
+    await this.saveRotated(account.login, credential, next, callId);
+    return next.accessToken;
   }
 
   private async refresh(credential: Extract<AccountCredential, { kind: "app" }>, stored: TokenSet): Promise<TokenSet> {
@@ -501,9 +565,9 @@ export class GithubAccounts {
         credential.alias,
         callId,
       );
-      this.unsaved.delete(login.toLowerCase());
+      this.latest.set(login.toLowerCase(), { tokens, saved: true });
     } catch (err) {
-      this.unsaved.set(login.toLowerCase(), tokens);
+      this.latest.set(login.toLowerCase(), { tokens, saved: false });
       await this.deps.notices
         .raiseNotice({
           key: `github-save:${login.toLowerCase()}`,

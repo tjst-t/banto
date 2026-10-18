@@ -1339,7 +1339,8 @@ async function main(): Promise<void> {
         identifiers: { name: alias },
       };
       try {
-        const value = await resolveSecretThroughVault(alias, caller);
+        // **banto が置いたログイン（`oauth-token`）は差し込まない**（2026-10-18、Backlog #405）——差し込みの解決でだけ見る
+        const value = await resolveSecretThroughVault(alias, caller, { refuseBantoLogin: true });
         values.set(alias, value);
         await relayGrants.recordCall(call, { allowed: true, reason: "Module の起動に差し込む秘密" });
       } catch (err) {
@@ -1619,6 +1620,7 @@ async function main(): Promise<void> {
   async function resolveSecretThroughVault(
     alias: string,
     caller: { project: string } | { instance: true },
+    opts: { refuseBantoLogin?: boolean } = {},
   ): Promise<string> {
     // **窓口を先に起こす**（追加・2026-09-16）。Module は同時に起こしているので、
     // 「窓口より先に、秘密を使う Module が立つ」順序が起きうる——そのとき
@@ -1635,16 +1637,22 @@ async function main(): Promise<void> {
       "project" in caller ? caller.project : undefined,
       !("project" in caller),
     );
-    let found: { implementation?: string; name?: string; group?: string };
+    let found: { implementation?: string; name?: string; group?: string; kind?: string };
     try {
       const looked = await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: meta });
       const lookedText = (looked.content as { text: string }[])[0]?.text ?? "";
       // 窓口が断った理由（「どの Vault にもありません」等）をそのまま返す——JSON として読むと理由が構文の誤りに化ける
       // （追加・2026-10-15、自動化の Webhook の署名の鍵で人の画面に出るようになった）
       if (looked.isError) throw new Error(lookedText || `"${alias}" の在りかを引けませんでした`);
-      found = JSON.parse(lookedText) as { implementation?: string; name?: string; group?: string };
+      found = JSON.parse(lookedText) as { implementation?: string; name?: string; group?: string; kind?: string };
     } finally {
       endDirectoryCall();
+    }
+    // **起動のときの差し込みには、banto が置いたログインを入れない**（決定・2026-10-18、Backlog #405。v4-modules.md §2.1）——
+    // Module の環境・リモート MCP の見出しに切れる値と refresh token がそのまま出る。正当な使い道は無い。種別は窓口の答えで見る
+    // （値を読む前に断る）。同じ引き方を使うリモート MCP のログインの読み（`oauth-<名前>`、同じ種別）には掛けない
+    if (opts.refuseBantoLogin && found.kind === "oauth-token") {
+      throw new Error(`"${alias}" は banto が置いたログインなので、起動の設定には差し込めません`);
     }
     if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
     const backend = connectedModules.get(found.implementation);

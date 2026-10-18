@@ -26,6 +26,7 @@ import {
   BATCH_MAX_ITEMS,
   BATCH_OF_META_KEY,
   CALLER_OWNED_META_KEY,
+  callIdOf,
   callerModuleOf,
   callerOf,
   RUNTIME_KEYS_GROUP,
@@ -47,6 +48,7 @@ import {
 } from "./alias-store.js";
 import { GroupBindings } from "./group-bindings.js";
 import { joinVariant, splitVariant, type VaultBackend } from "./backend.js";
+import type { OwnerRelay } from "./owner-relay.js";
 
 /** 一覧の resource（§2.1 A節）。**単体の `vault://aliases/{name}` と対**。 */
 const ALIASES_URI = "vault://aliases";
@@ -198,6 +200,12 @@ export interface VaultModuleOptions {
    * **`true` にするのは窓口だけ。** 既定は `false`（＝backend）。
    */
   agentFacing?: boolean;
+  /**
+   * **持ち主を呼ぶ中継**（追加・2026-10-18、Backlog #405。仕様 §2.1「banto が置く秘密は、持ち主が作った値で渡す」）。
+   * 種別 `oauth-token` を持ち主でない呼び元に渡すとき、持ち主の `presentOwnedSecret` を呼ぶ。**無ければ持ち主を呼べない**
+   * ——そのときは置いてある値に落とさず断る
+   */
+  ownerRelay?: OwnerRelay;
 }
 
 export function createVaultModuleServer(opts: VaultModuleOptions) {
@@ -612,6 +620,20 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "module",
         ),
+        // **banto が置く秘密を、別の Vault へ移すために丸ごと読む**（追加・2026-10-18、Backlog #405）。窓口の「Vault をまたいで
+        // 移す」だけが使う——写す前の読み（移し元）も、写したあとの確かめの読み（移し先）も。`resolveAlias` は持ち主でない
+        // 呼び元に持ち主が作った値を渡すので、移動の読みには使えない。人の管理操作の中でだけ（`assertHuman`）、種別
+        // `oauth-token` だけ。可視性は `module`——同梱どうしの窓口でなければ中継の承認に掛かり、カードに口の名前が出る
+        tool(
+          "exportOwnedSecret",
+          "banto が置く秘密（oauth-token）を、別の Vault へ移すために丸ごと読む（窓口の移動だけが使う。人の管理操作の中でだけ）",
+          {
+            type: "object",
+            properties: { name: { type: "string" }, group: { type: "string", description: "置き場（グループ）" } },
+            required: ["name"],
+          },
+          "module",
+        ),
         tool(
           "updateAlias",
           "aliasのメタデータ（note・対象）を変える（人専用）。値は変えない",
@@ -1009,6 +1031,70 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     return joinVariant(group, variant, axis.default);
   }
 
+  /**
+   * **持ち主の記録が無い banto のログインは、Module には渡さない**（2026-10-18、Backlog #405。仕様 §2.1「banto が置く秘密は、
+   * 持ち主が作った値で渡す」の 3.）。誰に値を作らせるかが決まらない——持ち主自身の読みも、持ち主かどうか決められないので断る。
+   * host が中継を通さずに直接読む（呼び元の Module の刻印が無い）ときは今までどおり（リモート MCP のログイン・人の画面の API）。
+   * **値を読む前に**確かめる（`resolveAliases` が値を読みに行かずに断れるように）
+   */
+  function assertOwnerKnown(source: SecretAliasMeta, name: string, rawMeta: Record<string, unknown> | undefined): void {
+    if (source.kind !== BANTO_OWNED_KIND || !callerModuleOf(rawMeta) || source.owner !== undefined) return;
+    throw new Error(
+      `"${name}" は banto が置いたログインですが、どの Module が置いたかの記録がありません。置いた Module でもう一度ログインすると使えます`,
+    );
+  }
+
+  /**
+   * **渡す値**（2026-10-18、Backlog #405。仕様 §2.1「banto が置く秘密は、持ち主が作った値で渡す」）。種別 `oauth-token` を
+   * 持ち主でない呼び元（host が刻んだ呼び元の Module の宣言の名前が、行の持ち主と違う）に渡すときは、置いてある値を添えて
+   * 持ち主の `presentOwnedSecret` を中継で呼び、その答えを渡す。期限を見る・取り直す・何を渡すかは持ち主が決める（Vault は値の
+   * 形を知らない）。**持ち主が答えなければ断る**——置いてある値に落とすと、持ち主を外しただけで refresh token 込みの値が渡る。
+   * ほかの種別・持ち主自身・host が直接読むときは置いてある値のまま
+   */
+  async function valueToHand(
+    source: SecretAliasMeta,
+    name: string,
+    stored: string | Buffer,
+    rawMeta: Record<string, unknown> | undefined,
+  ): Promise<string> {
+    const caller = callerModuleOf(rawMeta);
+    if (source.kind !== BANTO_OWNED_KIND || !caller) return String(stored);
+    const owner = source.owner;
+    if (owner === undefined) {
+      // 値を読む前に断っている（assertOwnerKnown）——ここに来るのは、その確かめを飛ばした道だけ
+      throw new Error(`"${name}" は banto が置いたログインですが、どの Module が置いたかの記録がありません`);
+    }
+    if (caller.name === owner) return String(stored);
+    let reason: string | undefined;
+    let answer: string | undefined;
+    if (!opts.ownerRelay) {
+      reason = `この Vault（${moduleName}）は中継に繋がっていないので、${owner} を呼べません`;
+    } else {
+      try {
+        answer = await opts.ownerRelay.callTool(
+          owner,
+          "presentOwnedSecret",
+          // 在りかは**窓口の lookupAlias と同じ形**（版付きのグループの書き方を含む）——持ち主は記録した在りかと文字列で比べる
+          { name: source.name, group: canon(groupOf(source)), value: String(stored) },
+          callIdOf(rawMeta),
+        );
+      } catch (e) {
+        const message = (e as Error).message;
+        // host は、持ち主が登録されていない・口を持たない・印を名乗っていないのを「宣言された依存に含まれない」で断る
+        reason = /宣言された依存に含まれない/.test(message)
+          ? `${owner} が入っていないか、渡す値を作る口を持っていません。入れ直すか、Vault の画面でこの alias を消してください`
+          : message;
+      }
+    }
+    if (answer === undefined || answer === "") {
+      reason ??= `${owner} が空の値を返しました`;
+      // **参照を引いたときは、元の置き場の名前を引いた参照の名前に言い換える**（元の置き場は人の管理面にだけ言う）
+      const said = source.name === name ? reason : reason.split(source.name).join(name);
+      throw new Error(`"${name}" は banto が置いたログインで、持ち主の ${owner} が使える値を用意できませんでした：${said}。置いてある値は渡しません`);
+    }
+    return answer;
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     await initPromise;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
@@ -1079,10 +1165,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         // **使えるかは、引いた行（参照ならその置き場）で決める。値は元から**（2026-10-04）
         assertUsable(meta, name, callMeta);
         const source = valueSource(meta, name, all, callMeta);
+        assertOwnerKnown(source, name, callMeta);
         const value = await backend.getSecret(source.backendPath);
         assertNotEmpty(value, name, source, callMeta);
+        const handed = await valueToHand(source, name, value, callMeta);
         await registry.markUsed(meta.backendPath);
-        return { content: [{ type: "text", text: String(value) }] };
+        return { content: [{ type: "text", text: handed }] };
       }
       case "resolveAliases": {
         // **resolveAlias と同じ確かめを1件ずつ**（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。違うのは、台帳を1回だけ
@@ -1099,7 +1187,9 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             const meta = pickAlias(all, name, group, callMeta);
             if (!meta) throw new Error(`alias "${name}" not found`);
             assertUsable(meta, name, callMeta);
-            return { name, meta, source: valueSource(meta, name, all, callMeta) };
+            const source = valueSource(meta, name, all, callMeta);
+            assertOwnerKnown(source, name, callMeta);
+            return { name, meta, source };
           } catch (e) {
             reasons.push((e as Error).message);
             return undefined;
@@ -1141,13 +1231,28 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           }
         }
         if (reasons.length > 0) throw refuse();
+        // **banto が置いたログインは、持ち主が作った値に替える**（2026-10-18、Backlog #405）。置き場ごとに1回だけ持ち主を呼ぶ
+        // （同じものが重なれば1回）。1件でも用意できなければ全部断る——ほかの alias で持ち主が済ませた取り直しは戻さない
+        // （新しい組は Vault に書き戻されていて、戻す必要が無い）
+        const handed = new Map<string, string>();
+        await Promise.all(
+          paths.map(async (path) => {
+            const f = found.find((x) => x.source.backendPath === path)!;
+            try {
+              handed.set(path, await valueToHand(f.source, f.name, values.get(path)!, callMeta));
+            } catch (e) {
+              reasons.push((e as Error).message);
+            }
+          }),
+        );
+        if (reasons.length > 0) throw refuse();
         const used = [...new Set(found.map((f) => f.meta.backendPath))];
         if (registry.markUsedMany) await registry.markUsedMany(used);
         else for (const path of used) await registry.markUsed(path);
         const resolved = found.map((f) => ({
           name: f.meta.name,
           group: canon(groupOf(f.meta)),
-          value: String(values.get(f.source.backendPath)),
+          value: handed.get(f.source.backendPath)!,
         }));
         return { content: [{ type: "text", text: JSON.stringify({ values: resolved }) }] };
       }
@@ -1310,6 +1415,25 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           ...(owner ? { owner } : {}),
         });
         return { content: [{ type: "text", text: `imported ${name}` }] };
+      }
+      case "exportOwnedSecret": {
+        // **窓口の「Vault をまたいで移す」が banto の置いたログインを丸ごと運ぶ口**（2026-10-18、Backlog #405）。`resolveAlias` は
+        // 持ち主でない呼び元に持ち主が作った値（GitHub なら access token だけ）を渡すので、移動には使えない。人の管理操作の中でだけ
+        assertHuman("banto が置く秘密を別の Vault へ運ぶ", callMeta);
+        const name = requiredString(args.name, "name");
+        const group = optionalString(args.group, "group");
+        const all = await listAll(groupsNamedIn(args, callMeta));
+        const meta = pickAlias(all, name, group, callMeta);
+        if (!meta) throw new Error(`alias "${name}" not found`);
+        // 参照は移動の側が先に断っている——ここでも運ばない（参照の値は元の置き場のもの）
+        if (isLink(meta)) throw new Error(`"${name}" は参照です。banto が置く秘密そのものしか運べません`);
+        if (meta.kind !== BANTO_OWNED_KIND) {
+          throw new Error(`"${name}" は banto が置く秘密ではありません（${meta.kind}）。この口は ${BANTO_OWNED_KIND} だけを運びます`);
+        }
+        assertUsable(meta, name, callMeta);
+        const value = await backend.getSecret(meta.backendPath);
+        assertNotEmpty(value, name, meta, callMeta);
+        return { content: [{ type: "text", text: String(value) }] };
       }
       case "generateSecret": {
         const name = requiredString(args.name, "name");
