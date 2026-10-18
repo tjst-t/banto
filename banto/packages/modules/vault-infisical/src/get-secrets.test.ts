@@ -144,7 +144,7 @@ test("値を読む権限が無ければ、全部を getSecret の1件ずつに�
   });
 });
 
-test("一括更新が失敗したら、そのフォルダは1件ずつ書く（値は渡す）", async () => {
+test("一括更新が失敗したら、そのフォルダは1件ずつ書く（値は渡さない）", async () => {
   const fake = seeded();
   fake.control.failBatch = true;
   await withServer(fake, async (c) => {
