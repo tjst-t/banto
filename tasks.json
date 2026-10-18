@@ -9642,7 +9642,7 @@
       "number": 400,
       "kind": "task",
       "title": "ブラウザでログインしてアカウントを足す・ログインし直す・外す（HTTP の口）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-relay-accounts"
@@ -9652,12 +9652,12 @@
       "labels": [],
       "body": "v4-security.md §2 の 4.。PKCE（code_verifier と state はメモリに10分）、認可の URL（https://claude.com/cai/oauth/authorize、Claude Code の client id、redirect https://platform.claude.com/oauth/code/callback、scope user:inference user:profile）、貼られた <code>#<state> を分けて確かめ、token の口で交換、/api/oauth/profile でメールと契約の種類。同じメールなら置き換え。URL・client id・scope は確かめた SDK の版に結びつける。ログインした人だけ、AI の tool は作らない。外すと置き場を消し並びから抜く（~/.claude は外せない）。",
       "doneWhen": "偽の認可・token・profile の口で、足す・同じメールで置き換え・state 違い・期限切れ・外す、の単体テストと HTTP の試験が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-login）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T11:57:54.731Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T12:15:13.968Z",
+      "closedAt": "2026-10-18T12:15:13.968Z",
       "extra": {}
     },
     {
