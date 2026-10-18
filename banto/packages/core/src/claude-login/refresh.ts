@@ -506,6 +506,35 @@ function oauthErrorCode(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * **置き場を人のログインで置き換える**（§2「Claude のアカウントを複数持つ」の 4.——同じメールアドレスでログインし直した）。
+ * 取り直し役の書き戻しと同じ CLI の書き込み用の鍵の中で、別名に 0600 で書いて rename で置き換える。取り直し役が
+ * 古い refresh token を投げている途中でも、書き戻すときに refresh token が替わったのを見て、こちらを採る
+ */
+export async function replaceCredentialsFile(path: string, oauth: OauthFields, opts: { lockRetryDelayMs?: () => number } = {}): Promise<void> {
+  const dir = dirname(path);
+  const lock = await acquireLock(join(dir, ".storage-write.lock"), {
+    stale: 15_000,
+    update: 7_500,
+    retries: 10,
+    delay: () => opts.lockRetryDelayMs?.() ?? 100 + Math.random() * 900,
+  });
+  if (lock === "busy") throw new CredentialsError("置き場の書き込み用の鍵が空きませんでした");
+  const tmp = join(dir, `${basename(path)}.banto-${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    // ほかの鍵（MCP のログイン等）は残す。置き場が読めなければ claudeAiOauth だけで作り直す
+    const whole = await readCredentialsFile(path).then((c) => c.whole, () => ({}) as Record<string, unknown>);
+    await writeFile(tmp, JSON.stringify({ ...whole, claudeAiOauth: oauth }), { mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  } finally {
+    await lock.release();
+  }
+}
+
 /** 同梱の Agent SDK の版（読めなければ undefined） */
 export function installedAgentSdkVersion(): string | undefined {
   try {

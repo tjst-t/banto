@@ -1229,7 +1229,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
   **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
-### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。ほかは未実装）
+### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。4. の HTTP の口は実装・2026-10-18、Backlog #400（`claude-login/account-login.ts`、画面はまだ）。ほかは未実装）
 
 **何をするか**：banto が Claude のアカウント（ブラウザでログインしたサブスクリプションのもの）を複数持ち、
 (1) 使用率が人の決めた閾値（5時間と週で別々）を超えたら次のアカウントへ切り替え、(2) Project ごとに使うアカウント
@@ -1343,6 +1343,16 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      「claude.ai の設定からもこのログインを取り消してください」と1行出す
    - 足す画面に「別のアカウントを足すときは、開いたタブで claude.ai をいったんログアウトしてから」と出す（ブラウザに残った
      ログインのまま同じアカウントが返ってくるため）
+   - **HTTP の口**（人のセッションだけ。機械の合言葉は 403）：`GET /api/claude-accounts`（一覧と既定の並び。トークンは返さない）・
+     `POST /api/claude-accounts/login`（`loginId`・認可の URL・期限）・`POST /api/claude-accounts/login/<loginId>`（`{ pasted }` →
+     `{ account, replaced }`）・`DELETE /api/claude-accounts/<id>`（`host` は 400）。失敗は `code` で分ける——`expired`（410）・
+     `state-mismatch`／`malformed`（400、手続きは残り貼り直せる）・`exchange-failed`（502）・`unknown`（404、使い切った・起こし直した）。
+     交換に行った手続きは成否によらず使い切る（認可コードは1回きり）
+   - 契約の種類は profile の `organization.organization_type` を CLI と同じ表（`claude_max`→`max` 等）で写し、上限の段は
+     `rate_limit_tier`。置き場には CLI と同じ `claudeAiOauth`（`scopes`・`expiresAt`・`refreshTokenExpiresAt`・契約の種類）で書く
+   - 同じメールアドレスの見分けは足したアカウント（`banto`）の中だけ（大文字小文字は見ない）。`~/.claude` は台帳に
+     メールアドレスを持たず、置き場も人の CLI のものなので置き換えない。置き換えは取り直し役と同じ書き込み用の鍵の中で書く
+   - E2E の偽の口：token の口は取り直しと同じ `BANTO_CLAUDE_RELAY_TOKEN_URL`、profile の口は `BANTO_CLAUDE_PROFILE_URL`
 5. **Project ごとの並び**：banto 全体に「既定の並び」（アカウントの優先順）を1つ持ち、Project 設定「Claude のアカウント」で
    「既定のまま」か「この Project の並び」（1つ以上）を選ぶ。1つだけなら固定、2つ以上ならその順に切り替える。
    外したアカウントは並びから消し、Project の並びが空になったら既定に戻す

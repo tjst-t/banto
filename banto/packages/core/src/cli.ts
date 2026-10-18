@@ -50,6 +50,7 @@ import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
+import { ClaudeAccountLogin } from "./claude-login/account-login.js";
 import { installedAgentSdkVersion, relayRefreshDecision } from "./claude-login/refresh.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
@@ -409,6 +410,23 @@ async function main(): Promise<void> {
       for (const key of keys) {
         void inbox.acknowledgeNoticesByKey(key).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
       }
+    },
+  });
+  /**
+   * **ブラウザでログインしてアカウントを足す・ログインし直す・外す**（§2「Claude のアカウントを複数持つ」の 4.）。
+   * ログインし直したら・外したら、そのアカウントの「取り直せなかった」カードを閉じる
+   */
+  const claudeAccountLogin = new ClaudeAccountLogin({
+    accounts: claudeAccounts,
+    // E2E は偽の token の口・profile の口を指す（取り直しと同じ token の口）
+    ...(process.env.BANTO_CLAUDE_RELAY_TOKEN_URL ? { tokenUrl: process.env.BANTO_CLAUDE_RELAY_TOKEN_URL } : {}),
+    ...(process.env.BANTO_CLAUDE_PROFILE_URL ? { profileUrl: process.env.BANTO_CLAUDE_PROFILE_URL } : {}),
+    onReplaced: (account) => {
+      void inbox.acknowledgeNoticesByKey(claudeLoginCardKey(account.id)).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
+    },
+    onRemoved: (accountId) => {
+      claudeLogin.forgetAccount(accountId);
+      void inbox.acknowledgeNoticesByKey(claudeLoginCardKey(accountId)).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
     },
   });
   /**
@@ -2949,6 +2967,7 @@ async function main(): Promise<void> {
     },
     relayEndpoint,
     claudeLogin,
+    claudeAccounts: { store: claudeAccounts, login: claudeAccountLogin },
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
     auth: new AuthService({
