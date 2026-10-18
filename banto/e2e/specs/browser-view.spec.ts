@@ -266,6 +266,9 @@ test("人の画面：カードから開いて映し、人の入力がページ�
 
   // ---- 6. 「AI に触らせない」 -----------------------------------------------------------------------
   await f.getByTestId("ai-blocked").check();
+  // 注記は隠れたまま（hidden）でも文はあるので、toContainText だけでは切り替えが Module に届くのを待てない（Backlog #386）。
+  // 見えるのは setAiBlocked の答えか Module の知らせで aiBlocked が true になってから
+  await expect(f.getByTestId("block-note")).toBeVisible();
   await expect(f.getByTestId("block-note")).toContainText("これは境界ではありません");
   expect((await uiCall(page, "getBrowserStatus")).aiBlocked).toBe(true);
   expect(await ai(page, "browserAct", { action: "reload" })).toContain("人が「AI に触らせない」を入れているので、browserAct の reload はできません");
