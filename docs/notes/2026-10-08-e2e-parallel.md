@@ -35,7 +35,8 @@ BANTO_E2E_WORKERS=3 npx playwright test [spec...]      # 1〜6
 - **画面（next）は1本を共有**——`?bantoHost=` が localStorage に覚えられるので、ブラウザの文脈（テストごと）が
   自分の worker の core を向く
 - **port**：4740〜4939 を回ごとに 25 ずつ（8 枠）。先頭が画面、続けて core ごとに4つ（core・sandbox・偽の MCP Registry・
-  偽の npm registry）。上限 6 本はこの枠から。同じ機械の回はロックで1回ずつなので、枠がぶつかるのはロックを外したときだけ
+  偽の npm registry）。上限 6 本はこの枠から。枠は空いているものを札で取る（2026-10-18 に改めた。下の「同じ機械で回を
+  並べる」）
 - **土台イメージ**は core を起こす前に主プロセスが `ensureBaseImage` を呼ぶ（2 本以上のとき）。`@banto/container` は
   同時に呼ばれても1回にまとめるが、それはプロセスの中だけ——core が何本も同時に作り始めると、後から publish した
   ほうが alias の重複で落ちる。あれば問い合わせ1回で終わる
