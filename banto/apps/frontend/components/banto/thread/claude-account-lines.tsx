@@ -78,30 +78,43 @@ export function RateLimitStoppedBand({ stop }: { stop: "stopped" | "gave_up" | "
   );
 }
 
-/** 1分ごとに進む「いま」（残りの時間を描き直す） */
-function useMinuteClock(active: boolean): number {
+/**
+ * **残りの分が変わるたびに進む「いま」**（残りの時間を描き直す）。描き直すのは壁時計の分の頭ではなく、残り
+ * （`continueAt` − いま）が分の境を越える時刻——表示（分は切り捨て）は越えたその時に変わる。壁時計の分の頭に合わせると、
+ * 残りが境を越えてから最長で1分近く古い分を出し続けていた（レビュー指摘、E2E が 11% の位相で落ちた）。
+ * 待ちが替わったら呼ぶ側が作り直す（`key`）——初めの値は useState の初期値
+ */
+function useRemainingClock(continueAt: string): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    // 分の変わり目に合わせて描き直す（最初の1回は次の分まで）
+    const at = Date.parse(continueAt);
     let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      // 次に残りが分の境を越えるまで（ちょうど境なら1分後）。少しだけ遅らせて、越えた後に読む
+      const left = (at - Date.now()) % 60_000;
+      timer = setTimeout(tick, (left > 0 ? left : 60_000 + left) + 50);
+    };
     const tick = () => {
       setNow(Date.now());
-      timer = setTimeout(tick, 60_000 - (Date.now() % 60_000));
+      schedule();
     };
-    timer = setTimeout(tick, 60_000 - (Date.now() % 60_000));
+    schedule();
     return () => clearTimeout(timer);
-  }, [active]);
+  }, [continueAt]);
   return now;
 }
 
 /** **上限が戻るのを待っている**——入力欄の上の帯。待ちは host の出来事の流れから（`rate-limit-waits.ts`） */
 export function RateLimitWaitBanner({ threadId }: { threadId: string }) {
   const continueAt = useRateLimitWait(threadId);
-  const now = useMinuteClock(continueAt !== undefined);
-  const [busy, setBusy] = useState(false);
   if (continueAt === undefined) return null;
+  // 待ちが替わったら作り直す（残りの時計を新しい時刻で始める）
+  return <RateLimitWaitBody key={continueAt} threadId={threadId} continueAt={continueAt} />;
+}
+
+function RateLimitWaitBody({ threadId, continueAt }: { threadId: string; continueAt: string }) {
+  const now = useRemainingClock(continueAt);
+  const [busy, setBusy] = useState(false);
   const act = (what: "continue" | "cancel") => {
     setBusy(true);
     // 帯は host の知らせ（rate_limit_wait.changed）で消える——ここで先に消さない（規則3）
