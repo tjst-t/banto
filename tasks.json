@@ -9378,7 +9378,7 @@
       "number": 389,
       "kind": "bug",
       "title": "Vault: runCommand の envSecrets に alias を25件ほど渡すと Infisical の 429 で断られる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9393,7 +9393,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T07:49:49.096Z",
-      "updatedAt": "2026-10-18T07:49:49.096Z",
+      "updatedAt": "2026-10-18T08:07:48.835Z",
       "closedAt": null,
       "extra": {}
     }
