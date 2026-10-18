@@ -59,7 +59,7 @@ export function MobileNavProvider({
             <NavPanel
               activeProjectId={projectId}
               activeForkThreadId={stack.forkThreadId}
-              onOpenInbox={() => stack.open({ overlay: "inbox" })}
+              onOpenInbox={() => stack.open({ overlay: "inbox", settings: false })}
               onOpenPalette={() => stack.open({ overlay: "palette" })}
               onOpenArchive={() => stack.open({ overlay: "archive" })}
               onNewProject={() => setShowNewProject(true)}

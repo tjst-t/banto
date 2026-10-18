@@ -10,6 +10,7 @@ import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
+import { settingsCloseHref } from "@/lib/settings-link";
 
 export type OverlayKind = "inbox" | "palette" | "archive" | null;
 
@@ -28,6 +29,12 @@ export interface OpenPanelInput {
   canvas?: { moduleId: string; viewId: string; toolCallId?: string } | null;
   canvasFullscreen?: boolean;
   overlay?: OverlayKind;
+  /**
+   * **false で設定（`?settings=1`）を閉じる**（追加・2026-10-18、ユーザー要望。v4-frontend.md §6.16）。受信箱は設定の
+   * 面（z-30）の下に出るので、設定を開いたまま受信箱を開いても見えなかった。サイドバー・レール・Drawer・Command
+   * Palette の「受信箱」は `{ overlay: "inbox", settings: false }` で開く
+   */
+  settings?: false;
 }
 
 export interface UsePanelStackResult extends PanelStackState {
@@ -66,7 +73,14 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
 
   const open = useCallback(
     (next: OpenPanelInput) => {
-      const params = new URLSearchParams(searchParams.toString());
+      let base = pathname;
+      let params = new URLSearchParams(searchParams.toString());
+      if (next.settings === false) {
+        // 設定を閉じた先（`/settings` を直に開いていたなら、見ていた Project の会話か「/」）の上に重ねる
+        const closed = new URL(settingsCloseHref(pathname, params), "http://x");
+        base = closed.pathname;
+        params = closed.searchParams;
+      }
 
       if (next.fork !== undefined) {
         if (next.fork === null) params.delete("fork");
@@ -99,7 +113,7 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
 
       const qs = params.toString();
       // サーバーに問い合わせずに URL を変える（`lib/url-nav.ts`、2026-09-30）
-      navigateUrl(router, qs ? `${pathname}?${qs}` : pathname);
+      navigateUrl(router, qs ? `${base}?${qs}` : base);
     },
     [pathname, router, searchParams],
   );

@@ -86,7 +86,7 @@ export function CommandPalette({
         stack?.open({ canvas: { moduleId: "banto.repo", viewId: "diff" }, overlay: null });
         break;
       case "open-inbox":
-        stack?.open({ overlay: "inbox" });
+        stack?.open({ overlay: "inbox", settings: false });
         break;
       case "open-project-settings":
         // 設定画面は1つ（§6.16）——この Project の層を開いた状態で行く

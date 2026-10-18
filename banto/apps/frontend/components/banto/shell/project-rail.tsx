@@ -46,7 +46,7 @@ import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { lastForkOf, useLastThreads } from "@/lib/last-thread";
-import { isSettingsOpen, projectNavHref, settingsOpenHref, threadRowHref } from "@/lib/settings-link";
+import { isSettingsOpen, settingsToggleHref, projectNavHref, threadRowHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
 import { useThreadUnread } from "@/lib/backend/real-inbox";
@@ -354,7 +354,7 @@ function CollapsedRail({
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
-                href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
+                href={settingsToggleHref(pathname, searchParams, { project: activeProjectId })}
                 aria-label="設定"
                 className={cn(
                   "flex size-8 items-center justify-center rounded-md",
