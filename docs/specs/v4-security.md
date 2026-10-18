@@ -818,6 +818,19 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   `containers` の前提の確かめ：Incus の版（6.0.6 以降）・SSH ユーザーが自分の区画でコンテナを作れる・`sudo -n`（上の準備に）・
   linger（**`containers` では注意でなく断る**——VM の再起動で中の Service と道を戻すため）。Docker・tmux は VM には要らない
   （コンテナの中の話）
+  - **実装済み（2026-10-18、Backlog #367）**：登録の画面で動かし方を選ぶ（記録の `mode`。前の記録は `machine`）。同じ host 鍵＋
+    ユーザーに違う動かし方を並べようとすると、確かめ（`check`）・登録の両方で名指しして断る（409・`code: "mixed-modes"`）。
+    `containers` の前提は共通の項目（CPU の種類・ログインの静けさ・道具は tar だけ・置き場・sshd の転送）に、Incus の版・区画
+    `user-<uid>` に繋がる・proxy・idmap・置き場 `banto`・linger・`sudo -n` を足す（`runtime/containers-host.ts`）。確かめ（登録の
+    前）は何も変えず、済んでいないものは sudo -n が通れば注意（「登録するときに整える」）、通らなければ打つコマンドを添えて断る。
+    **登録と人の「確かめ直す」のときだけ** 済んでいない項目のコマンドを順に `sudo -n` で打ち（incus グループに入れる・区画の
+    `restricted.devices.proxy=allow`・`usermod --add-subuids/--add-subgids U-U root` と区画の `restricted.idmap.uid/gid` に足す・
+    置き場を作る・`loginctl enable-linger`）、確かめ直して残っていれば断る。済んでいる項目には何も打たない。**subuid・subgid を
+    書き換えたときは Incus を起こし直す**（この機械の install.sh と同じ。要るかは まっさらな VM で測る——下の B2）。繋ぐたびには
+    sudo せず、崩れていれば「確かめ直す」で整えると言って断る。人が先に整えてあれば `sudo -n` が無くても使える（注意だけ）。
+    `incus-admin` で制限の無い区画に繋がるユーザーは、人が直すしかないので断る。`containers` は新しい Project・再開で「1つに1つ」
+    を数えない。**コンテナで Module を起こすところはまだ無い**（Backlog containers-project-module）——`containers` の Project の
+    Module を繋ごうとすると名指しして断る（VM のユーザーで直に起こす `machine` の形へ落ちない）。コードを先に送るだけの接続は通す
 - **SSH の接続は Project ごとに1本**（Fable の F1・F2・S4）：`MaxSessions`（既定 10）は 1 Project の Module 数でほぼ埋まる。
   接続・ControlPath・逆向きのトンネル・host の専用の待ち受け（`relay-listener`）を Project ごとに持つ。**トンネルの VM の側は
   番号ではなく Project ごとの決まったパスの UNIX ソケット**（`-R /run/user/<U>/banto/p-<Project>/t.sock:127.0.0.1:<待ち受け>`、

@@ -575,6 +575,7 @@ function RuntimeStep({
                   <Server className="size-3.5 shrink-0 text-ink-3" />
                   {r.name}
                   <span className="font-mono text-xs text-ink-3">{sshTarget(r)}</span>
+                  {r.mode === "containers" ? <span className="text-xs text-ink-3">Project ごとのコンテナ</span> : null}
                 </span>
                 {r.unavailableReason ? (
                   <span className="pl-5.5 text-xs text-ink-3" data-testid="new-project-runtime-reason">
@@ -588,7 +589,10 @@ function RuntimeStep({
       </Select>
       {error ? <p className="text-xs text-stop">別のサーバの一覧を読めませんでした（この機械のコンテナは選べます）：{error}</p> : null}
       <p className="text-xs text-ink-3" data-testid="new-project-runtime-note">
-        {remote
+        {remote?.mode === "containers"
+          ? `${remote.name} の中に、この Project 専用の Incus のコンテナを立てて動かします（同じサーバに Project を複数置けます）。` +
+            "コンテナで Module を起こすところはまだ作っていないので、いまは Module を起こせません。作ったあとで変えられません。"
+          : remote
           ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
           : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。"}
       </p>

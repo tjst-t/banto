@@ -255,6 +255,7 @@ function probeScript(dataRoot: string): string {
     `for t in ${[...REQUIRED_TOOLS, "tmux", "docker", "rsync"].join(" ")}; do if command -v "$t" >/dev/null 2>&1; then printf 'tool.%s=1\\n' "$t"; else printf 'tool.%s=0\\n' "$t"; fi; done`,
     `uid=$(id -u); user=$(id -un)`,
     `printf 'uid=%s\\nuser=%s\\nhome=%s\\n' "$uid" "$user" "$HOME"`,
+    `printf 'gid=%s\\n' "$(id -g)"`,
     `if [ -S "/run/user/$uid/bus" ]; then printf 'bus=1\\n'; else printf 'bus=0\\n'; fi`,
     `if [ -e "/var/lib/systemd/linger/$user" ]; then printf 'linger=1\\n'; else printf 'linger=0\\n'; fi`,
     `root=${remotePathExpr(dataRoot)}`,
@@ -439,19 +440,21 @@ export function evaluateProbe(
   return checks;
 }
 
+/** 向こうの様子と転送の確かめ（`machine`・`containers` の前提の確かめが共に使う）。繋げなかったら `probe` 無し */
+export interface BaseProbe {
+  probe?: { before: string; values: Map<string, string> };
+  forwarding?: ForwardingProbe;
+  result: SshResult;
+}
+
 /**
- * **前提を確かめる**（v4-security.md §1「前提の確かめ」）。繋げなかったら投げる（ssh の言葉を添えて）。
- * 1回目の接続で様子を引き、2回目の接続で転送が許されるかを実際に頼んで確かめる（`ExitOnForwardFailure`）
+ * **向こうの様子を引き、転送が許されるかを確かめる**。1回目の接続で様子を引き、2回目の接続で転送が許されるかを実際に頼んで
+ * 確かめる（`ExitOnForwardFailure`）
  */
-export async function probePrerequisites(
-  t: SshTarget,
-  files: SshFiles,
-  hostKeyType: string,
-  dataRoot: string,
-): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
+export async function probeBase(t: SshTarget, files: SshFiles, hostKeyType: string, dataRoot: string): Promise<BaseProbe> {
   const first = await runRemoteScript(t, files, hostKeyType, probeScript(dataRoot));
   const probe = first.code === 0 ? parseProbe(first.stdout) : undefined;
-  if (!probe) return { checks: [], result: first };
+  if (!probe) return { result: first };
 
   // 転送：向こうの sshd に -R を頼む（TCP と UNIX ソケット）。断られれば ssh が名指しして終わる。`ExitOnForwardFailure` は
   // 最初の断りで終わるので、1本ずつ別の接続で（並べて）頼む——片方の断りで、もう片方が分からなくならないように
@@ -461,10 +464,23 @@ export async function probePrerequisites(
   const [tcp, stream] = await Promise.all([ask("0:127.0.0.1:9"), ask(`${sock}:127.0.0.1:9`)]);
   for (const r of [tcp, stream]) {
     // 転送の断り以外で落ちた（途中で切れた等）——確かめられなかったことを、断られたことに見せない
-    if (r.code !== 0 && !/forwarding failed/i.test(r.stderr)) return { checks: [], result: r };
+    if (r.code !== 0 && !/forwarding failed/i.test(r.stderr)) return { result: r };
   }
-  const forwarding: ForwardingProbe = { tcp: tcp.code === 0, streamLocal: stream.code === 0 };
-  return { checks: evaluateProbe(probe, forwarding, hostPlatform()), result: first };
+  return { probe, forwarding: { tcp: tcp.code === 0, streamLocal: stream.code === 0 }, result: first };
+}
+
+/**
+ * **前提を確かめる**（`machine`。v4-security.md §1「前提の確かめ」）。繋げなかったら `checks` は空（ssh の結果を添える）
+ */
+export async function probePrerequisites(
+  t: SshTarget,
+  files: SshFiles,
+  hostKeyType: string,
+  dataRoot: string,
+): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
+  const { probe, forwarding, result } = await probeBase(t, files, hostKeyType, dataRoot);
+  if (!probe || !forwarding) return { checks: [], result };
+  return { checks: evaluateProbe(probe, forwarding, hostPlatform()), result };
 }
 
 // ── 向こうのフォルダ ─────────────────────────────────────────────────────────

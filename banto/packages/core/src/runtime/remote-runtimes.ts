@@ -22,6 +22,7 @@ import {
   REMOTE_RUNTIME_PREFIX,
   type RemoteRuntime,
   type RemoteRuntimeInput,
+  type RemoteRuntimeMode,
   type RemoteRuntimeStore,
 } from "./remote-store.js";
 import {
@@ -42,7 +43,9 @@ import {
   type RemoteDirectoryListing,
   type RuntimeCheck,
   type SshFiles,
+  type SshResult,
 } from "./ssh.js";
+import { ContainersPrepareError, probeContainersPrerequisites } from "./containers-host.js";
 
 /** 画面に返す失敗（状態番号つき）。理由はそのまま人に見せる */
 export class RemoteRuntimeError extends Error {
@@ -113,7 +116,11 @@ export function parseRuntimeInput(raw: unknown): RemoteRuntimeInput {
     port: typeof b.port === "number" ? b.port : Number(str("port") || "22"),
     identity: str("identity"),
     dataRoot: str("dataRoot") || DEFAULT_REMOTE_DATA_ROOT,
+    mode: (str("mode") || "machine") as RemoteRuntimeMode,
   };
+  if (input.mode !== "machine" && input.mode !== "containers") {
+    throw new RemoteRuntimeError(400, "動かし方は machine か containers です");
+  }
   if (!NAME_PATTERN.test(input.name)) {
     throw new RemoteRuntimeError(400, "名前は英小文字・数字・- で 32 字まで（先頭は英小文字か数字）にしてください");
   }
@@ -154,11 +161,11 @@ export class RemoteRuntimes {
   }
 
   /**
-   * **新しい Project で選べない理由**（画面にそのまま出す）。順に：ほかの Project が使っている（1つの実行場所に
-   * Project は1つ——v4-security.md §1）→ host 鍵が違う → 前提が足りない
+   * **新しい Project で選べない理由**（画面にそのまま出す）。順に：ほかの Project が使っている（`machine` は1つの実行場所に
+   * Project は1つ——v4-security.md §1。`containers` は Project ごとにコンテナを立てるので数えない）→ host 鍵が違う → 前提が足りない
    */
   unavailableReason(r: RemoteRuntime): string | undefined {
-    const used = this.deps.projectsUsing(runtimeIdOf(r.name))[0];
+    const used = r.mode === "machine" ? this.deps.projectsUsing(runtimeIdOf(r.name))[0] : undefined;
     if (used) return `Project「${used.name}」が使っています（1つの実行場所に Project は1つ）`;
     if (r.hostKeyMismatch) return "host 鍵が前と違うので繋ぎません";
     if (r.checks.some((c) => c.status === "fail")) return "前提が足りません";
@@ -174,15 +181,46 @@ export class RemoteRuntimes {
     }
   }
 
-  /** 2. 人が確かめた鍵で繋いで、前提を確かめる（まだ登録しない） */
+  /** 2. 人が確かめた鍵で繋いで、前提を確かめる（まだ登録しない・まだ sudo しない） */
   async check(input: RemoteRuntimeInput, hostKey: HostKey): Promise<RuntimeCheck[]> {
-    return this.probe(input, hostKey, `.probe-${randomBytes(4).toString("hex")}`, true);
+    this.refuseMixedModes(input, hostKey);
+    return this.probe(input, hostKey, `.probe-${randomBytes(4).toString("hex")}`, true, "check");
   }
 
-  /** 前提を確かめる。`dirName` の置き場に known_hosts・公開鍵を書き出して繋ぐ（`temporary` なら終わったら消す） */
-  private probe(input: RemoteRuntimeInput, hostKey: HostKey, dirName: string, temporary: boolean): Promise<RuntimeCheck[]> {
+  /**
+   * **同じサーバの同じユーザーに、`machine` と `containers` を並べて登録させない**（v4-security.md §1 の条件2）——`machine` の
+   * Project の AI は VM のユーザーそのもので、`containers` の準備はそのユーザーに sudo を求める。host 鍵＋ユーザーで比べる
+   * （宛先の書き方——名前・IP——に左右されない）
+   */
+  private refuseMixedModes(input: RemoteRuntimeInput, hostKey: HostKey): void {
+    const fingerprint = fingerprintOf(hostKey.key);
+    const other = this.deps.store
+      .list()
+      .find((r) => r.user === input.user && r.mode !== input.mode && r.hostKey.fingerprint === fingerprint);
+    if (other) {
+      throw new RemoteRuntimeError(
+        409,
+        `同じサーバの同じユーザー（${input.user}）が、実行場所「${other.name}」として ${modeLabel(other.mode)} で登録されています。` +
+          `${modeLabel(input.mode)} と並べては登録できません（${other.mode === "machine" ? "machine の Project の AI はこのユーザーそのもので、sudo できるユーザーになってしまいます" : "containers の準備で sudo できるユーザーを、machine の Project の AI に渡すことになります"}）。` +
+          `先に「${other.name}」の Project を退かせて外すか、別のユーザーにしてください`,
+        { code: "mixed-modes", runtime: other.name },
+      );
+    }
+  }
+
+  /**
+   * 前提を確かめる。`dirName` の置き場に known_hosts・公開鍵を書き出して繋ぐ（`temporary` なら終わったら消す）。`containers` で
+   * `prepare` なら、足りないものを sudo -n で整えてから確かめ直す
+   */
+  private probe(
+    input: RemoteRuntimeInput,
+    hostKey: HostKey,
+    dirName: string,
+    temporary: boolean,
+    stage: "check" | "prepare",
+  ): Promise<RuntimeCheck[]> {
     return this.withFiles(input, hostKey, dirName, temporary, async (files) => {
-      const { checks, result } = await probePrerequisites(input, files, hostKey.type, input.dataRoot);
+      const { checks, result } = await this.probeChecks(input, files, hostKey.type, stage);
       if (checks.length > 0) return checks;
       if (isHostKeyRefusal(result)) {
         throw new RemoteRuntimeError(409, "確かめた鍵と、いま向こうが返す鍵が違います。もう一度「繋いで確かめる」からやり直してください");
@@ -191,14 +229,15 @@ export class RemoteRuntimes {
     });
   }
 
-  /** 3. 登録する。host がもう一度確かめ、✕ があれば断る */
+  /** 3. 登録する。host がもう一度確かめ（`containers` は sudo -n で整えてから）、✕ があれば断る */
   async register(input: RemoteRuntimeInput, hostKey: HostKey): Promise<RemoteRuntimeView> {
     if (this.deps.store.get(input.name)) throw new RemoteRuntimeError(409, `「${input.name}」という名前はもう使われています`);
+    this.refuseMixedModes(input, hostKey);
     // 登録のときから恒久の置き場（`remote-runtimes/<名前>/`）に書き出して繋ぐ——known_hosts は「繋ぐたびに記録から
     // 書き出す」写しなので、登録の接続でも同じ場所に書く。登録しなかったら消す（記録に無い名前の写しを残さない）
     const dir = join(this.deps.dataDir, "remote-runtimes", input.name);
     try {
-      const checks = await this.probe(input, hostKey, input.name, false);
+      const checks = await this.probe(input, hostKey, input.name, false, "prepare");
       if (checks.some((c) => c.status === "fail")) {
         throw new RemoteRuntimeError(409, "足りない前提があるので登録できません", { checks });
       }
@@ -209,11 +248,11 @@ export class RemoteRuntimes {
     }
   }
 
-  /** 確かめ直す。鍵が違えば繋がずに記録する */
+  /** 確かめ直す（人が押した。`containers` は崩れた準備を sudo -n で整え直す）。鍵が違えば繋がずに記録する */
   async recheck(name: string): Promise<RemoteRuntimeView> {
     const r = this.mustGetUsable(name);
     await this.connect(r, async (files) => {
-      const { checks, result } = await probePrerequisites(r, files, r.hostKey.type, r.dataRoot);
+      const { checks, result } = await this.probeChecks(r, files, r.hostKey.type, "prepare");
       if (checks.length === 0) return this.refused(r, result, "前提を確かめられませんでした");
       await this.deps.store.recordChecks(r.name, checks);
     });
@@ -287,7 +326,8 @@ export class RemoteRuntimes {
    */
   async reopenProjectOn(name: string, projectId: string, reopen: () => Promise<void>): Promise<void> {
     return this.exclusive(name, async () => {
-      const used = this.deps.projectsUsing(runtimeIdOf(name)).find((p) => p.id !== projectId);
+      const used =
+        this.deps.store.get(name)?.mode === "containers" ? undefined : this.deps.projectsUsing(runtimeIdOf(name)).find((p) => p.id !== projectId);
       if (used) {
         throw new RemoteRuntimeError(
           409,
@@ -322,6 +362,25 @@ export class RemoteRuntimes {
   async withConnection<T>(name: string, fn: (r: RemoteRuntime, files: SshFiles) => Promise<T>): Promise<T> {
     const r = this.mustGetUsable(name);
     return this.connect(r, (files) => fn(r, files));
+  }
+
+  /**
+   * **前提を確かめる**（動かし方で分ける）。`check`：登録の前（sudo しない）。`prepare`：登録・人の「確かめ直す」（`containers` は
+   * sudo -n で整える）。`verify`：繋ぐたび（`containers` は準備が崩れていないことを確かめるだけ、sudo しない）
+   */
+  async probeChecks(
+    r: RemoteRuntimeInput,
+    files: SshFiles,
+    hostKeyType: string,
+    stage: "check" | "prepare" | "verify",
+  ): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
+    if (r.mode === "machine") return probePrerequisites(r, files, hostKeyType, r.dataRoot);
+    try {
+      return await probeContainersPrerequisites(r, files, hostKeyType, r.dataRoot, { mode: stage });
+    } catch (err) {
+      if (err instanceof ContainersPrepareError) throw new RemoteRuntimeError(502, err.message);
+      throw err;
+    }
   }
 
   /** 繋いだときに確かめた前提を記録する（設定の一覧に出す） */
@@ -413,6 +472,11 @@ export class RemoteRuntimes {
       if (temporary) rmSync(dir, { recursive: true, force: true });
     }
   }
+}
+
+/** 人に見せる動かし方の名前 */
+export function modeLabel(mode: RemoteRuntimeMode): string {
+  return mode === "machine" ? "サーバ丸ごと（machine）" : "Project ごとのコンテナ（containers）";
 }
 
 export { HOST_CONTAINER_RUNTIME };

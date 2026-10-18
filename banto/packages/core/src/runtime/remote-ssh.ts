@@ -14,7 +14,8 @@
 // 閉じたうえで `systemctl --user stop`。接続が切れたら、その上の Module は落ちたものとして扱われ（多重化したセッションが
 // 一緒に閉じる）、次に要るときに繋ぎ直す——起動役が、残っていた前の Module を止めてから起こす（二重に動かない）。
 //
-// **向こうで sudo しない**。root が要る準備は人が行う。
+// **Module を起こすときに向こうで sudo しない**。`machine` の root が要る準備は人が行う。`containers` の準備は登録のときに
+// core が sudo -n で済ませ（`containers-host.ts`）、繋ぐたびには崩れていないことを確かめるだけ。
 
 import { coreSocketDir, moduleSocketDir } from "./socket-dir.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -55,7 +56,6 @@ import type { PlaceAddress, PreparedPlace, RuntimePlace, RuntimeProcess } from "
 import {
   SshCommandError,
   SshConnectionClosedError,
-  probePrerequisites,
   remotePathExpr,
   shq,
   sshArgs,
@@ -491,8 +491,9 @@ export class RemoteSshRuntime {
     const listener = projectId !== undefined ? await this.listenerFor(name, projectId) : undefined;
     const started = performance.now();
     const conn = await this.opts.runtimes.withConnection(name, async (r, files) => {
-      // 1. 前提を確かめる（Module を起こす前に。v4-security.md §1「前提の確かめ」）
-      const { checks, result } = await probePrerequisites(r, files, r.hostKey.type, r.dataRoot);
+      // 1. 前提を確かめる（Module を起こす前に。v4-security.md §1「前提の確かめ」。containers は準備が崩れていないことを
+      //    確かめるだけで、sudo しない）
+      const { checks, result } = await this.opts.runtimes.probeChecks(r, files, r.hostKey.type, "verify");
       if (checks.length === 0) throw new SshCommandError(`${r.user}@${r.host} に繋げませんでした`, result);
       await this.opts.runtimes.recordChecks(name, checks);
       const failed = checks.filter((c) => c.status === "fail");
@@ -500,6 +501,14 @@ export class RemoteSshRuntime {
         throw new Error(
           `別のサーバ「${name}」で Module を起こせません——前提が足りません：` +
             failed.map((c) => `${c.label}：${c.detail ?? "足りません"}${c.fix ? `（直し方：${c.fix.replace(/\n/g, " ")}）` : ""}`).join(" ／ "),
+        );
+      }
+      // **containers の Project の Module はまだ起こせない**（Backlog containers-project-module で作る）。VM のユーザーで直に
+      // 起こすと、その Project の AI が sudo できるユーザーになる——黙って machine の起こし方へ落ちない（規則2）。コードを
+      // 先に送るだけの接続（Project を持たない）は通す——VM の置き場に送るのは containers でも同じ
+      if (r.mode === "containers" && projectId !== undefined) {
+        throw new Error(
+          `別のサーバ「${name}」は Project ごとのコンテナ（containers）で動かす実行場所ですが、コンテナで Module を起こすところはまだ作っていません`,
         );
       }
 
