@@ -9324,6 +9324,31 @@
       "updatedAt": "2026-10-18T00:59:13.812Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-turn-decisions-143-inbox-review-judg",
+      "number": 387,
+      "kind": "bug",
+      "title": "E2E turn-decisions:143 で inbox.review_judged が1件のはずが4件（deferred・incomplete 等）記録されることがある",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky",
+        "automation"
+      ],
+      "body": "2026-10-18 の夜間のフル E2E（origin/main 3efe8007）で1回落ち、流し直しで2回とも通った。\n\n- specs/turn-decisions.spec.ts:64 の 143 行目：`storedEvents(\"inbox.review_judged\")` の kind が `[\"decided-by-automation\"]` のはずが `[\"decided-by-automation\",\"deferred\",\"incomplete\",\"decided-by-automation\"]` だった。\n- 試験の後半（人に任せる・人が先に答える）の出来事が、この確かめより先に記録された見込み（フル E2E の負荷で順番がずれた）。あるいは記録を数える範囲がこの段に絞れていない。どちらかをコードで確かめる。",
+      "doneWhen": "turn-decisions.spec.ts をフル E2E の中で10回流して落ちない、または原因が分かって直っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-18T00:59:19.261Z",
+      "updatedAt": "2026-10-18T00:59:19.261Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
