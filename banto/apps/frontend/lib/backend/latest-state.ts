@@ -24,7 +24,7 @@ import {
   onStreamOutcome,
   restoredSyncVersion,
 } from "./adapter";
-import { getThread, realThreadExtraOf } from "../mock/threads";
+import { getThread, realThreadExtraOf, updateRealThreadMarks } from "../mock/threads";
 import { withoutReplayedReply } from "./replayed-turn";
 
 /** いま画面に開いている会話（実 Thread）と、開いている面の数 */
@@ -202,23 +202,45 @@ async function showLatestOnce(threadId: string): Promise<void> {
     // 記録から組み直し、走っていれば新しいランタイムがその流れを描き始める。**流し直すターンの AI の発言は記録から
     // 外す**（追加・2026-10-05）——host は書き終えるごとに記録に入れるので、そのまま描くと流し直しと2回出る
     applyThreadRecord(threadId, following ? withoutReplayedReply(record, following.startedSeq) : record);
-  } else if (readThrough && marksChanged(threadId, record)) {
-    // **会話の中の印が増えた・消えた**（Claude のアカウントの切り替えの1行・上限で止まった帯、v4-frontend.md §6.46）
-    // ——流れには載らない（記録にだけある）。置き場所は記録の発言の番号なので、写しごと組み直す
-    applyThreadRecord(threadId, record);
   } else if (readThrough) {
     // 最後まで読んだ会話は描き直さない（流れた吹き出しがそのまま最新——描き直すと tool のカードが消える）
     shownThrough.set(threadId, { build: restoredSyncVersion(threadId), record });
+    // 流れに載らない会話の中の印（§6.46）だけは足す——描き直さずに
+    addMarksWithoutRebuild(threadId, record);
   } else if (recordSignature(record.messages) !== shownSignature(threadId)) {
     applyThreadRecord(threadId, record);
   }
 }
 
-/** 流れに載らない会話の中の印（アカウントの切り替え・上限で終わったターン）が、いま描いている写しと違う */
-function marksChanged(threadId: string, record: RealThread): boolean {
+/** 会話ごとの、画面にいま出ている最後の発言の id を答える口（`thread-panel.tsx` が会話のランタイムから答える） */
+const lastShownMessage = new Map<string, () => string | undefined>();
+
+/** 画面の最後の発言の id を答える口を付ける。外すときは返り値を呼ぶ */
+export function registerLastShownMessage(threadId: string, read: () => string | undefined): () => void {
+  lastShownMessage.set(threadId, read);
+  return () => {
+    if (lastShownMessage.get(threadId) === read) lastShownMessage.delete(threadId);
+  };
+}
+
+/**
+ * **流れに載らない会話の中の印を、組み直さずに足す**（Claude のアカウントの切り替えの1行・上限で止まった帯、v4-frontend.md §6.46）。
+ * 印は記録にだけある。最後まで読んだ会話は組み直さない（流れた tool のカードを消さない、`docs/notes/2026-09-28-thread-view-persist.md`）
+ * ——発言の写しは古いままなので、写しの最後の発言より後に起きた切り替えは、いま画面に出ている最後の発言の後に置く
+ * （その後のターンの分まで後ろへずれない）。上限で止まった帯は会話の一番下に出る
+ */
+function addMarksWithoutRebuild(threadId: string, record: RealThread): void {
   const shown = getThread(threadId);
+  if (!shown) return;
   const next = realThreadExtraOf(record);
-  return (shown?.realAccountSwitches?.length ?? 0) !== (next.realAccountSwitches?.length ?? 0) || !!shown?.realRateLimited !== !!next.realRateLimited;
+  const known = new Set((shown.realAccountSwitches ?? []).map((s) => s.seq));
+  const added = (next.realAccountSwitches ?? []).filter((s) => !known.has(s.seq));
+  if (added.length === 0 && shown.realRateLimit === next.realRateLimit) return;
+  const lastCopied = shown.realMessages?.at(-1)?.seq ?? -1;
+  const lastId = lastShownMessage.get(threadId)?.();
+  const anchors: Record<number, string> = {};
+  if (lastId) for (const s of added) if (s.seq > lastCopied) anchors[s.seq] = lastId;
+  updateRealThreadMarks(threadId, next, anchors);
 }
 
 function scheduleRetry(threadId: string): void {

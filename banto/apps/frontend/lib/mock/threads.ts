@@ -178,8 +178,27 @@ function renumberDefaultForkTitles(projectId: string): void {
  *  再取得して差し替える（決定・2026-09-04）——ローカルに楽観的なコピーは
  *  持たない（真実は一箇所、規則3）。 */
 /** host の Thread の記録から、会話の中の印（アカウントの切り替え・上限で終わったターン）を引く */
-export function realThreadExtraOf(record: RealThread): Pick<MockThread, "realAccountSwitches" | "realRateLimited"> {
-  return { realAccountSwitches: record.accountSwitches, realRateLimited: record.lastTurn?.rateLimit !== undefined };
+export function realThreadExtraOf(record: RealThread): Pick<MockThread, "realAccountSwitches" | "realRateLimit"> {
+  return {
+    realAccountSwitches: record.accountSwitches,
+    realRateLimit: record.lastTurn?.rateLimit === undefined ? undefined : (record.rateLimitStop ?? "stopped"),
+  };
+}
+
+/**
+ * **会話の中の印だけを書き換える**（追加・2026-10-18、v4-frontend.md §6.46）。流れを最後まで読んだ会話は組み直さない
+ * （`latest-state.ts`——流れた tool のカードを消さない）ので、発言の写しは変えずに印だけを足す。`anchors` は写しの発言より後に
+ * 起きた印の置き場所（画面の発言の id）
+ */
+export function updateRealThreadMarks(
+  threadId: string,
+  extra: Pick<MockThread, "realAccountSwitches" | "realRateLimit">,
+  anchors: Readonly<Record<number, string>>,
+): void {
+  mockThreads = mockThreads.map((t) =>
+    t.id === threadId ? { ...t, ...extra, realMarkAnchors: { ...t.realMarkAnchors, ...anchors } } : t,
+  );
+  notifyMockStoreChange();
 }
 
 export function updateRealThreadData(
@@ -188,11 +207,12 @@ export function updateRealThreadData(
   realMarkers: MockThread["realMarkers"],
   realUsage?: MockThread["realUsage"],
   /** 会話の中の印（アカウントの切り替え・上限で終わったターン、追加・2026-10-18） */
-  extra?: Pick<MockThread, "realAccountSwitches" | "realRateLimited">,
+  extra?: Pick<MockThread, "realAccountSwitches" | "realRateLimit">,
 ): void {
   mockThreads = mockThreads.map((t) =>
     t.id === threadId
-      ? { ...t, realMessages, realMarkers, realUsage, realAccountSwitches: extra?.realAccountSwitches, realRateLimited: extra?.realRateLimited }
+      ? // 組み直したら、組み直さずに足した印の置き場所は捨てる（記録の発言の番号で置ける）
+        { ...t, realMessages, realMarkers, realUsage, realAccountSwitches: extra?.realAccountSwitches, realRateLimit: extra?.realRateLimit, realMarkAnchors: undefined }
       : t,
   );
   notifyMockStoreChange();

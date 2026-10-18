@@ -122,15 +122,22 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
 
         // ---- 1. 切り替えの1行 ------------------------------------------------------------------------------
         // host は 5時間 97%。リセットは少し先——全部越えのカードが閉じるところ（5.）まで、待ちの帯の場面（4.）を挟む
-        const hostReset = secondsFromNow(200);
+        const hostReset = secondsFromNow(260);
         fakeApi.setLimit(HOST_TOKEN, { fiveHour: { utilization: 0.97, resetsAt: hostReset } });
         await send(own, threadId, `1回目。${fakeTurn({ relayRequests: 1, say: "はい" })}`);
-        await send(own, threadId, `2回目。${fakeTurn({ relayRequests: 1, say: "はい" })}`);
+        // 切り替えるターンは tool も呼ぶ——画面が流れを最後まで読んだターンに印を足しても、組み直さない（tool のカードを消さない）
+        await send(
+          own,
+          threadId,
+          `2回目。${fakeTurn({ relayRequests: 1, tools: [{ server: "filesystem", name: "listDirectory", args: { path: "." } }], say: "はい" })}`,
+        );
         await expect.poll(async () => (await threadOf()).accountSwitches?.length ?? 0, { timeout: 15_000 }).toBe(1);
         await expect(lines).toHaveCount(1, { timeout: 15_000 });
         await expect(lines.first()).toHaveText(`Claude のアカウントを「${B_LABEL}」に切り替えました（${HOST_LABEL}の5時間 97%）`);
         await expect(lines.first()).not.toHaveAttribute("data-all-over");
         await expect(lines.first()).toHaveClass(/text-ink-3/);
+        // 流れた tool のカードは残っている（印を足すために組み直していない）
+        await expect(page.getByRole("button", { name: /tool calls?$/ })).toHaveCount(1);
 
         // ---- 2. warn の形：B も越えた → 一番早くリセットされる host で続ける ------------------------------------------
         fakeApi.setLimit("tok-b", { fiveHour: { utilization: 0.98, resetsAt: secondsFromNow(7200) } });
@@ -245,6 +252,25 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         await expect(banner).toHaveCount(0);
         // 切り替えの1行は残っている
         await expect(lines).toHaveCount(2);
+
+        // 4c. 続けて上限に当たり続ける——6回続けたところで、自動で続けるのをやめたと会話に出す（待ちの帯の代わり）
+        await send(own, threadId, `まだやって。${fakeTurn({ rateLimit: { resetInMs: 0, times: 7 } })}`);
+        await expect
+          .poll(async () => (await api<{ rateLimitStop?: string }>(own, `/api/threads/${threadId}`)).body.rateLimitStop, {
+            timeout: 90_000,
+            message: "6回続けたのに自動で続けるのをやめない",
+          })
+          .toBe("gave_up");
+        await expect(stoppedBand).toHaveAttribute("data-stop", "gave_up", { timeout: 15_000 });
+        await expect(stoppedBand.getByTestId("thread-rate-limit-gave-up")).toHaveText(
+          "続けて上限に当たったので、自動で続けるのをやめました。続けるなら、受信箱のカードの「続ける」を押すか、この会話で次を送ってください。",
+        );
+        await expect(banner).toHaveCount(0);
+        await expect(sidebarLine).toHaveCount(0);
+        // 開き直しても同じ（記録から導く）
+        await reopen();
+        await expect(stoppedBand.getByTestId("thread-rate-limit-gave-up")).toBeVisible({ timeout: 15_000 });
+        await expect(banner).toHaveCount(0);
 
         // ---- 5. host のリセットを過ぎたら、全部越えのカードは自動で閉じる -------------------------------------------
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&overlay=inbox`);

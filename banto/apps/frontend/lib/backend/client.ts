@@ -395,6 +395,11 @@ export interface RealThread {
    * （AI の文脈には入っていない）。この仕組みより前の会話には無い
    */
   accountSwitches?: RealAccountSwitch[];
+  /**
+   * **上限で止まった最後のターンを自動では続けない理由**（追加・2026-10-18、§6.46。host が記録から導く）。`gave_up`＝続けて
+   * 上限に当たったのでやめた、`unknown_reset`＝リセットの時刻が分からない。待っている・人がやめたなら無い
+   */
+  rateLimitStop?: "gave_up" | "unknown_reset";
   createdAt: string;
 }
 

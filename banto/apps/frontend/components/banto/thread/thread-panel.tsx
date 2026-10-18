@@ -9,7 +9,7 @@
 import { TurnSummaryFooter } from "@/components/banto/thread/turn-summary-card";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { AssistantRuntimeProvider, ExportedMessageRepository, useLocalRuntime } from "@assistant-ui/react";
-import { Thread } from "@/components/assistant-ui/elements/thread.aui";
+import { Thread, TRANSCRIPT_END } from "@/components/assistant-ui/elements/thread.aui";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import type { ForkFromMessage } from "@/components/banto/thread/fork-from-message";
@@ -32,7 +32,7 @@ import {
   subscribeFollow,
   takeFollowToStart,
 } from "@/lib/backend/adapter";
-import { noteRuntimeBuilt, recordSignature, registerOpenThread } from "@/lib/backend/latest-state";
+import { noteRuntimeBuilt, recordSignature, registerLastShownMessage, registerOpenThread } from "@/lib/backend/latest-state";
 import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
@@ -189,12 +189,13 @@ export function ThreadPanel({
       put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
     }
     // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）——切り替えた要求が出た場所（同じ seq の物差し）
+    // 組み直さずに足した印は、足した時点の画面の最後の発言の後（`realMarkAnchors`、`latest-state.ts`）
     for (const change of forkOwnPart(thread, thread.realAccountSwitches ?? [])) {
-      put(anchorOf(change.seq), <AccountSwitchLine key={`account-switch-${change.seq}`} change={change} />);
+      put(thread.realMarkAnchors?.[change.seq] ?? anchorOf(change.seq), <AccountSwitchLine key={`account-switch-${change.seq}`} change={change} />);
     }
-    // **最後のターンが上限で終わった**——会話の終わりに帯（§6.46）。待ちの帯は入力欄の上（下の hint）
-    if (thread.realRateLimited && msgs.length > 0) {
-      put(`real-${msgs.at(-1)!.seq}`, <RateLimitStoppedBand key="rate-limit-stopped" />);
+    // **最後のターンが上限で終わった**——会話の一番下に帯（§6.46）。待ちの帯は入力欄の上（下の hint）
+    if (thread.realRateLimit) {
+      put(TRANSCRIPT_END, <RateLimitStoppedBand key="rate-limit-stopped" stop={thread.realRateLimit} />);
     }
     // **分岐した場所に「この Fork を開く」を置く**（決定・2026-09-07、ユーザー要望）。
     // Fork は横のレールからも開けるが、**会話のどこで分けたのか**はそこからは
@@ -363,6 +364,11 @@ function ThreadRuntime({
   // 送り出すまでの間に組み直すと、送った発言ごと会話が作り直されて送信が消える
   useEffect(
     () => registerRuntimeBusy(threadId, () => runtime.thread.getState().isRunning),
+    [runtime, threadId],
+  );
+  // 組み直さずに印を足すときの置き場所（画面の最後の発言、§6.46）
+  useEffect(
+    () => registerLastShownMessage(threadId, () => runtime.thread.getState().messages.at(-1)?.id),
     [runtime, threadId],
   );
   // 走り終えたら知らせる——走っている間に引き返した「最新を出す」を、ここでやり直す

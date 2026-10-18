@@ -115,8 +115,17 @@ export interface MockThread {
   realUsage?: readonly { seq: number; contextUsage: unknown; compactionCount: number }[];
   /** real:trueのときだけ意味を持つ。Claude のアカウントの切り替えの1行（追加・2026-10-18、v4-frontend.md §6.46） */
   realAccountSwitches?: readonly RealAccountSwitch[];
-  /** real:trueのときだけ意味を持つ。最後のターンが Claude の使用量の上限で終わった（追加・2026-10-18、§6.46） */
-  realRateLimited?: boolean;
+  /**
+   * real:trueのときだけ意味を持つ。最後のターンが Claude の使用量の上限で終わった（追加・2026-10-18、§6.46）。`stopped`＝止まった
+   * （待っている・人がやめた）、`gave_up`＝続けて上限に当たったので自動で続けるのをやめた、`unknown_reset`＝リセットの時刻が分からない
+   */
+  realRateLimit?: "stopped" | "gave_up" | "unknown_reset";
+  /**
+   * real:trueのときだけ意味を持つ。**組み直さずに足した印の置き場所**（印の seq → 画面の発言の id）。流れを最後まで読んだ会話は
+   * 記録から組み直さない（tool のカードを消さない）ので、記録の写しの発言より後の印は、足した時点の最後の発言の後に置く。
+   * 組み直したら捨てる
+   */
+  realMarkAnchors?: Readonly<Record<number, string>>;
 }
 
 /** 会話の台本。ChatModelAdapter がこれを再生してダミー応答を作る。 */

@@ -365,6 +365,9 @@ const NO_MARKERS: ReadonlyMap<string | null, ReactNode> = new Map();
  * マーカー（Clear等の横線）を実際に差し込むため。`unstable_useThreadMessageIds`
  * は実験的APIだが、目的（idベースの手動描画）に対して用意されている想定の使い方。
  */
+/** `transcriptMarkers` の鍵：会話の一番下（最後の発言の後）に出す印（上限で止まった帯など、§6.46） */
+export const TRANSCRIPT_END = "\u0000end";
+
 const ThreadMessagesWithMarkers: FC<{
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
   /** 読んでいた場所へ戻すときの発言——窓をそこまで広げておく */
@@ -383,6 +386,7 @@ const ThreadMessagesWithMarkers: FC<{
           {transcriptMarkers.get(id)}
         </Fragment>
       ))}
+      {transcriptMarkers.get(TRANSCRIPT_END)}
     </>
   );
 };
