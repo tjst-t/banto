@@ -9290,13 +9290,13 @@
         "e2e",
         "flaky"
       ],
-      "body": "2026-10-18 の夜間のフル E2E（origin/main 3efe8007、2並列）で1回落ち、その spec だけを2回流し直すと2回とも通った。\n\n- 試験：specs/background-work.spec.ts:27「待たずに頼んだ仕事が、どの Thread で動いているかサイドバーに出て、押すとその仕事が開く」\n- 落ち方：`TypeError: fetch failed` / `[cause]: SocketError: other side closed`（試験からの API の呼び出しの接続が向こうから切られた）\n- 同じ回のログに、Module の起動で node_modules の中のファイルの ENOENT（zod・ajv・subagent の dist）が何度か出ていた。関係するかは未確認。\n- Backlog #221（サイドバーのバックグラウンドの印が消えない）とは落ち方が違う。",
+      "body": "2026-10-18 の夜間のフル E2E（origin/main 3efe8007、2並列）で1回落ち、その spec だけを2回流し直すと2回とも通った。\n\n- 試験：specs/background-work.spec.ts:27。0ms で落ちたので、テストの本体ではなく spec の替わり目の片づけ（test-base.ts の resetIfNewSpec：Project を畳む→コンテナを消す→Module を戻す→Vault→受信箱）の中の fetch と見ている。\n- 落ち方：`TypeError: fetch failed` / `[cause]: SocketError: other side closed`（core が答えずに接続を閉じた）。直前は automation-events-ui で、Project の close が 2440ms かかっていた。\n- 打ち消した見立て：片づけの spawnSync（incus delete・sleepSync）で event loop が止まっている間に keep-alive の接続が閉じる。5秒前後で event loop を止めてから POST する小さな再現（12通り）では1回も落ちなかった。\n- 2026-10-18 main 083b5907：test-base の api() で、届かなかった要求のメソッドとパスを誤りに添えるようにした。次に落ちたら、どの要求かで追う。settleInbox（helpers.ts）の fetch にはまだ添えていない。",
       "doneWhen": "background-work.spec.ts をフル E2E の中で10回流して落ちない、または原因が分かって直っている",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T00:59:08.263Z",
-      "updatedAt": "2026-10-18T00:59:08.263Z",
+      "updatedAt": "2026-10-18T02:09:19.289Z",
       "closedAt": null,
       "extra": {}
     },
