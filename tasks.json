@@ -9275,6 +9275,30 @@
       "updatedAt": "2026-10-18T00:01:25.956Z",
       "closedAt": "2026-10-18T00:01:25.956Z",
       "extra": {}
+    },
+    {
+      "id": "e2e-background-work-27-fetch-failed-othe",
+      "number": 385,
+      "kind": "bug",
+      "title": "E2E background-work:27 が時々「fetch failed（other side closed）」で落ちる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "flaky"
+      ],
+      "body": "2026-10-18 の夜間のフル E2E（origin/main 3efe8007、2並列）で1回落ち、その spec だけを2回流し直すと2回とも通った。\n\n- 試験：specs/background-work.spec.ts:27「待たずに頼んだ仕事が、どの Thread で動いているかサイドバーに出て、押すとその仕事が開く」\n- 落ち方：`TypeError: fetch failed` / `[cause]: SocketError: other side closed`（試験からの API の呼び出しの接続が向こうから切られた）\n- 同じ回のログに、Module の起動で node_modules の中のファイルの ENOENT（zod・ajv・subagent の dist）が何度か出ていた。関係するかは未確認。\n- Backlog #221（サイドバーのバックグラウンドの印が消えない）とは落ち方が違う。",
+      "doneWhen": "background-work.spec.ts をフル E2E の中で10回流して落ちない、または原因が分かって直っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-18T00:59:08.263Z",
+      "updatedAt": "2026-10-18T00:59:08.263Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
