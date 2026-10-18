@@ -36,7 +36,14 @@ export class InfisicalBackend implements VaultBackend {
   private readonly agents = new Map<string, { socketPath: string; pid: number }>();
   private agentCleanupRegistered = false;
 
-  constructor(private readonly conn: InfisicalConnection) {}
+  constructor(
+    private readonly conn: InfisicalConnection,
+    /**
+     * 秘密を置いた・消したあとに呼ぶ（2026-10-18、Backlog #389）——台帳が少し前の一覧を分け合っているので、
+     * 置き換えた値（空かどうか）・消した秘密が一覧に出遅れないよう捨てさせる（server.ts が台帳の `forget` を繋ぐ）
+     */
+    private readonly onChange: () => void = () => {},
+  ) {}
 
   async getSecret(path: string): Promise<string> {
     const { folder, key, env } = placeOf(path);
@@ -68,13 +75,19 @@ export class InfisicalBackend implements VaultBackend {
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
       await this.conn.secrets().updateSecret(key, { ...scope, secretPath: folder, secretValue });
+    } finally {
+      this.onChange();
     }
     this.dropAgents(path);
   }
 
   async deleteSecret(path: string): Promise<void> {
     const { folder, key, env } = placeOf(path);
-    await this.conn.secrets().deleteSecret(key, { ...this.conn.scopeFor(env), secretPath: folder });
+    try {
+      await this.conn.secrets().deleteSecret(key, { ...this.conn.scopeFor(env), secretPath: folder });
+    } finally {
+      this.onChange();
+    }
   }
 
   async listPaths(prefix?: string): Promise<string[]> {

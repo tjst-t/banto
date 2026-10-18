@@ -138,12 +138,14 @@ export function createInfisicalVaultServer(dataDir: string, moduleName = CANONIC
   const proxy = new Proxy({} as InfisicalConnection, {
     get: (_t, prop) => Reflect.get(lazy.active() as object, prop, lazy.active()),
   });
-  const backend = new InfisicalBackend(proxy);
+  const aliasStore = new InfisicalAliasStore(proxy);
+  // 値を置いた・消したら、台帳が分け合っている一覧を捨てさせる（2026-10-18、Backlog #389）
+  const backend = new InfisicalBackend(proxy, () => aliasStore.forget());
 
   return createVaultModuleServer({
     moduleName,
     backend,
-    aliasStore: new InfisicalAliasStore(proxy),
+    aliasStore,
     dataDir,
     configApp: {
       uri: CONFIG_APP_URI,

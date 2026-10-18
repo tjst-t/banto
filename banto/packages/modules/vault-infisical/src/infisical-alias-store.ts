@@ -53,8 +53,32 @@ import { isFolderMissing } from "./infisical-backend.js";
 type StoredMeta = DistributiveOmit<AliasMeta, "backendPath">;
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+/**
+ * 一覧を分け合う長さ（2026-10-18、Backlog #389）。**最後に使ってから `idleMs` 以内なら同じ一覧を返す**、
+ * ただし最初に読んでから `maxMs` を超えたら読み直す。1回の runCommand は alias ごとに窓口の
+ * `lookupAlias` と自分の `resolveAlias` を呼び、そのたびに一覧を読んでいた——25件で Infisical の回数制限に当たった
+ */
+const SHARED_LIST_IDLE_MS = 5_000;
+const SHARED_LIST_MAX_MS = 30_000;
+
+type SharedList = { rows: Promise<AliasMeta[]>; since: number; lastUsed: number };
+
 export class InfisicalAliasStore implements AliasStore {
-  constructor(private readonly conn: InfisicalConnection) {}
+  /** 置き場（Project・環境・フォルダ）ごとの、少し前に読んだ一覧。**値は入っていない**（`toMeta` が捨てる） */
+  private readonly shared = new Map<string, SharedList>();
+
+  constructor(
+    private readonly conn: InfisicalConnection,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /**
+   * 分け合っている一覧を捨てる。**自分が書いたら必ず呼ぶ**——書いた直後の一覧に、書いたものが出ないと困る。
+   * backend（値の置き換え・削除）からも呼ばれる（server.ts が繋ぐ）
+   */
+  forget(): void {
+    this.shared.clear();
+  }
 
   /** 遠くにあるので、立ち上がりで読み込むものは無い。 */
   async load(): Promise<void> {}
@@ -63,7 +87,10 @@ export class InfisicalAliasStore implements AliasStore {
    * 全フォルダの秘密を、**注記つきで**列挙する。
    *
    * **写しを持たない**（規則3）——手元に貯めると、別のホストが変えたときに
-   * 古いものを見せることになる。共有できることが眼目なので、毎回聞く。
+   * 古いものを見せることになる。共有できることが眼目なので、聞き直す。
+   * **ただし続けて来た問い合わせは、同じ一覧を分け合う**（改訂・2026-10-18、Backlog #389）——
+   * 最後に使ってから 5 秒以内（最長 30 秒）。別のホストの変更が見えるのが最長 30 秒遅れる代わりに、
+   * alias の数だけ Infisical に聞き直して回数制限に当たるのを止める。自分の書き込みでは捨てる（`forget`）
    *
    * **聞くのは1回**（改訂・2026-09-26、実測）。以前はフォルダの一覧を取ってから
    * フォルダごとに `listSecrets` を投げていた（N+1）。Infisical Cloud への往復が
@@ -103,8 +130,46 @@ export class InfisicalAliasStore implements AliasStore {
     return (await Promise.all(reads)).flat();
   }
 
-  /** 1つの環境の、1つのフォルダから下を読む。`env` が無ければ接続設定の環境（版を付けない）。 */
+  /**
+   * 1つの環境の、1つのフォルダから下を読む。`env` が無ければ接続設定の環境（版を付けない）。
+   * **少し前に読んだものがあれば、それを分け合う**（同時に来た呼び出しは同じ Promise を待つ）。
+   * 読めなかったものは分け合わない——次の呼び出しは読み直す
+   */
   private async listIn(env: string | undefined, secretPath: string): Promise<AliasMeta[]> {
+    const rows = await this.sharedRows(env, secretPath);
+    return rows.map((r) => ({ ...r }));
+  }
+
+  private sharedRows(env: string | undefined, secretPath: string): Promise<AliasMeta[]> {
+    const { projectId, environment } = this.conn.scopeFor(env);
+    const key = `${projectId}|${environment}|${secretPath}`;
+    const now = this.now();
+    const hit = this.shared.get(key);
+    if (hit && now - hit.lastUsed <= SHARED_LIST_IDLE_MS && now - hit.since <= SHARED_LIST_MAX_MS) {
+      hit.lastUsed = now;
+      return hit.rows;
+    }
+    const entry: SharedList = { rows: this.readIn(env, secretPath), since: now, lastUsed: now };
+    this.shared.set(key, entry);
+    entry.rows.catch(() => {
+      if (this.shared.get(key) === entry) this.shared.delete(key);
+    });
+    return entry.rows;
+  }
+
+  /** 分け合っている一覧の中の1行（あれば）。**写しではなく中の行そのもの**——`markUsed` が書き直す */
+  private async sharedRow(backendPath: string): Promise<AliasMeta | undefined> {
+    const now = this.now();
+    for (const entry of this.shared.values()) {
+      if (now - entry.lastUsed > SHARED_LIST_IDLE_MS || now - entry.since > SHARED_LIST_MAX_MS) continue;
+      const rows = await entry.rows.catch(() => [] as AliasMeta[]);
+      const hit = rows.find((r) => r.backendPath === backendPath);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  private async readIn(env: string | undefined, secretPath: string): Promise<AliasMeta[]> {
     const read = (viewSecretValue: boolean) =>
       this.conn.secrets().listSecrets({
         ...this.conn.scopeFor(env),
@@ -154,10 +219,12 @@ export class InfisicalAliasStore implements AliasStore {
    * その秘密に注記を付けるだけ——値には触らない。
    */
   async create(meta: AliasMeta): Promise<void> {
+    this.forget();
     await this.writeComment(meta.backendPath, stored(meta));
   }
 
   async update(backendPath: string, patch: AliasPatch): Promise<void> {
+    this.forget();
     const existing = await this.find(backendPath);
     if (!existing) throw new Error(`alias "${backendPath}" not found`);
     const next: Record<string, unknown> = { ...stored(existing) };
@@ -170,7 +237,9 @@ export class InfisicalAliasStore implements AliasStore {
   }
 
   /** 値ごと消える（`deleteSecret` が呼ばれる）ので、**ここでやることは無い**。 */
-  async delete(_backendPath: string): Promise<void> {}
+  async delete(_backendPath: string): Promise<void> {
+    this.forget();
+  }
 
   /**
    * **参照の置き場に、元を指す秘密を1つ置く**（2026-10-04）。値は Infisical の参照の
@@ -178,6 +247,7 @@ export class InfisicalAliasStore implements AliasStore {
    * フォルダは呼び出し側（kit）が作ってから呼ぶ。
    */
   async createLink(link: LinkAliasMeta): Promise<void> {
+    this.forget();
     const place = placeOf(link.backendPath);
     const target = this.referenceTo(link.linkTo);
     // グループのフォルダは kit が作る。**その中のフォルダはここで作る**（kit はグループしか知らない）
@@ -192,6 +262,7 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 指す先を変える——注記と、Infisical の参照の書き方の両方を（片方だけだと食い違う）。 */
   async retargetLink(backendPath: string, linkTo: string): Promise<void> {
+    this.forget();
     const existing = await this.find(backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
     const { folder, key, env } = placeOf(backendPath);
@@ -205,6 +276,7 @@ export class InfisicalAliasStore implements AliasStore {
 
   /** 参照の秘密（元を指す書き方が入っているだけ）を消す。**元には触らない**。 */
   async deleteLink(backendPath: string): Promise<void> {
+    this.forget();
     const existing = await this.find(backendPath);
     if (!existing || !isLink(existing)) throw new Error(`"${backendPath}" は参照ではありません`);
     const { folder, key, env } = placeOf(backendPath);
@@ -241,10 +313,18 @@ export class InfisicalAliasStore implements AliasStore {
     return `\${${parts.map(([, part]) => part).join(".")}}`;
   }
 
+  /**
+   * 使った日を注記に書く。**分け合っている一覧にその行があれば、それを元にする**（2026-10-18、Backlog #389）
+   * ——`resolveAlias` のたびにフォルダを読み直すと、alias の数だけ listSecrets が出る。一覧は捨てずに、
+   * その行の使った日だけ書き換える（使った日を書いただけで一覧を読み直させない）
+   */
   async markUsed(backendPath: string): Promise<void> {
-    const existing = await this.find(backendPath);
+    const recent = await this.sharedRow(backendPath);
+    const existing = recent ?? (await this.find(backendPath));
     if (!existing) return;
-    await this.writeComment(existing.backendPath, { ...stored(existing), lastUsedAt: new Date().toISOString() });
+    const lastUsedAt = new Date().toISOString();
+    await this.writeComment(existing.backendPath, { ...stored(existing), lastUsedAt });
+    if (recent) recent.lastUsedAt = lastUsedAt;
   }
 
   /** 注記だけを書き換える。**値は渡さない**——渡すと上書きしてしまう。 */
