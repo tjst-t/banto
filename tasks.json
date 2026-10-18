@@ -9665,7 +9665,7 @@
       "number": 401,
       "kind": "task",
       "title": "Project ごとの並びと閾値で切り替える（選ぶ規則・429 の送り直し・切り替えの記録・全部越えのカード）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-runner-via-relay"
@@ -9679,7 +9679,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T15:17:22.591Z",
       "closedAt": null,
       "extra": {}
     },
