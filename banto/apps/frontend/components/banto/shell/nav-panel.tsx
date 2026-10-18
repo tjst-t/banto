@@ -62,7 +62,7 @@ import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resou
 import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
-import { AUTOMATIONS_CANVAS, automationsCanvasHref, useAutomations } from "@/lib/backend/automations";
+import { automationsCanvasHref, useAutomations } from "@/lib/backend/automations";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
 import { ProjectCodeTransferLine } from "./code-transfer";
 
@@ -202,9 +202,17 @@ export function ProjectTreeItem({
   // **ほかの Project から移るときは、その Project で最後に開いていた Thread へ**（2026-10-13、§6.40）
   const lastThreads = useLastThreads();
   const lastForkId = isCurrent ? null : lastForkOf(lastThreads, project.id, forks.map((f) => f.id));
-  // **自動化**（v4-frontend.md §6.42）。目次を開いている Project の分だけ取る——専用の Fork の印と「自動化（n）」の行に使う
+  // **自動化**（v4-frontend.md §6.42）。目次を開いている Project の分だけ取る——専用の Fork の稲妻の印と、
+  // 自動化の届け先の Thread（専用の Fork・既存の Thread）の「…」の「自動化の設定を開く」に使う。
+  // 目次の「自動化（n）」の行はやめた（2026-10-18、ユーザー）
   const automations = useAutomations(expanded ? project.id : null);
   const dedicatedForks = new Set((automations ?? []).flatMap((a) => (a.target.kind === "dedicated" && a.target.threadId ? [a.target.threadId] : [])));
+  const automationThreads = new Set((automations ?? []).flatMap((a) => (a.target.threadId ? [a.target.threadId] : [])));
+  /** その Thread を開き、隣に自動化の画面（Canvas）を開く。Base なら forkId は null */
+  function openAutomations(forkId: string | null) {
+    router.push(automationsCanvasHref(project.id, forkId));
+    onNavigate?.();
+  }
 
   /**
    * **サイドバーから Fork を作る**（2026-10-11、ユーザー）。ダイアログは会話の面が持つ（`lib/fork-request.ts`）
@@ -368,6 +376,7 @@ export function ProjectTreeItem({
                   what="Base Thread"
                   name="Base Thread"
                   onFork={() => startFork(project.baseThreadId, "continue")}
+                  onOpenAutomations={automationThreads.has(project.baseThreadId) ? () => openAutomations(null) : undefined}
                 >
                   {(more) => (
                     <div className="relative">
@@ -409,6 +418,7 @@ export function ProjectTreeItem({
                         }
                         // **Fork からも分けられる**（2026-10-11、ユーザー）
                         onFork={() => startFork(fork.id, "continue")}
+                        onOpenAutomations={automationThreads.has(fork.id) ? () => openAutomations(fork.id) : undefined}
                       >
                         {(more) => (
                         <div className="relative" {...forkDrag}>
@@ -440,29 +450,6 @@ export function ProjectTreeItem({
                   </SortableRow>
                 ))}
               </SortableList>
-
-              {/* **自動化の一覧**（v4-frontend.md §6.42）。自動化がある Project だけ1行出す——無ければ目次を増やさない
-                  （作る口は Command Palette と AI への頼み）。いま開いている Fork は閉じずに、隣へ Canvas として開く */}
-              {automations && automations.length > 0 ? (
-                <SidebarMenuSubItem>
-                  <SidebarMenuSubButton
-                    asChild
-                    size="sm"
-                    className="text-ink-2"
-                    isActive={isCurrent && searchParams.get("canvas") === AUTOMATIONS_CANVAS}
-                  >
-                    <Link
-                      href={automationsCanvasHref(project.id, isCurrent ? activeForkThreadId : null)}
-                      data-roving-item
-                      onClick={onNavigate}
-                      data-testid="sidebar-automations"
-                    >
-                      <Zap />
-                      <span>自動化（{automations.length}）</span>
-                    </Link>
-                  </SidebarMenuSubButton>
-                </SidebarMenuSubItem>
-              ) : null}
 
               {/* **まっさらな Fork を作る**（2026-10-11、ユーザー）。会話を引き継いで分けるのは各行の「…」の「ここから Fork…」。
                   「閉じた Fork（N）」の行はやめた——左下の履歴と同じものだった */}
