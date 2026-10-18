@@ -20,6 +20,8 @@ import { ApprovalToolCard } from "@/components/banto/thread/approval-tool-card";
 import { ElicitationFormView } from "@/components/banto/inbox/elicitation-form";
 import { InlineModuleView, RealInlineModuleView } from "@/components/banto/thread/inline-module-view";
 import { RelayApprovalCard } from "@/components/banto/thread/relay-approval-card";
+import { RelayTargetsTable } from "@/components/banto/thread/relay-targets-table";
+import { splitTargets } from "@/lib/relay-targets";
 import { ShellCommandCard } from "@/components/banto/thread/shell-command-card";
 import {
   HUMAN_TOOL_NAME,
@@ -96,6 +98,7 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
   const isPending =
     props.status?.type === "requires-action" && answeredHere === null && answeredElsewhere === undefined && answerable;
   const answer = typeof props.result === "string" ? props.result : (answeredHere ?? answeredElsewhere ?? null);
+  const { rest, targets } = splitTargets(args.toolInput);
 
   return (
     <div
@@ -113,8 +116,10 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
         // runCommand を中身を見ないまま許可することになる
         // 「見出し→値」を1行ずつ、文字列は折り返して出す（tool-input-details.tsx）。長いもの（Memory の取り消し等）は
         // カードの中でスクロールする
-        <ToolInputDetails input={args.toolInput} className="max-h-96 overflow-auto" />
+        <ToolInputDetails input={targets ? rest : args.toolInput} className="max-h-96 overflow-auto" />
       ) : null}
+      {/* まとめて引く口の対象は1行1件の表（JSON のまま出さない） */}
+      {targets ? <RelayTargetsTable targets={targets} /> : null}
       {sendError ? <p className="text-xs text-destructive">{sendError}</p> : null}
       {!answerable ? (
         <p className="text-xs text-ink-3">

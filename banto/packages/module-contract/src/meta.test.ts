@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  batchOfMeta,
+  declaresBatchOf,
+  BATCH_OF_META_KEY,
   toolCardOf,
   CARD_META_KEY,
   classifyMetaDifference,
@@ -345,4 +348,15 @@ test("callerOf：core の印（host）を読み、Project・banto 全体の印�
   assert.deepEqual(stamp, { host: true });
   assert.ok(stamp && !("project" in stamp) && !("instance" in stamp) && !("admin" in stamp));
   assert.equal(callerOf({ [CALLER_META_KEY]: { host: "yes" } }), undefined);
+});
+
+test("batchOf：名乗りを読む——形が違えば undefined だが、名乗ったことは見分ける（host が断るため）", () => {
+  const ok = { _meta: { [BATCH_OF_META_KEY]: { tool: "resolveAlias", items: "items" } } };
+  assert.equal(BATCH_OF_META_KEY, "dev.banto/batchOf");
+  assert.deepEqual(batchOfMeta(ok), { tool: "resolveAlias", items: "items" });
+  assert.equal(declaresBatchOf(ok), true);
+  const bad = { _meta: { [BATCH_OF_META_KEY]: { tool: "", items: "items" } } };
+  assert.equal(batchOfMeta(bad), undefined);
+  assert.equal(declaresBatchOf(bad), true);
+  assert.equal(declaresBatchOf({}), false);
 });

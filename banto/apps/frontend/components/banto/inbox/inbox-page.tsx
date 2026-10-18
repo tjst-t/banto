@@ -72,6 +72,8 @@ import { getThread } from "@/lib/mock/threads";
 import { isOverlayOpen } from "@/lib/overlay-open";
 import { safeLinkUrl, type TurnSummary } from "@/lib/turn-summary";
 import { cn } from "@/lib/utils";
+import { splitTargets } from "@/lib/relay-targets";
+import { RelayTargetsTable } from "@/components/banto/thread/relay-targets-table";
 import { ElicitationFormView } from "./elicitation-form";
 import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
 
@@ -477,6 +479,7 @@ function Mark({ card }: { card: Card }) {
 function JudgmentBody({ item, onAnswered }: { item: RealInboxJudgment; onAnswered: (choice: string) => void }) {
   /** 答えようとして断られた理由（押したのに何も起きない、を作らない——規則2） */
   const [error, setError] = useState<string | null>(null);
+  const { rest, targets } = splitTargets(item.toolInput);
   return (
     <div className="px-4 pb-4">
       <p className="text-sm text-foreground">
@@ -485,7 +488,13 @@ function JudgmentBody({ item, onAnswered }: { item: RealInboxJudgment; onAnswere
         <span data-testid="inbox-judgment-message">{item.message}</span>
       </p>
       {/* 会話のカードと同じ出し方（tool-input-details.tsx） */}
-      <ToolInputDetails input={item.toolInput} className="mt-2.5 max-h-96 overflow-auto" />
+      <ToolInputDetails input={targets ? rest : item.toolInput} className="mt-2.5 max-h-96 overflow-auto" />
+      {/* まとめて引く口の対象は1行1件の表（JSON のまま出さない） */}
+      {targets ? (
+        <div className="mt-2.5">
+          <RelayTargetsTable targets={targets} />
+        </div>
+      ) : null}
       {item.source === "elicitation" ? (
         // Module からの質問（Elicitation）は、受信箱から答える口が host に無い（会話のカードも同じ）——会話を開いて答える
         <p className="mt-3 text-xs text-ink-3">この問いには会話を開いて答えてください</p>

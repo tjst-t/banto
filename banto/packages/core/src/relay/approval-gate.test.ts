@@ -27,16 +27,16 @@ import { AUTO_APPROVED_ANSWER_TEXT, AUTO_APPROVED_REASON } from "../inbox/auto-a
 const THREAD = "thread-1";
 const PROJECT = "project-1";
 
-async function fakeVaultClient(auditArgs?: string[]): Promise<Client> {
+async function fakeVaultClient(auditArgs?: string[], tools?: unknown[]): Promise<Client> {
   const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+    tools: (tools ?? [
       {
         name: "resolveAlias",
         inputSchema: { type: "object", properties: {} },
         ...(auditArgs ? { _meta: { "dev.banto/auditArgs": auditArgs } } : {}),
       },
-    ],
+    ]) as never,
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "explodes") throw new Error("宛先の Module が失敗しました");
@@ -55,6 +55,9 @@ async function setup(
     bundled?: boolean;
     /** 「承認をすべて自動で許可する」（試験の途中で切り替える） */
     autoApprove?: { on: boolean };
+    /** 宛先の tool の一覧を差し替える・宛先を同梱にする（まとめて呼ぶ口の試験） */
+    vaultTools?: unknown[];
+    vaultBundled?: boolean;
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
@@ -74,8 +77,10 @@ async function setup(
   const registry = new RelayRegistry();
   registry.registerModule({
     name: "vault",
-    client: await fakeVaultClient(opts.auditArgs),
-    meta: parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
+    client: await fakeVaultClient(opts.auditArgs, opts.vaultTools),
+    meta: ((m) => (opts.vaultBundled ? markBundled(m, "vault") : m))(
+      parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault"),
+    ),
   });
   const rawShellMeta = parseModuleMeta(
     { satisfies: ["shell"], dependsOn: [{ role: "vault", required: true }], isolation: "subprocess" },
@@ -712,6 +717,252 @@ test("中継の承認の判断待ちは、呼び出しが持つ tool_use の id 
       await pending.catch(() => undefined);
       call.end();
     }
+  } finally {
+    await t.close();
+  }
+});
+
+// ── まとめて呼ぶ口（`dev.banto/batchOf`、追加・2026-10-18、v4-modules.md「秘密をまとめて引く」の承認） ──
+
+/** vault-kit と同じ形の口：1件ずつの `resolveAlias`（name は required、group は任意）と、まとめた `resolveAliases` */
+function batchVaultTools(opts: { member?: boolean; batchOf?: unknown } = {}): unknown[] {
+  return [
+    ...(opts.member === false
+      ? []
+      : [
+          {
+            name: "resolveAlias",
+            inputSchema: { type: "object", properties: { name: { type: "string" }, group: { type: "string" } }, required: ["name"] },
+            _meta: { "dev.banto/auditArgs": ["name", "group"] },
+          },
+          { name: "lookupAlias", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+        ]),
+    {
+      name: "resolveAliases",
+      inputSchema: { type: "object", properties: { items: { type: "array" } } },
+      _meta: { "dev.banto/batchOf": opts.batchOf ?? { tool: "resolveAlias", items: "items" } },
+    },
+    { name: "lookupAliases", inputSchema: { type: "object" }, _meta: { "dev.banto/batchOf": { tool: "lookupAlias", items: "items" } } },
+  ];
+}
+
+function callBatch(t: Awaited<ReturnType<typeof setup>>, args: Record<string, unknown>, name = "resolveAliases") {
+  return t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name, arguments: args } });
+}
+
+const names = (...xs: string[]) => ({ items: xs.map((name) => ({ name })) });
+
+test("まとめて呼ぶ口：要素ごとの鍵は resolveAlias と同じ——前に許したものは聞かず、まだのものだけをカード1枚で聞き、許可は1件ずつに効く", async () => {
+  const t = await setup({ inContainer: true, vaultTools: batchVaultTools(), vaultBundled: true });
+  const seen = new Set<string>();
+  try {
+    // 1件ずつの口で前に許したもの
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias", scope: { name: "a" } });
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const pending = callBatch(t, { items: [{ name: "a" }, { name: "b", group: "g1" }, { name: "c" }] });
+    const judgment = await waitForJudgment(t.inbox, seen);
+    assert.match(judgment.message, /shell が vault の resolveAliases（まとめて 3 件のうち、まだ許していない 2 件）を呼ぼうとしています/);
+    const input = judgment.toolInput as Record<string, unknown>;
+    assert.equal(input["名前"], "resolveAliases");
+    assert.deepEqual(input["対象"], [{ name: "b", group: "g1" }, { name: "c" }]);
+    t.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    assert.equal(((await pending).content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    assert.equal(t.cards.length, 1, "カードは1回の呼び出しに1枚");
+
+    // まとめて許したものは、1件ずつの口にも効く
+    await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { name: "c" } } });
+    await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { name: "b", group: "g1" } } });
+    // 全部許してあれば、まとめた呼び出しでもカードは出ない
+    await callBatch(t, { items: [{ name: "c" }, { name: "a" }] });
+    assert.equal(t.cards.length, 1, "許したものを聞き直している");
+    endCall();
+
+    const all = await t.events();
+    const grants = all.filter((e) => e.type === "relay.grant_created").map((e) => e.payload);
+    assert.deepEqual(grants.slice(1), [
+      { projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias", scope: { name: "b", group: "g1" } },
+      { projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias", scope: { name: "c" } },
+    ]);
+    // 監査は alias 1件ごとに1行（name は実際に呼んだ口、まとめた印を添える）
+    const recorded = all
+      .filter((e) => e.type === "relay.call_recorded")
+      .map((e) => e.payload as Record<string, unknown>)
+      .filter((r) => r.name === "resolveAliases");
+    assert.equal(recorded.length, 5);
+    assert.deepEqual(
+      recorded.slice(0, 3).map((r) => [r.identifiers, r.batch, r.allowed, r.ok]),
+      [
+        [{ name: "a" }, { size: 3 }, true, true],
+        [{ name: "b", group: "g1" }, { size: 3 }, true, true],
+        [{ name: "c" }, { size: 3 }, true, true],
+      ],
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("まとめて呼ぶ口：拒否なら呼び出しごと断る——前から許してあったものの許可は残り、何も覚えない", async () => {
+  const t = await setup({ inContainer: true, vaultTools: batchVaultTools(), vaultBundled: true });
+  const seen = new Set<string>();
+  try {
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias", scope: { name: "a" } });
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const pending = callBatch(t, names("a", "b"));
+    const judgment = await waitForJudgment(t.inbox, seen);
+    t.pendingApprovals.resolve(judgment.id, { behavior: "deny", message: "やめる" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "deny" });
+    await assert.rejects(pending, /人が拒否しました/);
+    // a の許可はそのまま
+    await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: { name: "a" } } });
+    assert.equal(t.cards.length, 1);
+    endCall();
+    const all = await t.events();
+    assert.equal(all.filter((e) => e.type === "relay.grant_created").length, 1, "拒否は覚えない");
+    const refused = all.filter((e) => e.type === "relay.call_recorded").map((e) => e.payload as Record<string, unknown>).filter((r) => r.name === "resolveAliases");
+    assert.deepEqual(refused.map((r) => [r.identifiers, r.allowed]), [[{ name: "a" }, false], [{ name: "b" }, false]]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("まとめて呼ぶ口：「承認をすべて自動で許可する」なら答え済みのカードを1枚（対象の一覧つき）残し、覚えない", async () => {
+  const t = await setup({ inContainer: true, vaultTools: batchVaultTools(), vaultBundled: true, autoApprove: { on: true } });
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    await callBatch(t, names("a", "b", "c"));
+    endCall();
+    assert.equal(t.cards.length, 1);
+    assert.match(t.cards[0]!.message, /resolveAliases（まとめて 3 件のうち、まだ許していない 3 件）/);
+    assert.deepEqual((t.cards[0]!.toolInput as Record<string, unknown>)["対象"], [{ name: "a" }, { name: "b" }, { name: "c" }]);
+    assert.match(JSON.stringify(t.cards[0]!.toolInput), /聞かずに通しました/);
+    const all = await t.events();
+    assert.equal(all.filter((e) => e.type === "relay.grant_created").length, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("まとめて呼ぶ口：拾えない形は聞く前に中継ごと断る", async () => {
+  const cases: Array<[string, Record<string, unknown>, RegExp, Parameters<typeof batchVaultTools>[0]?]> = [
+    ["items 以外の引数", { ...names("a"), extra: 1 }, /items のほかの引数を渡せません（extra）/],
+    ["items が配列でない", { items: "a" }, /items が配列ではありません/],
+    ["空", { items: [] }, /items が空です/],
+    ["上限を超える", { items: Array.from({ length: 101 }, (_, i) => ({ name: `k${i}` })) }, /100 件までです（101 件）/],
+    ["要素がオブジェクトでない", { items: ["a"] }, /1 件目がオブジェクトではありません/],
+    ["required の識別子が無い", { items: [{ name: "a" }, { group: "g" }] }, /2 件目から name を拾えません/],
+    ["required の識別子が文字列でない", { items: [{ name: 1 }] }, /1 件目から name を拾えません/],
+    ["required の識別子が長すぎる", { items: [{ name: "x".repeat(201) }] }, /1 件目から name を拾えません/],
+    ["batchOf.tool が同じ宛先に無い", names("a"), /resolveAlias が、同じ Module にありません/, { member: false }],
+    ["batchOf の形が違う", names("a"), /batchOf）の形が違います/, { batchOf: { tool: 1 } }],
+  ];
+  for (const [label, args, expected, toolOpts] of cases) {
+    const t = await setup({ inContainer: true, vaultTools: batchVaultTools(toolOpts), vaultBundled: true });
+    try {
+      const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+      await assert.rejects(callBatch(t, args), expected, label);
+      endCall();
+      assert.equal(t.cards.length, 0, `${label}：聞く前に断る`);
+      const recorded = (await t.events()).filter((e) => e.type === "relay.call_recorded").map((e) => e.payload as Record<string, unknown>);
+      assert.equal(recorded.length, 1, `${label}：断ったことを記録する`);
+      assert.equal(recorded[0]!.allowed, false);
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("まとめて呼ぶ口：第三者の宛先が batchOf を名乗っていたら、コンテナからは断る——ホストからは普通の tool として1回聞く", async () => {
+  const fromContainer = await setup({ inContainer: true, vaultTools: batchVaultTools() });
+  try {
+    const endCall = fromContainer.moduleCalls.begin("shell-project-1", THREAD);
+    await assert.rejects(callBatch(fromContainer, names("a")), /同梱でない Module のまとめて呼ぶ口は、コンテナの中からは呼べない/);
+    endCall();
+    assert.equal(fromContainer.cards.length, 0);
+  } finally {
+    await fromContainer.close();
+  }
+  const fromHost = await setup({ vaultTools: batchVaultTools() });
+  const seen = new Set<string>();
+  try {
+    const endCall = fromHost.moduleCalls.begin("shell-project-1", THREAD);
+    const pending = callBatch(fromHost, { anything: true });
+    const judgment = await waitForJudgment(fromHost.inbox, seen);
+    assert.match(judgment.message, /shell が vault の resolveAliases を呼ぼうとしています/);
+    fromHost.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await fromHost.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    await pending;
+    endCall();
+    const grants = (await fromHost.events()).filter((e) => e.type === "relay.grant_created").map((e) => e.payload);
+    assert.deepEqual(grants, [{ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAliases" }]);
+  } finally {
+    await fromHost.close();
+  }
+});
+
+test("まとめて呼ぶ口：ホストで動く呼び手は batchOf.tool の組み合わせの鍵1つ——1件ずつの口の許可がそのまま効く", async () => {
+  const t = await setup({ vaultTools: batchVaultTools(), vaultBundled: true });
+  try {
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias" });
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    await callBatch(t, names("a", "b"));
+    endCall();
+    assert.equal(t.cards.length, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("まとめて呼ぶ口：識別子を名乗らない口（lookupAlias）は、コンテナからも鍵1つ", async () => {
+  const t = await setup({ inContainer: true, vaultTools: batchVaultTools(), vaultBundled: true });
+  try {
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "lookupAlias", scope: {} });
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    await callBatch(t, names("a", "b"), "lookupAliases");
+    endCall();
+    assert.equal(t.cards.length, 0);
+    const recorded = (await t.events()).filter((e) => e.type === "relay.call_recorded").map((e) => e.payload as Record<string, unknown>);
+    assert.deepEqual(recorded.map((r) => [r.name, r.batch, r.identifiers]), [["lookupAliases", { size: 2 }, undefined], ["lookupAliases", { size: 2 }, undefined]]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("まとめて呼ぶ口：重なる2つのまとめた呼び出しで、同じ alias のカードを2枚出さない——後の呼び出しは先の答えを待ち、残りだけを聞く", async () => {
+  const t = await setup({ inContainer: true, vaultTools: batchVaultTools(), vaultBundled: true });
+  const seen = new Set<string>();
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const first = callBatch(t, names("a", "b"));
+    const j1 = await waitForJudgment(t.inbox, seen);
+    assert.deepEqual((j1.toolInput as Record<string, unknown>)["対象"], [{ name: "a" }, { name: "b" }]);
+    const second = callBatch(t, names("b", "c"));
+    // b が先の問いに載っているので、まだ新しく聞かない
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(t.cards.length, 1, "b を2枚目で聞いている");
+    t.pendingApprovals.resolve(j1.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(j1.id, { behavior: "allow" });
+    await first;
+    const j2 = await waitForJudgment(t.inbox, seen);
+    assert.match(j2.message, /まとめて 2 件のうち、まだ許していない 1 件/);
+    assert.deepEqual((j2.toolInput as Record<string, unknown>)["対象"], [{ name: "c" }]);
+    t.pendingApprovals.resolve(j2.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(j2.id, { behavior: "allow" });
+    await second;
+    assert.equal(t.cards.length, 2);
+
+    // 先の答えが拒否なら、相乗りした側も断る
+    const third = callBatch(t, names("d", "e"));
+    const j3 = await waitForJudgment(t.inbox, seen);
+    const fourth = callBatch(t, names("e", "f"));
+    await new Promise((r) => setTimeout(r, 100));
+    t.pendingApprovals.resolve(j3.id, { behavior: "deny", message: "拒否" });
+    await t.inbox.answerJudgment(j3.id, { behavior: "deny" });
+    await assert.rejects(third, /人が拒否しました/);
+    await assert.rejects(fourth, /人が拒否しました/);
+    assert.equal(t.cards.length, 3);
+    endCall();
   } finally {
     await t.close();
   }
