@@ -181,7 +181,7 @@ function renumberDefaultForkTitles(projectId: string): void {
 export function realThreadExtraOf(record: RealThread): Pick<MockThread, "realAccountSwitches" | "realRateLimit"> {
   return {
     realAccountSwitches: record.accountSwitches,
-    realRateLimit: record.lastTurn?.rateLimit === undefined ? undefined : (record.rateLimitStop ?? "stopped"),
+    realRateLimit: record.rateLimitStop,
   };
 }
 

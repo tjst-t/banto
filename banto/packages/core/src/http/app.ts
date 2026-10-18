@@ -1256,13 +1256,16 @@ function judgmentCardsOf(inbox: InboxStore, ids: readonly string[]) {
 }
 
 /**
- * **上限で終わった最後のターンを、自動では続けない理由**（追加・2026-10-18、v4-frontend.md §6.46）。`gave_up`＝続けて上限に
- * 当たった回数が上限に達した、`unknown_reset`＝リセットの時刻が分からなかった（どちらも受信箱で人に聞いている）。
- * 待っている・上限で終わっていない・人がやめたなら undefined
+ * **会話の一番下に「上限で止まった」帯を出すか**（追加・2026-10-18、v4-frontend.md §6.46）。読むときに記録から導く（規則3）
+ * ——画面は `lastTurn.rateLimit` の有無で決めない。最後のターンが上限で終わっていなければ undefined。**畳んだターン**
+ * （Clear・閉じた Fork、`abandonedBy`）も出さない——fold は `rateLimit` を残すが、その会話はもう続かない。
+ * `stopped`＝止まった（待っている・人が待つのをやめた）、`gave_up`＝続けて上限に当たった回数が上限に達したので自動で続けない、
+ * `unknown_reset`＝リセットの時刻が分からないので自動で続けない（どちらも受信箱で人に聞いている）
  */
-function rateLimitStopOf(thread: ThreadState): "gave_up" | "unknown_reset" | undefined {
+export function rateLimitStopOf(thread: Pick<ThreadState, "lastTurn">): "stopped" | "gave_up" | "unknown_reset" | undefined {
   const turn = thread.lastTurn;
-  if (!turn?.rateLimit || turn.rateLimit.continueAt !== undefined || turn.continuationCancelled !== undefined) return undefined;
+  if (!turn?.rateLimit || turn.abandonedBy !== undefined) return undefined;
+  if (turn.rateLimit.continueAt !== undefined || turn.continuationCancelled !== undefined) return "stopped";
   return rateLimitContinuedOf(turn) >= RATE_LIMIT_CONTINUE_LIMIT ? "gave_up" : "unknown_reset";
 }
 
@@ -1273,7 +1276,7 @@ function toThreadDetail(thread: ThreadState, inbox: InboxStore, accounts: Claude
   const stop = rateLimitStopOf(thread);
   return {
     ...rest,
-    // **上限で止まったターンを自動で続けない理由**（v4-frontend.md §6.46）。読むときに記録から導く（規則3）
+    // **上限で止まった帯を出すか・自動で続けない理由**（v4-frontend.md §6.46）。読むときに記録から導く（規則3）
     ...(stop ? { rateLimitStop: stop } : {}),
     // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）。記録は id だけ——名前は読むときに台帳から引く（変えられる、規則3）
     ...(accountSwitches

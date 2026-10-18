@@ -212,22 +212,23 @@ async function showLatestOnce(threadId: string): Promise<void> {
   }
 }
 
-/** 会話ごとの、画面にいま出ている最後の発言の id を答える口（`thread-panel.tsx` が会話のランタイムから答える） */
-const lastShownMessage = new Map<string, () => string | undefined>();
+/** 会話ごとの、画面にいま出ている最後の人の発言の id を答える口（`thread-panel.tsx` が会話のランタイムから答える） */
+const lastShownUserMessage = new Map<string, () => string | undefined>();
 
-/** 画面の最後の発言の id を答える口を付ける。外すときは返り値を呼ぶ */
-export function registerLastShownMessage(threadId: string, read: () => string | undefined): () => void {
-  lastShownMessage.set(threadId, read);
+/** 画面の最後の人の発言の id を答える口を付ける。外すときは返り値を呼ぶ */
+export function registerLastShownUserMessage(threadId: string, read: () => string | undefined): () => void {
+  lastShownUserMessage.set(threadId, read);
   return () => {
-    if (lastShownMessage.get(threadId) === read) lastShownMessage.delete(threadId);
+    if (lastShownUserMessage.get(threadId) === read) lastShownUserMessage.delete(threadId);
   };
 }
 
 /**
  * **流れに載らない会話の中の印を、組み直さずに足す**（Claude のアカウントの切り替えの1行・上限で止まった帯、v4-frontend.md §6.46）。
  * 印は記録にだけある。最後まで読んだ会話は組み直さない（流れた tool のカードを消さない、`docs/notes/2026-09-28-thread-view-persist.md`）
- * ——発言の写しは古いままなので、写しの最後の発言より後に起きた切り替えは、いま画面に出ている最後の発言の後に置く
- * （その後のターンの分まで後ろへずれない）。上限で止まった帯は会話の一番下に出る
+ * ——発言の写しは古いままなので、写しの最後の発言より後に起きた切り替えは、**画面のそのターンの人の発言の後**に置く。
+ * 切り替えは人の発言のあと AI の返事より前に起きるので、記録から組み直したとき（`anchorOf(seq)`）と同じ場所——開き直しても
+ * 動かない。ここはターンが終わってから走るので、その時点の最後の人の発言がそのターンのもの。上限で止まった帯は会話の一番下
  */
 function addMarksWithoutRebuild(threadId: string, record: RealThread): void {
   const shown = getThread(threadId);
@@ -237,7 +238,7 @@ function addMarksWithoutRebuild(threadId: string, record: RealThread): void {
   const added = (next.realAccountSwitches ?? []).filter((s) => !known.has(s.seq));
   if (added.length === 0 && shown.realRateLimit === next.realRateLimit) return;
   const lastCopied = shown.realMessages?.at(-1)?.seq ?? -1;
-  const lastId = lastShownMessage.get(threadId)?.();
+  const lastId = lastShownUserMessage.get(threadId)?.();
   const anchors: Record<number, string> = {};
   if (lastId) for (const s of added) if (s.seq > lastCopied) anchors[s.seq] = lastId;
   updateRealThreadMarks(threadId, next, anchors);

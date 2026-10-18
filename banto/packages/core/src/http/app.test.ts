@@ -17,7 +17,7 @@ import { AppEventBus, announceProjectsChanged } from "./app-events.js";
 import { TurnEventBus } from "./turn-events.js";
 import { ModuleCallTracker, RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import type { ActivityReport } from "./activity.js";
-import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
+import { createApp, rateLimitStopOf, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 import { ProjectSleep } from "../runtime/project-sleep.js";
 import type { ProjectWokeCause } from "../project-thread/types.js";
 
@@ -2693,4 +2693,20 @@ test("眠っている Project の会話に人が送ると、ターンを開く�
     },
     { threadTurns: turns, projectSleep: h.projectSleep, runTurn: recordingRunner(seen) },
   );
+});
+
+test("上限で止まった帯の印（rateLimitStop）は記録から導く——Clear・閉じた Fork で畳んだターンには出さない（v4-frontend.md §6.46）", () => {
+  const base = { turnId: "t", startedSeq: 1, startedAt: "2026-10-18T00:00:00.000Z", cause: "human" as const, attempt: 0 };
+  const of = (turn: Record<string, unknown> | undefined) => rateLimitStopOf({ lastTurn: turn as never });
+  assert.equal(of(undefined), undefined);
+  assert.equal(of({ ...base, outcome: "completed" }), undefined);
+  // 待っている・人が待つのをやめた
+  assert.equal(of({ ...base, rateLimit: { continueAt: "2026-10-18T01:00:00.000Z" } }), "stopped");
+  assert.equal(of({ ...base, rateLimit: { continueAt: "2026-10-18T01:00:00.000Z" }, continuationCancelled: "human" }), "stopped");
+  // 自動で続けない：続けた回数が上限に達した／リセットの時刻が分からない
+  assert.equal(of({ ...base, rateLimit: {}, continuesReason: "rate_limit", attempt: 6 }), "gave_up");
+  assert.equal(of({ ...base, rateLimit: {} }), "unknown_reset");
+  // 畳んだターン（fold は rateLimit を残す）
+  assert.equal(of({ ...base, rateLimit: { continueAt: "2026-10-18T01:00:00.000Z" }, abandonedBy: "cleared" }), undefined);
+  assert.equal(of({ ...base, rateLimit: {}, continuesReason: "rate_limit", attempt: 6, abandonedBy: "thread_closed" }), undefined);
 });
