@@ -9759,7 +9759,7 @@
       "number": 406,
       "kind": "task",
       "title": "受信箱の「全部が閾値を越えました」カードのボタンを設定へ繋ぐ（と #403 のレビューの小さな2点）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-ui-settings",
@@ -9774,7 +9774,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T19:49:05.671Z",
-      "updatedAt": "2026-10-18T20:36:24.578Z",
+      "updatedAt": "2026-10-18T20:36:30.021Z",
       "closedAt": null,
       "extra": {}
     },
