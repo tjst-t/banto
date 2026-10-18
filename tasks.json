@@ -9711,7 +9711,7 @@
       "number": 403,
       "kind": "task",
       "title": "画面：設定「Claude のアカウント」・アカウントを足す・Project 設定",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-login",
@@ -9722,12 +9722,12 @@
       "labels": [],
       "body": "v4-frontend.md §6.46 の設定・ダイアログ・Project の設定の節。見本は mock/app/claude-accounts。",
       "doneWhen": "E2E で、アカウントの一覧とメーター・閾値のスライダーの保存・既定の並びの入れ替え・足すダイアログ（偽の口）・Project の並びの選択が通り、携帯の幅でも崩れない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-ui-settings）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T17:21:18.150Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T19:10:36.573Z",
+      "closedAt": "2026-10-18T19:10:36.573Z",
       "extra": {}
     },
     {
