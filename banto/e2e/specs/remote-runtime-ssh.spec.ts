@@ -89,9 +89,9 @@ async function remotePids(host: SshHost, needle: string): Promise<number[]> {
   return r.stdout.split("\n").filter(Boolean).map(Number);
 }
 
-/** host の、その実行場所への SSH の親の接続（`-M`） */
-function masterPids(name: string): number[] {
-  const cm = `cm-${createHash("sha256").update(name).digest("hex").slice(0, 10)}`;
+/** host の、その実行場所への その Project の SSH の親の接続（`-M`。ControlPath は実行場所＋Project ごと——`remote-ssh.ts`） */
+function masterPids(name: string, projectId: string): number[] {
+  const cm = `cm-${createHash("sha256").update(`${name}\0${projectId}`).digest("hex").slice(0, 10)}`;
   const ps = spawnSync("ps", ["-eo", "pid=,args="], { encoding: "utf8" }).stdout;
   return ps
     .split("\n")
@@ -322,7 +322,7 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       expect(sshdPids.length, "向こうの SSH のセッションが見つからない").toBeGreaterThan(0);
       await host.rootExec(`kill -STOP ${sshdPids.join(" ")}`);
       try {
-        const masters = masterPids(name);
+        const masters = masterPids(name, projectId);
         expect(masters.length, "host に SSH の親の接続が無い").toBe(1);
         process.kill(masters[0]!, "SIGKILL");
         // 繋ぎ直して起き直す（前の Shell は止まっていた sshd の下で生きていた）
@@ -339,7 +339,7 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
         expect((await remotePids(host, "packages/modules/shell/dist/server.js")).length, "Shell が二重に動いている").toBe(1);
         const alive = await host.rootExec(`kill -0 ${shellPid} 2>/dev/null && echo alive || echo gone`);
         expect(alive.stdout.trim(), "前の Shell が止まっていない").toBe("gone");
-        expect(masterPids(name).length, "親の接続が1本でない").toBe(1);
+        expect(masterPids(name, projectId).length, "親の接続が1本でない").toBe(1);
       } finally {
         await host.rootExec(`kill -CONT ${sshdPids.join(" ")} 2>/dev/null || true`);
       }
@@ -357,7 +357,7 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
 
       // ---- 7. 前提が欠けた相手では、欠けたものを名指しして断る ------------------------------------------------
       await host.ssh(`sed -i '1i echo こんにちは' ~/.bashrc`);
-      process.kill(masterPids(name)[0]!, "SIGKILL");
+      process.kill(masterPids(name, projectId)[0]!, "SIGKILL");
       await expect
         .poll(
           async () =>

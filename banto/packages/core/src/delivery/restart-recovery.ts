@@ -141,8 +141,8 @@ export interface RestartRecoveryDeps {
   publishBackground(threadId: string): void;
   /** その Module が別のサーバで動くなら、その実行場所の名前（この機械なら undefined）。無ければみなこの機械 */
   remoteOf?(target: ResumeTarget): string | undefined;
-  /** その実行場所に SSH で繋がらないなら、その理由（`remote-outage.ts`） */
-  unreachableReason?(runtimeName: string): string | undefined;
+  /** その Module の Project の、その実行場所への接続が SSH で繋がらないなら、その理由（`remote-outage.ts`——Project ごとの接続が鍵） */
+  unreachableReason?(runtimeName: string, projectId: string | undefined): string | undefined;
   /** その接続がいま繋がっているか（打ち切ったあと、もう繋がっていればすぐ届け直す） */
   isConnected?(connName: string): boolean;
   askTimeoutMs?: number;
@@ -894,7 +894,7 @@ export class RestartRecovery {
   /** 繋がるのを待つ上限を越えた理由（実行場所に繋がらない／Module が起きない） */
   private connectGiveUp(target: ResumeTarget, runtime: string, ms: number, last: string | undefined): string {
     const span = spanOf(ms);
-    const unreachable = this.deps.unreachableReason?.(runtime);
+    const unreachable = this.deps.unreachableReason?.(runtime, target.projectId);
     return unreachable !== undefined
       ? `別のサーバ「${runtime}」に ${span}繋がりませんでした：${unreachable}`
       : `別のサーバ「${runtime}」で ${target.moduleName} が ${span}たっても起きませんでした${last ? `：${last}` : ""}`;

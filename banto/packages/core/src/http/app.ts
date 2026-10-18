@@ -74,6 +74,7 @@ import type { ProjectMover } from "../runtime/project-move.js";
 import { ProjectSleepError, type ProjectSleep } from "../runtime/project-sleep.js";
 import { AUTO_SLEEP_KEY, autoSleepModeOf, isAutoSleepMode, type ProjectIdle } from "../runtime/project-idle.js";
 import { SshCommandError } from "../runtime/ssh.js";
+import { suspendsServicesToClose } from "../runtime/runtime-kind.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import {
   runThreadTurn,
@@ -3091,7 +3092,7 @@ export function createApp(deps: AppDeps) {
           // v4-security.md §1「閉じた Project は数えない」）。閉じたら実行場所は空き、別の Project が来る——enable のままだと
           // 向こうの起こし直しで起きてぶつかる。止められなければ閉じない（空いたことにしない）
           // 眠っているなら、眠らせたときに止めて自動起動から外してある（眠っている間は Service の Module も起こさない）
-          if (remoteNameOf(closing.runtime) && !closing.sleep && deps.suspendProjectServices) {
+          if (suspendsServicesToClose(closing.runtime) && !closing.sleep && deps.suspendProjectServices) {
             try {
               await deps.suspendProjectServices(closing.id);
             } catch (err) {

@@ -18,7 +18,8 @@ import { loadOrCreateBootstrapConfig, loginOrigins, resolveBootstrapConfigPath }
 import { AuthStore } from "./auth/store.js";
 import { AuthService } from "./auth/service.js";
 import { EventLog } from "./event-store/log.js";
-import { ProjectThreadStore, currentSkillSet, isRemoteProject } from "./project-thread/store.js";
+import { ProjectThreadStore, currentSkillSet } from "./project-thread/store.js";
+import { usesHostContainer } from "./runtime/runtime-kind.js";
 import {
   discoverSkills,
   isSkillEnabled,
@@ -320,7 +321,7 @@ async function main(): Promise<void> {
    */
   async function stopSleepingContainers(): Promise<void> {
     const sleeping = projectThread.listProjects().filter((p) => {
-      if (p.status === "closed" || !p.sleep || isRemoteProject(p)) return false;
+      if (p.status === "closed" || !p.sleep || !usesHostContainer(p.runtime)) return false;
       try {
         return awaitedOf(p.id).length === 0;
       } catch (err) {
@@ -462,7 +463,8 @@ async function main(): Promise<void> {
       runtime: o.runtimeName,
       reason: o.reason,
       since: new Date(o.since).toISOString(),
-      projectIds: projectsOnRuntime(o.runtimeName),
+      // 繋がらない Module が残っている Project だけ（Project ごとの接続が鍵——同じ実行場所でも繋がった Project には出さない）
+      projectIds: o.projectIds,
     }));
   const publishUnreachable = () => appEvents.publish({ type: "runtimes.unreachable", unreachable: unreachableRuntimes() });
   const remoteOutage: RemoteOutageWatch = new RemoteOutageWatch({
@@ -490,8 +492,8 @@ async function main(): Promise<void> {
   });
   /**
    * **実行場所の2つ目——別のサーバ**（決定・2026-10-08、Backlog `remote-runtime-ssh`）。Project の記録の `runtime` が
-   * `remote:<名前>` の Project は、SSH の接続1本の上で Module を起こす。中から banto へは逆向きのトンネルで、host の
-   * 127.0.0.1 の**中継だけを受ける専用の待ち受け**（実行場所ごとに1つ。その実行場所の Project の合言葉だけを受ける）に届く
+   * `remote:<名前>` の Project は、SSH の接続1本（Project ごと）の上で Module を起こす。中から banto へは逆向きのトンネルで、
+   * host の 127.0.0.1 の**中継だけを受ける専用の待ち受け**（実行場所＋Project ごとに1つ。その Project の合言葉だけを受ける）に届く
    */
   /**
    * **エージェントの本体**（決定・2026-10-17、アーキ仕様 §4.1「エージェントの本体を取ってくる」）。OpenCode は依存に持たず、
@@ -505,11 +507,12 @@ async function main(): Promise<void> {
     monorepoRoot,
     runtimes: remoteRuntimes,
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
-    createRelayListener: (runtimeName) =>
+    createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },
         claudeLogin,
-        acceptsProject: (projectId) => projectThread.getProject(projectId)?.runtime === runtimeIdOf(runtimeName),
+        // その Project だけ（同じ実行場所のほかの Project の合言葉も断る）。実行場所が変わっていれば（移した）それも断る
+        acceptsProject: (projectId) => projectId === forProject && projectThread.getProject(projectId)?.runtime === runtimeIdOf(runtimeName),
         // 本文の上限は core の口と同じ（`RELAY_BODY_MAX_BYTES`）
         readJsonBody: (req) => readJsonBody(req, RELAY_BODY_MAX_BYTES),
       }),
@@ -517,9 +520,9 @@ async function main(): Promise<void> {
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
-    onConnected: (runtimeName) => {
+    onConnected: (runtimeName, projectId) => {
       runtimeKeyPlace.connected(runtimeName);
-      const outMs = remoteOutage.recordConnected(runtimeName);
+      const outMs = remoteOutage.recordConnected(runtimeName, projectId);
       if (outMs !== undefined) console.log(`[host] 別のサーバ「${runtimeName}」に繋がりました（${Math.round(outMs / 1000)} 秒 繋がりませんでした）`);
     },
     // 送っている間を画面に出す（Backlog #269）——サイドバーとその Project の会話
@@ -837,7 +840,7 @@ async function main(): Promise<void> {
     publishBackground,
     // **別のサーバの Module は繋がってから期限を数える**（Backlog #324）
     remoteOf: ({ projectId }) => (projectId !== undefined ? remoteNameOf(projectThread.getProject(projectId)?.runtime) : undefined),
-    unreachableReason: (runtimeName) => remoteOutage.unreachableReason(runtimeName),
+    unreachableReason: (runtimeName, projectId) => remoteOutage.unreachableReason(runtimeName, projectId),
     isConnected: (connName) => connectedModules.has(connName),
     // E2E だけが縮める（繋がらないまま上限を越えたときを見る）
     ...(Number(process.env.BANTO_RESUME_CONNECT_LIMIT_MS) > 0 ? { connectLimitMs: Number(process.env.BANTO_RESUME_CONNECT_LIMIT_MS) } : {}),
@@ -2975,7 +2978,7 @@ async function main(): Promise<void> {
     // 別のサーバの Project にはこの機械のコンテナは無い（あれば前の名残——聞かない）
     projectContainerStatus: async (projectId: string) => {
       const project = projectThread.getProject(projectId);
-      return project && isRemoteProject(project) ? undefined : runtime.status(projectId);
+      return project && !usesHostContainer(project.runtime) ? undefined : runtime.status(projectId);
     },
     // **資源の上限**（決定・2026-10-02）。設定を変えたら、動いているコンテナにも起こし直さずに効かせる
     containerLimits: {
@@ -2987,7 +2990,7 @@ async function main(): Promise<void> {
           : [...projectThread.listProjects().map((p) => p.id), runtime.instancePlaceId, runtime.toolsPlaceId]
         ).filter((id) => {
           const project = projectThread.getProject(id);
-          return !project || !isRemoteProject(project);
+          return !project || usesHostContainer(project.runtime);
         });
         for (const id of ids) await runtime.applyLimits(id);
       },
