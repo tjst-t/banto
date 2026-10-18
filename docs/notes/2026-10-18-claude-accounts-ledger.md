@@ -124,3 +124,10 @@ Factory はローカルの `main`（origin/main と分かれている）の上�
 - **Escape で名前の編集を取り消さない**：設定の面は Escape で一発で閉じる（`use-escape-leave-settings`）。取り消しは置かず、
   離れたら保存する
 - 設定の左の一覧に「Claude のアカウント」が2つ並ぶ（banto 全体と Project の層）。層の見出しで分かれるので名前は変えなかった
+- **E2E（このブランチ、2026-10-18）**：`claude-accounts-settings` は3回続けて通った（約10秒。期待を1つずつ壊すと、その行で
+  落ちることも確かめた）。隣の spec（`claude-accounts-switch`・`claude-login-relay`・`project-modules`）も通過。フルは2回に
+  分けて全部の spec を流した（1回目が上限の50分で切れたため、届かなかった26本と途中の2本を流し直した）——落ちたのは
+  `browser-video:428`・`project-sleep:239`・`project-sleep-awaited-modules:105`・`sidebar-project-sleep:121`・
+  `remote-module-disconnect:80`・`subagent-from-module:102` の6本で、土台（8469f770）でも同じ文で落ちる（この作業の環境の
+  HOME が深い・Vault の SSH 鍵の置き場など、前からあるもの）。`remote-runtime-ssh:109` は1回目に落ち、1本だけで流すと通った
+  （1回中1回、数えるにはもっと要る）
