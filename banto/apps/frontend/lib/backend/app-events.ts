@@ -45,6 +45,8 @@ export type RealAppEvent =
       type: "hello";
       running?: Array<{ threadId: string; projectId?: string }>;
       background?: Array<{ threadId: string; projectId?: string; items: RealBackgroundItem[] }>;
+      /** 上限が戻るのを待っている Thread（追加・2026-10-18、v4-frontend.md §6.46）。古い host は付けない */
+      rateLimitWaits?: Array<{ threadId: string; projectId?: string; continueAt: string }>;
       /** 混んでいる Project とこの機械（追加・2026-10-09、§6.36）。古い host は付けない */
       resources?: RealResourcesBusy;
       /** 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。古い host は付けない */
@@ -82,6 +84,8 @@ export type RealAppEvent =
   | { type: "resources.busy"; busy: RealResourcesBusy }
   /** その Thread のバックグラウンドの仕事が増えた・減った（その Thread の分を丸ごと） */
   | { type: "background.changed"; threadId: string; projectId?: string; items: RealBackgroundItem[] }
+  /** 上限が戻るのを待っている Thread が変わった（追加・2026-10-18、§6.46）。`continueAt` が無ければ待っていない */
+  | { type: "rate_limit_wait.changed"; threadId: string; projectId?: string; continueAt?: string }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
   | { type: "inbox.changed" }

@@ -130,6 +130,13 @@ export interface FakePlan {
    * 同じ会話を続けたターン（banto の続き。指示の印は無い）もまた断られる。数はこのプロセスのメモリだけ（起こし直すと忘れる）
    */
   rateLimit?: { resetInMs: number; times?: number };
+  /**
+   * **会話の本体と同じ道で Claude のログインの中継に推論の要求を送る**（追加・2026-10-18、v4-frontend.md §6.46、Backlog #404）。
+   * 本物の CLI と同じく、渡された env の `ANTHROPIC_BASE_URL` に本体用の合言葉（`CLAUDE_CODE_OAUTH_TOKEN`）と
+   * `ANTHROPIC_CUSTOM_HEADERS`（Thread の印）で `/v1/messages` を n 回。中継がアカウントを選び・切り替えを記録する——
+   * 本物の CLI を起こさずに、切り替えの1行・全部越えのカードを画面で見るため。2xx でなければターンを失敗にする
+   */
+  relayRequests?: number;
 }
 
 /** 会話ごとの、あと何回上限で断るか（`FakePlan.rateLimit`） */
@@ -547,6 +554,8 @@ export async function* runTurn(opts: {
     resolve(result: { behavior: "allow"; updatedInput?: Record<string, unknown> } | { behavior: "deny"; message: string }): void;
   }): void;
   signal?: AbortSignal;
+  /** 会話の本体の CLI の環境（Claude のログインの中継を通す、`runnerEnvFor`）。`relayRequests` が使う */
+  env?: Record<string, string | undefined>;
 }): AsyncGenerator<unknown, { sessionId?: string; compactionCount: number; contextUsage?: unknown }> {
   const plan = parsePlan(opts.prompt);
   const servers = opts.mcpServers ?? {};
@@ -581,6 +590,26 @@ export async function* runTurn(opts: {
     yield { type: "message", message: { ...assistantMessage(sessionId, [{ type: "text", text }]), error: "rate_limit" } };
     yield { type: "message", message: { ...resultMessage(sessionId, text), subtype: "error_during_execution", is_error: true } };
     return { sessionId, compactionCount: 0 };
+  }
+
+  for (let i = 0; i < (plan.relayRequests ?? 0); i++) {
+    const base = opts.env?.ANTHROPIC_BASE_URL;
+    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN;
+    if (!base || !token) throw new Error("relayRequests：会話の本体の env に ANTHROPIC_BASE_URL・CLAUDE_CODE_OAUTH_TOKEN がありません（中継が取り直せない banto）");
+    const custom = Object.fromEntries(
+      (opts.env?.ANTHROPIC_CUSTOM_HEADERS ?? "")
+        .split("\n")
+        .map((line) => line.split(/:\s*/, 2))
+        .filter((kv): kv is [string, string] => kv.length === 2 && kv[0] !== ""),
+    );
+    const res = await fetch(`${base}/v1/messages?beta=true`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...custom },
+      body: JSON.stringify({ model: "claude-fake", max_tokens: 16, messages: [{ role: "user", content: `fake-runner relay ${i}` }] }),
+    });
+    const body = await res.text();
+    console.warn(`[fake-runner] 中継へ /v1/messages ${i + 1}/${plan.relayRequests} → ${res.status}`);
+    if (!res.ok) throw new Error(`中継が ${res.status} を返しました: ${body.slice(0, 300)}`);
   }
 
   if (opts.images && opts.images.length > 0) {

@@ -40,7 +40,7 @@ import {
 import { refreshRealInbox } from "./real-inbox";
 import { decideRun, type LiveTurnState } from "./live-turn-guard";
 import { getThreadPermissionMode } from "../mock/permission-mode";
-import { appendRealUsage, updateRealThreadData } from "../mock/threads";
+import { appendRealUsage, realThreadExtraOf, updateRealThreadData } from "../mock/threads";
 import type { MockThread } from "../mock/types";
 import { HUMAN_TOOL_NAME } from "../mock/adapter";
 
@@ -1100,7 +1100,7 @@ export function applyThreadRecord(threadId: string, record: RealThread): void {
   restoredSyncVersionByThread.set(threadId, build);
   // 乗った流れがまだ描かれていなければ、この版の会話が描き始める
   if (liveTurns.get(threadId)?.awaitingStart) followsToStart.set(threadId, build);
-  updateRealThreadData(threadId, record.messages, record.markers, record.usage);
+  updateRealThreadData(threadId, record.messages, record.markers, record.usage, realThreadExtraOf(record));
   followVersionCounter += 1;
   for (const listener of followListeners) listener();
 }

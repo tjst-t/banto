@@ -65,6 +65,7 @@ import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
 import { automationsCanvasHref, useAutomations } from "@/lib/backend/automations";
 import { ProjectBackgroundBadge, ThreadBackgroundLine } from "./background-work";
+import { ThreadRateLimitWaitLine } from "./rate-limit-wait-line";
 import { ProjectCodeTransferLine } from "./code-transfer";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -404,6 +405,7 @@ export function ProjectTreeItem({
                   )}
                 </SidebarItemMenu>
                 <ThreadBackgroundLine projectId={project.id} thread={{ id: project.baseThreadId, title: "Base Thread", fork: false }} />
+                <ThreadRateLimitWaitLine threadId={project.baseThreadId} />
               </SidebarMenuSubItem>
 
               <SortableList ids={forks.map((f) => f.id)} onReorder={reorderForksTo}>
@@ -453,6 +455,7 @@ export function ProjectTreeItem({
                         )}
                       </SidebarItemMenu>
                       <ThreadBackgroundLine projectId={project.id} thread={{ id: fork.id, title: fork.title, fork: true }} />
+                      <ThreadRateLimitWaitLine threadId={fork.id} />
                       </>
                     )}
                   </SortableRow>

@@ -2,7 +2,7 @@
 // Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
-import type { RealJudgmentCard, RealMessageImage, RealMessageOrigin, RealMessageQuote, RealPartlyAwake } from "@/lib/backend/client";
+import type { RealAccountSwitch, RealJudgmentCard, RealMessageImage, RealMessageOrigin, RealMessageQuote, RealPartlyAwake } from "@/lib/backend/client";
 import type { RealTurnSummary } from "@/lib/turn-summary";
 
 export type ProjectId = string;
@@ -113,6 +113,10 @@ export interface MockThread {
   /** real:trueのときだけ意味を持つ。F2/F3——ターンごとの文脈使用量（決定・2026-09-04）。
    *  contextUsageはRunnerが返す形をそのまま持つ（規則12）。 */
   realUsage?: readonly { seq: number; contextUsage: unknown; compactionCount: number }[];
+  /** real:trueのときだけ意味を持つ。Claude のアカウントの切り替えの1行（追加・2026-10-18、v4-frontend.md §6.46） */
+  realAccountSwitches?: readonly RealAccountSwitch[];
+  /** real:trueのときだけ意味を持つ。最後のターンが Claude の使用量の上限で終わった（追加・2026-10-18、§6.46） */
+  realRateLimited?: boolean;
 }
 
 /** 会話の台本。ChatModelAdapter がこれを再生してダミー応答を作る。 */

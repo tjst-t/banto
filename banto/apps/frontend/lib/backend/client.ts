@@ -385,9 +385,39 @@ export interface RealThread {
   /** セッションごとに効かせた Skill（決定・2026-09-23、アーキ仕様 §5.7）。
    *  最後の1件がいまのセッションのもの。この仕組みより前の会話には無い。 */
   skillSets?: { seq: number; set: RealSessionSkillSet }[];
-  /** 最後のターンの始まり（追加・2026-10-05、host の `lastTurn` の一部）。流し直すターンとの境界を引くのに使う */
-  lastTurn?: { startedSeq: number };
+  /**
+   * 最後のターンの始まり（追加・2026-10-05、host の `lastTurn` の一部）。流し直すターンとの境界を引くのに使う。
+   * `rateLimit`：Claude の使用量の上限で終わった（追加・2026-10-18、v4-frontend.md §6.46）——会話の終わりに帯を出す
+   */
+  lastTurn?: { startedSeq: number; rateLimit?: { continueAt?: string } };
+  /**
+   * **この Thread の要求で Claude のアカウントを切り替えた**（追加・2026-10-18、v4-frontend.md §6.46）。会話に薄い1行で出す
+   * （AI の文脈には入っていない）。この仕組みより前の会話には無い
+   */
+  accountSwitches?: RealAccountSwitch[];
   createdAt: string;
+}
+
+/** Claude のアカウントの切り替え1件（host の `ClaudeAccountSwitchRecord` に名前を添えたもの） */
+export interface RealAccountSwitch {
+  /** 会話の中の置き場（発言と同じ物差し） */
+  seq: number;
+  at: string;
+  from: string;
+  to: string;
+  /** アカウントの名前（読むときに台帳から引く。外したアカウントには無い） */
+  fromLabel?: string;
+  toLabel?: string;
+  reason: {
+    kind: "threshold" | "rejected" | "recovered" | "order" | "unavailable";
+    window?: "5h" | "7d";
+    /** 0〜1 */
+    utilization?: number;
+    resetsAt?: string;
+    claim?: string;
+  };
+  /** 並びの全部が閾値を越えていて、一番早くリセットされる `to` で続けた */
+  allOver?: true;
 }
 
 /** 会話の始まりで固定した Skill の集合（host の `SessionSkillSet` と同じ形）。 */
@@ -406,6 +436,33 @@ export type MockPermissionModeValue =
   | "plan"
   | "dontAsk"
   | "auto";
+
+/** 全部越えのカードの中身（`RealInboxNotice.claudeAccounts`） */
+export interface RealNoticeClaudeAccounts {
+  projectId: string;
+  projectName?: string;
+  order: string[];
+  /** 続けているアカウント（一番早くリセットされるもの） */
+  using: string;
+  /** 並びの順。リセットを過ぎた窓は無い（分からない） */
+  accounts: Array<{
+    id: string;
+    label: string;
+    fiveHour?: RealUsageWindow;
+    sevenDay?: RealUsageWindow;
+    status?: string;
+    statusResetsAt?: string;
+  }>;
+  /** 0〜1 */
+  thresholds: { fiveHour: number; sevenDay: number };
+}
+
+/** 窓1つの使用率（host の `UsageWindow`） */
+export interface RealUsageWindow {
+  /** 0〜1 */
+  utilization: number;
+  resetsAt?: string;
+}
 
 /** 判断待ち（§2.4）。hostの`JudgmentItem`をそのまま受け取る——ここで形を
  *  作り替えない（規則3・規則12）。 */
@@ -529,6 +586,11 @@ export interface RealInboxNotice {
    * **実行場所の SSH 鍵が置き場の外にある**（追加・2026-10-17、Backlog 375 番）。`from` があれば「移す」を押せる
    * （`moveRealRuntimeKey`）。無ければ理由と入口だけ
    */
+  /**
+   * **並びの Claude のアカウントが全部閾値を越えた**（追加・2026-10-18、v4-frontend.md §6.46）。名前・メーター・閾値は host が
+   * 読むたびに台帳から添える。どれかが閾値の下に戻ると host がカードを閉じる
+   */
+  claudeAccounts?: RealNoticeClaudeAccounts;
   runtimeKey?: {
     runtime: string;
     alias: string;
@@ -682,6 +744,16 @@ export async function setRealThreadModel(
 
 export async function clearRealThread(threadId: string): Promise<void> {
   await request(`/api/threads/${threadId}/clear`, { method: "POST" });
+}
+
+/** **上限の待ちを今すぐ続ける**（追加・2026-10-18、v4-frontend.md §6.46）。待っていなければ host が断る（409） */
+export async function continueRealRateLimitWait(threadId: string): Promise<void> {
+  await request(`/api/threads/${threadId}/rate-limit-wait/continue`, { method: "POST" });
+}
+
+/** **上限の待ちをやめる**（追加・2026-10-18、§6.46）。自動では続けない——人が送れば、その発言で始まる */
+export async function cancelRealRateLimitWait(threadId: string): Promise<void> {
+  await request(`/api/threads/${threadId}/rate-limit-wait/cancel`, { method: "POST" });
 }
 
 /** Fork Threadを畳む（削除ではない——履歴から読み返し、再度開ける）。 */

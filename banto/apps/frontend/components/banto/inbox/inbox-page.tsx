@@ -75,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { splitTargets } from "@/lib/relay-targets";
 import { RelayTargetsTable } from "@/components/banto/thread/relay-targets-table";
 import { ElicitationFormView } from "./elicitation-form";
+import { ClaudeAccountsAllOverNotice } from "./claude-accounts-notice";
 import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
 
 type Section = "judgment" | "decide" | "returned" | "fix";
@@ -330,6 +331,8 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
                           className={cn(
                             "overflow-hidden rounded-xl border bg-card transition-[opacity,box-shadow,border-color] duration-300",
                             focused === card.id ? "border-ink-3/40 shadow-2" : "border-border",
+                            // 全部越えのカードは左の線を warn に（§6.46）
+                            card.kind === "fix" && card.item.claudeAccounts ? "border-l-4 border-l-warn" : "",
                             settled ? "opacity-70" : "",
                           )}
                         >
@@ -374,7 +377,9 @@ function Kbd({ children }: { children: ReactNode }) {
 function CardHead({ card, now }: { card: Card; now: number }) {
   const threadId = card.kind === "fix" ? (card.item.threadId ?? card.item.resume?.threadId) : card.item.threadId;
   const thread = threadId ? getThread(threadId) : undefined;
-  const projectId = thread?.projectId ?? card.item.projectId;
+  // 全部越えのカードは banto 全体のお知らせだが、気づいた Project を出す（§6.46）
+  const projectId =
+    thread?.projectId ?? card.item.projectId ?? (card.kind === "fix" ? card.item.claudeAccounts?.projectId : undefined);
   const project = projectId ? getProject(projectId) : undefined;
   const threadName = thread ? (thread.kind === "base" ? "Base Thread" : (thread.title ?? "Fork Thread")) : null;
   const destination = destinationOf(card);
@@ -1047,7 +1052,8 @@ function NoticeBody({ item, onSeen }: { item: RealInboxNotice; onSeen: () => Pro
       <p data-testid="inbox-notice-title" className="text-sm font-medium text-foreground">
         {item.title}
       </p>
-      <p className="mt-1 text-sm text-ink-2">{item.detail}</p>
+      {/* 全部越えのカードは並び・メーターを組んで出す（§6.46）。本文の文は同じことを文だけで書いたもの */}
+      {item.claudeAccounts ? <ClaudeAccountsAllOverNotice card={item.claudeAccounts} /> : <p className="mt-1 text-sm text-ink-2">{item.detail}</p>}
       {item.runtimeKey ? <RuntimeKeyNotice runtimeKey={item.runtimeKey} /> : null}
       {resumeError ? (
         <p data-testid="inbox-notice-resume-error" className="mt-1 text-xs text-stop">

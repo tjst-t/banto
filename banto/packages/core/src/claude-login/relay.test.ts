@@ -938,3 +938,28 @@ test("使用率の読み直し：アカウントごとのトークンで usage �
     await new Promise((r) => usage.close(r));
   }
 });
+
+test("並びの全部が閾値を越えて一番早くリセットされるものへ替えたら、切り替えに allOver を付ける（会話の1行を warn の形にする）", async () => {
+  const clock = new Date("2026-10-08T00:00:00Z");
+  const switches: Array<{ from: string; to: string; reason: { kind: string }; allOver?: true }> = [];
+  const f = await fixture({ now: () => clock, onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    // host は1時間後、B は2時間後に戻る
+    f.upstreamByToken.value = {
+      "REAL-ACCESS": { headers: limitHeaders(0.97, new Date("2026-10-08T01:00:00Z")) },
+      "B-ACCESS": { headers: limitHeaders(0.98, new Date("2026-10-08T02:00:00Z")) },
+    };
+    assert.equal((await post(f.url, secret, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200); // host が 97% と分かる
+    assert.equal((await post(f.url, secret, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200); // B へ（まだ全部越えではない）
+    assert.equal((await post(f.url, secret, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200); // 全部越え：早く戻る host へ
+    assert.deepEqual(
+      switches.map((s) => `${s.from}→${s.to} ${s.reason.kind}${s.allOver ? " allOver" : ""}`),
+      [`host→${b.id} threshold`, `${b.id}→host threshold allOver`],
+    );
+  } finally {
+    f.relay.close();
+    await f.close();
+  }
+});

@@ -180,7 +180,7 @@ test("閾値を越えたら次のアカウントへ・リセットで戻る・�
         // host と B の rejected が切れるのを待つ（中継が覚えた `-reset` の時刻）
         const waitRejected = rejectedUntil * 1000 + 500 - Date.now();
         if (waitRejected > 0) await page.waitForTimeout(waitRejected);
-        const TITLE = "Project E2E アカウントの切り替え の Claude のアカウントが全部閾値を越えました";
+        const TITLE = "Claude のアカウントが全部、閾値を越えました";
         const openCards = async () => JSON.stringify((await api<unknown>(own, "/api/inbox")).body).split(TITLE).length - 1;
         expect(await openCards(), "全部越える前にカードが出た").toBe(0);
         const usedBefore = fakeApi.replies.length;
@@ -192,7 +192,7 @@ test("閾値を越えたら次のアカウントへ・リセットで戻る・�
         expect(new Set(fakeApi.replies.slice(usedBefore).map((r) => nameOfToken[r.token]))).toEqual(new Set(["host", "b", "c"]));
         expect(Date.now(), "ターンが遅く、B のリセットを過ぎてしまった（試験の前提が崩れた）").toBeLessThan(bReset * 1000 - 10_000);
         const inboxText = JSON.stringify((await api<unknown>(own, "/api/inbox")).body);
-        expect(inboxText).toContain("b@example.com で続けています");
+        expect(inboxText).toContain("「b@example.com」で続けています");
         expect(inboxText).toContain("5時間 95%・週 95%");
         // 全部越えのあいだは、一番早くリセットされる B で続ける。開いている間はカードを増やさない
         const afterCard = fakeApi.replies.length;

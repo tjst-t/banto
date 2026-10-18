@@ -48,6 +48,9 @@ export type AppEvent =
   | { type: "auth.device_added"; codeId: string; label: string }
   // その Thread のバックグラウンドの仕事が増えた・減った。**その Thread の分を丸ごと**送る（画面は置き換える）
   | { type: "background.changed"; threadId: string; projectId?: string; items: BackgroundItem[] }
+  // 上限が戻るのを待っている Thread が変わった（追加・2026-10-18、v4-frontend.md §6.46）。`continueAt` があれば待っている（その時刻に
+  // 自動で続ける）、無ければ待っていない。会話の待ちの帯とサイドバーの1行に使う
+  | { type: "rate_limit_wait.changed"; threadId: string; projectId?: string; continueAt?: string }
   // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
   | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }
