@@ -65,6 +65,18 @@ export function settingsCloseHref(pathname: string, params: ReadableParams): str
   return withQuery(pathname, next);
 }
 
+/**
+ * **サイドバー・レールの「設定」ボタンの行き先**（追加・2026-10-18、ユーザー要望。§6.16）。押すたびに開閉を切り替える
+ * ——設定を開いていれば閉じる（下の画面がそのまま戻る）、開いていなければいまの画面の上に開く
+ */
+export function settingsToggleHref(
+  pathname: string,
+  params: ReadableParams,
+  target: { project?: string | null; section?: string | null } = {},
+): string {
+  return isSettingsOpen(pathname, params) ? settingsCloseHref(pathname, params) : settingsOpenHref(pathname, params, target);
+}
+
 /** その Project の層に属する節か（切り替えても同じ節を保てる） */
 function isProjectSection(section: string | null): boolean {
   return section !== null && section.startsWith("project-");

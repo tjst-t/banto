@@ -115,7 +115,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
         // ドラッグ中は覚えない（描画だけ）。手を離した1回だけ覚える
         onResize={(next) => setSidebarWidth(next, { persist: false })}
         onResizeEnd={(next) => setSidebarWidth(next)}
-        onOpenInbox={() => stack.open({ overlay: "inbox" })}
+        onOpenInbox={() => stack.open({ overlay: "inbox", settings: false })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
         onOpenArchive={() => stack.open({ overlay: "archive" })}
       />

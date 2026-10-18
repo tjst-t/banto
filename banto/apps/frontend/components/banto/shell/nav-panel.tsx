@@ -44,7 +44,7 @@ import { describeFailure } from "@/lib/report-failure";
 import { requestForkDialog, type ForkStartMode } from "@/lib/fork-request";
 import { cn } from "@/lib/utils";
 import { lastForkOf, useLastThreads } from "@/lib/last-thread";
-import { isSettingsOpen, projectNavHref, settingsOpenHref, threadNavHref, threadRowHref } from "@/lib/settings-link";
+import { isSettingsOpen, settingsToggleHref, projectNavHref, settingsOpenHref, threadNavHref, threadRowHref } from "@/lib/settings-link";
 import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
@@ -601,7 +601,7 @@ export function NavPanel({
           ) : null}
           {SHOW_INSTANCE_SETTINGS ? (
             <Link
-              href={settingsOpenHref(pathname, searchParams, { project: activeProjectId })}
+              href={settingsToggleHref(pathname, searchParams, { project: activeProjectId })}
               onClick={onNavigate}
               aria-current={isSettingsOpen(pathname, searchParams) ? "page" : undefined}
               data-active={isSettingsOpen(pathname, searchParams) ? "" : undefined}

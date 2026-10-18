@@ -262,3 +262,54 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   await expect(page.locator("[data-banto-settings]"), "Thread を押しても設定が閉じない").toHaveCount(0, { timeout: 10_000 });
   await expectProjectOpen(page, "設定の層A");
 });
+
+test("設定を開いているとき、サイドバーの「設定」で閉じ、「受信箱」で設定を閉じて受信箱へ移る", async ({ page }) => {
+  // 決定・2026-10-18、ユーザー要望（v4-frontend.md §6.16）：受信箱は設定の面の下に出るので、設定を開いたまま
+  // 受信箱を押しても見えなかった。「設定」ボタンは押すたびに開閉を切り替える。広いサイドバー・畳んだレール・
+  // 携帯の Drawer のどれでも同じ
+  await openApp(page);
+  await createProject(page, "設定と受信箱", mkdtempSync(join(tmpdir(), "banto-e2e-settings-inbox-")));
+  const underPath = new URL(page.url()).pathname;
+  const settings = page.locator("[data-banto-settings]");
+  const inbox = page.getByTestId("inbox-page");
+  const sidebar = page.locator('[data-slot="sidebar-container"]');
+
+  /** その幅の入口（Drawer なら開いてから）で「設定」と「受信箱」を押す */
+  async function check(where: string, openEntry: () => Promise<void>): Promise<void> {
+    // 設定を開く → もう一度「設定」で閉じる（下の画面はそのまま）
+    await openEntry();
+    await page.getByRole("link", { name: "設定", exact: true }).filter({ visible: true }).first().click();
+    await page.waitForURL(/[?&]settings=1/, { timeout: 20_000 });
+    await expect(settings, `${where}：設定が開かない`).toBeVisible();
+    await openEntry();
+    await page.getByRole("link", { name: "設定", exact: true }).filter({ visible: true }).first().click();
+    await page.waitForURL((url) => url.pathname === underPath && !url.searchParams.has("settings"), { timeout: 20_000 });
+    await expect(settings, `${where}：開いているときに「設定」を押しても閉じない`).toHaveCount(0, { timeout: 10_000 });
+
+    // 設定を開く → 「受信箱」で設定を閉じて受信箱へ
+    await openEntry();
+    await page.getByRole("link", { name: "設定", exact: true }).filter({ visible: true }).first().click();
+    await page.waitForURL(/[?&]settings=1/, { timeout: 20_000 });
+    await openEntry();
+    await page.getByRole("button", { name: /^受信箱/ }).filter({ visible: true }).first().click();
+    await page.waitForURL(
+      (url) => url.pathname === underPath && url.searchParams.get("overlay") === "inbox" && !url.searchParams.has("settings"),
+      { timeout: 20_000 },
+    );
+    await expect(settings, `${where}：「受信箱」を押しても設定が閉じない`).toHaveCount(0, { timeout: 10_000 });
+    await expect(inbox, `${where}：受信箱が出ない`).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId("inbox-close").click();
+    await page.waitForURL((url) => !url.searchParams.has("overlay"), { timeout: 10_000 });
+  }
+
+  await check("広いサイドバー", async () => {});
+  await sidebar.getByRole("button", { name: "サイドバーを折りたたむ" }).click();
+  await expectSidebarWidth(sidebar, 58);
+  await check("畳んだレール", async () => {});
+  await sidebar.getByRole("button", { name: "サイドバーを開く（⌘B / Ctrl-B）" }).click();
+  await expectSidebarWidth(sidebar, 256);
+
+  // 携帯の幅：≡ の Drawer（同じ NavPanel）から
+  await page.setViewportSize({ width: 390, height: 844 });
+  await check("携帯の Drawer", () => openNav(page));
+});
