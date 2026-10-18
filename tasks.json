@@ -9453,7 +9453,7 @@
       "number": 392,
       "kind": "task",
       "title": "vault-kit の resolveAliases（getSecrets?・markUsedMany? の任意の契約）と窓口の lookupAliases",
-      "status": "in-progress",
+      "status": "done",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "host-dev-banto-batchof-1"
@@ -9463,12 +9463,12 @@
       "labels": [],
       "body": "仕様は docs/specs/v4-modules.md「秘密をまとめて引く」の口の表。vault-kit（banto/packages/vault-kit/src/server.ts・backend.ts・alias-store.ts）に resolveAliases（items:[{name,group?}]、_meta dev.banto/batchOf {tool:\"resolveAlias\",items:\"items\"}、全部か何もなしで引けなかったものを全部理由つきで断る、listAll は1回、各件 pickAlias・assertUsable・valueSource・assertNotEmpty）。VaultBackend.getSecrets? と AliasStore.markUsedMany? は任意で、無ければ kit が1件ずつ代わりを務める（vault-local はそれで足りる）。窓口（banto/packages/modules/vault-directory/src/server.ts）に lookupAliases（items:[{name}]、batchOf {tool:\"lookupAlias\"}、crossAliases は1回、名前ごとに在りかか理由）。上限は module-contract の定数。",
       "doneWhen": "vault-kit・vault-local・vault-directory の単体テスト：resolveAliases が順に値を返す・1件でも引けなければ値を返さず全部の理由で断る・参照と空の値と使えない置き場は resolveAlias と同じに扱う・listAll が1回、lookupAliases が crossAliases 1回で名前ごとに返す。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/vault-kit-resolvealiases-getsecrets-mark）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:25:04.452Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T09:39:54.498Z",
+      "closedAt": "2026-10-18T09:39:54.498Z",
       "extra": {}
     },
     {
