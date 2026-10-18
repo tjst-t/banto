@@ -9642,7 +9642,7 @@
       "number": 400,
       "kind": "task",
       "title": "ブラウザでログインしてアカウントを足す・ログインし直す・外す（HTTP の口）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-relay-accounts"
@@ -9656,7 +9656,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T11:57:54.731Z",
       "closedAt": null,
       "extra": {}
     },
