@@ -877,7 +877,11 @@ export interface RealRuntimeInput {
   /** Vault の ssh-identity の alias */
   identity: string;
   dataRoot: string;
+  /** 動かし方：サーバ丸ごと1つの Project の箱（machine）／Project ごとに Incus のコンテナを立てる（containers） */
+  mode: RealRuntimeMode;
 }
+
+export type RealRuntimeMode = "machine" | "containers";
 
 export interface RealRemoteRuntime extends RealRuntimeInput {
   /** Project の記録に書く印（`remote:<名前>`） */

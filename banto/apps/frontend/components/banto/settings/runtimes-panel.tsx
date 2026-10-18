@@ -10,6 +10,8 @@
 //   （`unavailableReason`）。新しい Project の画面と同じ言い方
 // - 足すときは「繋いで確かめる」→ host 鍵の指紋を人が確かめる → 前提の確かめ → 登録、の順。指紋を見ずに覚えない
 // - 注意（サーバ丸ごと AI のもの・LAN から直に届く・他のアカウントにも中継の口が見える）は足す前に読める位置に置く
+// - **動かし方**（決定・2026-10-17、v4-security.md §1「別のサーバの中のコンテナ」、Backlog #367）は登録で選ぶ：サーバ丸ごと
+//   1つの Project の箱（machine）／Project ごとにコンテナ（containers）。containers は登録のときに banto が sudo -n で準備する
 import { RuntimeCodeTransferLine } from "@/components/banto/shell/code-transfer";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
@@ -49,6 +51,7 @@ import {
   type RealRemoteRuntime,
   type RealRuntimeCheck,
   type RealRuntimeInput,
+  type RealRuntimeMode,
 } from "@/lib/backend/client";
 
 const DEFAULT_DATA_ROOT = "~/.local/share/banto-remote";
@@ -56,6 +59,24 @@ const DEFAULT_DATA_ROOT = "~/.local/share/banto-remote";
 /** `user@host`（22 番以外ならポートも） */
 export function sshTarget(r: Pick<RealRuntimeInput, "user" | "host" | "port">): string {
   return `${r.user}@${r.host}${r.port === 22 ? "" : `:${r.port}`}`;
+}
+
+const MODE_OPTIONS: ReadonlyArray<{ value: RealRuntimeMode; label: string; hint: string }> = [
+  {
+    value: "machine",
+    label: "サーバ丸ごと（machine）",
+    hint: "SSH のユーザーで直に動かします。サーバ丸ごとが1つの Project の箱で、そのサーバの Project は1つです。",
+  },
+  {
+    value: "containers",
+    label: "Project ごとのコンテナ（containers）",
+    hint: "サーバの Incus に Project ごとのコンテナを立てます。1台に Project を複数置けます。登録のときに banto が sudo -n で準備します。",
+  },
+];
+
+/** 人に見せる動かし方の名前 */
+export function modeLabel(mode: RealRuntimeMode): string {
+  return MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode;
 }
 
 /** 人に見せる鍵の種類（`ssh-keygen -l` の括弧の中と同じ） */
@@ -144,11 +165,37 @@ export function RuntimesPanel() {
   );
 }
 
-/** 登録する前に読んでほしいこと。足す画面にも同じものを出す */
-function Cautions() {
+/** 登録する前に読んでほしいこと。足す画面には選んだ動かし方の分を出す */
+function Cautions({ mode }: { mode?: RealRuntimeMode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {mode !== "containers" ? <MachineCautions /> : null}
+      {mode !== "machine" ? <ContainersCautions /> : null}
+    </div>
+  );
+}
+
+function ContainersCautions() {
+  return (
+    <div className="rounded-md bg-surface-2 px-3 py-2.5 text-xs text-ink-2" data-testid="runtime-cautions-containers">
+      <p className="mb-1.5 font-medium text-foreground">Project ごとのコンテナ（containers）で動かすとき</p>
+      <ul className="flex list-disc flex-col gap-1 pl-4">
+        <li>
+          {"登録のときに banto が sudo -n で root の要る準備（区画の proxy device の許可・uid の対応・置き場 banto・linger）を済ませます。" +
+            "SSH のユーザーはパスワード無しで sudo できる必要があります。Project の AI はコンテナの中で動き、このユーザーにはなりません。"}
+        </li>
+        <li>サーバは banto 専用にしてください（ほかのユーザー・サービスを置かない）。Incus 6.0.6 以降が要ります。</li>
+        <li>同じサーバの同じユーザーを、サーバ丸ごと（machine）と並べて登録できません。</li>
+        <li>コンテナで Module を起こすところはまだ作っていません。いまは登録と準備までです。</li>
+      </ul>
+    </div>
+  );
+}
+
+function MachineCautions() {
   return (
     <div className="rounded-md bg-surface-2 px-3 py-2.5 text-xs text-ink-2" data-testid="runtime-cautions">
-      <p className="mb-1.5 font-medium text-foreground">別のサーバで動かすとき</p>
+      <p className="mb-1.5 font-medium text-foreground">サーバ丸ごと（machine）で動かすとき</p>
       <ul className="flex list-disc flex-col gap-1 pl-4">
         <li>
           {"サーバ丸ごとが、その Project の箱になります。AI は SSH のユーザーができることを全部できます（Docker を使えるなら、実質 root）。" +
@@ -179,7 +226,7 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
     : r.checks.some((c) => c.status === "fail")
       ? { tone: "stop", text: "前提が足りません" }
       : used
-        ? { tone: "ok", text: `Project「${used.name}」が使っています` }
+        ? { tone: "ok", text: r.usedBy.length > 1 ? `Project ${r.usedBy.length} 件が使っています` : `Project「${used.name}」が使っています` }
         : warns.length > 0
           ? { tone: "warn", text: `使えます（注意 ${warns.length} 件）` }
           : { tone: "ok", text: "使えます——まだどの Project も使っていません" };
@@ -212,6 +259,9 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
             <span className="font-medium text-foreground">{r.name}</span>
             <span className="font-mono text-xs text-ink-3" data-testid="runtime-target">
               {sshTarget(r)}
+            </span>
+            <span className="text-xs text-ink-3" data-testid="runtime-mode" data-mode={r.mode}>
+              {modeLabel(r.mode)}
             </span>
           </p>
           <p
@@ -391,6 +441,7 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   const [port, setPort] = useState("22");
   const [identity, setIdentity] = useState<string>("");
   const [dataRoot, setDataRoot] = useState(DEFAULT_DATA_ROOT);
+  const [mode, setMode] = useState<RealRuntimeMode>("machine");
   const [step, setStep] = useState<Step>({ kind: "form" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -423,6 +474,7 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
     port: Number(port) || 22,
     identity,
     dataRoot: dataRoot.trim() || DEFAULT_DATA_ROOT,
+    mode,
   };
   const nameTaken = taken.includes(input.name);
   const filled = !!(input.name && input.host && input.user && input.identity) && !nameTaken;
@@ -451,10 +503,49 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-card p-3" data-testid="runtime-add-form">
       <p className="text-sm font-medium text-foreground">別のサーバを登録</p>
-      <Cautions />
+      <Cautions mode={step.kind === "form" ? mode : step.input.mode} />
 
       {step.kind === "form" ? (
         <form onSubmit={connect} className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span id="rt-mode-label" className="text-sm font-medium">
+              動かし方
+            </span>
+            <div role="radiogroup" aria-labelledby="rt-mode-label" className="grid gap-2 sm:grid-cols-2" data-testid="runtime-mode-select">
+              {MODE_OPTIONS.map((option) => {
+                const selected = mode === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    data-testid={`runtime-mode-${option.value}`}
+                    onClick={() => setMode(option.value)}
+                    className={cn(
+                      "flex items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      selected ? "border-primary bg-accent" : "border-border hover:bg-accent/50",
+                    )}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "mt-1 flex size-3.5 shrink-0 items-center justify-center rounded-full border",
+                        selected ? "border-foreground" : "border-muted-foreground",
+                      )}
+                    >
+                      {selected ? <span className="size-1.5 rounded-full bg-foreground" /> : null}
+                    </span>
+                    <span className="flex flex-col">
+                      <span className="text-sm font-medium">{option.label}</span>
+                      <span className="text-xs text-muted-foreground">{option.hint}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field id="rt-name" label="名前" hint={nameTaken ? "この名前はもう使われています" : "一覧と、Project を作る画面に出ます（英小文字・数字・-）"}>
               <Input id="rt-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="lab-pve" />
@@ -468,7 +559,11 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
                 placeholder="192.168.1.80"
               />
             </Field>
-            <Field id="rt-user" label="ユーザー" hint="banto 専用のユーザーを勧めます">
+            <Field
+              id="rt-user"
+              label="ユーザー"
+              hint={mode === "containers" ? "banto 専用のユーザー（パスワード無しで sudo できること）" : "banto 専用のユーザーを勧めます"}
+            >
               <Input id="rt-user" value={user} onChange={(e) => setUser(e.target.value)} className="font-mono text-xs" />
             </Field>
             <Field id="rt-port" label="ポート">
@@ -586,6 +681,10 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
             <p className="text-xs text-stop" data-testid="runtime-add-blocked">
               足りないものがあるので登録できません。向こうで上のコマンドを打ってから、確かめ直してください。
             </p>
+          ) : step.input.mode === "containers" && step.checks.some((c) => c.status === "warn") ? (
+            <p className="text-xs text-ink-2" data-testid="runtime-add-prepare">
+              注意の項目は、登録するときに banto が sudo -n で整えます（上のコマンドと同じもの。入っているものには何もしません）。
+            </p>
           ) : null}
           {error ? (
             <p data-testid="runtime-add-error" className="text-xs text-stop">
@@ -605,7 +704,13 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
                 })
               }
             >
-              {busy ? "登録しています…" : "登録する"}
+              {busy
+                ? step.input.mode === "containers"
+                  ? "準備して登録しています…"
+                  : "登録しています…"
+                : step.input.mode === "containers"
+                  ? "準備して登録する"
+                  : "登録する"}
             </Button>
             <Button
               type="button"

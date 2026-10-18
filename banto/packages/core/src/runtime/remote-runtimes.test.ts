@@ -12,7 +12,7 @@ import { fingerprintOf, type RuntimeCheck } from "./ssh.js";
 
 const KEY = { type: "ssh-ed25519", key: "AAAAC3NzaC1lZDI1NTE5AAAAIOld", fingerprint: fingerprintOf("AAAAC3NzaC1lZDI1NTE5AAAAIOld") };
 const NEW_KEY = { type: "ssh-ed25519", key: "AAAAC3NzaC1lZDI1NTE5AAAAINew", fingerprint: fingerprintOf("AAAAC3NzaC1lZDI1NTE5AAAAINew") };
-const INPUT = { name: "lab", host: "192.168.1.80", user: "banto", port: 22, identity: "lab-ssh", dataRoot: "~/.local/share/banto-remote" };
+const INPUT = { name: "lab", host: "192.168.1.80", user: "banto", port: 22, identity: "lab-ssh", dataRoot: "~/.local/share/banto-remote", mode: "machine" as const };
 const OK: RuntimeCheck[] = [{ id: "tools", label: "道具", status: "ok" }];
 
 async function withStores(fn: (s: { dir: string; log: EventLog; store: RemoteRuntimeStore; projects: ProjectThreadStore; runtimes: RemoteRuntimes }) => Promise<void>) {
@@ -54,7 +54,10 @@ test("宛先の入力：名前（id を兼ねる）・ホスト・鍵を確か�
     port: 2222,
     identity: "k",
     dataRoot: "~/.local/share/banto-remote",
+    mode: "machine",
   });
+  assert.equal(parseRuntimeInput({ ...INPUT, mode: "containers" }).mode, "containers");
+  assert.throws(() => parseRuntimeInput({ ...INPUT, mode: "vm" }), /動かし方/);
   assert.throws(() => parseRuntimeInput({ ...INPUT, name: "Lab PVE" }), /名前/);
   assert.throws(() => parseRuntimeInput({ ...INPUT, host: "-oProxyCommand=sh" }), /ホスト/);
   assert.throws(() => parseRuntimeInput({ ...INPUT, identity: "" }), /SSH 鍵/);
@@ -174,5 +177,51 @@ test("別のサーバの Project：根はこの機械で正規化しない・あ
     await assert.rejects(projects.setProjectRoot(p.id, "/tmp"), RemoteProjectError);
     assert.equal(remoteNameOf(p.runtime), "lab");
     assert.equal(remoteNameOf("host-container"), undefined);
+  });
+});
+
+test("動かし方を持つ前の登録の記録は machine として畳む", async () => {
+  await withStores(async ({ dir, log }) => {
+    const { mode: _mode, ...old } = INPUT;
+    await log.append("runtime.remote_registered", { runtime: old, hostKey: KEY, checks: OK });
+    const store = new RemoteRuntimeStore(dir, log);
+    await store.load();
+    assert.equal(store.get("lab")!.mode, "machine");
+  });
+});
+
+test("containers は「1つの実行場所に Project は1つ」で選べなくしない（作る・再開する）", async () => {
+  await withStores(async ({ store, projects, runtimes }) => {
+    await store.register({ ...INPUT, mode: "containers" }, KEY, OK);
+    const a = await projects.createProject("a", "/home/banto/a", { runtime: "remote:lab" });
+    await projects.createProject("b", "/home/banto/b", { runtime: "remote:lab" });
+    const view = runtimes.get("lab")!;
+    assert.equal(view.unavailableReason, undefined);
+    assert.deepEqual(view.usedBy.map((p) => p.name).sort(), ["a", "b"]);
+    await projects.closeProject(a.id);
+    await runtimes.reopenProjectOn("lab", a.id, () => projects.reopenProject(a.id));
+    assert.equal(projects.getProject(a.id)!.status, "active");
+  });
+});
+
+test("同じ host 鍵＋ユーザーに machine と containers を並べられない（繋ぐ前に名指しして断る）。ユーザーが違えば並べられる", async () => {
+  await withStores(async ({ store, runtimes }) => {
+    await store.register(INPUT, KEY, OK);
+    const containers = { ...INPUT, name: "lab-c", host: "lab.example", mode: "containers" as const };
+    for (const attempt of [() => runtimes.check(containers, KEY), () => runtimes.register(containers, KEY)]) {
+      await assert.rejects(
+        attempt(),
+        (err: unknown) =>
+          err instanceof RemoteRuntimeError && err.status === 409 && err.extra?.code === "mixed-modes" && /実行場所「lab」/.test(err.message),
+      );
+    }
+    assert.equal(store.get("lab-c"), undefined);
+    // 別のユーザー・別の鍵（別のサーバ）は断らない——ここから先は繋ぎに行く（この試験では Vault が無いので 502）
+    for (const other of [{ ...containers, user: "banto2" }]) {
+      await assert.rejects(runtimes.check(other, KEY), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 502);
+    }
+    await assert.rejects(runtimes.check(containers, NEW_KEY), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 502);
+    // 同じ動かし方なら並べるのは断らない
+    await assert.rejects(runtimes.check({ ...INPUT, name: "lab2" }, KEY), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 502);
   });
 });

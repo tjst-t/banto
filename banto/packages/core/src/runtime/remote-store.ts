@@ -15,6 +15,13 @@ export const HOST_CONTAINER_RUNTIME = "host-container";
 /** Project の記録の、別のサーバの印の前置き */
 export const REMOTE_RUNTIME_PREFIX = "remote:";
 
+/**
+ * 別のサーバの動かし方（決定・2026-10-17、v4-security.md §1「別のサーバの中のコンテナ」）：`machine` は向こうのユーザーで直に
+ * 動かし、サーバ丸ごとが1つの Project の箱。`containers` は Project ごとに Incus のコンテナを立てる（1台に Project を複数）。
+ * 登録のときに決め、あとから変えない。前の記録（動かし方が無い）は `machine`
+ */
+export type RemoteRuntimeMode = "machine" | "containers";
+
 /** 既定の向こうの置き場の根 */
 export const DEFAULT_REMOTE_DATA_ROOT = "~/.local/share/banto-remote";
 
@@ -28,6 +35,8 @@ export interface RemoteRuntimeInput {
   identity: string;
   /** 向こうの置き場の根 */
   dataRoot: string;
+  /** 動かし方 */
+  mode: RemoteRuntimeMode;
 }
 
 export interface RemoteRuntime extends RemoteRuntimeInput {
@@ -46,7 +55,8 @@ export interface RemoteRuntimeState {
 }
 
 export type RemoteRuntimeEvent =
-  | { type: "runtime.remote_registered"; payload: { runtime: RemoteRuntimeInput; hostKey: HostKey; checks: RuntimeCheck[] } }
+  // 動かし方を持つ前の記録には `mode` が無い
+  | { type: "runtime.remote_registered"; payload: { runtime: Omit<RemoteRuntimeInput, "mode"> & { mode?: RemoteRuntimeMode }; hostKey: HostKey; checks: RuntimeCheck[] } }
   | { type: "runtime.remote_checked"; payload: { name: string; checks: RuntimeCheck[] } }
   | { type: "runtime.remote_host_key_mismatch"; payload: { name: string; hostKey: HostKey } }
   | { type: "runtime.remote_host_key_accepted"; payload: { name: string; hostKey: HostKey } }
@@ -63,6 +73,7 @@ export const remoteRuntimeFold: Fold<RemoteRuntimeState> = {
         const { runtime, hostKey, checks } = event.payload;
         runtimes.set(runtime.name, {
           ...runtime,
+          mode: runtime.mode ?? "machine",
           hostKey: { ...hostKey, confirmedAt: raw.ts },
           checks,
           checkedAt: raw.ts,
