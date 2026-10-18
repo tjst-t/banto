@@ -6064,7 +6064,7 @@
       "number": 384,
       "kind": "task",
       "title": "Browser：Canvas が狭いとき上の帯を2行に折り返さない——「ブラウザの記録を消す」などを「…」にしまう",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "browser-module",
       "dependsOn": [],
       "milestone": null,
@@ -6078,7 +6078,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T00:51:36.756Z",
-      "updatedAt": "2026-10-18T00:51:36.756Z",
+      "updatedAt": "2026-10-18T00:51:45.183Z",
       "closedAt": null,
       "extra": {}
     },
