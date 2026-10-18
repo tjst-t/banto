@@ -9499,7 +9499,7 @@
       "number": 394,
       "kind": "task",
       "title": "Shell：envSecrets・secretFiles を lookupAliases 1回と Vault ごとの resolveAliases 1回で引く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "host-dev-banto-batchof-1",
@@ -9510,12 +9510,12 @@
       "labels": [],
       "body": "仕様は docs/specs/v4-modules.md「秘密をまとめて引く」の「Shell」。banto/packages/modules/shell/src/run-command.ts・host-relay-client.ts。重複を除いて集め、引けない名前は全部の名前と理由を1つの文で断る。Vault ごとに resolveAliases（100件ごとに分ける）、「その tool は無い」で断られたら resolveAlias の1件ずつに落とす（ほかの理由は落とさない）。sshIdentity は今どおり。進捗は Vault ごとにまとめる。既存の通しの試験 shell/src/infisical-rate-limit.integration.test.ts を、まとめた形での回数（値・書き込みも比例しない）に強める。E2E：コンテナの Shell から envSecrets に複数件渡して承認のカードが1枚（未許可だけ）になることを既存の relay-approval の形で足す。",
       "doneWhen": "Shell の単体・通しの試験：27件で lookupAliases 1回・resolveAliases が Vault ごとに1回、宛先に resolveAliases が無ければ1件ずつ。E2E：未許可の alias 3件を含む呼び出しでカードが1枚・許可後はカード無しで通る。relay-approval・auto-approve-all・vault-* の E2E が通る。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/shell-envsecrets-secretfiles-lookupalias）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:40:07.375Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T10:14:37.404Z",
+      "closedAt": "2026-10-18T10:14:37.404Z",
       "extra": {}
     },
     {
