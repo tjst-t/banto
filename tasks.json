@@ -8905,7 +8905,7 @@
       "number": 366,
       "kind": "task",
       "title": "別のサーバの SSH の接続・待ち受け・トンネルを Project ごとにする作り直し（実行場所＋Project の層）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "a-proxy-device-security-uid-symlink-subu"
@@ -8919,7 +8919,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-18T01:33:56.850Z",
       "closedAt": null,
       "extra": {}
     },
