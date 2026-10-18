@@ -5,8 +5,10 @@
 // 一番早いリセットの時刻と、アカウントごとのメーター。名前・使用率・閾値は host が読むたびに台帳から添える（規則3）。
 // どれかが閾値の下に戻ると host がカードを閉じる（人は押さなくてよい）。
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import type { RealNoticeClaudeAccounts, RealUsageWindow } from "@/lib/backend/client";
 import { clockOf } from "@/lib/backend/rate-limit-waits";
+import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { cn } from "@/lib/utils";
 
 type Account = RealNoticeClaudeAccounts["accounts"][number];
@@ -65,16 +67,24 @@ export function ClaudeAccountsAllOverNotice({ card }: { card: RealNoticeClaudeAc
         ])}
       </div>
       <p className="text-xs text-ink-3">どれかが閾値の下に戻ったら、このカードは自動で閉じます。</p>
-      <div className="flex justify-end">
-        {/* Project の Claude のログインの節（一般）。「アカウントを足す」は設定「Claude のアカウント」ができてから（規則13） */}
-        <Link
-          href={`/settings?${new URLSearchParams({ project: card.projectId, section: "project-general" }).toString()}`}
-          data-testid="inbox-claude-accounts-project-settings"
-          className="flex h-8 items-center rounded-md px-3 text-xs text-ink-2 hover:bg-accent"
-        >
-          Project の設定を開く
-        </Link>
-      </div>
+      {/* 並びを直す入口（§6.46「受信箱」）——Project の並び（Project 設定「Claude のアカウント」）と、アカウントを足す
+          （banto 全体の設定「Claude のアカウント」の「アカウントを足す」）。設定の節が出ないときは置かない（規則13） */}
+      {CONNECTED_FEATURES.claudeAccounts ? (
+        <div className="flex justify-end gap-2">
+          <Link
+            href={`/settings?${new URLSearchParams({ project: card.projectId, section: "project-claude-accounts" }).toString()}`}
+            data-testid="inbox-claude-accounts-project-settings"
+            className="flex h-8 items-center rounded-md px-3 text-xs text-ink-2 hover:bg-accent"
+          >
+            Project の設定を開く
+          </Link>
+          <Button asChild size="sm" className="h-8 text-xs">
+            <Link href="/settings?section=claude-accounts" data-testid="inbox-claude-accounts-add">
+              アカウントを足す
+            </Link>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

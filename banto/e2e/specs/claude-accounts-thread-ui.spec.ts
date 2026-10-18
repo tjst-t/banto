@@ -122,7 +122,7 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
 
         // ---- 1. 切り替えの1行 ------------------------------------------------------------------------------
         // host は 5時間 97%。リセットは少し先——全部越えのカードが閉じるところ（5.）まで、待ちの帯の場面（4.）を挟む
-        const hostReset = secondsFromNow(260);
+        const hostReset = secondsFromNow(320);
         fakeApi.setLimit(HOST_TOKEN, { fiveHour: { utilization: 0.97, resetsAt: hostReset } });
         await send(own, threadId, `1回目。${fakeTurn({ relayRequests: 1, say: "はい" })}`);
         // 切り替えるターンは tool も呼ぶ——画面が流れを最後まで読んだターンに印を足しても、組み直さない（tool のカードを消さない）
@@ -198,10 +198,22 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         await expect(meters.nth(2)).toHaveAttribute("data-over", "");
         await expect(meters.nth(3)).toContainText(`${B_LABEL}　週—`);
         await expect(card).toContainText("どれかが閾値の下に戻ったら、このカードは自動で閉じます。");
-        await expect(card.getByTestId("inbox-claude-accounts-project-settings")).toHaveAttribute(
-          "href",
-          `/settings?project=${projectId}&section=project-general`,
-        );
+        // 並びを直す入口：Project 設定の「Claude のアカウント」と、banto 全体の設定の「アカウントを足す」
+        const projectSettings = card.getByTestId("inbox-claude-accounts-project-settings");
+        const addAccount = card.getByTestId("inbox-claude-accounts-add");
+        await expect(projectSettings).toHaveText("Project の設定を開く");
+        await expect(projectSettings).toHaveAttribute("href", `/settings?project=${projectId}&section=project-claude-accounts`);
+        await expect(addAccount).toHaveText("アカウントを足す");
+        await expect(addAccount).toHaveAttribute("href", "/settings?section=claude-accounts");
+        // 押した先が、その画面になっている（並びを変える画面・「アカウントを足す」のある画面）
+        await addAccount.click();
+        await expect(page.getByTestId("claude-accounts-add"), "「アカウントを足す」の先に足すボタンが無い").toBeVisible({ timeout: 30_000 });
+        await page.goto(`/p/${projectId}?bantoHost=${own.url}&overlay=inbox`);
+        await expect(card).toHaveCount(1, { timeout: 30_000 });
+        await card.getByTestId("inbox-claude-accounts-project-settings").click();
+        await expect(page.getByTestId("project-claude-accounts-panel"), "「Project の設定を開く」の先が並びの画面でない").toBeVisible({ timeout: 30_000 });
+        await page.goto(`/p/${projectId}?bantoHost=${own.url}&overlay=inbox`);
+        await expect(card).toHaveCount(1, { timeout: 30_000 });
         // 本文の文だけを出す形にはしていない（並び・メーターで組んでいる）
         await expect(card.getByText("のどれも、使用率が閾値")).toHaveCount(0);
 

@@ -26,12 +26,20 @@ warn の形（「並びのアカウントがどれも閾値を越えています
 いま使っているものと同じなら、切り替えが無いので1行も出ない（受信箱のカードは出る）。仕様は「並びの全部が閾値を越えた
 ときは」とだけ書いていて、この場合をどうするかは決めていない。
 
-## 受信箱のカードの「アカウントを足す」は置いていない
+## 受信箱のカードの2つのボタン（訂正・2026-10-18）
 
-§6.46 のカードのボタンは「Project の設定を開く」「アカウントを足す」。「アカウントを足す」の行き先（設定「Claude の
-アカウント」とそのダイアログ）は #403 で、この main にまだ無い——繋がっていないボタンは置かない（規則13）。#403 が入ったら
-足す。「Project の設定を開く」も、Project の設定の「Claude のアカウント」の節（#403）が無いので、いまは「Claude のログイン」の
-節がある「一般」を開く。
+§6.46 のカードのボタンは「Project の設定を開く」「アカウントを足す」。
+
+- 「Project の設定を開く」→ Project 設定の「Claude のアカウント」（`section=project-claude-accounts`、Project の並びを変える画面）
+- 「アカウントを足す」→ banto 全体の設定の「Claude のアカウント」（`section=claude-accounts`、「アカウントを足す」のボタンがある）
+
+どちらも設定の節が出るとき（`CONNECTED_FEATURES.claudeAccounts`）だけ置く。E2E は href と、押した先にその画面
+（`project-claude-accounts-panel`・`claude-accounts-add`）が出ることを見る。
+
+**最初の版は仕様から外れていた**：行き先の節（#403）が分岐点の main に無かったので「アカウントを足す」を置かず、「Project の
+設定を開く」は「Claude のログイン」の節がある「一般」へ飛ばしていた（規則13）。#403 を含む main（47350207）の上に載せ直した
+あとも、この節は「#403 がまだ無い」を理由に残したままで、食い違いの理由が事実と合わなくなっていた（レビュー指摘、規則8）。
+載せ直した版で行き先はあるので、仕様どおりに繋いだ。
 
 カードは banto 全体のお知らせのまま（`projectId` を持たない）。鍵が並びの中身で、閉じる側（`onBackUnderThreshold`）は鍵しか
 知らないため。気づいた Project は `claudeAccounts.projectId` に持ち、カードの頭と「Project の設定を開く」に使う。名前・
@@ -117,3 +125,6 @@ main（#403 の 47350207）の上に載せ直した。`relay.test.ts` は両方�
 core の単体テスト 1014件・frontend 50件ほかが通り、`claude-accounts-thread-ui` は `--repeat-each=2` で2回とも通った。
 `claude-accounts-switch`・`claude-accounts-settings`・`claude-login-relay`・`rate-limit-continue`・会話の組み直しの4本・
 `project-thread-fork` は、spec だけを直す前の同じ版で 18件通った。フル E2E は流していない。
+
+2つのボタンを繋いだ版で `claude-accounts-thread-ui` を `--repeat-each=2` で流し、2回とも通った（各 5.5分。押した先の画面を見る
+ぶん遅くなるので、全部越えのカードが閉じるところまでに間に合うよう host のリセットを 260秒後から 320秒後にした）。
