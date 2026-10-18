@@ -38,7 +38,7 @@
 import { isLink, type AliasListOptions, type AliasMeta, type AliasPatch, type AliasStore, type LinkAliasMeta } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
 import { backendPathOf, ensureFolders, nameWithinGroup, parseGroupId, placeOf } from "./place.js";
-import { isFolderMissing } from "./infisical-backend.js";
+import { isFolderMissing, isPermissionDenied } from "./infisical-backend.js";
 
 /**
  * 注記に書く中身。**`backendPath` は置き場そのものなので書かない**（規則3）。
@@ -203,15 +203,27 @@ export class InfisicalAliasStore implements AliasStore {
    * 引数なしの一覧には出てこないので、一覧から探すと見つからない
    */
   private async find(backendPath: string): Promise<AliasMeta | undefined> {
-    const place = placeOf(backendPath);
-    const listed = await this.conn.secrets().listSecrets({
-      ...this.conn.scopeFor(place.env),
-      secretPath: place.folder,
-      viewSecretValue: false,
-      expandSecretReferences: false,
-    });
-    const hit = (listed.secrets ?? []).find((s) => s.secretKey === place.key);
-    return hit ? toMeta(hit, backendPath) : undefined;
+    return (await this.findMany([backendPath])).get(backendPath);
+  }
+
+  /** 何件かを引く。**（環境・フォルダ）ごとに1回だけ読む**（`markUsedMany` が分け合う一覧に無い行を引くとき）。 */
+  private async findMany(backendPaths: readonly string[]): Promise<Map<string, AliasMeta>> {
+    const out = new Map<string, AliasMeta>();
+    await Promise.all(
+      [...byFolder(backendPaths).values()].map(async ({ env, folder, paths }) => {
+        const listed = await this.conn.secrets().listSecrets({
+          ...this.conn.scopeFor(env),
+          secretPath: folder,
+          viewSecretValue: false,
+          expandSecretReferences: false,
+        });
+        for (const [key, backendPath] of paths) {
+          const hit = (listed.secrets ?? []).find((s) => s.secretKey === key);
+          if (hit) out.set(backendPath, toMeta(hit, backendPath));
+        }
+      }),
+    );
+    return out;
   }
 
   /**
@@ -327,6 +339,45 @@ export class InfisicalAliasStore implements AliasStore {
     if (recent) recent.lastUsedAt = lastUsedAt;
   }
 
+  /**
+   * 使った日を**（環境・フォルダ）ごとに1回で**書く（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。行は `markUsed` と同じく
+   * 分け合っている一覧から取り、無いものだけフォルダごとに読む。書くのは Infisical の一括更新（`PATCH /api/v4/secrets/batch`、
+   * 注記だけ）。**一括で失敗したら、そのフォルダは1件ずつに落とす**（消えた秘密が1つあると一括は呼び出しごと失敗する）。
+   * 分け合っている行の使った日も直す
+   */
+  async markUsedMany(backendPaths: readonly string[]): Promise<void> {
+    const unique = [...new Set(backendPaths)];
+    const recent = new Map<string, AliasMeta>();
+    for (const backendPath of unique) {
+      const row = await this.sharedRow(backendPath);
+      if (row) recent.set(backendPath, row);
+    }
+    const found = await this.findMany(unique.filter((p) => !recent.has(p)));
+    const lastUsedAt = new Date().toISOString();
+    await Promise.all(
+      [...byFolder(unique).values()].map(async ({ env, folder, paths }) => {
+        const rows: Array<{ key: string; row: AliasMeta }> = [];
+        for (const [key, backendPath] of paths) {
+          const row = recent.get(backendPath) ?? found.get(backendPath);
+          // 見つからないものは書かない（`markUsed` と同じ）
+          if (row) rows.push({ key, row });
+        }
+        if (rows.length === 0) return;
+        try {
+          await this.conn.batch().updateSecrets({
+            ...this.conn.scopeFor(env),
+            secretPath: folder,
+            secrets: rows.map(({ key, row }) => ({ secretKey: key, secretComment: JSON.stringify({ ...stored(row), lastUsedAt }) })),
+          });
+        } catch {
+          // 一括の失敗は1件ずつに落とす——1件ずつでも書けなければ、そこで投げる（`markUsed` と同じ）
+          for (const { row } of rows) await this.writeComment(row.backendPath, { ...stored(row), lastUsedAt });
+        }
+        for (const { row } of rows) if (recent.get(row.backendPath) === row) row.lastUsedAt = lastUsedAt;
+      }),
+    );
+  }
+
   /** 注記だけを書き換える。**値は渡さない**——渡すと上書きしてしまう。 */
   private async writeComment(backendPath: string, meta: StoredMeta): Promise<void> {
     const { folder, key, env } = placeOf(backendPath);
@@ -336,6 +387,21 @@ export class InfisicalAliasStore implements AliasStore {
       secretComment: JSON.stringify(meta),
     });
   }
+}
+
+/** backendPath を（環境・フォルダ）ごとに分ける。中身は秘密の名前 → backendPath。 */
+function byFolder(
+  backendPaths: readonly string[],
+): Map<string, { env: string | undefined; folder: string; paths: Map<string, string> }> {
+  const out = new Map<string, { env: string | undefined; folder: string; paths: Map<string, string> }>();
+  for (const backendPath of backendPaths) {
+    const { env, folder, key } = placeOf(backendPath);
+    const id = `${env ?? ""}|${folder}`;
+    const group = out.get(id) ?? { env, folder, paths: new Map<string, string>() };
+    group.paths.set(key, backendPath);
+    out.set(id, group);
+  }
+  return out;
 }
 
 /**
@@ -417,10 +483,4 @@ function parseComment(comment: string | undefined): StoredMeta | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** 権限が無くて断られた（値を読む権限が無い等）。文言か状態符号 403 で見る。 */
-function isPermissionDenied(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /StatusCode=403|permission|forbidden/i.test(message);
 }

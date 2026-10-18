@@ -45,6 +45,11 @@ export function fakeConnection(
   const secrets = new Map<string, Stored>();
   const folders = new Set<string>(); // "/g" か "prod|/g"
   const listOptions: Array<Record<string, unknown>> = [];
+  /** 一括更新（`PATCH /api/v4/secrets/batch`）に来た引数。`failBatch` を立てると断る（1件ずつに落ちるかを見る） */
+  const batchCalls: Array<Record<string, unknown>> = [];
+  /** 1件ずつの注記・値の書き込み（`updateSecret`）に来た引数 */
+  const updateCalls: Array<Record<string, unknown>> = [];
+  const control = { failBatch: false };
   const envKey = (env: string, path: string) => (env === def ? path : `${env}|${path}`);
   const at = (env: string, path: string, key: string) => `${envKey(env, path)}\0${key}`;
   const parse = (k: string) => {
@@ -72,6 +77,27 @@ export function fakeConnection(
           .map((f) => (f.includes("|") ? { env: f.split("|")[0], path: f.split("|")[1]! } : { env: def, path: f }))
           .filter((f) => f.env === o.environment && f.path.split("/").length === 2)
           .map((f) => ({ name: f.path.slice(1) }));
+      },
+    }),
+    // **v4 の一括更新**（本物は SDK の外で直に呼ぶ口、2026-10-18）。`mode` は既定の `failOnNotFound`——1つでも無ければ
+    // 何も書かずに呼び出しごと断る。**値は受けない**（渡されたら試験が気づくように断る）
+    batch: () => limited({
+      async updateSecrets(o: {
+        projectId: string;
+        environment: string;
+        secretPath: string;
+        secrets: Array<{ secretKey: string; secretComment: string; secretValue?: unknown }>;
+      }) {
+        batchCalls.push(o as unknown as Record<string, unknown>);
+        if (control.failBatch) throw new Error("[URL=/api/v4/secrets/batch] [Method=patch] [StatusCode=500] Something went wrong");
+        if (o.secrets.some((x) => "secretValue" in x)) throw new Error("一括更新に値が渡された");
+        const keys = o.secrets.map((x) => at(o.environment, o.secretPath, x.secretKey));
+        if (keys.some((k) => !secrets.has(k))) {
+          throw new Error("[URL=/api/v4/secrets/batch] [Method=patch] [StatusCode=404] Secret not found");
+        }
+        o.secrets.forEach((x, i) => {
+          secrets.set(keys[i]!, { ...secrets.get(keys[i]!)!, secretComment: x.secretComment });
+        });
       },
     }),
     secrets: () => limited({
@@ -107,6 +133,7 @@ export function fakeConnection(
         secrets.set(at(o.environment, o.secretPath, key), { secretValue: o.secretValue, secretComment: o.secretComment });
       },
       async updateSecret(key: string, o: { environment: string; secretPath: string; secretValue?: string; secretComment?: string }) {
+        updateCalls.push({ key, ...o });
         const cur = secrets.get(at(o.environment, o.secretPath, key));
         if (!cur) throw new Error("not found");
         secrets.set(at(o.environment, o.secretPath, key), {
@@ -119,7 +146,7 @@ export function fakeConnection(
       },
     }),
   };
-  return { conn: conn as unknown as InfisicalConnection, secrets, folders, listOptions, sleeps,
+  return { conn: conn as unknown as InfisicalConnection, secrets, folders, listOptions, sleeps, batchCalls, updateCalls, control,
     /** 回数制限の窓を新しくする（試験の準備で使った回数を数えないように） */
     resetRateWindow: () => {
       callsInWindow = 0;
