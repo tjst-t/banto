@@ -110,12 +110,21 @@ extended.beforeAll = ((...args: unknown[]) => {
 
 export const test = extended;
 
+/**
+ * core を呼ぶ。**届かなかったら、どの要求だったかを添えて投げる**（追加・2026-10-18、Backlog #385）。替わり目の片づけで
+ * fetch が「fetch failed（other side closed）」だけを残して落ち、どの要求を core が答えずに閉じたのか分からなかった
+ */
 async function api(path: string, method = "GET", body?: unknown): Promise<Response> {
-  return fetch(`${CORE_BASE_URL}${path}`, {
-    method,
-    headers: { authorization: `Bearer ${AUTH_TOKEN}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  try {
+    return await fetch(`${CORE_BASE_URL}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (err) {
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    throw new Error(`[e2e] 替わり目の片づけで ${method} ${path} が core に届きませんでした：${(err as Error).message}${cause ? `（${cause.code ?? ""} ${cause.message ?? ""}）` : ""}`, { cause: err });
+  }
 }
 
 async function apiJson<T>(path: string): Promise<T> {
