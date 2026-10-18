@@ -9476,7 +9476,7 @@
       "number": 393,
       "kind": "task",
       "title": "vault-infisical の getSecrets（値の一覧1回）と markUsedMany（v4 の一括更新）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "vault-kit-resolvealiases-getsecrets-mark"
@@ -9490,7 +9490,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:03:58.408Z",
+      "updatedAt": "2026-10-18T09:40:05.092Z",
       "closedAt": null,
       "extra": {}
     },
