@@ -9596,7 +9596,7 @@
       "number": 398,
       "kind": "task",
       "title": "中継がアカウントを複数持つ（台帳・置き場・アカウントごとの取り直しとカード・~/.claude を1つ目に）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-probe"
@@ -9610,7 +9610,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T11:26:02.554Z",
       "closedAt": null,
       "extra": {}
     },
