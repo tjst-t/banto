@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pageContent } from "./content.js";
 import { redactHeaders } from "./redact.js";
 
 export type RecordKind = "http" | "websocket" | "eventsource";
@@ -467,6 +468,41 @@ export function statusText(r: NetworkRecord): string {
 export function formatLine(r: NetworkRecord): string {
   const ms = r.durationMs !== undefined ? `${Math.round(r.durationMs)}ms` : "-";
   return `${r.id} ${r.tab} ${r.method} ${statusText(r)} ${r.type} ${formatBytes(r.encodedBytes ?? r.responseBody?.size)} ${ms} ${r.url}`;
+}
+
+/** 一覧（listNetwork）で1本の URL に出す字数の上限。超えたら頭だけ出して全体の字数を添える（Backlog #388） */
+export const LIST_URL_MAX = 200;
+/** 一覧（listNetwork）の結果全体の字数の上限。tool の結果の上限より十分小さく。新しい順に並べ、届いたらそこで打ち切る */
+export const LIST_TEXT_MAX = 30_000;
+
+function listLine(r: NetworkRecord): string {
+  if (r.url.length <= LIST_URL_MAX) return formatLine(r);
+  return formatLine({ ...r, url: `${r.url.slice(0, LIST_URL_MAX)}…（全 ${r.url.length.toLocaleString("en-US")} 字）` });
+}
+
+/** listNetwork の結果の文。rows は新しい順。URL を切り、全体を LIST_TEXT_MAX 以下に収める */
+export function formatNetworkList(rows: NetworkRecord[], total: number): string {
+  if (rows.length === 0) return `当てはまる通信はありません（記録は全部で ${total} 件）`;
+  const lines: string[] = [];
+  let size = 0;
+  // 頭・区切り・末尾の案内の分（どれも 300 字に届かない）を残しておく
+  const budget = LIST_TEXT_MAX - 1_000;
+  for (const r of rows) {
+    const line = listLine(r);
+    if (lines.length > 0 && size + line.length + 1 > budget) break;
+    lines.push(line);
+    size += line.length + 1;
+  }
+  const cut = lines.length < rows.length;
+  const urlCut = rows.slice(0, lines.length).some((r) => r.url.length > LIST_URL_MAX);
+  const head =
+    `新しい順に ${cut ? `${lines.length} 件を出します（当てはまるのは ${rows.length} 件。` : `${rows.length} 件（`}` +
+    `記録は全部で ${total} 件。列：id タブ メソッド 状態 種類 大きさ 時間 URL）` +
+    (urlCut ? `\n${LIST_URL_MAX} 字を超える URL は頭だけ出しています。全部の URL は getNetworkRequest で見られます` : "");
+  const tail = cut
+    ? `\n残り ${rows.length - lines.length} 件は出していません（一覧は全体で ${LIST_TEXT_MAX.toLocaleString("en-US")} 字まで）。type・urlContains・since で絞ってください`
+    : "";
+  return `${head}\n${pageContent("通信の一覧", lines.join("\n"))}${tail}`;
 }
 
 export type DetailPart = "all" | "headers" | "request" | "response" | "frames";
