@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { replaceCredentialsFile, type OauthFields } from "./refresh.js";
+import { DEFAULT_THRESHOLDS, type UsageThresholds } from "./select.js";
 
 /** 最初の1つ（`~/.claude`）の id。外せない（並びから抜くだけ） */
 export const HOST_ACCOUNT_ID = "host";
@@ -68,6 +69,13 @@ interface Ledger {
   accounts: ClaudeAccount[];
   /** banto 全体の既定の並び（アカウントの id の優先順） */
   defaultOrder: string[];
+  /**
+   * **Project の並び**（§2 の 5.）。鍵は Project の id。無ければ「既定のまま」。外したアカウントは抜き、空になったら
+   * 消す（既定に戻る）。前からある台帳には無い
+   */
+  projectOrders?: Record<string, string[]>;
+  /** 切り替えの閾値（0〜1、5時間と週で別々、§2 の 6.）。無ければ既定（95%・95%）。前からある台帳には無い */
+  thresholds?: UsageThresholds;
 }
 
 export interface ClaudeAccountStoreDeps {
@@ -119,11 +127,61 @@ export class ClaudeAccountStore {
 
   /** 既定の並びを決める（台帳にあるアカウントだけ・重ねない。空でもよい——使えるアカウントが無いと中継が理由を返す） */
   setDefaultOrder(ids: string[]): void {
-    if (new Set(ids).size !== ids.length) throw new Error("既定の並びに同じアカウントが2回あります");
-    const unknown = ids.find((id) => !this.ledger.accounts.some((a) => a.id === id));
-    if (unknown) throw new Error(`Claude のアカウント ${unknown} は台帳にありません`);
+    this.checkOrder(ids, "既定の並び");
     this.ledger.defaultOrder = [...ids];
     this.write();
+  }
+
+  /** その Project の並び。決めていなければ undefined（既定のまま） */
+  projectOrder(projectId: string): string[] | undefined {
+    const o = this.ledger.projectOrders?.[projectId];
+    return o ? [...o] : undefined;
+  }
+
+  /** その Project で使う並び：決めていればそれ、無ければ既定の並び */
+  orderFor(projectId: string): string[] {
+    return this.projectOrder(projectId) ?? this.defaultOrder();
+  }
+
+  /**
+   * **Project の並びを決める**（§2 の 5.）。`undefined` で「既定のまま」に戻す。決めるなら1つ以上（1つなら固定、
+   * 2つ以上ならその順に切り替える）
+   */
+  setProjectOrder(projectId: string, ids: string[] | undefined): void {
+    const orders = { ...(this.ledger.projectOrders ?? {}) };
+    if (ids === undefined) {
+      delete orders[projectId];
+    } else {
+      if (ids.length === 0) throw new Error("Project の並びには1つ以上のアカウントを入れてください（既定のままにするなら並びを渡さない）");
+      this.checkOrder(ids, "Project の並び");
+      orders[projectId] = [...ids];
+    }
+    this.ledger.projectOrders = orders;
+    this.write();
+  }
+
+  thresholds(): UsageThresholds {
+    return { ...(this.ledger.thresholds ?? DEFAULT_THRESHOLDS) };
+  }
+
+  /** **閾値を決める**（0 より大きく 1 以下。5時間と週で別々） */
+  setThresholds(t: UsageThresholds): void {
+    for (const [name, v] of [["5時間", t.fiveHour], ["週", t.sevenDay]] as const) {
+      if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > 1) throw new Error(`${name}の閾値は 0 より大きく 1 以下で渡してください`);
+    }
+    this.ledger.thresholds = { fiveHour: t.fiveHour, sevenDay: t.sevenDay };
+    this.write();
+  }
+
+  /** 覚えている使用率（リセットの時刻を過ぎたものも含めた生の値。選ぶ側が「分からない」に戻す） */
+  usageOf(id: string): AccountUsage | undefined {
+    return this.ledger.accounts.find((x) => x.id === id)?.usage;
+  }
+
+  private checkOrder(ids: string[], what: string): void {
+    if (new Set(ids).size !== ids.length) throw new Error(`${what}に同じアカウントが2回あります`);
+    const unknown = ids.find((id) => !this.ledger.accounts.some((a) => a.id === id));
+    if (unknown) throw new Error(`Claude のアカウント ${unknown} は台帳にありません`);
   }
 
   /** そのアカウントの置き場（`.credentials.json`） */
@@ -204,6 +262,15 @@ export class ClaudeAccountStore {
     if (a.kind === "host") throw new Error("このマシンの Claude Code のログインは外せません（並びから抜くことはできます）");
     this.ledger.accounts = this.ledger.accounts.filter((x) => x.id !== id);
     this.ledger.defaultOrder = this.ledger.defaultOrder.filter((x) => x !== id);
+    // Project の並びからも抜き、空になったら既定に戻す（§2 の 5.）
+    if (this.ledger.projectOrders) {
+      const orders: Record<string, string[]> = {};
+      for (const [projectId, order] of Object.entries(this.ledger.projectOrders)) {
+        const kept = order.filter((x) => x !== id);
+        if (kept.length > 0) orders[projectId] = kept;
+      }
+      this.ledger.projectOrders = orders;
+    }
     this.write();
     rmSync(this.accountDir(id), { recursive: true, force: true });
   }
@@ -338,7 +405,12 @@ function loadLedger(path: string): Ledger | undefined {
     Array.isArray(l.accounts) &&
     l.accounts.every((a) => typeof a?.id === "string" && (a.kind === "host" || a.kind === "banto") && typeof a.label === "string") &&
     Array.isArray(l.defaultOrder) &&
-    l.defaultOrder.every((id) => typeof id === "string" && l.accounts!.some((a) => a.id === id));
+    l.defaultOrder.every((id) => typeof id === "string" && l.accounts!.some((a) => a.id === id)) &&
+    (l.projectOrders === undefined ||
+      (typeof l.projectOrders === "object" &&
+        l.projectOrders !== null &&
+        Object.values(l.projectOrders).every((o) => Array.isArray(o) && o.every((id) => typeof id === "string" && l.accounts!.some((a) => a.id === id))))) &&
+    (l.thresholds === undefined || (typeof l.thresholds?.fiveHour === "number" && typeof l.thresholds?.sevenDay === "number"));
   if (!ok) throw new Error(`Claude のアカウントの台帳が壊れています：${path}`);
   return l as Ledger;
 }

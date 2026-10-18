@@ -3910,7 +3910,28 @@ export function createApp(deps: AppDeps) {
           if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
           deps.auth.requireHuman(principal, { stepUp: false });
           const sub = url.pathname.slice("/api/claude-accounts".length);
-          if (sub === "" && req.method === "GET") return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder() });
+          if (sub === "" && req.method === "GET") {
+            return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder(), thresholds: store.thresholds() });
+          }
+          // **既定の並びと閾値**（banto 全体の設定、§2 の 5.・6.）。閾値は 0〜1（5時間と週で別々）。渡したものだけ変える
+          if (sub === "/settings" && req.method === "PUT") {
+            const body = (await readJsonBody(req)) as { defaultOrder?: unknown; thresholds?: unknown } | undefined;
+            const order = body?.defaultOrder;
+            const th = body?.thresholds as { fiveHour?: unknown; sevenDay?: unknown } | undefined;
+            if (order !== undefined && !(Array.isArray(order) && order.every((x) => typeof x === "string"))) {
+              return json(res, 400, { error: "defaultOrder はアカウントの id の配列で渡してください" });
+            }
+            if (th !== undefined && (typeof th !== "object" || th === null || typeof th.fiveHour !== "number" || typeof th.sevenDay !== "number")) {
+              return json(res, 400, { error: "thresholds は { fiveHour, sevenDay }（0〜1）で渡してください" });
+            }
+            try {
+              if (order !== undefined) store.setDefaultOrder(order as string[]);
+              if (th !== undefined) store.setThresholds({ fiveHour: th.fiveHour as number, sevenDay: th.sevenDay as number });
+            } catch (err) {
+              return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+            }
+            return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder(), thresholds: store.thresholds() });
+          }
           if (sub === "/login" && req.method === "POST") return json(res, 200, login.start());
           const finishMatch = sub.match(/^\/login\/([^/]+)$/);
           if (finishMatch && req.method === "POST") {
@@ -3935,6 +3956,45 @@ export function createApp(deps: AppDeps) {
           if (err instanceof ClaudeAccountLoginError) return json(res, CLAUDE_LOGIN_FAILURE_STATUS[err.code], { error: err.message, code: err.code });
           throw err;
         }
+      }
+
+      // **Project の Claude のアカウントの並び**（決定・2026-10-18、`docs/specs/v4-security.md` §2「Claude のアカウントを
+      // 複数持つ」の 5.）。`order: null` で「既定のまま」、配列（1つ以上）で「この Project の並び」。変えるのは人のセッション
+      // だけ。観測：いま使っているアカウント（起こしてから）と最後の切り替え（Event Store から）
+      const claudeAccountsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/claude-accounts$/);
+      if (claudeAccountsMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = claudeAccountsMatch[1]!;
+        const project = deps.projectThread.getProject(projectId);
+        if (!project) return json(res, 404, { error: "not found" });
+        if (!deps.claudeAccounts || !deps.claudeLogin) return json(res, 501, { error: "この banto は Claude のアカウントを持っていません" });
+        const { store } = deps.claudeAccounts;
+        if (req.method === "PUT") {
+          try {
+            if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
+            deps.auth.requireHuman(principal, { stepUp: false });
+          } catch (err) {
+            if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+            throw err;
+          }
+          const body = (await readJsonBody(req)) as { order?: unknown } | undefined;
+          const order = body?.order;
+          if (order !== null && !(Array.isArray(order) && order.every((x) => typeof x === "string"))) {
+            return json(res, 400, { error: "order はアカウントの id の配列か null（既定のまま）で渡してください" });
+          }
+          try {
+            store.setProjectOrder(projectId, order === null ? undefined : (order as string[]));
+          } catch (err) {
+            return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        const current = deps.claudeLogin.currentAccountOf(projectId);
+        json(res, 200, {
+          order: store.projectOrder(projectId) ?? null,
+          effectiveOrder: store.orderFor(projectId),
+          ...(current ? { currentAccount: current } : {}),
+          ...(project.lastClaudeAccountSwitch ? { lastSwitch: project.lastClaudeAccountSwitch } : {}),
+        });
+        return;
       }
 
       // **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。

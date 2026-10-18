@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-18（§2「Claude のアカウントを複数持つ」：台帳・置き場・アカウントごとの取り直しとカード・`~/.claude` を1つ目に——Backlog #398）
+> 最終更新：2026-10-18（§2「Claude のアカウントを複数持つ」：5.・6. Project ごとの並びと閾値で切り替える——Backlog #401）
 
 ## 1. セキュリティ境界
 
@@ -1229,7 +1229,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
   **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
-### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。4. の HTTP の口は実装・2026-10-18、Backlog #400（`claude-login/account-login.ts`、画面はまだ）。1.・2.（会話の本体を中継に通す・本体用の合言葉）は実装・2026-10-18、Backlog #399（`claude-login/relay.ts` の `runnerEnvFor`）——ただし 2. の「取り直せない banto で設定にその理由を出す」は画面がまだ無い。ほかは未実装）
+### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。4. の HTTP の口は実装・2026-10-18、Backlog #400（`claude-login/account-login.ts`、画面はまだ）。1.・2.（会話の本体を中継に通す・本体用の合言葉）は実装・2026-10-18、Backlog #399（`claude-login/relay.ts` の `runnerEnvFor`）——ただし 2. の「取り直せない banto で設定にその理由を出す」は画面がまだ無い。5.・6.（並びと閾値・429 の送り直し・切り替えの記録・全部越えのカード）は実装・2026-10-18、Backlog #401（`claude-login/select.ts`・`relay.ts`、画面はまだ）。ほかは未実装）
 
 **何をするか**：banto が Claude のアカウント（ブラウザでログインしたサブスクリプションのもの）を複数持ち、
 (1) 使用率が人の決めた閾値（5時間と週で別々）を超えたら次のアカウントへ切り替え、(2) Project ごとに使うアカウント
@@ -1358,6 +1358,12 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 5. **Project ごとの並び**：banto 全体に「既定の並び」（アカウントの優先順）を1つ持ち、Project 設定「Claude のアカウント」で
    「既定のまま」か「この Project の並び」（1つ以上）を選ぶ。1つだけなら固定、2つ以上ならその順に切り替える。
    外したアカウントは並びから消し、Project の並びが空になったら既定に戻す
+   - **置き場は台帳**（`projectOrders`、Project の id ごと）。閾値（`thresholds`）も台帳に持つ。どちらも前からある台帳には無く、
+     無ければ「既定のまま」・既定の閾値
+   - **HTTP の口**：`PUT /api/claude-accounts/settings`（`{ defaultOrder?, thresholds?: { fiveHour, sevenDay } }`、閾値は 0〜1。
+     人のセッションだけ）・`GET|PUT /api/projects/<id>/claude-accounts`（`{ order: string[] | null }`——null で既定のまま。PUT は
+     人のセッションだけ。返すのは `order`・`effectiveOrder`・観測の `currentAccount`（起こしてから最後に返事をしたもの）・
+     `lastSwitch`（Event Store の最後の切り替え））。`GET /api/claude-accounts` は `thresholds` も返す
 6. **閾値で切り替える**：閾値は **5時間と週で別々**（banto 全体の設定、**既定は5時間 95%・週 95%**。決定・2026-10-18、ユーザー）
    - 中継は返事の見出しから、そのアカウントの使用率（5時間・週の率とリセットの時刻）を台帳のメモリの写しに書く
      （ファイルへは間引いて書く）
@@ -1375,6 +1381,11 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      すぐ上限のエラーで終わったが、見出しの無い 429（上流の別の理由）で CLI の試し直しのたびに並びの全部へ送り直して
      要求が倍々になるのを防ぐため、旗は付けておく
    - 切り替えたら Event Store に1件（Project・前と後・理由の率）、Project 設定の観測に出す
+     - 出来事は `claude_account.switched`（`projectId`・`threadId?`・`from`・`to`・`reason`）。`reason.kind` は `threshold`（前のものが
+       閾値を越えた。`window`・`utilization`）・`rejected`（前のものが上限で断った）・`recovered`（前のものがリセットされ並びの前へ
+       戻った）・`order`（並びが変わった）・`unavailable`（前のものが使えなかった——ログインしていない等）
+     - **切り替えの見分け**：Project ごとに最後に返事を返したアカウントを中継のメモリに持ち、違うアカウントが返事を返したら1件
+       （上限の 429 で断られた返事は数えない）。起こしてから最初の1回は比べる相手が無いので数えない
    - **切り替えたことは会話にも薄い1行で出す**（決定・2026-10-18、ユーザー）：その Project で動いている Thread の、
      切り替えた要求のところに「Claude のアカウントを B に切り替えました（A の5時間 96%）」（Thread は上の 2. の
      `x-banto-thread-id` で知る）。コンテナの中の要求
@@ -1383,6 +1394,9 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    - **並びの全部が閾値を越えたら**（決定・2026-10-18、ユーザー）：**一番早くリセットされるもの**（越えているほうの窓の
      リセットの時刻が一番近いもの）で続け、受信箱に1枚「Project ○○ の Claude のアカウントが全部閾値を越えました」を
      出す（Project の並びごとに1枚、dedupeKey に並びの中身）。どれかが閾値の下に戻ったら自動で閉じる
+     - dedupeKey は `claude-accounts-all-over:<並びの id を , でつないだもの>`（Project は持たない——同じ並びの Project で1枚）。
+       閉じるのは、その並びで選んだときに全部越えでなかったとき、と、一番早いリセットの1秒あとの見直し（要求が来なくても
+       閉じる）。まだ見ていない並びは開いている扱い（起こし直す前のカードも、その並びで最初に選んだときに閉じる）
 7. **観測と知らせ**：設定「Claude のアカウント」にアカウントごとの使用率（5時間・週、リセットまでの時間）と、どの Project が
    いまどれを使っているか。ログインが壊れた・401 が続く等のカードは今の決まりのまま**アカウントごと**に1枚
    （dedupeKey にアカウントの id を入れる）。使用率は使っていないアカウントでも、設定を開いたときに `/api/oauth/usage` で

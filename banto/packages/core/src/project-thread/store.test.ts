@@ -1288,3 +1288,27 @@ test("sleepProject／wakeProject：active のまま sleep が立ち、起きる�
     assert.equal(changed, 5, "眠った・起きたで一覧の変更を流していない");
   });
 });
+
+// **Claude のアカウントを切り替えた記録**（v4-security.md §2「Claude のアカウントを複数持つ」の 6.）：Event Store に1件。
+// その Project の Thread ならその会話に1行（画面だけの印）、Project には最後の1件。別の Project の Thread の印は載せない
+test("Claude のアカウントの切り替え：その Project の Thread にだけ1行、Project に最後の1件。起こし直しても残る", async () => {
+  await withStore(async (store, dir, log) => {
+    const a = await store.createProject("a", dir);
+    const b = await store.createProject("b", dir);
+    const ta = await store.createBaseThread(a.id);
+    const tb = await store.createBaseThread(b.id);
+    const reason = { kind: "threshold" as const, window: "5h" as const, utilization: 0.96 };
+    await store.recordClaudeAccountSwitch({ projectId: a.id, threadId: ta.id, from: "host", to: "acc-b", reason });
+    // 別の Project の Thread を名乗っても、その会話には載せない
+    await store.recordClaudeAccountSwitch({ projectId: a.id, threadId: tb.id, from: "acc-b", to: "host", reason: { kind: "recovered" } });
+    assert.deepEqual(store.getThread(ta.id)!.accountSwitches?.map((s) => [s.from, s.to, s.reason.kind]), [["host", "acc-b", "threshold"]]);
+    assert.equal(store.getThread(tb.id)!.accountSwitches, undefined);
+    assert.deepEqual(store.getProject(a.id)!.lastClaudeAccountSwitch?.reason, { kind: "recovered" });
+    assert.equal(store.getProject(b.id)!.lastClaudeAccountSwitch, undefined);
+    await assert.rejects(store.recordClaudeAccountSwitch({ projectId: "nope", from: "host", to: "x", reason }), NotFoundError);
+    const reloaded = new ProjectThreadStore(dir, log);
+    await reloaded.load();
+    assert.equal(reloaded.getThread(ta.id)!.accountSwitches?.length, 1);
+    assert.equal(reloaded.getProject(a.id)!.lastClaudeAccountSwitch?.to, "host");
+  });
+});

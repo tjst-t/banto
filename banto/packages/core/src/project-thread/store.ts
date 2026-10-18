@@ -21,6 +21,7 @@ import type {
   ThreadClosedBy,
   ThreadEffort,
   ThreadState,
+  ClaudeAccountSwitchReasonRecord,
   UiToolCallEntry,
   MessageImage,
   MessageQuote,
@@ -920,6 +921,27 @@ export class ProjectThreadStore {
     if (!thread) throw new NotFoundError(`thread ${threadId} not found`);
     if (sameSkillSet(currentSkillSet(thread), set)) return;
     const event = await this.log.append("thread.skills_fixed", { threadId, set });
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **Claude のアカウントを切り替えたことを記録する**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
+   * Thread はその Project のものだけ載せる（違えば外して Project の記録だけにする——中継が受けた印をそのまま信じない）
+   */
+  async recordClaudeAccountSwitch(input: {
+    projectId: ProjectId;
+    threadId?: ThreadId;
+    from: string;
+    to: string;
+    reason: ClaudeAccountSwitchReasonRecord;
+  }): Promise<void> {
+    if (!this.getProject(input.projectId)) throw new NotFoundError(`project ${input.projectId} not found`);
+    const thread = input.threadId ? this.getThread(input.threadId) : undefined;
+    const { threadId: _threadId, ...rest } = input;
+    const event = await this.log.append("claude_account.switched", {
+      ...rest,
+      ...(thread && thread.projectId === input.projectId ? { threadId: thread.id } : {}),
+    });
     this.projection.applyOne(event);
   }
 

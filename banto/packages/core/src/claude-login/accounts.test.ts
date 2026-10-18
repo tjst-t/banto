@@ -117,3 +117,39 @@ test(
     assert.throws(() => new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: "/x" }), /JSON ではありません/);
   }),
 );
+
+// **Project の並びと閾値**（§2「Claude のアカウントを複数持つ」の 5.・6.）
+test(
+  "Project の並び：無ければ既定のまま。外したアカウントは並びから抜け、空になれば既定に戻る。閾値は既定 95%・95%。起こし直しても残る",
+  withDir((dir) => {
+    const hostPath = join(dir, "host.json");
+    const store = new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath });
+    const b = store.add({ email: "b@example.com", oauth: { accessToken: "B" } });
+    const c = store.add({ email: "c@example.com", oauth: { accessToken: "C" } });
+    assert.equal(store.projectOrder("p1"), undefined);
+    assert.deepEqual(store.orderFor("p1"), [HOST_ACCOUNT_ID, b.id, c.id]);
+    store.setProjectOrder("p1", [c.id, b.id]);
+    store.setProjectOrder("p2", [b.id]);
+    assert.deepEqual(store.orderFor("p1"), [c.id, b.id]);
+    assert.throws(() => store.setProjectOrder("p1", []), /1つ以上/);
+    assert.throws(() => store.setProjectOrder("p1", [b.id, b.id]), /2回/);
+    assert.throws(() => store.setProjectOrder("p1", ["nope"]), /台帳にありません/);
+    assert.deepEqual(store.thresholds(), { fiveHour: 0.95, sevenDay: 0.95 });
+    store.setThresholds({ fiveHour: 0.8, sevenDay: 0.9 });
+    assert.throws(() => store.setThresholds({ fiveHour: 0, sevenDay: 0.9 }), /5時間/);
+    assert.throws(() => store.setThresholds({ fiveHour: 0.5, sevenDay: 1.5 }), /週/);
+
+    store.remove(b.id);
+    assert.deepEqual(store.orderFor("p1"), [c.id]);
+    // p2 は空になったので既定に戻る
+    assert.equal(store.projectOrder("p2"), undefined);
+    assert.deepEqual(store.orderFor("p2"), [HOST_ACCOUNT_ID, c.id]);
+
+    const again = new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath });
+    assert.deepEqual(again.orderFor("p1"), [c.id]);
+    assert.deepEqual(again.thresholds(), { fiveHour: 0.8, sevenDay: 0.9 });
+    // 既定に戻す
+    again.setProjectOrder("p1", undefined);
+    assert.deepEqual(again.orderFor("p1"), [HOST_ACCOUNT_ID, c.id]);
+  }),
+);

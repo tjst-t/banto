@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
 import { HOST_ACCOUNT_ID, type ClaudeAccountStore } from "./accounts.js";
+import { blockedBy, chooseAccount, earliestRecovery, type Blocked } from "./select.js";
 
 const UPSTREAM = "https://api.anthropic.com";
 /**
@@ -49,6 +50,10 @@ export const CLAUDE_LOGIN_ENABLED_KEY = "claudeLogin.enabled";
  * 送り込みまで触れる広さを持つ——コンテナに要るのは推論だけなので、他は断る
  */
 const ALLOWED_PATH = /^\/v1\/messages(\/count_tokens)?(\?|$)/;
+/** 上限の見出し（`allowed`・`allowed_warning`・`rejected`）。429 でこれが rejected なら、並びの次へ送り直す */
+const RATELIMIT_STATUS_HEADER = "anthropic-ratelimit-unified-status";
+/** 全部越えのカードを閉じに行くのは、一番早いリセットの少しあと */
+const RECOVERY_CHECK_DELAY_MS = 1_000;
 /** どの Thread の要求かの印（本体の CLI が `ANTHROPIC_CUSTOM_HEADERS` で付ける）。中継が読み、上流へは流さない */
 export const THREAD_ID_HEADER = "x-banto-thread-id";
 const HOP_BY_HOP = ["host", "connection", "content-length", "authorization", "x-api-key", "keep-alive", "transfer-encoding", THREAD_ID_HEADER];
@@ -168,10 +173,36 @@ export interface ClaudeLoginStats {
   lastUnauthorizedAt?: string;
 }
 
+/**
+ * **なぜ切り替えたか**（§2「Claude のアカウントを複数持つ」の 6.）。前のアカウントが閾値を越えた・上限で断った（`Blocked`）、
+ * 前のアカウントがリセットされて並びの前へ戻った（`recovered`）、並びが変わった（`order`）、前のアカウントが使えなかった
+ * （ログインしていない等、`unavailable`）
+ */
+export type ClaudeAccountSwitchReason = Blocked | { kind: "recovered" } | { kind: "order" } | { kind: "unavailable" };
+
+/** 切り替えの1件（Event Store に1件、Thread が分かればその会話に1行） */
+export interface ClaudeAccountSwitch {
+  projectId: string;
+  /** 本体の要求なら `x-banto-thread-id` の Thread（コンテナからの要求では読まない） */
+  threadId?: string;
+  from: string;
+  to: string;
+  reason: ClaudeAccountSwitchReason;
+}
+
+/** 並びの全部が閾値を越えた（受信箱に1枚。鍵は並びの中身——Project の並びごとに1枚） */
+export interface ClaudeAccountsAllOver {
+  key: string;
+  projectId: string;
+  order: string[];
+  /** 続けているアカウント（一番早くリセットされるもの） */
+  using: string;
+}
+
 export interface ClaudeLoginRelayDeps {
   /**
    * **アカウントの台帳と置き場**（§2「Claude のアカウントを複数持つ」の 3.）。アカウント1つ＝置き場1つ＝取り直し役1つ＝
-   * 知らせ1つ。どれを使うかの選び方は既定の並びの先頭（閾値での切り替えはまだ無い）
+   * 知らせ1つ。どれを使うかは要求ごとに、その Project の並びと使用率・閾値から選ぶ（`select.ts`）
    */
   accounts: ClaudeAccountStore;
   /** 合言葉の置き場（host のデータの置き場。0600） */
@@ -193,6 +224,15 @@ export interface ClaudeLoginRelayDeps {
    * **別のアカウントが通っても呼ばない**
    */
   onUpstreamAuthorized?(accountId: string): void;
+  /** **その Project で使うアカウントが替わった**（§2 の 6.）。記録の失敗で推論を止めない——呼ぶ側が受けて知らせる */
+  onAccountSwitched?(change: ClaudeAccountSwitch): void;
+  /** 並びの全部が閾値を越えた（同じ並びで開いている間は呼ばない） */
+  onAllOverThreshold?(info: ClaudeAccountsAllOver): void;
+  /**
+   * その並びのどれかが閾値の下に戻った——カードを閉じるため。**まだ見ていない並びは開いている扱い**（起こし直す前に
+   * 出したカードも、その並びで最初に選んだときに閉じる）
+   */
+  onBackUnderThreshold?(key: string): void;
   upstream?: string;
   /** 取り直しの口（試験・E2E で差し替える。既定は本番） */
   tokenUrl?: string;
@@ -225,6 +265,12 @@ export class ClaudeLoginRelay {
   private readonly openTrouble = new Map<string, { closeWhen: CloseWhen; refreshToken?: string } | undefined>();
   /** いま試し直し用に抱えている本文の合計 */
   private bufferedBytes = 0;
+  /** Project ごとの、最後に返事を返したアカウント（切り替えを見分けるため。起こしてからのもの） */
+  private readonly current = new Map<string, string>();
+  /** 並び（の鍵）ごとの、全部越えのカードが開いているか。無い鍵は開いている扱い */
+  private readonly allOverOpen = new Map<string, boolean>();
+  /** 全部越えのカードを閉じに行く時計（並びの鍵ごと） */
+  private readonly recoveryTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
@@ -315,16 +361,27 @@ export class ClaudeLoginRelay {
   }
 
   /**
-   * **その Project の要求に使うアカウント**。いまは既定の並びの先頭（Project ごとの並びと閾値での切り替えは
-   * §2 の 5.・6.、まだ無い）。並びが空なら undefined
+   * **その Project の要求にいま使うアカウント**（§2 の 5.・6.）：その Project の並び（無ければ既定の並び）の先頭から、
+   * 閾値の下で上限に断られていない最初のもの。全部越えていれば一番早くリセットされるもの。並びが空なら undefined
    */
   private accountFor(projectId: string): string | undefined {
-    return this.orderFor(projectId)[0];
+    return this.choose(projectId)?.accountId;
   }
 
-  /** その Project の並び（いまは既定の並び。Project ごとの並びは §2 の 5.、まだ無い） */
-  private orderFor(_projectId: string): string[] {
-    return this.deps.accounts.defaultOrder();
+  private choose(projectId: string, skip?: ReadonlySet<string>) {
+    const store = this.deps.accounts;
+    return chooseAccount(store.orderFor(projectId), (id) => store.usageOf(id), store.thresholds(), this.now(), skip);
+  }
+
+  /** その Project が最後に使ったアカウント（Project 設定の観測。起こしてから1度も使っていなければ undefined） */
+  currentAccountOf(projectId: string): string | undefined {
+    return this.current.get(projectId);
+  }
+
+  /** 止めるとき：全部越えのカードを閉じに行く時計を止める */
+  close(): void {
+    for (const t of this.recoveryTimers.values()) clearTimeout(t);
+    this.recoveryTimers.clear();
   }
 
   /**
@@ -335,7 +392,7 @@ export class ClaudeLoginRelay {
   earliestResetFor(projectId: string): number | undefined {
     if (this.deps.refreshEnabled === false) return undefined;
     let earliest: number | undefined;
-    for (const id of this.orderFor(projectId)) {
+    for (const id of this.deps.accounts.orderFor(projectId)) {
       const usage = this.deps.accounts.get(id)?.usage;
       if (usage?.status !== "rejected" || usage.statusResetsAt === undefined) continue;
       const at = Date.parse(usage.statusResetsAt);
@@ -411,21 +468,13 @@ export class ClaudeLoginRelay {
       refuse(res, 403, `banto の中継は推論（/v1/messages）だけを通します: ${req.method} ${path}`);
       return;
     }
-    const accountId = this.accountFor(projectId);
-    if (!accountId) {
-      refuse(res, 500, "使える Claude のアカウントがありません（既定の並びが空です）");
+    const order = this.deps.accounts.orderFor(projectId);
+    const first = this.choose(projectId);
+    if (!first) {
+      refuse(res, 500, "使える Claude のアカウントがありません（並びが空です）");
       return;
     }
-    const refresher = this.refresherFor(accountId);
-    // 切れかけていれば取り直す（§2「中継も、切れかけたら取り直す」）。トークンも無い＝ログインしていない——理由を返す
-    const first = await refresher.ensureFresh();
-    if (first.kind === "failed" && !first.accessToken) {
-      refuse(res, 500, first.reason);
-      return;
-    }
-    let token = first.accessToken!;
-    /** 流せても人が直すことが残った（例：取り直したのに書き戻せなかった） */
-    let trouble = troubleOf(first);
+    this.noteAllOver(projectId, order, first.allOver, first.accountId);
     const abort = new AbortController();
     res.on("close", () => abort.abort());
     // 試し直すために本文を読み切って持つ（上限を超えたら、読んだ分と残りをつないで流す）
@@ -434,42 +483,60 @@ export class ClaudeLoginRelay {
     const body: { buffered?: Buffer; stream?: Readable } = hasBody ? await readBodyUpTo(req, room) : {};
     const held = body.buffered?.length ?? 0;
     this.bufferedBytes += held;
-    let upstreamRes: Response;
+    /** 本文を持てた（または本文が無い）——401 の試し直し・429 の送り直しができる */
+    const resendable = !hasBody || body.buffered !== undefined;
+    const send = (bearer: string) =>
+      fetch(`${this.upstream}${path}`, {
+        method: req.method ?? "POST",
+        headers: { ...forwardedHeaders(req), authorization: `Bearer ${bearer}` },
+        ...(hasBody
+          ? body.buffered !== undefined
+            ? { body: body.buffered }
+            : // Node の fetch で本文を流しながら送るには duplex が要る
+              { body: Readable.toWeb(body.stream!) as ReadableStream<Uint8Array>, duplex: "half" }
+          : {}),
+        signal: abort.signal,
+      } as RequestInit);
+    let upstreamRes: Response | undefined;
+    let accountId = first.accountId;
+    /** 並びの全部が上限で断った（送り直しを尽くした） */
+    let exhausted = false;
     try {
-      const send = (bearer: string) =>
-        fetch(`${this.upstream}${path}`, {
-          method: req.method ?? "POST",
-          headers: { ...forwardedHeaders(req), authorization: `Bearer ${bearer}` },
-          ...(hasBody
-            ? body.buffered !== undefined
-              ? { body: body.buffered }
-              : // Node の fetch で本文を流しながら送るには duplex が要る
-                { body: Readable.toWeb(body.stream!) as ReadableStream<Uint8Array>, duplex: "half" }
-            : {}),
-          signal: abort.signal,
-        } as RequestInit);
-      upstreamRes = await send(token);
-      // 401：置き場を読み直し（替わっていなければ線を見ずに取り直して）、1回だけ送り直す
-      if (upstreamRes.status === 401 && (!hasBody || body.buffered !== undefined)) {
-        const second = await refresher.ensureFresh({ force: true, seenAccessToken: token });
-        if (second.accessToken && second.accessToken !== token) {
-          await upstreamRes.body?.cancel().catch(() => {});
-          token = second.accessToken;
-          upstreamRes = await send(token);
-          trouble = troubleOf(second) ?? trouble;
-          if (upstreamRes.status === 401) trouble ??= { reason: "取り直したトークンでも断られました（401）", closeWhen: "authorized" };
-        } else if (second.kind === "failed" && second.needsHuman) {
-          trouble = troubleOf(second);
-        } else if (second.kind === "failed") {
-          // 一時的（取り直しの口に届かない・鍵の取り合い）：知らせず、次の要求でまた試す
-          console.warn(`[claude-login] 401 のあと取り直せませんでした（一時的）: ${second.reason}`);
+      // **上限で断られたら（429・rejected）、並びの次のアカウントへ、使えるものが無くなるまで順に送り直す**（§2 の 6.）
+      const tried = new Set<string>();
+      for (let candidate: string | undefined = first.accountId; candidate !== undefined; ) {
+        tried.add(candidate);
+        const attempt = await this.sendAs(candidate, projectId, send, resendable);
+        if (attempt.kind === "refused") {
+          // そのアカウントはログインしていない：並びに次があればそれへ。無ければ、前に断られた 429 があればそれを、
+          // 無ければ理由を返す
+          const next = resendable ? this.choose(projectId, tried) : undefined;
+          if (next) {
+            candidate = next.accountId;
+            continue;
+          }
+          if (!upstreamRes) {
+            refuse(res, 500, attempt.reason);
+            return;
+          }
+          exhausted = true;
+          break;
         }
-      } else if (upstreamRes.status === 401) {
-        console.warn("[claude-login] 上流が 401 を返しました（本文が大きく、試し直しませんでした）");
+        if (upstreamRes) await upstreamRes.body?.cancel().catch(() => {});
+        upstreamRes = attempt.res;
+        accountId = candidate;
+        if (!rejectedByLimit(upstreamRes) || !resendable) break;
+        const next = this.choose(projectId, tried);
+        if (!next) {
+          exhausted = true;
+          break;
+        }
+        candidate = next.accountId;
       }
     } finally {
       this.bufferedBytes -= held;
     }
+    if (!upstreamRes) throw new Error("unreachable: 上流の返事が無い");
     const at = this.now().toISOString();
     const table = caller.kind === "runner" ? this.runnerStats : this.stats;
     const s = table.get(projectId) ?? { requests: 0 };
@@ -477,6 +544,61 @@ export class ClaudeLoginRelay {
     s.lastRequestAt = at;
     if (upstreamRes.status === 401) s.lastUnauthorizedAt = at;
     table.set(projectId, s);
+    if (!rejectedByLimit(upstreamRes)) {
+      // Thread の印は本体用の合言葉で来たときだけ読む（コンテナから来たものは無視する）
+      const threadHeader = caller.kind === "runner" ? req.headers[THREAD_ID_HEADER] : undefined;
+      this.noteServed(projectId, accountId, order, typeof threadHeader === "string" && threadHeader ? threadHeader : undefined);
+    }
+    const headers: Record<string, string> = {};
+    // fetch は圧縮を解いて渡すので、長さと符号化の見出しは付け直さない
+    upstreamRes.headers.forEach((v, k) => {
+      if (!["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)) headers[k] = v;
+    });
+    // **並びの全部が断ったら、上流の 429 を見出しごと返し、試し直さない旗も付ける**（見出しの無い 429 で CLI の試し直しの
+    // たびに並びの全部へ送り直して、要求が倍々になるのを防ぐ）。本文を持てず送り直さなかったときは付けない
+    if (exhausted && upstreamRes.status === 429) headers["x-should-retry"] = "false";
+    res.writeHead(upstreamRes.status, headers);
+    if (upstreamRes.body) Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream).pipe(res);
+    else res.end();
+  }
+
+  /**
+   * **そのアカウントで1回送る**：切れかけていれば取り直し、401 なら置き場を読み直して（替わっていなければ取り直して）
+   * 1回だけ送り直す。使用率を覚え、人が直すことが残ればそのアカウントのカードを出し、通ればそのアカウントのカードを
+   * 閉じる。トークンも無い（ログインしていない）なら送らずに理由を返す
+   */
+  private async sendAs(
+    accountId: string,
+    projectId: string,
+    send: (bearer: string) => Promise<Response>,
+    resendable: boolean,
+  ): Promise<{ kind: "response"; res: Response } | { kind: "refused"; reason: string }> {
+    const refresher = this.refresherFor(accountId);
+    // 切れかけていれば取り直す（§2「中継も、切れかけたら取り直す」）。トークンも無い＝ログインしていない——理由を返す
+    const first = await refresher.ensureFresh();
+    if (first.kind === "failed" && !first.accessToken) return { kind: "refused", reason: first.reason };
+    let token = first.accessToken!;
+    /** 流せても人が直すことが残った（例：取り直したのに書き戻せなかった） */
+    let trouble = troubleOf(first);
+    let upstreamRes = await send(token);
+    // 401：置き場を読み直し（替わっていなければ線を見ずに取り直して）、1回だけ送り直す
+    if (upstreamRes.status === 401 && resendable) {
+      const second = await refresher.ensureFresh({ force: true, seenAccessToken: token });
+      if (second.accessToken && second.accessToken !== token) {
+        await upstreamRes.body?.cancel().catch(() => {});
+        token = second.accessToken;
+        upstreamRes = await send(token);
+        trouble = troubleOf(second) ?? trouble;
+        if (upstreamRes.status === 401) trouble ??= { reason: "取り直したトークンでも断られました（401）", closeWhen: "authorized" };
+      } else if (second.kind === "failed" && second.needsHuman) {
+        trouble = troubleOf(second);
+      } else if (second.kind === "failed") {
+        // 一時的（取り直しの口に届かない・鍵の取り合い）：知らせず、次の要求でまた試す
+        console.warn(`[claude-login] 401 のあと取り直せませんでした（一時的）: ${second.reason}`);
+      }
+    } else if (upstreamRes.status === 401) {
+      console.warn("[claude-login] 上流が 401 を返しました（本文が大きく、試し直しませんでした）");
+    }
     // 使用率はアカウントごとに覚える（見出しの無い返事では変えない）
     this.deps.accounts.recordUsage(accountId, upstreamRes.headers);
     if (trouble) {
@@ -494,14 +616,68 @@ export class ClaudeLoginRelay {
         this.deps.onUpstreamAuthorized?.(accountId);
       }
     }
-    const headers: Record<string, string> = {};
-    // fetch は圧縮を解いて渡すので、長さと符号化の見出しは付け直さない
-    upstreamRes.headers.forEach((v, k) => {
-      if (!["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)) headers[k] = v;
-    });
-    res.writeHead(upstreamRes.status, headers);
-    if (upstreamRes.body) Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream).pipe(res);
-    else res.end();
+    return { kind: "response", res: upstreamRes };
+  }
+
+  /** **返事を返したアカウントを覚え、替わっていたら切り替えを知らせる**（起こしてから最初の1回は比べる相手が無い） */
+  private noteServed(projectId: string, accountId: string, order: readonly string[], threadId: string | undefined): void {
+    const prev = this.current.get(projectId);
+    this.current.set(projectId, accountId);
+    if (prev === undefined || prev === accountId) return;
+    const blocked = blockedBy(this.deps.accounts.usageOf(prev), this.deps.accounts.thresholds(), this.now());
+    const reason: ClaudeAccountSwitchReason =
+      blocked ??
+      (!order.includes(prev)
+        ? { kind: "order" }
+        : order.indexOf(accountId) < order.indexOf(prev)
+          ? { kind: "recovered" }
+          : { kind: "unavailable" });
+    this.deps.onAccountSwitched?.({ projectId, ...(threadId ? { threadId } : {}), from: prev, to: accountId, reason });
+  }
+
+  /**
+   * **全部越えのカード**（§2 の 6.）：並びの全部が閾値を越えたら1枚出し（同じ並びで開いている間は出さない）、どれかが
+   * 下に戻ったら閉じる。要求が来なくても戻ったら閉じられるよう、一番早いリセットの少しあとに見直す
+   */
+  private noteAllOver(projectId: string, order: readonly string[], allOver: boolean, using: string): void {
+    const key = order.join(",");
+    const open = this.allOverOpen.get(key);
+    if (allOver) {
+      if (open === true) return;
+      this.allOverOpen.set(key, true);
+      this.deps.onAllOverThreshold?.({ key, projectId, order: [...order], using });
+      this.scheduleRecoveryCheck(projectId, order);
+    } else if (open !== false) {
+      this.allOverOpen.set(key, false);
+      const timer = this.recoveryTimers.get(key);
+      if (timer) clearTimeout(timer);
+      this.recoveryTimers.delete(key);
+      this.deps.onBackUnderThreshold?.(key);
+    }
+  }
+
+  private scheduleRecoveryCheck(projectId: string, order: readonly string[]): void {
+    const key = order.join(",");
+    const store = this.deps.accounts;
+    const at = earliestRecovery(order, (id) => store.usageOf(id), store.thresholds(), this.now());
+    const old = this.recoveryTimers.get(key);
+    if (old) clearTimeout(old);
+    this.recoveryTimers.delete(key);
+    // いつ戻るか分からない：次の要求で見直す
+    if (at === undefined) return;
+    const timer = setTimeout(
+      () => {
+        this.recoveryTimers.delete(key);
+        if (this.allOverOpen.get(key) !== true) return;
+        const choice = chooseAccount(order, (id) => store.usageOf(id), store.thresholds(), this.now());
+        if (choice && !choice.allOver) this.noteAllOver(projectId, order, false, choice.accountId);
+        else this.scheduleRecoveryCheck(projectId, order);
+      },
+      // setTimeout の上限（約 24.8 日）を超えないように。週の窓でも足りる
+      Math.min(Math.max(0, at - this.now().getTime()) + RECOVERY_CHECK_DELAY_MS, 2 ** 31 - 1),
+    );
+    timer.unref();
+    this.recoveryTimers.set(key, timer);
   }
 
   /** 合言葉から、どの Project の・どちらの表のものかを引く */
@@ -534,6 +710,11 @@ function loadSecrets(path: string): Record<string, string> {
 /** IPv4 を IPv6 の形で受けた待ち受け（`::ffff:10.0.0.2`）でも、コンテナのアドレスと比べられる形に */
 function normalizeAddress(address: string): string {
   return address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+}
+
+/** 上流が上限で断った（429 で、全体の status が rejected） */
+function rejectedByLimit(res: Response): boolean {
+  return res.status === 429 && res.headers.get(RATELIMIT_STATUS_HEADER) === "rejected";
 }
 
 /** 人が直すことが残った取り直しの結果ならその理由と閉じ方（一時的な失敗は数えない） */
