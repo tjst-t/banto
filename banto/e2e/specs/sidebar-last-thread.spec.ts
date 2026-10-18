@@ -7,6 +7,7 @@
 //   3. いま見ている Project の名前を押したときは Base Thread へ戻る（今までどおり）
 //   4. 覚えていた Fork を閉じたら、戻ったときは Base Thread
 //   5. 畳んだレールの頭文字でも同じ
+//   6. 名前を押すと目次も開け閉めする（いま見ている Project は切り替え、ほかの Project は開く）
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +52,20 @@ test("ほかの Project から名前を押して戻ると、その Project で�
   await projectLink(A).click();
   await expect.poll(() => new URL(page.url()).searchParams.get("fork"), { timeout: 15_000 }).toBeNull();
   await expect.poll(() => new URL(page.url()).pathname).toBe(aPath);
+
+  // ---- 6. 名前を押すと目次も開け閉めする（2026-10-18、ユーザー要望）——いま見ている Project なら切り替え、
+  //         ほかの Project なら（畳んでいても）開く ----
+  const forkLink = sidebar.getByTestId("sidebar-fork-name").filter({ hasText: "覚えておく Fork" });
+  await expect(forkLink).toHaveCount(0); // 3. で押したので畳んだ
+  await projectLink(A).click();
+  await expect(forkLink).toHaveCount(1);
+  await projectLink(A).click();
+  await expect(forkLink).toHaveCount(0);
+  await projectLink(B).click();
+  await expect(page).not.toHaveURL(new RegExp(aPath), { timeout: 15_000 });
+  await projectLink(A).click();
+  await expect.poll(() => new URL(page.url()).pathname, { timeout: 15_000 }).toBe(aPath);
+  await expect(forkLink).toHaveCount(1);
 
   // ---- 5. 畳んだレールでも同じ（Base を見たので、A は Base を覚えている。Fork へ戻してから） ----
   await sidebar.getByRole("link", { name: "覚えておく Fork" }).click();

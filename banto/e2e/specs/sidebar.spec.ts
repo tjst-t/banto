@@ -250,6 +250,10 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
   await page.waitForURL(/\/p\/[0-9a-f-]+$/, { timeout: 20_000 });
   await expectProjectOpen(page, "設定の層A");
+  // いま見ている Project の名前を押すと目次も畳む（2026-10-18、ユーザー要望、§6.40）——Thread の行を押すので、もう一度押して開き直す
+  await expect(page.getByTestId("sidebar-base-name")).toHaveCount(0);
+  await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
+  await expect(page.getByTestId("sidebar-base-name")).toHaveCount(1);
 
   // **Thread の行を押す**——設定を閉じてその会話を出す（改訂・2026-10-05、ユーザー要望。以前は設定を開いたまま）
   const projectA = new URL(page.url()).pathname;
