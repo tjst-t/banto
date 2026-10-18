@@ -1466,7 +1466,8 @@ test("AI が envSecrets で GitHub のブラウザログインを受け取ると
     await expect(page.locator('[data-role="assistant"]').filter({ hasText: "二度目を試しました。" })).toBeVisible({ timeout: 120_000 });
     await openToolCards(page, "mcp__shell__runCommand");
     await expect(
-      page.getByText(new RegExp(`"${alias}" は banto が置いたログインで、持ち主の repositories が使える値を用意できませんでした：@${login} のログインを更新できませんでした`)).first(),
+      // 結果は JSON の中なので、引用符は \" で出る
+      page.getByText(new RegExp(`${alias}\\\\?" は banto が置いたログインで、持ち主の repositories が使える値を用意できませんでした：@${login} のログインを更新できませんでした.*置いてある値は渡しません`)).first(),
       "取り直せないのに理由つきで断っていない",
     ).toBeVisible({ timeout: 30_000 });
     // 断ったので、コマンドは走っていない（2回目の指紋は出ていない）
