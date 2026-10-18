@@ -105,7 +105,15 @@ async function build(run: RunIncus, timeoutMs: number): Promise<string> {
       rmSync(dirname(tar), { recursive: true, force: true });
     }
     await must(run, ["stop", tmp], "一時のコンテナを止める", 120_000);
-    await must(run, ["publish", tmp, "--alias", alias], "土台イメージにする", timeoutMs);
+    const published = await run(["publish", tmp, "--alias", alias], { timeoutMs });
+    if (published.code !== 0) {
+      // **別のプロセスが同じ土台を先に作り終えた**（「alias がもうある」）なら、それを使う——中身は同じ手順から作ったもの（名前が
+      // 手順から決まる）。上の building がまとめるのはプロセスの中だけで、同じ機械で並んで走る E2E の回どうしは同時に作り始めうる
+      const now = await run(["query", `/1.0/images/aliases/${alias}?project=${encodeURIComponent(project)}`], { timeoutMs: 30_000 });
+      if (now.code !== 0) {
+        throw new Error(`土台イメージにするのに失敗しました：${(published.stderr || published.stdout).trim().slice(-800) || `終了コード ${published.code}`}`);
+      }
+    }
     return alias;
   } finally {
     await run(["delete", "--force", tmp], { timeoutMs: 120_000 });

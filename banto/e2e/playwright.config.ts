@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import { ensureIncusAccess } from "./incus-access.ts";
-import { acquireMachineLock } from "./run-lock.ts";
+import { acquireWorktreeLock } from "./run-lock.ts";
 
 // **流し方**（2026-10-08）：`cd banto/e2e && npx playwright test [spec...]`。
 //   - **並列の数は `BANTO_E2E_WORKERS`**（既定は `config.ts` の DEFAULT_WORKERS。1〜6）。worker ごとに core を1本起こす
@@ -12,6 +12,12 @@ import { acquireMachineLock } from "./run-lock.ts";
 // 起こし直す。**`config.ts` を読む前に**——config は読んだプロセスの pid を回の印にし、TMPDIR を書き換える
 // （起こし直す親の値が子に渡ってはいけない）ので、静的な import にしない
 await ensureIncusAccess();
+
+// **同じ機械で E2E を同時にいくつ流してもよい**（改訂・2026-10-18、`run-lock.ts`）。ただし**同じ作業ツリーの回は1回ずつ**
+// （画面の組み立ての置き場 `.next-e2e` を取り合うため）。config を読む**前に**取る——config は読んだときに port の枠を
+// 取るので、待つ間に枠を抱えないように。worker・webServer の子は env の印を見て何もしない
+acquireWorktreeLock(new URL("..", import.meta.url).pathname);
+
 const {
   CORE_COUNT,
   coreBaseUrl,
@@ -19,11 +25,8 @@ const {
   FRONTEND_LISTEN_URL,
   FRONTEND_PORT,
   FRONTEND_DIST_DIR,
+  PORT_SLOT,
 } = await import("./config.js");
-
-// **同じ機械の E2E は一度に1回**（`run-lock.ts`）。webServer を起こす前に取る——config はここで読まれ終わってから
-// webServer が起きる。worker・webServer の子は env の印を見て何もしない
-acquireMachineLock(new URL("..", import.meta.url).pathname);
 
 // **土台イメージは core を起こす前に用意する**（追加・2026-10-08）。無ければ core は最初の Project のコンテナで作るが、
 // core が何本もあると同時に作り始め、後から publish したほうが「alias がもうある」で落ちる（`@banto/container` の
@@ -68,7 +71,11 @@ export default defineConfig({
       command: `node ${new URL("./start-core.ts", import.meta.url).pathname}`,
       url: `${coreBaseUrl(index)}/healthz`,
       // 実行の印（port・置き場を決める）と core の番号を渡す——別プロセスでも同じ実行・同じ番号の値になる
-      env: { BANTO_E2E_RUN_ID: process.env.BANTO_E2E_RUN_ID!, BANTO_E2E_CORE_INDEX: String(index) },
+      env: {
+        BANTO_E2E_RUN_ID: process.env.BANTO_E2E_RUN_ID!,
+        BANTO_E2E_PORT_SLOT: String(PORT_SLOT),
+        BANTO_E2E_CORE_INDEX: String(index),
+      },
       // **既に誰かが立っていたら相乗りしない**——別の実行の core を掴むと、
       // 受信箱もデータも混ざる。Playwright はここで止まる（黙って続けない）
       reuseExistingServer: false,
@@ -88,7 +95,7 @@ export default defineConfig({
         `npm run build --workspace=@banto/frontend && ` +
         `npm exec --workspace=@banto/frontend -- next start -H 127.0.0.1 -p ${FRONTEND_PORT}`,
       cwd: new URL("..", import.meta.url).pathname,
-      env: { BANTO_NEXT_DIST_DIR: FRONTEND_DIST_DIR },
+      env: { BANTO_NEXT_DIST_DIR: FRONTEND_DIST_DIR, BANTO_E2E_PORT_SLOT: String(PORT_SLOT) },
       url: FRONTEND_LISTEN_URL,
       // **黙って相乗りしない**（core と同じ規律）——別の実行のフロントを
       // 掴むと、どのビルドを試験したのか分からなくなる

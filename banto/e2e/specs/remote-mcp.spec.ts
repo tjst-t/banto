@@ -12,7 +12,7 @@
 import { test, expect } from "../test-base.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT } from "../config.js";
+import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT, FIXTURE_PORT_OFFSETS } from "../config.js";
 import { startRemoteMcpFixture, type RemoteFixture } from "../remote-mcp-fixture.js";
 
 test.describe.configure({ mode: "serial" });
@@ -24,7 +24,7 @@ const ALIAS = `e2e-remote-key-${STAMP}`;
 const SECRET = `rk-${STAMP}`;
 
 /** core と同じ枠から、この実行だけの port を1つ借りる（他の実行とぶつからない）。 */
-const FIXTURE_PORT = CORE_PORT + 1000;
+const FIXTURE_PORT = CORE_PORT + FIXTURE_PORT_OFFSETS.remoteMcp;
 
 let fixture: RemoteFixture;
 

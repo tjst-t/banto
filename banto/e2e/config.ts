@@ -3,6 +3,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { claimPortSlot, PORT_SLOT_ENV, PORT_SLOTS } from "./run-lock.ts";
 
 /**
  * **1回の実行を、他の実行から切り離す印**（決定・2026-09-10、`e2e-run-isolation`）。
@@ -61,10 +62,51 @@ function coreCountFromEnv(): number {
  * 実行ごとに違う port を選ぶ。**衝突したら Playwright が止まる**（黙って相乗りしない）。
  *
  * 4740〜4939 の枠を、実行ごとに **25 ずつ**使う（8 枠）：先頭が画面、その後ろに core ごとに4つ
- * （core・sandbox・MCP Registry の偽物・npm registry の偽物）。同じ機械の回は機械全体のロック（`run-lock.ts`）で
- * 1回ずつなので、枠がぶつかるのはロックを外して重ねたときだけ
+ * （core・sandbox・MCP Registry の偽物・npm registry の偽物）。spec が core の port からずらして立てる偽物
+ * （`FIXTURE_PORT_OFFSETS`）と、偽の GitHub（`SELF_UPDATE_GITHUB_PORT`）も枠ごとに決まる。
+ *
+ * **枠は空いているものを札で取る**（改訂・2026-10-18、`run-lock.ts` の `claimPortSlot`）。同じ機械で E2E を同時に
+ * いくつ流してもよくなったので、以前の「pid を 8 で割った余り」（同時に2回で 1/8 でぶつかる）はやめた。主プロセスが
+ * 取って env（`BANTO_E2E_PORT_SLOT`）に置き、worker と webServer の子はそれを読む
  */
-const RUN_PORT_BASE = 4740 + (Number(RUN_ID) % 8) * 25;
+const PORT_SLOT_WIDTH = 25;
+const PORT_BASE = 4740;
+/** spec が core の port からずらして立てる偽物（remote-mcp は +1000・oauth-remote-mcp は +1200）。枠どうしで重ならない間隔 */
+export const FIXTURE_PORT_OFFSETS = { remoteMcp: 1000, oauthRemoteMcp: 1200 } as const;
+
+function slotBase(slot: number): number {
+  return PORT_BASE + slot * PORT_SLOT_WIDTH;
+}
+function selfUpdateGithubPort(slot: number, coreIndex: number): number {
+  return 15100 + slot * 8 + coreIndex;
+}
+/** その枠で回が待ち受けうる port の全部（枠を取るとき、誰も待ち受けていないことを確かめる） */
+function portsOfSlot(slot: number): number[] {
+  const base = slotBase(slot);
+  const ports: number[] = [];
+  for (let p = base; p < base + PORT_SLOT_WIDTH; p++) ports.push(p);
+  for (let i = 0; i < MAX_WORKERS; i++) {
+    const core = base + 1 + i * 4;
+    ports.push(core + FIXTURE_PORT_OFFSETS.remoteMcp, core + FIXTURE_PORT_OFFSETS.oauthRemoteMcp, selfUpdateGithubPort(slot, i));
+  }
+  return ports;
+}
+
+function portSlot(): number {
+  const raw = process.env[PORT_SLOT_ENV];
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n >= PORT_SLOTS) throw new Error(`[e2e] ${PORT_SLOT_ENV} は 0〜${PORT_SLOTS - 1} の整数で（いま「${raw}」）`);
+    return n;
+  }
+  // 主プロセス（最初に config を読んだもの）が取る。子はこの env を引き継ぐ
+  const slot = claimPortSlot(new URL("..", import.meta.url).pathname, portsOfSlot);
+  process.env[PORT_SLOT_ENV] = String(slot);
+  return slot;
+}
+
+export const PORT_SLOT = portSlot();
+const RUN_PORT_BASE = slotBase(PORT_SLOT);
 function corePort(index: number, offsetInCore: number): number {
   return RUN_PORT_BASE + 1 + index * 4 + offsetInCore;
 }
@@ -189,7 +231,7 @@ export const FAKE_SYSTEMCTL = join(SELF_UPDATE_DIR, "systemctl");
  * `testOnlySelfUpdate.prebuiltBase/githubApi` と、偽の systemctl が起こす本物の update.mjs の両方がここに聞く。上の枠
  * （4740〜4939）の外に、実行ごと・core ごとに決まった場所を取る
  */
-export const SELF_UPDATE_GITHUB_PORT = 15100 + (Number(RUN_ID) % 8) * 8 + CORE_INDEX;
+export const SELF_UPDATE_GITHUB_PORT = selfUpdateGithubPort(PORT_SLOT, CORE_INDEX);
 export const SELF_UPDATE_GITHUB_URL = `http://127.0.0.1:${SELF_UPDATE_GITHUB_PORT}`;
 /** Repositories のアカウントのための偽の GitHub の行き先（core のプロセスが書き、spec が読む——`github-login-fixture.ts`） */
 export const GITHUB_LOGIN_FIXTURE_FILE = join(E2E_TMP, "github-login-fixture.json");

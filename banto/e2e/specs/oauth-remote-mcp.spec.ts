@@ -14,7 +14,7 @@
 import { test, expect } from "../test-base.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT } from "../config.js";
+import { CORE_BASE_URL, AUTH_TOKEN, CORE_PORT, FIXTURE_PORT_OFFSETS } from "../config.js";
 import { openApp } from "../helpers.js";
 import { startOAuthMcpFixture, type OAuthFixture } from "../oauth-mcp-fixture.js";
 
@@ -24,7 +24,7 @@ test.setTimeout(180_000);
 const STAMP = Date.now();
 const MODULE = `e2e-oauth-${STAMP}`;
 /** core と同じ枠から、この実行だけの port を借りる。 */
-const FIXTURE_PORT = CORE_PORT + 1100;
+const FIXTURE_PORT = CORE_PORT + FIXTURE_PORT_OFFSETS.oauthRemoteMcp;
 
 let fixture: OAuthFixture;
 
