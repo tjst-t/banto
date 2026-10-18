@@ -9688,7 +9688,7 @@
       "number": 402,
       "kind": "task",
       "title": "上限で止まったターンをリセットのあと自動で続ける",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-runner-via-relay"
@@ -9698,12 +9698,12 @@
       "labels": [],
       "body": "v4-security.md §2 の 9.。見分けは Runner の error: \"rate_limit\"。turn.ended に reason: rate_limit と continueAt（中継の最早のリセット＋1分、無ければ rate_limit_event.resetsAt＋1分）、消す出来事 turn.continuation_cancelled（待つのをやめる・止める・閉じた Fork）。fold で待ちを拾い起こし直しをまたぐ。時刻が来たら（眠っていれば wake で起こして）resume で続ける（continues を付け起こす回数の歯止めに数えない）。人が送れば待ちを外す、届いたものは留めて一緒に積む。続けて6回で受信箱。hostActivity には入れない（眠ってよい）。「今すぐ続ける」「待つのをやめる」の HTTP の口。",
       "doneWhen": "偽の Runner の E2E で、上限で止まる→時刻に自動で続く・起こし直しをまたぐ・眠った Project が起きて続く・人が送ると待ちが外れる・待つのをやめる・6回で受信箱、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-auto-continue）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T15:17:24.991Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T16:02:59.547Z",
+      "closedAt": "2026-10-18T16:02:59.547Z",
       "extra": {}
     },
     {
