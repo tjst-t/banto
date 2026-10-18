@@ -1059,7 +1059,7 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 | 口 | どこ | 引数 → 戻り値 |
 |---|---|---|
 | `lookupAliases({items: [{name}]})` | 窓口（vault-directory）、`module`。`batchOf: { tool: "lookupAlias", items: "items" }`——承認は `lookupAlias` と同じ鍵（今までどおり Project ごとに1回） | → 名前ごとの在りか（`lookupAlias` と同じ三つ組）か、その名前が引けない理由。**一覧（`crossAliases`）は1回だけ読む**。引けない名前があっても、引けたものは返す（Shell が全部の理由をまとめて出せるように） |
-| `resolveAliases({items: [{name, group?}]})` | vault-kit（vault-local・vault-infisical の両方）、`module` | → `{values: [{name, group, value}]}`（並びは `items` と同じ）。**全部か何もなしか**——1件でも引けない（無い・使えない・空・読めない）なら値は1つも返さず、引けなかったもの全部を理由つきで並べて断る。1回に **100 件まで**（超えたら断る） |
+| `resolveAliases({items: [{name, group?}]})` | vault-kit（vault-local・vault-infisical の両方）、`module` | → `{values: [{name, group, value}]}`（並びは `items` と同じ）。**全部か何もなしか**——1件でも引けない（無い・使えない・空・読めない）なら値は1つも返さず、引けなかったもの全部を理由つきで並べて断る。1回に **100 件まで**（超えたら断る。上限の定数は `@banto/module-contract` の1か所に置き、host と vault-kit が同じものを数える）。**`items` 以外の引数は受けない**（来たら host が断る——下の承認） |
 | `VaultBackend.getSecrets?(paths)` | vault-kit の backend の契約（**任意**） | → パスごとの値。名乗らない backend には kit が `getSecret` を1件ずつ呼んで代わりを務める（vault-local はこれで足りる——手元のファイルなので往復が無い） |
 
 `resolveAliases` の中身は `resolveAlias` と同じ確かめを1件ずつ行う（`pickAlias`・`assertUsable`・参照なら元から・
@@ -1069,20 +1069,34 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 **承認——カードは1回の呼び出しに1枚、許可は今までどおり alias ごと**
 
 - 宛先の tool は `_meta["dev.banto/batchOf"]: { tool: "resolveAlias", items: "items" }` を名乗る。「`items` の1つ1つが
-  `resolveAlias` 1回ぶん」という意味。host は `items` の各要素から、`resolveAlias` が名乗る識別子（`auditArgs`——
-  `name`・`group`）を拾い、**1件ずつを `resolveAlias` の呼び出しとして**承認の鍵（`grantKey`）を作る。だから
-  **今までに `resolveAlias` で許したものは、まとめた呼び出しでもそのまま効き、まとめた呼び出しで許したものは1件ずつの
-  呼び出しにも効く**（同じ鍵）
-- コンテナからの呼び出し（`scope` を付けるもの）：まだ許していない alias **だけ**を1枚のカードに並べて聞く（「shell が
-  vault-infisical の resolveAlias を 27 件呼ぼうとしています」＋対象の一覧。値は入らない）。全部許してあればカードは出ない。
-  「許可」で覚えるのは並べた alias の1件ずつ（`relay.grant_created` を件数ぶん）。拒否なら呼び出しごと断る
-- banto 本体で動く Module からの呼び出し（`scope` を付けない）：今までどおり `resolveAlias` の組み合わせで1回
-- 「承認をすべて自動で許可する」がオン：答え済みのカードを**1枚**残す（中に対象の一覧）。覚えない
-- 識別子の拾い方は `auditArgs` と同じ線で、**拾えない要素があれば中継ごと断る**——`items` が配列でない・要素が
-  オブジェクトでない・`name` が無い・長すぎる・件数が上限を超える。拾えない要素を黙って飛ばすと、承認の鍵に
-  入らない alias の値が出ていく（fail closed）
-- **`batchOf` を信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。第三者の宛先が名乗っても普通の tool として扱う
-- 監査（`relay.call_recorded`）は **alias 1件ごとに1行**（識別子は1件ぶん）——「どの秘密が使われたか」の引き方を変えない
+  `resolveAlias` 1回ぶん」という意味。host は要素ごとに、`batchOf.tool` が名乗る識別子（`auditArgs`——
+  `resolveAlias` なら `name`・`group`）を拾い、**1件ずつを `batchOf.tool` の呼び出しとして**承認の鍵（`grantKey`）を作る。
+  だから**今までに `resolveAlias` で許したものは、まとめた呼び出しでもそのまま効き、まとめた呼び出しで許したものは
+  1件ずつの呼び出しにも効く**（同じ鍵）
+- **host が断る形**（どれも中継ごと断る。拾えないものを黙って飛ばすと、承認の鍵に入らない alias の値が出ていく——fail closed）：
+  - `batchOf.tool` が同じ宛先に無い
+  - 引数に `items` 以外がある・`items` が配列でない・空・上限を超える・要素がオブジェクトでない
+  - `batchOf.tool` が識別子を名乗る口のとき：要素から識別子が1つも拾えない（無い・文字列でない・200字を超える）。
+    `batchOf.tool` が識別子を名乗らない口（窓口の `lookupAlias`）のときは要素の形だけ確かめ、鍵は `batchOf.tool` の鍵1つ
+    （今の `lookupAlias` と同じく、コンテナからは Project ごとに1回）
+- **`batchOf` を信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。ただし**信じない＝通す、ではない**：第三者の宛先の tool が
+  `batchOf` を名乗っていて、呼び手がコンテナの中なら**中継ごと断る**（普通の tool として扱うと、配列から識別子が拾えず鍵が
+  `scope: {}` の1つに潰れ、一度の許可でどの alias でもまとめて引ける——2026-09-25 に塞いだ穴そのもの）。banto 本体で動く呼び手
+  からは普通の tool として扱う（今までどおり組み合わせで1回）
+- コンテナからの呼び出し（`scope` を付けるもの。別のサーバの Project の Module も同じ印で同じ道）：まだ許していない alias
+  **だけ**を1枚のカードに並べて聞く。全部許してあればカードは出ない。「許可」で覚えるのは並べた alias の1件ずつ
+  （`relay.grant_created` を件数ぶん）。拒否なら呼び出しごと断る（カードに出る前から許してあった alias の許可はそのまま残る）
+- banto 本体で動く Module からの呼び出し（`scope` を付けない）：`batchOf.tool` の組み合わせの鍵1つ（今までどおり1回）
+- **相乗り（inFlight）**：まとめた問いは、聞いている未許可の鍵すべてで相乗りの表に載せる。後から来た呼び出し（1件ずつでも
+  まとめたものでも）は、自分の未許可の鍵のどれかが載っていればその答えを待ち、許可なら `isGranted` を自分の鍵ごとに
+  引き直して、まだ残る未許可があればそれだけを聞く。聞いた呼び出しが答えの前に終わって畳んだ（`askerEnded`）ときも、
+  鍵ごとに引き直して残った未許可だけを聞き直す
+- **カード**：文は「shell が vault-infisical の resolveAliases（まとめて 27 件のうち、まだ許していない 3 件）を呼ぼうとしています」。
+  `toolInput.対象` は要素ごとの識別子の配列。画面は配列を1行1件の表で出す（v4-frontend.md「Module 間中継の承認」）
+- 「承認をすべて自動で許可する」がオン：答え済みのカードを**1枚**残す（中に対象の一覧）。覚えない。判断役の会話には効かない
+  （`autoApproveAllFor`、今までどおり）
+- **監査**（`relay.call_recorded`）は **alias 1件ごとに1行**：`name` は実際に呼んだ口（`resolveAliases`）、`identifiers` は1件ぶん、
+  まとめた呼び出しの印（`batch: { size }`）を添える——「どの秘密が使われたか」は今までどおり `identifiers.name` で引ける
 - 人を待っている間の進捗（「人の承認を待っています」）・聞いた呼び出しが答えの前に終わったら畳む、は今までどおり
 
 **Shell**
@@ -1099,19 +1113,28 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 
 - 頼まれたパスを（Project・環境・グループの根）ごとに分け、それぞれ `listSecrets`（`recursive`・
   `viewSecretValue: true`・`expandSecretReferences: false`——`getSecret` と同じ読み方）を**1回**呼ぶ。応答から頼まれた
-  パスの値だけを取り出し、**残りはその場で捨てる**。一覧に見つからないパスだけ `getSecret` で読み直す
+  パスの値だけを取り出し、**残りはその場で捨てる**。一覧に見つからないパスだけ `getSecret` で読み直す。
+  Machine Identity に値を読む権限が無く一覧が値を返さないとき（既存の一覧が `viewSecretValue: false` に落ちる場合と同じ）は、
+  全部を `getSecret` の1件ずつに落とす
 - **値は台帳の分け合う一覧（`shared`）に入れない**——分け合う一覧は今までどおり値を持たない（空かどうかの印だけ）。
   「一覧で読んだ値は空かどうかを見たらすぐ捨てる」（上の「値が空の秘密」）は、`getSecrets` については
   「**頼まれた値だけを、その呼び出しの戻り値として返し、残りは捨てる**」と読み替える
-- 使った日の書き込み（`markUsedMany`）は、Infisical の一括更新（REST の `PATCH /api/v3/secrets/batch/raw`。SDK 5.0.2 には
-  口が無いので、接続の認証で直に呼ぶ）で置き場ごとに1回。使えなければ1件ずつ。書き込みの失敗で値を渡すのを止めない
-  （今までどおり）
+- 使った日の書き込み（`markUsedMany`）は、Infisical の一括更新（`PATCH /api/v4/secrets/batch`——`projectId`・`environment`・
+  `secretPath`・`secrets[]` の `secretKey` と `secretComment`、値は渡さない。v3 の batch/raw は非推奨で `projectSlug` を要る。
+  SDK 5.0.2 には口が無いので、`listEnvironments` と同じ形で接続の認証を使って直に呼ぶ。429 は `retryOnRateLimit` と同じ待ち方）で
+  （環境・フォルダ）ごとに1回。失敗したら1件ずつに落とす。書き込みの失敗で値を渡すのを止めない（今までどおり）
 - これで27件の runCommand は、Infisical へ一覧1〜2回・値の一覧1〜2回・使った日の書き込み1〜2回になる
 
 **採らなかった形**：(1) Vault ごとに1件ずつの承認を残し、カードだけをまとめて見せる（画面の都合で承認の単位と
 カードの単位がずれ、答え方が分かりにくい）。(2) 窓口が値を運ぶ「まとめて引いて渡す」（値は窓口を通さない決まり）。
 (3) まとめた呼び出しを別の承認の鍵にする（`resolveAliases` を新しい組み合わせとして聞き直すことになり、
-今までの許可が効かない）。経緯は `docs/notes/2026-10-18-batch-resolve.md`。
+今までの許可が効かない）。
+
+**未決**：(a) 使った日（`lastUsedAt`）の書き込みを間引く（同じ日・直近 N 分に書いた行は書かない）——一括更新も要らなくなるが、
+管理画面の「最後に使った」の細かさが変わるのでユーザーが決める。(b) 窓口の `lookupAlias`・`lookupAliases` を `valueFree` にする
+（返るのは `vault://aliases` が承認なしで見せている在りかと同じ）——承認の線を変えるのでユーザーが決める。
+(c) 1件ずつの `resolveAlias` は、名前が200字を超えると識別子を拾えず `scope: {}` の鍵で聞いて通す（まとめた口より緩い）
+——識別子を名乗る口で1つも拾えなければ断る、に揃える（Backlog）。経緯は `docs/notes/2026-10-18-batch-resolve.md`。
 
 #### D. バックエンド実装者向けの内部インターフェース（MCP ではなく npm ライブラリ）
 
