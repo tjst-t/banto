@@ -49,6 +49,7 @@ import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
+import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
 import { installedAgentSdkVersion, relayRefreshDecision } from "./claude-login/refresh.js";
 import { describeLimits, limitNumbersFor } from "./container-limits.js";
 import { ContainerPressureWatch } from "./container-pressure.js";
@@ -358,10 +359,20 @@ async function main(): Promise<void> {
   // 中継が本体のログインを取り直すか（§2「中継も、切れかけたら取り直す」）
   const relayRefresh = relayRefreshDecision(process.env, installedAgentSdkVersion());
   if (!relayRefresh.enabled) console.warn(`[host] Claude ログインの中継は取り直しません（${relayRefresh.why}）`);
+  /**
+   * **Claude のアカウントの台帳と置き場**（§2「Claude のアカウントを複数持つ」）。最初の起動で `~/.claude` を1つ目にし、
+   * 既定の並びをそれだけにする——足すまで今と同じに動く
+   */
+  const claudeAccounts = new ClaudeAccountStore({
+    dataDir: bootstrap.dataDir,
+    // 試験は本物のログインを読まない（E2E が置いた偽物を指す）。ふだんは本体（Runner）と同じ置き場
+    hostCredentialsPath: process.env.BANTO_CLAUDE_RELAY_CREDENTIALS ?? hostClaudeCredentialsPath(),
+  });
+  /** アカウントごとの「取り直せなかった」カード（dedupeKey にアカウントの id——別のアカウントが通っても閉じない） */
+  const claudeLoginCardKey = (accountId: string) => `claude-login-upstream-unauthorized:${accountId}`;
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     refreshEnabled: relayRefresh.enabled,
-    // 試験は本物のログインを読まない（E2E が置いた偽物を指す）。ふだんは本体（Runner）と同じ置き場
-    credentialsPath: process.env.BANTO_CLAUDE_RELAY_CREDENTIALS ?? hostClaudeCredentialsPath(),
+    accounts: claudeAccounts,
     ...(process.env.BANTO_CLAUDE_RELAY_UPSTREAM ? { upstream: process.env.BANTO_CLAUDE_RELAY_UPSTREAM } : {}),
     // 取り直しの口（E2E が偽物を指す。§2「中継も、切れかけたら取り直す」）
     ...(process.env.BANTO_CLAUDE_RELAY_TOKEN_URL ? { tokenUrl: process.env.BANTO_CLAUDE_RELAY_TOKEN_URL } : {}),
@@ -374,24 +385,30 @@ async function main(): Promise<void> {
     // **中継が取り直しても直せなかったときだけ、受信箱に1件**（同じものが開いている間は増やさない。改訂・2026-10-16、
     // v4-security.md §2「中継も、切れかけたら取り直す」）。以前は 401 が1回来たら出し、本体の会話が次に動いて自然に
     // 直っても閉じなかった
-    onUpstreamUnauthorized: (_projectId, reason) => {
-      console.warn(`[host] Claude ログインの中継で直せませんでした: ${reason}`);
+    onUpstreamUnauthorized: (_projectId, reason, accountId) => {
+      console.warn(`[host] Claude ログインの中継で直せませんでした（${accountId}）: ${reason}`);
+      const host = accountId === HOST_ACCOUNT_ID;
+      const label = claudeAccounts.get(accountId)?.label ?? accountId;
       void inbox
         .raiseNotice({
-          dedupeKey: "claude-login-upstream-unauthorized",
-          title: "banto 本体の Claude ログインを取り直せませんでした",
+          dedupeKey: claudeLoginCardKey(accountId),
+          title: host ? "banto 本体の Claude ログインを取り直せませんでした" : `Claude のアカウント ${label} のログインを取り直せませんでした`,
           detail:
             `Project のコンテナからの Claude の呼び出しが通りません（${reason}）。` +
             "banto は自分でトークンを取り直そうとしましたが、うまくいきませんでした。" +
-            "banto を動かしているユーザーで `claude auth login` でログインし直してください。通るようになれば、このカードは自動で閉じます",
+            (host
+              ? "banto を動かしているユーザーで `claude auth login` でログインし直してください。"
+              : "設定「Claude のアカウント」でこのアカウントにログインし直してください。") +
+            "通るようになれば、このカードは自動で閉じます",
         })
         .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
     },
-    // 通ったら、出していたカードを閉じる
-    onUpstreamAuthorized: () => {
-      void inbox
-        .acknowledgeNoticesByKey("claude-login-upstream-unauthorized")
-        .catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
+    // そのアカウントで通ったら、そのアカウントのカードだけを閉じる。最初の1つは、アカウントを分ける前の印のカードも閉じる
+    onUpstreamAuthorized: (accountId) => {
+      const keys = [claudeLoginCardKey(accountId), ...(accountId === HOST_ACCOUNT_ID ? ["claude-login-upstream-unauthorized"] : [])];
+      for (const key of keys) {
+        void inbox.acknowledgeNoticesByKey(key).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
+      }
     },
   });
   /**

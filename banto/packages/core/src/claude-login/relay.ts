@@ -25,6 +25,7 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
+import { HOST_ACCOUNT_ID, type ClaudeAccountStore } from "./accounts.js";
 
 const UPSTREAM = "https://api.anthropic.com";
 /**
@@ -126,7 +127,11 @@ export interface ClaudeLoginStats {
 }
 
 export interface ClaudeLoginRelayDeps {
-  credentialsPath: string;
+  /**
+   * **アカウントの台帳と置き場**（§2「Claude のアカウントを複数持つ」の 3.）。アカウント1つ＝置き場1つ＝取り直し役1つ＝
+   * 知らせ1つ。どれを使うかの選び方は既定の並びの先頭（閾値での切り替えはまだ無い）
+   */
+  accounts: ClaudeAccountStore;
   /** 合言葉の置き場（host のデータの置き場。0600） */
   secretsPath: string;
   /** Project 設定のスイッチ。聞くたびに引く */
@@ -140,14 +145,15 @@ export interface ClaudeLoginRelayDeps {
    * **本体のログインを中継では直せなかった**（受信箱に1件出すため。改訂・2026-10-16）——取り直して試し直しても上流が
    * 401、または取り直しが断られた・書き戻せなかった。一時的な失敗（通信・5xx・鍵の取り合い）だけでは呼ばない
    */
-  onUpstreamUnauthorized?(projectId: string, reason: string): void;
-  /** 上流が通った（2xx）——出していたカードを閉じるため。直前に直せなかったことがあるときだけ呼ぶ */
-  onUpstreamAuthorized?(): void;
+  onUpstreamUnauthorized?(projectId: string, reason: string, accountId: string): void;
+  /**
+   * そのアカウントで上流が通った（2xx）——そのアカウントのカードを閉じるため。直前に直せなかったことがあるときだけ呼ぶ。
+   * **別のアカウントが通っても呼ばない**
+   */
+  onUpstreamAuthorized?(accountId: string): void;
   upstream?: string;
   /** 取り直しの口（試験・E2E で差し替える。既定は本番） */
   tokenUrl?: string;
-  /** 取り直し役（試験で差し替える。既定は credentialsPath と tokenUrl から作る） */
-  refresher?: CredentialRefresher;
   /** 中継が取り直すか（既定はする。切れば今までどおり読むだけ） */
   refreshEnabled?: boolean;
   now?: () => Date;
@@ -160,25 +166,19 @@ export class ClaudeLoginRelay {
   private readonly verifiedSockets = new WeakMap<Socket, Set<string>>();
   private readonly upstream: string;
   private readonly now: () => Date;
-  private readonly refresher: CredentialRefresher;
+  /** アカウントごとの取り直し役（置き場ごとに1つ。同時に来た要求の待ち合わせ・401 の間引きも置き場ごと） */
+  private readonly refreshers = new Map<string, CredentialRefresher>();
   /**
-   * 知らせたカードを閉じる条件（無ければ開いていない）。起こし直す前に出したカードも、最初に通ったときに閉じる
+   * アカウントごとの、知らせたカードを閉じる条件（`undefined`＝開いていない）。**まだ載っていないアカウントは開いている
+   * 扱い**——起こし直す前に出したカードも、そのアカウントで最初に通ったときに閉じる
    */
-  private openTrouble: { closeWhen: CloseWhen; refreshToken?: string } | undefined = { closeWhen: "authorized" };
+  private readonly openTrouble = new Map<string, { closeWhen: CloseWhen; refreshToken?: string } | undefined>();
   /** いま試し直し用に抱えている本文の合計 */
   private bufferedBytes = 0;
 
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
     this.now = deps.now ?? (() => new Date());
-    this.refresher =
-      deps.refresher ??
-      new CredentialRefresher({
-        credentialsPath: deps.credentialsPath,
-        ...(deps.tokenUrl ? { tokenUrl: deps.tokenUrl } : {}),
-        ...(deps.refreshEnabled !== undefined ? { enabled: deps.refreshEnabled } : {}),
-        now: () => this.now().getTime(),
-      });
     this.secrets = new Map(Object.entries(loadSecrets(deps.secretsPath)));
   }
 
@@ -198,7 +198,10 @@ export class ClaudeLoginRelay {
       this.save();
     }
     // 契約の種類は秘密ではない。ログインしていなければ入れない（中継に来たときに理由を返す）
-    const status = await readHostClaudeAccount(this.deps.credentialsPath);
+    const accountId = this.accountFor(projectId);
+    const status: HostLoginStatus = accountId
+      ? await readHostClaudeAccount(this.deps.accounts.credentialsPathOf(accountId))
+      : { loggedIn: false, reason: "使える Claude のアカウントがありません" };
     return {
       ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
       CLAUDE_CODE_OAUTH_TOKEN: secret,
@@ -216,8 +219,31 @@ export class ClaudeLoginRelay {
     return { ...(this.stats.get(projectId) ?? { requests: 0 }) };
   }
 
+  /** 最初の1つ（このマシンの Claude Code のログイン）の様子 */
   hostLogin(): Promise<HostLoginStatus> {
-    return readHostClaudeAccount(this.deps.credentialsPath);
+    return readHostClaudeAccount(this.deps.accounts.credentialsPathOf(HOST_ACCOUNT_ID));
+  }
+
+  /**
+   * **その Project の要求に使うアカウント**。いまは既定の並びの先頭（Project ごとの並びと閾値での切り替えは
+   * §2 の 5.・6.、まだ無い）。並びが空なら undefined
+   */
+  private accountFor(_projectId: string): string | undefined {
+    return this.deps.accounts.defaultOrder()[0];
+  }
+
+  private refresherFor(accountId: string): CredentialRefresher {
+    let r = this.refreshers.get(accountId);
+    if (!r) {
+      r = new CredentialRefresher({
+        credentialsPath: this.deps.accounts.credentialsPathOf(accountId),
+        ...(this.deps.tokenUrl ? { tokenUrl: this.deps.tokenUrl } : {}),
+        ...(this.deps.refreshEnabled !== undefined ? { enabled: this.deps.refreshEnabled } : {}),
+        now: () => this.now().getTime(),
+      });
+      this.refreshers.set(accountId, r);
+    }
+    return r;
   }
 
   /** `CLAUDE_LOGIN_PATH` の下に来た要求を受ける。どの待ち受けから来たかで、受ける Project と送り元の縛りが変わる */
@@ -254,8 +280,14 @@ export class ClaudeLoginRelay {
       refuse(res, 403, `banto の中継は推論（/v1/messages）だけを通します: ${req.method} ${path}`);
       return;
     }
+    const accountId = this.accountFor(projectId);
+    if (!accountId) {
+      refuse(res, 500, "使える Claude のアカウントがありません（既定の並びが空です）");
+      return;
+    }
+    const refresher = this.refresherFor(accountId);
     // 切れかけていれば取り直す（§2「中継も、切れかけたら取り直す」）。トークンも無い＝ログインしていない——理由を返す
-    const first = await this.refresher.ensureFresh();
+    const first = await refresher.ensureFresh();
     if (first.kind === "failed" && !first.accessToken) {
       refuse(res, 500, first.reason);
       return;
@@ -288,7 +320,7 @@ export class ClaudeLoginRelay {
       upstreamRes = await send(token);
       // 401：置き場を読み直し（替わっていなければ線を見ずに取り直して）、1回だけ送り直す
       if (upstreamRes.status === 401 && (!hasBody || body.buffered !== undefined)) {
-        const second = await this.refresher.ensureFresh({ force: true, seenAccessToken: token });
+        const second = await refresher.ensureFresh({ force: true, seenAccessToken: token });
         if (second.accessToken && second.accessToken !== token) {
           await upstreamRes.body?.cancel().catch(() => {});
           token = second.accessToken;
@@ -313,18 +345,21 @@ export class ClaudeLoginRelay {
     s.lastRequestAt = at;
     if (upstreamRes.status === 401) s.lastUnauthorizedAt = at;
     this.stats.set(projectId, s);
+    // 使用率はアカウントごとに覚える（見出しの無い返事では変えない）
+    this.deps.accounts.recordUsage(accountId, upstreamRes.headers);
     if (trouble) {
-      this.openTrouble = {
+      this.openTrouble.set(accountId, {
         closeWhen: trouble.closeWhen,
-        ...(trouble.closeWhen === "refresh-token-changed" ? { refreshToken: await this.refresher.currentRefreshToken() } : {}),
-      };
-      this.deps.onUpstreamUnauthorized?.(projectId, trouble.reason);
-    } else if (upstreamRes.ok && this.openTrouble) {
-      // ログインが壊れた知らせは、置き場の refresh token が替わるまで閉じない（手元の access token でたまたま通っただけ）
-      const open = this.openTrouble;
-      if (open.closeWhen === "authorized" || (await this.refresher.currentRefreshToken()) !== open.refreshToken) {
-        this.openTrouble = undefined;
-        this.deps.onUpstreamAuthorized?.();
+        ...(trouble.closeWhen === "refresh-token-changed" ? { refreshToken: await refresher.currentRefreshToken() } : {}),
+      });
+      this.deps.onUpstreamUnauthorized?.(projectId, trouble.reason, accountId);
+    } else if (upstreamRes.ok) {
+      // 閉じるのはそのアカウントのカードだけ。ログインが壊れた知らせは、置き場の refresh token が替わるまで閉じない
+      // （手元の access token でたまたま通っただけ）
+      const open = this.openTrouble.has(accountId) ? this.openTrouble.get(accountId) : { closeWhen: "authorized" as const };
+      if (open && (open.closeWhen === "authorized" || (await refresher.currentRefreshToken()) !== open.refreshToken)) {
+        this.openTrouble.set(accountId, undefined);
+        this.deps.onUpstreamAuthorized?.(accountId);
       }
     }
     const headers: Record<string, string> = {};
