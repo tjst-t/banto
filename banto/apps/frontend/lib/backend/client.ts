@@ -387,19 +387,20 @@ export interface RealThread {
   skillSets?: { seq: number; set: RealSessionSkillSet }[];
   /**
    * 最後のターンの始まり（追加・2026-10-05、host の `lastTurn` の一部）。流し直すターンとの境界を引くのに使う。
-   * `rateLimit`：Claude の使用量の上限で終わった（追加・2026-10-18、v4-frontend.md §6.46）——会話の終わりに帯を出す
+   * 上限で止まったかは `rateLimitStop` で読む（ここの `rateLimit` は畳んだターンにも残る）
    */
-  lastTurn?: { startedSeq: number; rateLimit?: { continueAt?: string } };
+  lastTurn?: { startedSeq: number };
   /**
    * **この Thread の要求で Claude のアカウントを切り替えた**（追加・2026-10-18、v4-frontend.md §6.46）。会話に薄い1行で出す
    * （AI の文脈には入っていない）。この仕組みより前の会話には無い
    */
   accountSwitches?: RealAccountSwitch[];
   /**
-   * **上限で止まった最後のターンを自動では続けない理由**（追加・2026-10-18、§6.46。host が記録から導く）。`gave_up`＝続けて
-   * 上限に当たったのでやめた、`unknown_reset`＝リセットの時刻が分からない。待っている・人がやめたなら無い
+   * **会話の一番下に「上限で止まった」帯を出すか**（追加・2026-10-18、§6.46。host が記録から導く——`lastTurn.rateLimit` の有無で
+   * 決めない）。`stopped`＝止まった（待っている・人がやめた）、`gave_up`＝続けて上限に当たったのでやめた、`unknown_reset`＝
+   * リセットの時刻が分からない。上限で終わっていない・Clear や閉じた Fork で畳んだターンなら無い
    */
-  rateLimitStop?: "gave_up" | "unknown_reset";
+  rateLimitStop?: "stopped" | "gave_up" | "unknown_reset";
   createdAt: string;
 }
 

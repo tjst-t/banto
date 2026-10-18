@@ -155,6 +155,22 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         });
         expect(order.every((i) => i >= 0), JSON.stringify(order)).toBe(true);
         expect([...order].sort((a, b) => a - b), "切り替えの1行が起きた場所に出ていない").toEqual(order);
+        // どちらの1行も、切り替えたターンの人の発言のすぐ後（AI の返事より前）。組み直さずに足した画面でも、開き直した画面でも
+        // 同じ場所（記録の置き場所と同じ）
+        const placement = () =>
+          page.evaluate(() => {
+            const text = document.body.innerText;
+            const rightAfter = (user: string, line: string) => {
+              const u = text.indexOf(user);
+              const l = text.indexOf(line);
+              return u >= 0 && l > u && !/\nはい(\n|$)/.test(text.slice(u, l));
+            };
+            return { line1: rightAfter("2回目。", "に切り替えました"), line2: rightAfter("4回目。", "どれも閾値を越えています") };
+          });
+        expect(await placement(), "流れを読んだ画面で、切り替えの1行が人の発言のすぐ後に無い").toEqual({ line1: true, line2: true });
+        await reopen();
+        await expect(lines).toHaveCount(2, { timeout: 15_000 });
+        expect(await placement(), "開き直したら切り替えの1行の場所が動いた").toEqual({ line1: true, line2: true });
         await expect(lines.first()).toHaveText(`Claude のアカウントを「${B_LABEL}」に切り替えました（${HOST_LABEL}の5時間 97%）`);
         // AI の文脈には入れない（画面だけの印）——会話の記録の発言は人とAIの分だけ
         expect((await threadOf()).messages.map((m) => m.role)).toEqual(Array.from({ length: 5 }, () => ["user", "assistant"]).flat());
@@ -271,6 +287,32 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         await reopen();
         await expect(stoppedBand.getByTestId("thread-rate-limit-gave-up")).toBeVisible({ timeout: 15_000 });
         await expect(banner).toHaveCount(0);
+
+        // 4d. Clear する——畳んだターンには「止まった」帯も待ちの帯も出さない。切り替えの1行は記録にあるまま残る
+        //     （Clear の直後も、開き直したあとも）
+        await page.getByRole("button", { name: "Thread の操作" }).last().click();
+        await page.getByRole("menuitem", { name: "Clear" }).click();
+        const clearMarker = page.locator('[data-testid="thread-marker"][data-kind="clear"]');
+        await expect(clearMarker, "Clear の横線が会話に出ていない").toBeVisible({ timeout: 15_000 });
+        expect((await api<{ rateLimitStop?: string }>(own, `/api/threads/${threadId}`)).body.rateLimitStop, "畳んだターンに止まった印が残った").toBeUndefined();
+        await expect(stoppedBand, "Clear の直後に止まった帯が残った").toHaveCount(0);
+        await expect(banner).toHaveCount(0);
+        await expect(sidebarLine).toHaveCount(0);
+        // 4c で発言が増え、最初の発言は窓の外（最新の 20 件だけ描く）——前を開いてから数える
+        const showAllEarlier = async () => {
+          const earlier = page.getByTestId("show-earlier-messages");
+          while ((await earlier.count()) > 0) await earlier.click();
+        };
+        await showAllEarlier();
+        await expect(lines, "Clear の直後に切り替えの1行が消えた").toHaveCount(2);
+        await reopen();
+        await expect(clearMarker).toBeVisible({ timeout: 15_000 });
+        await showAllEarlier();
+        await expect(lines, "開き直したら切り替えの1行が消えた").toHaveCount(2);
+        expect(await placement(), "開き直したら切り替えの1行の場所が動いた").toEqual({ line1: true, line2: true });
+        await expect(stoppedBand, "開き直したら Clear の横線の下に止まった帯が出た").toHaveCount(0);
+        await expect(banner).toHaveCount(0);
+        await expect(sidebarLine).toHaveCount(0);
 
         // ---- 5. host のリセットを過ぎたら、全部越えのカードは自動で閉じる -------------------------------------------
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&overlay=inbox`);

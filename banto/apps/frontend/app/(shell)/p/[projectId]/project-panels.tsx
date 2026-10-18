@@ -51,6 +51,7 @@ import {
   reopenThread,
   registerRealFork,
   renameForkThread,
+  realThreadExtraOf,
   updateRealThreadData,
 } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -292,7 +293,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       // （§6.4 transcriptMarkers）、そこから枝を分けられるのも、これがあってこそ。
       // **走行中は組み直さない**——流れている表示を壊す
       if (!hasLiveRealRun(threadId)) rebuildThreadFromRecord(threadId);
-      updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
+      // 会話の中の印（切り替えの1行・上限で止まった帯、§6.46）も同じ記録から——渡さないと Clear の直後に消える
+      updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage, realThreadExtraOf(updated));
     } catch (err) {
       toast(`Clear に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
     }

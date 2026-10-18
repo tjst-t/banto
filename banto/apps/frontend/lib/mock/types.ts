@@ -122,7 +122,7 @@ export interface MockThread {
   realRateLimit?: "stopped" | "gave_up" | "unknown_reset";
   /**
    * real:trueのときだけ意味を持つ。**組み直さずに足した印の置き場所**（印の seq → 画面の発言の id）。流れを最後まで読んだ会話は
-   * 記録から組み直さない（tool のカードを消さない）ので、記録の写しの発言より後の印は、足した時点の最後の発言の後に置く。
+   * 記録から組み直さない（tool のカードを消さない）ので、記録の写しの発言より後の印は、そのターンの人の発言の後に置く（組み直しても同じ場所）。
    * 組み直したら捨てる
    */
   realMarkAnchors?: Readonly<Record<number, string>>;

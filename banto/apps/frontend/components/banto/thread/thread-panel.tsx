@@ -32,7 +32,7 @@ import {
   subscribeFollow,
   takeFollowToStart,
 } from "@/lib/backend/adapter";
-import { noteRuntimeBuilt, recordSignature, registerLastShownMessage, registerOpenThread } from "@/lib/backend/latest-state";
+import { noteRuntimeBuilt, recordSignature, registerLastShownUserMessage, registerOpenThread } from "@/lib/backend/latest-state";
 import { ImageAttachmentAdapter } from "@/lib/backend/image-attachment";
 import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canvas/canvas-opener";
 import { getProject } from "@/lib/mock/projects";
@@ -189,7 +189,7 @@ export function ThreadPanel({
       put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
     }
     // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）——切り替えた要求が出た場所（同じ seq の物差し）
-    // 組み直さずに足した印は、足した時点の画面の最後の発言の後（`realMarkAnchors`、`latest-state.ts`）
+    // 組み直さずに足した印は、そのターンの画面の人の発言の後（`realMarkAnchors`、`latest-state.ts`）
     for (const change of forkOwnPart(thread, thread.realAccountSwitches ?? [])) {
       put(thread.realMarkAnchors?.[change.seq] ?? anchorOf(change.seq), <AccountSwitchLine key={`account-switch-${change.seq}`} change={change} />);
     }
@@ -366,9 +366,9 @@ function ThreadRuntime({
     () => registerRuntimeBusy(threadId, () => runtime.thread.getState().isRunning),
     [runtime, threadId],
   );
-  // 組み直さずに印を足すときの置き場所（画面の最後の発言、§6.46）
+  // 組み直さずに印を足すときの置き場所（画面の最後の人の発言、§6.46）
   useEffect(
-    () => registerLastShownMessage(threadId, () => runtime.thread.getState().messages.at(-1)?.id),
+    () => registerLastShownUserMessage(threadId, () => runtime.thread.getState().messages.findLast((m) => m.role === "user")?.id),
     [runtime, threadId],
   );
   // 走り終えたら知らせる——走っている間に引き返した「最新を出す」を、ここでやり直す

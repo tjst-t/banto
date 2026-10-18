@@ -95,3 +95,25 @@ warn の形（「並びのアカウントがどれも閾値を越えています
 待ちは延ばさず、次の描き直しを `(continueAt − いま) % 60秒` 後（＋50ms）に掛ける形にした。表示は常に切り捨ての値と一致し、
 変化は残りの境から 50ms で出る。待ちが替わったら帯の中身を `key` で作り直す（effect の中で `setNow` しない——
 react-hooks/set-state-in-effect）。直した版で `--repeat-each=2` が2回とも通った（各 4.4分）。
+
+## Clear と会話の中の印（レビューで訂正・2026-10-18）
+
+- **Clear の直後に印が消えていた**：`updateRealThreadData` に印の引数を足したのに、`project-panels.tsx` の `handleClear` だけが
+  渡しておらず、Clear を押した直後から次の取り直しまで切り替えの1行が消えた（Clear の横線は残るのに、同じ記録にある印だけが
+  消えて、開き直すと戻る）。ほかの2か所と同じく `realThreadExtraOf(updated)` を渡す
+- **畳んだターンに「止まった」帯が出ていた**：fold の `thread.cleared` は `lastTurn` に `abandonedBy` を付けるだけで
+  `rateLimit` を残す。画面は `lastTurn.rateLimit` の有無で帯を出していたので、Clear のあとも帯が Clear の横線の下に出続けた。
+  host の `rateLimitStop` を「帯を出すか」の印にした（`stopped`／`gave_up`／`unknown_reset`、畳んだターンは無い。読むときに
+  記録から導く）。画面は `lastTurn.rateLimit` を読まない（型からも外した）。待ちの帯はもともと `rateLimitWaitOf`（`abandonedBy`
+  を見る）なので出ない
+- **後から足す切り替えの1行の置き場所**：画面の最後の発言（＝AI の返事）の後に置いていたので、開き直すと人の発言の後（記録の
+  置き場所）へ1つ上に動いた。そのターンの画面の最後の人の発言の後に置く形にした（切り替えは人の発言のあと返事の前に起きる）
+
+E2E は、流れを読んだ画面と開き直した画面で1行がどちらも人の発言のすぐ後にあること、Clear の直後と開き直したあとで止まった帯・
+待ちの帯・サイドバーの1行が無く、切り替えの1行が2つ残ることを見る。1回目は「Clear の直後に1行が消えた」で落ちたが、原因は
+試験の側——4c で発言が 20 件を越え、最初の発言が窓の外（最新の 20 件だけ描く）だった。前を開いてから数える形にした。
+
+main（#403 の 47350207）の上に載せ直した。`relay.test.ts` は両方が末尾にテストを足していたので両方を残した。最後の版で：
+core の単体テスト 1014件・frontend 50件ほかが通り、`claude-accounts-thread-ui` は `--repeat-each=2` で2回とも通った。
+`claude-accounts-switch`・`claude-accounts-settings`・`claude-login-relay`・`rate-limit-continue`・会話の組み直しの4本・
+`project-thread-fork` は、spec だけを直す前の同じ版で 18件通った。フル E2E は流していない。
