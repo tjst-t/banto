@@ -16,7 +16,6 @@
 //   5. 閉じた Project の根の中へは移せる（#290——根が R の上にある閉じた Project があっても R へ戻せる）。閉じた Project の根
 //      そのもの・それを含むフォルダへは断られる（写しで閉じた Project のフォルダを壊さない）
 import { test, expect, type Page } from "../test-base.js";
-import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +25,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { FRONTEND_BASE_URL } from "../config.js";
 import { openApp } from "../helpers.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
+import { startFakeAnthropic } from "../fake-anthropic.js";
 import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
@@ -51,90 +51,6 @@ interface Estimate {
     movedAt?: string;
     diff?: { files: number; bytes: number; deleted: number };
     overwritten: { count: number; head: string[] };
-  };
-}
-
-// ── 偽の Anthropic API ────────────────────────────────────────────────────────────────────────────
-// 本物の CLI が送ってきた要求（＝モデルが見る履歴）を全部とっておき、短い文で返す
-
-interface ApiRequest {
-  path: string;
-  /** その要求の会話（各発言の文を1つにつないだもの） */
-  messages: Array<{ role: string; text: string }>;
-}
-
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((b: { type?: string; text?: string; content?: unknown }) =>
-      b.type === "text" ? (b.text ?? "") : b.type === "tool_result" ? textOf(b.content) : "",
-    )
-    .join(" ");
-}
-
-async function startFakeApi(): Promise<{ url: string; requests: ApiRequest[]; seen: string[]; close: () => Promise<void> }> {
-  const requests: ApiRequest[] = [];
-  /** 受けた要求の全部（メソッドとパス） */
-  const seen: string[] = [];
-  let seq = 0;
-  const server: Server = createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      let body: { model?: string; stream?: boolean; messages?: Array<{ role: string; content: unknown }> } = {};
-      try {
-        body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as typeof body;
-      } catch {
-        // 本文の無い要求
-      }
-      const path = req.url ?? "";
-      seen.push(`${req.method} ${path}`);
-      if (!path.startsWith("/v1/messages")) {
-        res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "fake" } }));
-        return;
-      }
-      if (path.startsWith("/v1/messages/count_tokens")) {
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ input_tokens: 100 }));
-        return;
-      }
-      const messages = (body.messages ?? []).map((m) => ({ role: m.role, text: textOf(m.content) }));
-      requests.push({ path, messages });
-      const n = ++seq;
-      const lastUser = [...messages].reverse().find((m) => m.role === "user")?.text ?? "";
-      const said = /合言葉は ([a-z]+-\d+)/.exec(lastUser)?.[1];
-      const text = said ? `覚えました：${said}` : `ack(${messages.length})`;
-      const id = `msg_fake_${n}`;
-      const usage = { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-      if (!body.stream) {
-        res.writeHead(200, { "content-type": "application/json" }).end(
-          JSON.stringify({ id, type: "message", role: "assistant", model: body.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage }),
-        );
-        return;
-      }
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-      const ev = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-      ev("message_start", { message: { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage } });
-      ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-      ev("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
-      ev("content_block_stop", { index: 0 });
-      ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 10 } });
-      ev("message_stop", {});
-      res.end();
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("偽の API の待ち受けを読めません");
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    requests,
-    seen,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
   };
 }
 
@@ -239,7 +155,7 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
   writeFileSync(join(root, "gone.txt"), "向こうで消す\n");
   mkdirSync(join(root, "sub"));
   for (let i = 0; i < 20; i++) writeFileSync(join(root, "sub", `f${i}.txt`), `変えないファイル ${i}\n`);
-  const fakeApi = await startFakeApi();
+  const fakeApi = await startFakeAnthropic();
   const securestorage = mkdtempSync(join(tmpdir(), "banto-e2e-move-back-cred-"));
   try {
     await withSshHost(async (sshHost: SshHost) => {
@@ -302,6 +218,13 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
             requestFor("合言葉は apple-17"),
             `本物の CLI が偽の API を呼んでいない（偽の API が受けた要求：${fakeApi.seen.join("・")}／${JSON.stringify(fakeApi.requests).slice(0, 1500)}／ターン：${first.slice(-1500)}）`,
           ).toBeTruthy();
+          // **会話の本体は Claude のログインの中継を通った**：上流には本体用の合言葉ではなく置き場のトークンが届き、Thread の
+          // 印は剥がされている。観測は本体の分に数え、コンテナの分（Project 設定の表示）は増えない
+          expect(requestFor("合言葉は apple-17")!.auth, "中継を通っていない（置き場のトークンに差し替わっていない）").toBe("Bearer e2e-not-a-token");
+          expect(fakeApi.requests.filter((r) => r.threadHeader !== null), "Thread の印が上流へ漏れた").toEqual([]);
+          const relayed = (await api<{ stats: { requests: number }; runnerStats: { requests: number } }>(own, `/api/projects/${projectId}/claude-login`)).body;
+          expect(relayed.runnerStats.requests, JSON.stringify(relayed)).toBeGreaterThan(0);
+          expect(relayed.stats.requests, JSON.stringify(relayed)).toBe(0);
           const rootRecords = join(claudeDir, "projects", encode(root));
           expect(readFileSync(join(rootRecords, `${session}.jsonl`), "utf8")).toContain("apple-17");
 
@@ -481,14 +404,16 @@ test("前に居た場所へ戻すと差分で写り、向こうで話した内�
           expect(lastSeen).toContain("向こうで言った合言葉を覚えている？");
         },
         {
-          // **本物の CLI を偽の API に当てる**（偽の Runner は会話の記録を書かない）
+          // **本物の CLI を偽の API に当てる**（偽の Runner は会話の記録を書かない）。会話の本体は Claude のログインの中継を
+          // 通るので、偽の API は中継の上流（と取り直しの口）に置く——CLI に API キー・住所は渡さない（§2「Claude のアカウントを
+          // 複数持つ」の 2.「E2E」）
           unsetEnv: OUTER_CLAUDE_ENV,
           env: {
             BANTO_FAKE_RUNNER: "",
-            ANTHROPIC_BASE_URL: fakeApi.url,
-            ANTHROPIC_API_KEY: "sk-ant-e2e-fake",
+            BANTO_CLAUDE_RELAY_UPSTREAM: fakeApi.url,
+            BANTO_CLAUDE_RELAY_TOKEN_URL: `${fakeApi.url}/v1/oauth/token`,
             CLAUDE_SECURESTORAGE_CONFIG_DIR: securestorage,
-            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+            // 付随の通信を止める印（CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC）は渡さない——core が入れる
             DISABLE_TELEMETRY: "1",
             DISABLE_AUTOUPDATER: "1",
           },

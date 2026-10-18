@@ -7,6 +7,9 @@
 // **本物のトークン（と refresh token）はコンテナに入らない**——中では AI が root で何でも読めるので、渡さないのが
 // 唯一の守り方。
 //
+// **会話の本体（Runner）もこの中継を通る**（決定・2026-10-18、§2「Claude のアカウントを複数持つ」の 2.）。本体には別の表の
+// 合言葉（本体用）を渡し、host の loopback から来たときだけ受ける。コンテナ用と取り違えたら断る。
+//
 // 合言葉は Project ごとに1つで固定（Service がコンテナの起動で勝手に起きても、古い合言葉にならない）。替わるのは
 // Project 設定の「Claude のログインを使わせる」を切ったときだけ（切った時点で消し、次に要るときに新しく出す）。
 //
@@ -46,7 +49,38 @@ export const CLAUDE_LOGIN_ENABLED_KEY = "claudeLogin.enabled";
  * 送り込みまで触れる広さを持つ——コンテナに要るのは推論だけなので、他は断る
  */
 const ALLOWED_PATH = /^\/v1\/messages(\/count_tokens)?(\?|$)/;
-const HOP_BY_HOP = ["host", "connection", "content-length", "authorization", "x-api-key", "keep-alive", "transfer-encoding"];
+/** どの Thread の要求かの印（本体の CLI が `ANTHROPIC_CUSTOM_HEADERS` で付ける）。中継が読み、上流へは流さない */
+export const THREAD_ID_HEADER = "x-banto-thread-id";
+const HOP_BY_HOP = ["host", "connection", "content-length", "authorization", "x-api-key", "keep-alive", "transfer-encoding", THREAD_ID_HEADER];
+/**
+ * **本体用の合言葉を受ける送り元**：host の loopback だけ。core は 0.0.0.0 で待ち受けるので3つとも来うる
+ * （§2「Claude のアカウントを複数持つ」の 2.）
+ */
+const LOOPBACK = new Set(["127.0.0.1", "::ffff:127.0.0.1", "::1"]);
+/**
+ * **本体の Runner の env から外す、上流を決める変数**。残すと合言葉より勝つ（`ANTHROPIC_API_KEY` は `x-api-key` で送られ、
+ * 401 を 10 回試し直す——#397 の実測）。どちらが勝つかに頼らず外す
+ */
+const UPSTREAM_ENV = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_UNIX_SOCKET",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  // 下で入れ直すもの（外の値が残らないように。契約の種類は分からなければ入れない）
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_SUBSCRIPTION_TYPE",
+  "CLAUDE_CODE_RATE_LIMIT_TIER",
+  "ANTHROPIC_CUSTOM_HEADERS",
+];
+/**
+ * **付随の通信を止める**（§2「Claude のアカウントを複数持つ」の 1.）。止めないと CLI は `ANTHROPIC_BASE_URL` を無視して
+ * api.anthropic.com へ直に出る（機能の旗・利用の記録・bootstrap）——中継の合言葉を banto の外へ送ってしまう。
+ * 本体の Runner とコンテナの環境の両方に入れる
+ */
+export const NONESSENTIAL_TRAFFIC_ENV = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } as const;
 
 /**
  * 本体（main の Runner）が使っている資格情報の置き場。CLI と同じ順で決める——
@@ -111,11 +145,19 @@ export interface ClaudeLoginListener {
   /** この待ち受けで受けてよい Project か（専用の待ち受けは、その実行場所の Project だけ） */
   acceptsProject(projectId: string): boolean;
   /**
+   * **本体用の合言葉を受ける待ち受けか**（core の口だけ。別のサーバの専用の待ち受けは受けない）。受ける口でも、
+   * 送り元が host の loopback でなければ断る
+   */
+  acceptsRunner: boolean;
+  /**
    * 送り元のアドレスを、その Project のコンテナのアドレスに縛るか。別のサーバからは SSH のトンネルで来るので、
    * 送り元は全部 127.0.0.1——そこでは待ち受けが送り元の代わりになるので縛らない
    */
   bindSource: boolean;
 }
+
+/** 合言葉の種類。本体用（host の Runner）とコンテナ用は別の表に持ち、取り違えたら断る */
+export type ClaudeLoginSecretKind = "runner" | "container";
 
 /** Project ごとの観測（Project 設定に出す。Event Store には要求ごとに残さない——多すぎる） */
 export interface ClaudeLoginStats {
@@ -160,8 +202,16 @@ export interface ClaudeLoginRelayDeps {
 }
 
 export class ClaudeLoginRelay {
+  /** コンテナ用の合言葉（Project ごと。置き場に書く——Service がコンテナの起動で勝手に起きても替わらない） */
   private readonly secrets: Map<string, string>;
+  /**
+   * **本体用の合言葉**（Project ごと、別の表——§2「Claude のアカウントを複数持つ」の 2.）。スイッチ（`enabled`）と revoke の
+   * 対象外。置き場には書かない——使うのは core の子の CLI だけで、core と寿命が同じ（起こし直せば CLI も起こし直る）
+   */
+  private readonly runnerSecrets = new Map<string, string>();
+  /** 観測はコンテナからの要求だけ（Project 設定の今の表示の意味を変えない）。本体の要求は `runnerStats` に別に数える */
   private readonly stats = new Map<string, ClaudeLoginStats>();
+  private readonly runnerStats = new Map<string, ClaudeLoginStats>();
   /** 送り元を確かめ済みの接続と、その接続で確かめた Project */
   private readonly verifiedSockets = new WeakMap<Socket, Set<string>>();
   private readonly upstream: string;
@@ -197,14 +247,48 @@ export class ClaudeLoginRelay {
       this.secrets.set(projectId, secret);
       this.save();
     }
-    // 契約の種類は秘密ではない。ログインしていなければ入れない（中継に来たときに理由を返す）
+    return {
+      ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
+      CLAUDE_CODE_OAUTH_TOKEN: secret,
+      ...(await this.accountEnv(projectId)),
+    };
+  }
+
+  /**
+   * **会話の本体（Runner）の `query()` に渡す環境**（§2「Claude のアカウントを複数持つ」の 2.）。SDK の `env` は process.env を
+   * 置き換えるので、process.env から上流を決める変数を外したものに、中継の住所（host の loopback）・本体用の合言葉・
+   * 契約の種類・付随の通信を止める印・Thread の印を足す。`CLAUDE_CONFIG_DIR`（会話の記録の置き場）は今のまま。
+   *
+   * **中継が取り直せない banto では中継を通さない**：合言葉を渡された CLI は `~/.claude` を読まず自分では取り直さないので、
+   * 誰も取り直さず約8時間で本体の会話まで 401 になる。そのときは今の形（`~/.claude` を自分で読む）に付随の通信を止める
+   * 印だけを足す
+   */
+  async runnerEnvFor(projectId: string, threadId: string, baseUrl: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string | undefined>> {
+    if (this.deps.refreshEnabled === false) return { ...env, ...NONESSENTIAL_TRAFFIC_ENV };
+    let secret = this.runnerSecrets.get(projectId);
+    if (!secret) {
+      secret = `banto-runner-${randomBytes(32).toString("base64url")}`;
+      this.runnerSecrets.set(projectId, secret);
+    }
+    const base = { ...env };
+    for (const name of UPSTREAM_ENV) delete base[name];
+    return {
+      ...base,
+      ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
+      CLAUDE_CODE_OAUTH_TOKEN: secret,
+      ...(await this.accountEnv(projectId)),
+      ...NONESSENTIAL_TRAFFIC_ENV,
+      ANTHROPIC_CUSTOM_HEADERS: `${THREAD_ID_HEADER}: ${threadId}`,
+    };
+  }
+
+  /** 契約の種類（秘密ではない）。いまその Project で選ばれるアカウントのもの。ログインしていなければ入れない（中継に来たときに理由を返す） */
+  private async accountEnv(projectId: string): Promise<Record<string, string>> {
     const accountId = this.accountFor(projectId);
     const status: HostLoginStatus = accountId
       ? await readHostClaudeAccount(this.deps.accounts.credentialsPathOf(accountId))
       : { loggedIn: false, reason: "使える Claude のアカウントがありません" };
     return {
-      ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
-      CLAUDE_CODE_OAUTH_TOKEN: secret,
       ...(status.loggedIn && status.subscriptionType ? { CLAUDE_CODE_SUBSCRIPTION_TYPE: status.subscriptionType } : {}),
       ...(status.loggedIn && status.rateLimitTier ? { CLAUDE_CODE_RATE_LIMIT_TIER: status.rateLimitTier } : {}),
     };
@@ -215,8 +299,14 @@ export class ClaudeLoginRelay {
     if (this.secrets.delete(projectId)) this.save();
   }
 
+  /** コンテナからの要求の観測 */
   statsFor(projectId: string): ClaudeLoginStats {
     return { ...(this.stats.get(projectId) ?? { requests: 0 }) };
+  }
+
+  /** 会話の本体（Runner）からの要求の観測（コンテナのものとは別に数える） */
+  runnerStatsFor(projectId: string): ClaudeLoginStats {
+    return { ...(this.runnerStats.get(projectId) ?? { requests: 0 }) };
   }
 
   /** 最初の1つ（このマシンの Claude Code のログイン）の様子 */
@@ -264,24 +354,37 @@ export class ClaudeLoginRelay {
 
   private async forward(req: IncomingMessage, res: ServerResponse, listener: ClaudeLoginListener): Promise<void> {
     const path = (req.url ?? "").slice(CLAUDE_LOGIN_PATH.length);
-    const projectId = this.projectOf(req.headers.authorization);
-    // 合言葉が違う・その待ち受けで受けない Project・切られた Project は、どれも同じ 401（どれに当たったかを外に言わない）
-    if (!projectId || !listener.acceptsProject(projectId) || !this.deps.enabled(projectId)) {
-      if (projectId && !this.deps.enabled(projectId)) this.revoke(projectId);
-      refuse(res, 401, "合言葉が違います");
-      return;
-    }
-    if (listener.bindSource && !this.verifiedSockets.get(req.socket)?.has(projectId)) {
-      const remote = normalizeAddress(req.socket.remoteAddress ?? "");
-      if (!this.deps.sourceMatches || !(await this.deps.sourceMatches(projectId, remote))) {
-        refuse(res, 403, `この合言葉は、その Project のコンテナからしか使えません（送り元 ${remote}）`);
+    const caller = this.callerOf(req.headers.authorization);
+    const projectId = caller?.projectId;
+    const remoteAddress = req.socket.remoteAddress ?? "";
+    if (caller?.kind === "runner") {
+      // **本体用の合言葉は core の口に host の loopback から来たときだけ**。コンテナの口（ブリッジのアドレス）・別のサーバの
+      // 専用の待ち受けに来たら断る。Incus には聞かない。スイッチ（`enabled`）は見ない——それはコンテナの中だけを決める
+      if (!listener.acceptsRunner || !LOOPBACK.has(remoteAddress)) {
+        refuse(res, 403, `この合言葉は banto 本体の会話からしか使えません（送り元 ${normalizeAddress(remoteAddress)}）`);
         return;
       }
-      // 同じ接続の送り元は変わらない（コンテナが止まれば接続も切れる）——keep-alive の続きでは Incus に聞き直さない
-      const verified = this.verifiedSockets.get(req.socket) ?? new Set<string>();
-      verified.add(projectId);
-      this.verifiedSockets.set(req.socket, verified);
+    } else {
+      // 合言葉が違う・その待ち受けで受けない Project・切られた Project は、どれも同じ 401（どれに当たったかを外に言わない）
+      if (!projectId || !listener.acceptsProject(projectId) || !this.deps.enabled(projectId)) {
+        if (projectId && !this.deps.enabled(projectId)) this.revoke(projectId);
+        refuse(res, 401, "合言葉が違います");
+        return;
+      }
+      if (listener.bindSource && !this.verifiedSockets.get(req.socket)?.has(projectId)) {
+        const remote = normalizeAddress(remoteAddress);
+        // host の loopback から来たコンテナ用の合言葉（取り違え）も、コンテナのアドレスと合わないのでここで断られる
+        if (!this.deps.sourceMatches || !(await this.deps.sourceMatches(projectId, remote))) {
+          refuse(res, 403, `この合言葉は、その Project のコンテナからしか使えません（送り元 ${remote}）`);
+          return;
+        }
+        // 同じ接続の送り元は変わらない（コンテナが止まれば接続も切れる）——keep-alive の続きでは Incus に聞き直さない
+        const verified = this.verifiedSockets.get(req.socket) ?? new Set<string>();
+        verified.add(projectId);
+        this.verifiedSockets.set(req.socket, verified);
+      }
     }
+    if (!caller || !projectId) throw new Error("unreachable: 合言葉から Project が決まっていない");
     if (!ALLOWED_PATH.test(path)) {
       refuse(res, 403, `banto の中継は推論（/v1/messages）だけを通します: ${req.method} ${path}`);
       return;
@@ -346,11 +449,12 @@ export class ClaudeLoginRelay {
       this.bufferedBytes -= held;
     }
     const at = this.now().toISOString();
-    const s = this.stats.get(projectId) ?? { requests: 0 };
+    const table = caller.kind === "runner" ? this.runnerStats : this.stats;
+    const s = table.get(projectId) ?? { requests: 0 };
     s.requests++;
     s.lastRequestAt = at;
     if (upstreamRes.status === 401) s.lastUnauthorizedAt = at;
-    this.stats.set(projectId, s);
+    table.set(projectId, s);
     // 使用率はアカウントごとに覚える（見出しの無い返事では変えない）
     this.deps.accounts.recordUsage(accountId, upstreamRes.headers);
     if (trouble) {
@@ -378,10 +482,12 @@ export class ClaudeLoginRelay {
     else res.end();
   }
 
-  private projectOf(authorization: string | undefined): string | undefined {
+  /** 合言葉から、どの Project の・どちらの表のものかを引く */
+  private callerOf(authorization: string | undefined): { projectId: string; kind: ClaudeLoginSecretKind } | undefined {
     const m = /^Bearer (.+)$/.exec(authorization ?? "");
     if (!m) return undefined;
-    for (const [projectId, secret] of this.secrets) if (secret === m[1]) return projectId;
+    for (const [projectId, secret] of this.secrets) if (secret === m[1]) return { projectId, kind: "container" };
+    for (const [projectId, secret] of this.runnerSecrets) if (secret === m[1]) return { projectId, kind: "runner" };
     return undefined;
   }
 

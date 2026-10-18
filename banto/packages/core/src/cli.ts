@@ -48,7 +48,7 @@ import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
-import { ClaudeLoginRelay, hostClaudeCredentialsPath } from "./claude-login/relay.js";
+import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
 import { ClaudeAccountLogin } from "./claude-login/account-login.js";
 import { installedAgentSdkVersion, relayRefreshDecision } from "./claude-login/refresh.js";
@@ -395,7 +395,7 @@ async function main(): Promise<void> {
           dedupeKey: claudeLoginCardKey(accountId),
           title: host ? "banto 本体の Claude ログインを取り直せませんでした" : `Claude のアカウント ${label} のログインを取り直せませんでした`,
           detail:
-            `Project のコンテナからの Claude の呼び出しが通りません（${reason}）。` +
+            `Claude の呼び出し（会話の本体・Project のコンテナ）が通りません（${reason}）。` +
             "banto は自分でトークンを取り直そうとしましたが、うまくいきませんでした。" +
             (host
               ? "banto を動かしているユーザーで `claude auth login` でログインし直してください。"
@@ -1989,6 +1989,9 @@ async function main(): Promise<void> {
           // **Claude のログイン**（決定・2026-09-27）：中継の住所とその Project の合言葉・契約の種類。Shell の子・
           // サブエージェント・Service はこれをそのまま使う。Project 設定で切られていれば入れない
           ...(where === "project-container" && project ? await claudeLogin.envFor(project.id, prepared.bantoOrigin) : undefined),
+          // **付随の通信を止める**（決定・2026-10-18、§2「Claude のアカウントを複数持つ」の 1.）——止めないと中の CLI が
+          // 中継の合言葉を api.anthropic.com へ直に送る。ログインを使わせない Project でも入れる
+          ...NONESSENTIAL_TRAFFIC_ENV,
           BANTO_MODULE_DATA_DIR: context.moduleDataDir,
           // **自分の宣言上の名前**（追加・2026-09-15）。同じ実装を2本以上立てることがある——Module 自身が
           // 「自分はどの1本か」を知らないと、画面に同じ名前が並ぶ。host が必ず渡す
@@ -2933,6 +2936,9 @@ async function main(): Promise<void> {
   const app = createApp({
     warmModelCatalog: true,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
+    // **会話の本体も Claude のログインの中継を通す**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 2.）。
+    // 住所は host の loopback——中継は本体用の合言葉をそこからだけ受ける
+    runnerEnv: (projectId, threadId) => claudeLogin.runnerEnvFor(projectId, threadId, `http://127.0.0.1:${bootstrap.port}`),
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,
     globalMemory,

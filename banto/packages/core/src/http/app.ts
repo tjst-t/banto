@@ -412,6 +412,8 @@ export interface AppDeps {
   releaseDir?: string;
   /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
+  /** 会話の本体の CLI の環境（Claude のログインの中継を通す）。`runThreadTurn` がそのまま受け取る */
+  runnerEnv?: Parameters<typeof runThreadTurn>[0]["runnerEnv"];
   /**
    * **MCP Registry を引くときの fetch**（試験用の差し替え口、追加・2026-09-21）。
    *
@@ -789,8 +791,11 @@ export const DEFAULT_PERMISSION_MODE_KEY = "defaultPermissionMode";
  */
 export const CONTAINER_NESTING_KEY = "container.nesting";
 
-/** core の口の Claude の中継：どの Project も受け、送り元はその Project のコンテナに縛る（`claude-login/relay.ts`） */
-const CORE_CLAUDE_LOGIN_LISTENER = { acceptsProject: () => true, bindSource: true };
+/**
+ * core の口の Claude の中継：どの Project も受け、送り元はその Project のコンテナに縛る（`claude-login/relay.ts`）。
+ * 本体用の合言葉も受ける（送り元が host の loopback のときだけ）
+ */
+const CORE_CLAUDE_LOGIN_LISTENER = { acceptsProject: () => true, bindSource: true, acceptsRunner: true };
 
 /** この Project に Claude のログインを使わせるか。**既定はオン**——書かれているのが false のときだけ切る */
 /** 画面が分けて出すログインの失敗と、その HTTP の状態 */
@@ -3926,6 +3931,8 @@ export function createApp(deps: AppDeps) {
           enabled: claudeLoginEnabled(deps.runtimeConfig, projectId),
           hostLogin: await deps.claudeLogin.hostLogin(),
           stats: deps.claudeLogin.statsFor(projectId),
+          // 会話の本体（Runner）からの要求は別に数える（`stats` はコンテナからのものだけ）
+          runnerStats: deps.claudeLogin.runnerStatsFor(projectId),
         });
         return;
       }

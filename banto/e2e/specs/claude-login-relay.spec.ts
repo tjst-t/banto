@@ -2,10 +2,10 @@
 //
 // Project のコンテナの環境には、core が中継の住所とその Project の合言葉・契約の種類を入れておく。Shell のコマンドは
 // 何も書かずに本体のログインで推論を呼べ、本物のトークンは中に入らない。人は Project 設定で、使わせるかを切り替え、
-// 使われた回数と時刻を見る。上流は偽物（`start-core.ts`——受け取った Authorization とパスを返す）。
+// 使われた回数と時刻を見る。上流は偽物（`fake-anthropic.ts`——会話でない要求には受け取った Authorization とパスを返す）。
 //
 // 見るもの（規則14——呼べたで終わらせず、何が上流に届いたか・画面に何が出たかまで）：
-//   1. Shell のコマンドの環境に4つが入り、本物のトークンは入っていない
+//   1. Shell のコマンドの環境に4つと付随の通信を止める印が入り、本物のトークンは入っていない
 //   2. コマンドから中継を呼ぶと、上流には本物のトークンが届く。推論以外は断る
 //   3. 同じ合言葉でも、コンテナの外（この試験のプロセス）からは断る（送り元の縛り）
 //   4. Project 設定に「使わせる」（既定オン）・本体のログイン（契約）・回数・最後の時刻・直近の 401 が出る
@@ -79,12 +79,15 @@ test("Claude のログインの中継：コンテナのコマンドから本体�
   const env = await run(
     project.id,
     'echo "base=$ANTHROPIC_BASE_URL"; echo "secret=$CLAUDE_CODE_OAUTH_TOKEN"; ' +
-      'echo "sub=$CLAUDE_CODE_SUBSCRIPTION_TYPE tier=$CLAUDE_CODE_RATE_LIMIT_TIER"; echo "real=$(env | grep -c e2e-not-a-token)"',
+      'echo "sub=$CLAUDE_CODE_SUBSCRIPTION_TYPE tier=$CLAUDE_CODE_RATE_LIMIT_TIER"; echo "real=$(env | grep -c e2e-not-a-token)"; ' +
+      'echo "nonessential=$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"',
   );
   expect(env.exitCode, env.stderr).toBe(0);
   expect(env.stdout).toMatch(/^base=http:\/\/[0-9.]+:\d+\/claude-login$/m);
   expect(env.stdout).toContain("sub=max tier=e2e-tier");
   expect(env.stdout, "本物のトークンがコンテナの環境に入っている").toContain("real=0");
+  // 付随の通信は止める（止めないと中の CLI が合言葉を api.anthropic.com へ直に送る）
+  expect(env.stdout).toContain("nonessential=1");
   const secret = /^secret=(banto-\S+)$/m.exec(env.stdout)?.[1];
   expect(secret, env.stdout).toBeTruthy();
 
