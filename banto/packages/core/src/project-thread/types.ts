@@ -210,6 +210,12 @@ export interface TurnContinuation {
    * 最初から（実測 M2）。その会話を Clear で捨てていたら使わない
    */
   session?: { resume: string } | { fresh: string };
+  /**
+   * **何の続きか**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 9.）。`rate_limit`＝Claude の使用量の
+   * 上限で止まったターンを、リセットのあと続けるもの。無ければ起こし直しで切れたターンの続き。`attempt` はどちらも
+   * 「続けて何回目か」だが、数える上限が別（切れた回数は `RESUME_CUT_LIMIT`、上限で続けた回数は `RATE_LIMIT_CONTINUE_LIMIT`）
+   */
+  reason?: "rate_limit";
 }
 
 /**
@@ -569,6 +575,15 @@ export type TurnCause = "human" | "delivery";
 export type TurnOutcome = "completed" | "stopped" | "failed";
 
 /**
+ * **終わった理由**（`turn.ended` の `reason`、追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 9.）。
+ * `rate_limit`＝Claude の使用量の上限で断られて終わった（Runner の `error: "rate_limit"`）
+ */
+export type TurnEndReason = "rate_limit";
+
+/** 上限の待ちを消した理由（`turn.continuation_cancelled`）：人が「待つのをやめる」を押した／止めるボタン */
+export type ContinuationCancelledBy = "human" | "stopped";
+
+/**
  * **1ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5「1. Thread のターンを続ける」）。`turn.started`・
  * `turn.session_known`・`turn.ended` と、始めたより後に起きた出来事から fold が作る
  */
@@ -604,6 +619,16 @@ export interface TurnRecord {
    * 履歴はここに置く。間に Clear があれば持たない（Clear より前の発言から分けて、Clear のあとの会話にならないように）
    */
   continuesFromSeq?: number;
+  /** 続きのターンなら、何の続きか（`TurnContinuation.reason`）。`rate_limit` は上限で止まったターンの続き */
+  continuesReason?: "rate_limit";
+  /**
+   * **Claude の使用量の上限で終わった**（`turn.ended` の `reason: "rate_limit"`、追加・2026-10-18、v4-security.md §2 の 9.）。
+   * `continueAt` はリセットのあと自動で続ける時刻——無ければ待たない（続けて上限に当たった回数が上限に達した・リセットの
+   * 時刻が分からない。受信箱で人に聞いている）。待ちが生きているかは `rateLimitWaitOf`
+   */
+  rateLimit?: { continueAt?: string };
+  /** 上限の待ちを消した（`turn.continuation_cancelled`）。消したら自動では続けない */
+  continuationCancelled?: ContinuationCancelledBy;
 }
 
 export interface ProjectThreadReadModel {

@@ -32,6 +32,8 @@ import type {
   DeliveryAuthor,
   ExternalContent,
   TurnOutcome,
+  TurnEndReason,
+  ContinuationCancelledBy,
   ProjectSleptBy,
   ProjectWokeCause,
 } from "./types.js";
@@ -582,8 +584,8 @@ export class ProjectThreadStore {
       resumePoint?: string;
       rewindTo?: string;
       sessionId?: string;
-      /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（追加・2026-10-05） */
-      continues?: { turnId: string; fromSeq: number };
+      /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（追加・2026-10-05）。上限で止まったターンの続きは `reason` */
+      continues?: { turnId: string; fromSeq: number; reason?: "rate_limit" };
     },
   ): Promise<string> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
@@ -608,8 +610,30 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
-  async endTurn(threadId: ThreadId, turnId: string, outcome: TurnOutcome): Promise<void> {
-    const event = await this.log.append("turn.ended", { threadId, turnId, outcome });
+  async endTurn(
+    threadId: ThreadId,
+    turnId: string,
+    outcome: TurnOutcome,
+    /** Claude の使用量の上限で終わったなら、その印と自動で続ける時刻（追加・2026-10-18、v4-security.md §2 の 9.） */
+    end?: { reason: TurnEndReason; continueAt?: string },
+  ): Promise<void> {
+    const event = await this.log.append("turn.ended", {
+      threadId,
+      turnId,
+      outcome,
+      ...(end ? { reason: end.reason } : {}),
+      ...(end?.continueAt !== undefined ? { continueAt: end.continueAt } : {}),
+    });
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **上限の待ちを消す**（`turn.continuation_cancelled`、追加・2026-10-18、v4-security.md §2 の 9.）——人が「待つのをやめる」・
+   * 止めるボタン。そのターンがまだ Thread の最後のターンのときだけ意味を持つ（fold が見る）
+   */
+  async cancelContinuation(threadId: ThreadId, turnId: string, by: ContinuationCancelledBy): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("turn.continuation_cancelled", { threadId, turnId, by });
     this.projection.applyOne(event);
   }
 

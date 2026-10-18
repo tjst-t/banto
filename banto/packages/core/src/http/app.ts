@@ -55,6 +55,8 @@ import type { InboxItem } from "../inbox/types.js";
 import type { MessageQuote, ProjectWokeCause, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
 import { CanvasQuoteRejectedError, parseCanvasQuotes } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
+import { rateLimitWaitOf } from "../project-thread/rate-limit-wait.js";
+import type { RateLimitContinuations } from "../delivery/rate-limit-continuation.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
 import { DEFAULT_MODEL_VALUE, ModelCatalog, modelIdentityOf, type ModelIdentity } from "../runner/models.js";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
@@ -414,6 +416,13 @@ export interface AppDeps {
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
   /** 会話の本体の CLI の環境（Claude のログインの中継を通す）。`runThreadTurn` がそのまま受け取る */
   runnerEnv?: Parameters<typeof runThreadTurn>[0]["runnerEnv"];
+  /** 上限で終わったターンを続ける時刻（v4-security.md §2 の 9.）。`runThreadTurn` がそのまま受け取る */
+  rateLimitContinueAt?: Parameters<typeof runThreadTurn>[0]["rateLimitContinueAt"];
+  /**
+   * **上限の待ちを人が動かす口**（追加・2026-10-18、v4-security.md §2 の 9.）——「今すぐ続ける」「待つのをやめる」と、止めるボタン。
+   * 渡されなければ口は断る（止めるボタンは待ちに触らない）
+   */
+  rateLimitWaits?: Pick<RateLimitContinuations, "continueNow" | "cancel">;
   /**
    * **MCP Registry を引くときの fetch**（試験用の差し替え口、追加・2026-09-21）。
    *
@@ -2904,7 +2913,26 @@ export function createApp(deps: AppDeps) {
         if (!deps.projectThread.getThread(threadId)) return json(res, 404, { error: "not found" });
         const body = (await readJsonBody(req).catch(() => ({}))) as { turnId?: unknown } | undefined;
         const turnId = typeof body?.turnId === "string" ? body.turnId : undefined;
-        return json(res, 200, await turnStops.stop(threadId, turnId));
+        const outcome = await turnStops.stop(threadId, turnId);
+        // **上限が戻るのを待っていれば、止めるボタンは待ちを消す**（v4-security.md §2 の 9.）。待っていなければ何もしない
+        if (!outcome.stopped && deps.rateLimitWaits && rateLimitWaitOf(deps.projectThread.getThread(threadId))) {
+          const cancelled = await deps.rateLimitWaits.cancel(threadId, "stopped");
+          return json(res, 200, { ...outcome, ...(cancelled.ok ? { waitCancelled: true } : {}) });
+        }
+        return json(res, 200, outcome);
+      }
+
+      // **上限の待ちを人が動かす**（追加・2026-10-18、v4-security.md §2 の 9.）——「今すぐ続ける」「待つのをやめる」
+      const rateLimitMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/rate-limit-wait\/(continue|cancel)$/);
+      if (rateLimitMatch && req.method === "POST") {
+        if (!deps.rateLimitWaits) return json(res, 501, { error: "この banto では上限の待ちを扱えません" });
+        const threadId = rateLimitMatch[1]!;
+        const result =
+          rateLimitMatch[2] === "continue"
+            ? await deps.rateLimitWaits.continueNow(threadId)
+            : await deps.rateLimitWaits.cancel(threadId, "human");
+        if (!result.ok) return json(res, result.status, { error: result.error });
+        return json(res, 200, { ok: true });
       }
 
       // **host から画面への出来事の流れ**（決定・2026-09-25、v4-frontend.md §6.8）。何が起きたかだけを流す

@@ -64,7 +64,8 @@ export interface DeliverInput {
 export type WakeDecision =
   | { wake: "now" }
   | { wake: "later" }
-  | { wake: "held"; reason: string };
+  /** `quiet`：人の番ではないので受信箱に出さない留め（上限が戻るのを待っている——`wait`） */
+  | { wake: "held"; reason: string; quiet?: true };
 
 export interface ThreadDeliveriesDeps {
   projectThread: ProjectThreadStore;
@@ -76,6 +77,11 @@ export interface ThreadDeliveriesDeps {
    * たびに切れるので自動で続けるのをやめた Thread は、お知らせが開いている間、届いたものでも起こさない
    */
   hold?(threadId: string): string | undefined;
+  /**
+   * **上限が戻るのを待っているので留める**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 9.）。留めるなら
+   * その理由。届いたものは続けたターンに一緒に積む。人の番ではないので、留めても受信箱に出さない
+   */
+  wait?(threadId: string): string | undefined;
   now?: () => number;
   /** 1時間に起こす上限（無ければ `DELIVERY_LIMITS.wakesPerHour`。E2E だけが、留めたときを見るために縮める） */
   wakesPerHour?: number;
@@ -116,7 +122,7 @@ export class ThreadDeliveries {
     const decision = this.kick(input.threadId);
     // 起こした・あとで起こすものは知らせない（改訂・2026-10-15）——人が何かしないと先へ進まないのは留めたときだけ。
     // 自動化の届けものは留めても知らせない（§4.3——留めた理由は自動化の回の記録に残る）
-    if (decision.wake !== "held" || input.kind === "automation") return { deliveryId, ...decision };
+    if (decision.wake !== "held" || decision.quiet || input.kind === "automation") return { deliveryId, ...decision };
     const project = this.deps.projectThread.getProject(thread.projectId);
     const where = `${project?.name ?? "Project"} の ${thread.title ?? (thread.kind === "base" ? "Base Thread" : "Fork Thread")}`;
     await this.deps
@@ -141,7 +147,7 @@ export class ThreadDeliveries {
     if (!thread || pending.length === 0) return { wake: "held", reason: "届いたものがありません" };
     if (this.deps.turns.isRunning(threadId)) return { wake: "later" };
     const held = this.holdReason(threadId, pending);
-    if (held) return { wake: "held", reason: held };
+    if (held) return { wake: "held", ...held };
     // 起動の途中（ターンを開く口がまだ無い）——起動し終えたら `resumeAll` が起こす
     if (!this.runTurn) return { wake: "later" };
     const hop = Math.max(...pending.map((d) => d.hop));
@@ -161,7 +167,14 @@ export class ThreadDeliveries {
     }
   }
 
-  private holdReason(threadId: string, pending: PendingDelivery[]): string | undefined {
+  private holdReason(threadId: string, pending: PendingDelivery[]): { reason: string; quiet?: true } | undefined {
+    const reason = this.loudHoldReason(threadId, pending);
+    if (reason !== undefined) return { reason };
+    const waiting = this.deps.wait?.(threadId);
+    return waiting !== undefined ? { reason: waiting, quiet: true } : this.rateHoldReason(threadId, pending);
+  }
+
+  private loudHoldReason(threadId: string, pending: PendingDelivery[]): string | undefined {
     const thread = this.deps.projectThread.getThread(threadId)!;
     if (thread.status === "closed") return "この Thread は閉じられています";
     const project = this.deps.projectThread.getProject(thread.projectId);
@@ -174,6 +187,11 @@ export class ThreadDeliveries {
     if (hop > DELIVERY_LIMITS.maxHop) {
       return `届いたものから起こした連鎖が ${DELIVERY_LIMITS.maxHop} 回を超えました（止まらない往復を防ぐため）`;
     }
+    return undefined;
+  }
+
+  /** 速度の上限（`wakesPerHour`）で留める理由 */
+  private rateHoldReason(threadId: string, pending: PendingDelivery[]): { reason: string } | undefined {
     const now = (this.deps.now ?? Date.now)();
     const recent = (this.wakes.get(threadId) ?? []).filter((t) => now - t < 60 * 60 * 1000);
     this.wakes.set(threadId, recent);
@@ -182,7 +200,7 @@ export class ThreadDeliveries {
     if (exemptFromRate(pending)) return undefined;
     const limit = this.deps.wakesPerHour ?? DELIVERY_LIMITS.wakesPerHour;
     if (recent.length >= limit) {
-      return `この1時間に届いたもので ${limit} 回起こしました（止まらない往復を防ぐため）`;
+      return { reason: `この1時間に届いたもので ${limit} 回起こしました（止まらない往復を防ぐため）` };
     }
     return undefined;
   }

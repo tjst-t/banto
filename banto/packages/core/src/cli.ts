@@ -105,6 +105,7 @@ import { receivesReplies, TOOLS_PREPARING_MARKER, type ModuleReplyArguments } fr
 import type { CallerIdentity } from "./relay/host-relay-endpoint.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
+import { RateLimitContinuations } from "./delivery/rate-limit-continuation.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
@@ -601,9 +602,13 @@ async function main(): Promise<void> {
     if (projectId === undefined || !projectSleep?.awakeForErrand(projectId)) return;
     setImmediate(() => void projectSleep?.returnIfDone(projectId));
   }
+  /** 上限で止まったターンを続ける（下で作る——届ける口が要る） */
+  let rateLimits: RateLimitContinuations | undefined;
   const deliveries = new ThreadDeliveries({
     projectThread,
     turns: threadTurns,
+    // 上限が戻るのを待っている Thread は、届いたものでも起こさず続けたターンに積む——受信箱には出さない（v4-security.md §2 の 9.）
+    wait: (threadId) => rateLimits?.hold(threadId),
     notify: async (n) => {
       await inbox.raiseNotice(n);
     },
@@ -613,6 +618,19 @@ async function main(): Promise<void> {
     // E2E だけが縮める（眠っている Project に留めた届けものでは起きない、を見る——アーキ仕様 §2.2「起こす」）
     ...(Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) > 0 ? { wakesPerHour: Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) } : {}),
   });
+  // **上限で止まったターンを、リセットのあと人を待たずに続ける**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを
+  // 複数持つ」の 9.）。続ける時刻は中継が持つ一番早いリセット（無ければ Runner の `rate_limit_event`）の1分後
+  rateLimits = new RateLimitContinuations({
+    projectThread,
+    inbox,
+    deliveries,
+    earliestReset: (projectId) => claudeLogin.earliestResetFor(projectId),
+    // E2E だけが縮める（リセットの1分後を待たずに続くところを見る）
+    ...(process.env.BANTO_TEST_RATE_LIMIT_MARGIN_MS !== undefined ? { marginMs: Number(process.env.BANTO_TEST_RATE_LIMIT_MARGIN_MS) } : {}),
+  });
+  const rateLimitContinuations = rateLimits;
+  // ターンが始まった・終わったら時計を掛け直す（終わりの記録はターンの鍵を返す前に書かれている）
+  threadTurns.onChange((change) => rateLimitContinuations.arm(change.threadId));
   // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
   const automationRunner = new AutomationRunner({
     projectThread,
@@ -2939,6 +2957,8 @@ async function main(): Promise<void> {
     // **会話の本体も Claude のログインの中継を通す**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 2.）。
     // 住所は host の loopback——中継は本体用の合言葉をそこからだけ受ける
     runnerEnv: (projectId, threadId) => claudeLogin.runnerEnvFor(projectId, threadId, `http://127.0.0.1:${bootstrap.port}`),
+    rateLimitContinueAt: (threadId, resetsAt) => rateLimitContinuations.continueAt(threadId, resetsAt),
+    rateLimitWaits: rateLimitContinuations,
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,
     globalMemory,
@@ -3208,6 +3228,9 @@ async function main(): Promise<void> {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
+    // **上限が戻るのを待っている会話の時計を掛ける**（v4-security.md §2 の 9.）——起こし直しをまたいだ待ちも fold が拾っている。
+    // 時刻を過ぎていればすぐ続ける。待ち受けてから（続きのターンも Runner が中継の口に繋ぐ）
+    rateLimitContinuations.start();
     // **時刻の自動化を刻み始める**（§4.3「時計」）。最初の刻みで止まっていた間の時刻を取り戻す——待ち受けて、届いたものを
     // 再開したあと（届けたもので起こすターンも Runner が中継の口に繋ぐ）
     automationClock.start();
