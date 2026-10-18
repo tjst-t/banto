@@ -210,6 +210,19 @@ test("全面の受信箱で、判断待ちに答え・まとめと返事を読�
   const input = decideCard.getByTestId("inbox-reply-input");
   await expect(input).toHaveValue("案A で進めて。");
   await expect(decision.getByTestId("inbox-turn-option").filter({ hasText: "案A" })).toHaveAttribute("aria-pressed", "true");
+  // 返信の欄は書いた分だけ下へ伸び、上限（320px）を越えたら欄の中でスクロールする。消せば1行に戻る
+  const heightOf = () => input.evaluate((el) => el.getBoundingClientRect().height);
+  const oneLine = await heightOf();
+  await input.fill("案A で進めて。\n" + "長い返事の行。".repeat(40));
+  await expect.poll(heightOf).toBeGreaterThan(oneLine + 30);
+  const grown = await heightOf();
+  expect(await input.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+  await input.fill("行\n".repeat(60));
+  await expect.poll(heightOf).toBeGreaterThan(grown);
+  expect(await heightOf()).toBeLessThanOrEqual(321);
+  expect(await input.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
+  await input.fill("案A で進めて。");
+  await expect.poll(heightOf).toBe(oneLine);
   await input.press("Enter");
   await expect(inbox.getByTestId("inbox-sent")).toContainText("送りました。AI が動いています");
   // host でそのターンが最後まで走る——画面は流れを読んでいない
