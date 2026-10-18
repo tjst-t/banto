@@ -2149,6 +2149,9 @@ test("エージェントの本体を取ってこさせられるのは、同梱�
     await assert.rejects(() => call(tokens.shell, "relayAgentBinaryStatus", { agent: "opencode" }), /確かめられません/);
   } finally {
     close();
+  }
+});
+
 // **持ち主が、自分の置いた秘密から渡す値を作る口**（追加・2026-10-18、Backlog #405、`dev.banto/presentsOwnedSecret`）。
 //
 // Vault は持ち主でない呼び元に `oauth-token` を渡す前に、置いた Module（Repositories）に今の値を見せて渡す値を作らせる。
