@@ -647,6 +647,7 @@ alias の一覧の在りか（`vault://aliases`）／値ではなく**名前**�
 
 | tool | 引数→戻り値 | 用途 |
 |---|---|---|
+| `resolveAliases({items})` | → `{values}`。1回で複数を引く（全部か何もなし、100件まで）。承認は alias ごと（下の「秘密をまとめて引く」、2026-10-18） | Shell の envSecrets・secretFiles |
 | `resolveAlias({name})` | → 値（文字列 or バイト列）。**静的保存か動的発行かは Vault 内部の実装詳細**——呼び出し側はどちらでも同じ形で受け取る | 汎用シークレット注入（Shell の alias 方式、アーキ仕様 §2.5）、ファイル内容、動的短命トークン |
 | `startSshAgent({identity})` | → `{socketPath}` のみ。**秘密鍵は返さない** | ssh-agent 経由の git 認証（D5）。**旧名 `hostSshAgent` から改名**（2026-09-02）——「host」はアーキ仕様で core の配線・解決層を指す予約語（§2.5）であり、ここで別の意味（ssh-agentプロセスを起動する）に使うのは規則11（一般的な用語を使う）に反する紛らわしさがあった |
 | `verify({alias, payload, signature})` | → true/false のみ。値は一切返さない | Webhook 署名検証など、値そのものが要らない検証 |
@@ -1044,6 +1045,73 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
   待つのは1回の呼び出しで**合計 30 秒まで**。超えるなら「Infisical の回数制限で読めませんでした（書けませんでした）
   （N 秒後にもう一度試してください…）」で断る。窓口はこれを「読めていない Vault があります」の理由として出す
 - Shell と窓口の口（`lookupAlias`・`resolveAlias` を alias ごとに呼ぶ）は変えない——承認は alias の単位なので
+  （**改訂・2026-10-18**：まとめて引く口を足した。下の「秘密をまとめて引く」）
+
+#### 秘密をまとめて引く（決定・2026-10-18、ユーザー）
+
+**1回の runCommand で使う秘密は、Vault ごとに1回の呼び出しで引く。** 以前は alias ごとに窓口の
+`lookupAlias` と Vault の `resolveAlias` を呼び、(1) コンテナからの呼び出しは alias ごとに承認のカードが1枚ずつ出て、
+27件なら会話がカード27枚で埋まり、(2) Infisical へは値の読み出しと使った日の書き込みが alias ごとに出た（27件で54回。
+回数制限は待って試し直すことで逃げていた——上の「Infisical の回数制限」）。
+
+**口（3つ足す。今の1件ずつの口は残す）**
+
+| 口 | どこ | 引数 → 戻り値 |
+|---|---|---|
+| `lookupAliases({items: [{name}]})` | 窓口（vault-directory）、`module`。`batchOf: { tool: "lookupAlias", items: "items" }`——承認は `lookupAlias` と同じ鍵（今までどおり Project ごとに1回） | → 名前ごとの在りか（`lookupAlias` と同じ三つ組）か、その名前が引けない理由。**一覧（`crossAliases`）は1回だけ読む**。引けない名前があっても、引けたものは返す（Shell が全部の理由をまとめて出せるように） |
+| `resolveAliases({items: [{name, group?}]})` | vault-kit（vault-local・vault-infisical の両方）、`module` | → `{values: [{name, group, value}]}`（並びは `items` と同じ）。**全部か何もなしか**——1件でも引けない（無い・使えない・空・読めない）なら値は1つも返さず、引けなかったもの全部を理由つきで並べて断る。1回に **100 件まで**（超えたら断る） |
+| `VaultBackend.getSecrets?(paths)` | vault-kit の backend の契約（**任意**） | → パスごとの値。名乗らない backend には kit が `getSecret` を1件ずつ呼んで代わりを務める（vault-local はこれで足りる——手元のファイルなので往復が無い） |
+
+`resolveAliases` の中身は `resolveAlias` と同じ確かめを1件ずつ行う（`pickAlias`・`assertUsable`・参照なら元から・
+`assertNotEmpty`）。違うのは、台帳の一覧（`listAll`）を1回だけ読むこと・値を `getSecrets` でまとめて読むこと・
+使った日をまとめて書くこと（`AliasStore.markUsedMany?`、任意。無ければ `markUsed` を1件ずつ）。
+
+**承認——カードは1回の呼び出しに1枚、許可は今までどおり alias ごと**
+
+- 宛先の tool は `_meta["dev.banto/batchOf"]: { tool: "resolveAlias", items: "items" }` を名乗る。「`items` の1つ1つが
+  `resolveAlias` 1回ぶん」という意味。host は `items` の各要素から、`resolveAlias` が名乗る識別子（`auditArgs`——
+  `name`・`group`）を拾い、**1件ずつを `resolveAlias` の呼び出しとして**承認の鍵（`grantKey`）を作る。だから
+  **今までに `resolveAlias` で許したものは、まとめた呼び出しでもそのまま効き、まとめた呼び出しで許したものは1件ずつの
+  呼び出しにも効く**（同じ鍵）
+- コンテナからの呼び出し（`scope` を付けるもの）：まだ許していない alias **だけ**を1枚のカードに並べて聞く（「shell が
+  vault-infisical の resolveAlias を 27 件呼ぼうとしています」＋対象の一覧。値は入らない）。全部許してあればカードは出ない。
+  「許可」で覚えるのは並べた alias の1件ずつ（`relay.grant_created` を件数ぶん）。拒否なら呼び出しごと断る
+- banto 本体で動く Module からの呼び出し（`scope` を付けない）：今までどおり `resolveAlias` の組み合わせで1回
+- 「承認をすべて自動で許可する」がオン：答え済みのカードを**1枚**残す（中に対象の一覧）。覚えない
+- 識別子の拾い方は `auditArgs` と同じ線で、**拾えない要素があれば中継ごと断る**——`items` が配列でない・要素が
+  オブジェクトでない・`name` が無い・長すぎる・件数が上限を超える。拾えない要素を黙って飛ばすと、承認の鍵に
+  入らない alias の値が出ていく（fail closed）
+- **`batchOf` を信じるのは同梱の宛先だけ**（`valueFree` と同じ線）。第三者の宛先が名乗っても普通の tool として扱う
+- 監査（`relay.call_recorded`）は **alias 1件ごとに1行**（識別子は1件ぶん）——「どの秘密が使われたか」の引き方を変えない
+- 人を待っている間の進捗（「人の承認を待っています」）・聞いた呼び出しが答えの前に終わったら畳む、は今までどおり
+
+**Shell**
+
+- 1回の runCommand の `envSecrets` と `secretFiles` の alias を重複を除いて集め、窓口の `lookupAliases` を1回呼ぶ（101 件以上なら 100 件ずつ）。
+  引けない名前があれば、**全部の名前と理由を1つの文で**断る（コマンドは流さない）
+- 在りかを Vault（実装）ごとに分け、Vault ごとに `resolveAliases` を1回呼ぶ（101 件以上なら 100 件ずつに分ける）。
+  宛先が `resolveAliases` を持たなければ（第三者の Vault）、今までどおり1件ずつ `resolveAlias` を呼ぶ
+- `sshIdentity` は今までどおり `startSshAgent`（1件だけ・値を返さない口なので、まとめる意味が無い）
+- 進捗は Vault ごとにまとめる（「envSecrets・secretFiles：vault-infisical から 27 件を引きました」）
+- Subagent・Repositories・core の `${secret:…}` の解決は1件ずつのまま（1回に引くのが1〜2件のため）
+
+**Infisical の `getSecrets`**
+
+- 頼まれたパスを（Project・環境・グループの根）ごとに分け、それぞれ `listSecrets`（`recursive`・
+  `viewSecretValue: true`・`expandSecretReferences: false`——`getSecret` と同じ読み方）を**1回**呼ぶ。応答から頼まれた
+  パスの値だけを取り出し、**残りはその場で捨てる**。一覧に見つからないパスだけ `getSecret` で読み直す
+- **値は台帳の分け合う一覧（`shared`）に入れない**——分け合う一覧は今までどおり値を持たない（空かどうかの印だけ）。
+  「一覧で読んだ値は空かどうかを見たらすぐ捨てる」（上の「値が空の秘密」）は、`getSecrets` については
+  「**頼まれた値だけを、その呼び出しの戻り値として返し、残りは捨てる**」と読み替える
+- 使った日の書き込み（`markUsedMany`）は、Infisical の一括更新（REST の `PATCH /api/v3/secrets/batch/raw`。SDK 5.0.2 には
+  口が無いので、接続の認証で直に呼ぶ）で置き場ごとに1回。使えなければ1件ずつ。書き込みの失敗で値を渡すのを止めない
+  （今までどおり）
+- これで27件の runCommand は、Infisical へ一覧1〜2回・値の一覧1〜2回・使った日の書き込み1〜2回になる
+
+**採らなかった形**：(1) Vault ごとに1件ずつの承認を残し、カードだけをまとめて見せる（画面の都合で承認の単位と
+カードの単位がずれ、答え方が分かりにくい）。(2) 窓口が値を運ぶ「まとめて引いて渡す」（値は窓口を通さない決まり）。
+(3) まとめた呼び出しを別の承認の鍵にする（`resolveAliases` を新しい組み合わせとして聞き直すことになり、
+今までの許可が効かない）。経緯は `docs/notes/2026-10-18-batch-resolve.md`。
 
 #### D. バックエンド実装者向けの内部インターフェース（MCP ではなく npm ライブラリ）
 

@@ -1392,6 +1392,8 @@ host のコードに無い」ことと「誰も選んでいない接続が黙っ
 でVault を見つけ、Shell は**名前から在りかを引いてから**その Vaultを直接呼ぶ
 （`lookupAlias` → `resolveAlias`）。**在りかが引けないときに既定の Vaultへ
 落とさない**——別の Vaultの同名を開けてしまう（規則2）。
+1回の runCommand で複数の秘密を使うときは、窓口の `lookupAliases` を1回・Vault ごとに `resolveAliases` を1回
+呼ぶ（2026-10-18、`docs/specs/v4-modules.md`「秘密をまとめて引く」）。
 
 #### 中継は入れ子になる——文脈は外側から継ぐ（決定・2026-09-12）
 
