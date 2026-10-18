@@ -355,7 +355,34 @@ export interface ProjectState {
    * 場所（届ける・自動化・メッセージ・移す）を眠っている間も通すため。`project.slept` で立ち、`project.woke`・`project.closed` で消える
    */
   sleep?: ProjectSleepState;
+  /**
+   * **最後に Claude のアカウントを切り替えたこと**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
+   * Project 設定の観測に出す。履歴は Event Store の `claude_account.switched`
+   */
+  lastClaudeAccountSwitch?: ClaudeAccountSwitchRecord;
   createdAt: string;
+}
+
+/**
+ * **Claude のアカウントを切り替えた1件**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
+ * `reason.kind`：`threshold`（前のものが閾値を越えた。`window` と `utilization`）・`rejected`（前のものが上限で断った）・
+ * `recovered`（前のものがリセットされ並びの前へ戻った）・`order`（並びが変わった）・`unavailable`（前のものが使えなかった）
+ */
+export interface ClaudeAccountSwitchRecord {
+  seq: number;
+  at: string;
+  from: string;
+  to: string;
+  reason: ClaudeAccountSwitchReasonRecord;
+}
+
+export interface ClaudeAccountSwitchReasonRecord {
+  kind: "threshold" | "rejected" | "recovered" | "order" | "unavailable";
+  window?: "5h" | "7d";
+  /** 0〜1 */
+  utilization?: number;
+  resetsAt?: string;
+  claim?: string;
 }
 
 /** 誰が眠らせたか（人・しばらく開いていないので自動で） */
@@ -563,6 +590,11 @@ export interface ThreadState {
   lastTurn?: TurnRecord;
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
+  /**
+   * **この Thread の要求で Claude のアカウントを切り替えた**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを
+   * 複数持つ」の 6.）。会話に薄い1行で出す画面だけの印で、**AI の文脈には入れない**。前からある snapshot には無い——無ければ空
+   */
+  accountSwitches?: ClaudeAccountSwitchRecord[];
   /** 最新の1件だけ（2026-10-04 から。履歴は Event Store の usage.recorded） */
   usage: UsageEntry[];
   createdAt: string;

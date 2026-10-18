@@ -38,6 +38,8 @@ interface Fixture {
   upstreamHeaders: { value: Record<string, string> };
   /** これを決めると、上流はこのトークンのときだけ 200・ほかは 401（upstreamStatus より優先） */
   upstreamAccepts: { value: string | undefined };
+  /** トークンごとの返事（決めたトークンでは upstreamStatus・upstreamHeaders より優先） */
+  upstreamByToken: { value: Record<string, { status?: number; headers?: Record<string, string> }> };
   /** 上流が返す前に1回呼ぶ（本体の CLI が途中で書き換えた形を作る） */
   beforeUpstreamReply: { fn: (() => void) | undefined };
   /** 偽の取り直しの口が返すもの（既定は 400 invalid_grant） */
@@ -66,15 +68,18 @@ async function fixture(
   const upstreamHeaders: Fixture["upstreamHeaders"] = { value: {} };
   const upstreamAccepts: Fixture["upstreamAccepts"] = { value: undefined };
   const beforeUpstreamReply: Fixture["beforeUpstreamReply"] = { fn: undefined };
+  const upstreamByToken: Fixture["upstreamByToken"] = { value: {} };
   const upstream = createServer((req, res) => {
     seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "", beta: String(req.headers["anthropic-beta"] ?? "") });
     seenThreadHeader.push(req.headers["x-banto-thread-id"] as string | undefined);
     const hook = beforeUpstreamReply.fn;
     beforeUpstreamReply.fn = undefined;
     hook?.();
+    const byToken = upstreamByToken.value[(req.headers.authorization ?? "").replace(/^Bearer /, "")];
     const status =
-      upstreamAccepts.value === undefined ? upstreamStatus.value : req.headers.authorization === `Bearer ${upstreamAccepts.value}` ? 200 : 401;
-    res.writeHead(status, { "content-type": "application/json", ...upstreamHeaders.value }).end('{"ok":"upstream"}');
+      byToken?.status ??
+      (upstreamAccepts.value === undefined ? upstreamStatus.value : req.headers.authorization === `Bearer ${upstreamAccepts.value}` ? 200 : 401);
+    res.writeHead(status, { "content-type": "application/json", ...(byToken?.headers ?? upstreamHeaders.value) }).end('{"ok":"upstream"}');
   });
   const upstreamUrl = await listen(upstream);
   const tokenReply: Fixture["tokenReply"] = { status: 400, body: { error: "invalid_grant" } };
@@ -120,6 +125,7 @@ async function fixture(
     upstreamStatus,
     upstreamHeaders,
     upstreamAccepts,
+    upstreamByToken,
     beforeUpstreamReply,
     tokenReply,
     tokenCalls,
@@ -735,6 +741,165 @@ test("並びで一番早いリセット：断っているアカウントの -res
     const off = new ClaudeLoginRelay({ accounts: f.accounts, secretsPath: join(mkdtempSync(join(tmpdir(), "claude-login-relay-")), "s.json"), enabled: () => true, refreshEnabled: false });
     assert.equal(off.earliestResetFor("p1"), undefined);
   } finally {
+    await f.close();
+  }
+});
+
+// **閾値で切り替える・429 で送り直す・切り替えの記録・全部越えのカード**（§2「Claude のアカウントを複数持つ」の 5.・6.）
+
+/** 使用率の見出し（5時間の率とリセット、全体の status とリセット） */
+const limitHeaders = (fiveHour: number, resetAt: Date, status = "allowed"): Record<string, string> => ({
+  "anthropic-ratelimit-unified-status": status,
+  "anthropic-ratelimit-unified-reset": String(Math.floor(resetAt.getTime() / 1000)),
+  "anthropic-ratelimit-unified-5h-utilization": String(fiveHour),
+  "anthropic-ratelimit-unified-5h-reset": String(Math.floor(resetAt.getTime() / 1000)),
+});
+
+test("閾値を越えたら次の要求から次のアカウント、リセットを過ぎたら前へ戻る。切り替えは Thread の印つきで知らせる", async () => {
+  let clock = new Date("2026-10-08T00:00:00Z");
+  const switches: unknown[] = [];
+  const f = await fixture({ now: () => clock, onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const reset = new Date("2026-10-08T01:00:00Z");
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.96, reset) } };
+    // 1回目は host（起こしてから最初なので切り替えではない）。返事で 96% と分かる
+    assert.equal((await post(f.url, runner, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200);
+    assert.deepEqual(switches, []);
+    // 2回目から B。Thread の印は本体の要求のときだけ渡す
+    assert.equal((await post(f.url, runner, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer B-ACCESS"]);
+    assert.deepEqual(switches, [
+      { projectId: "p1", threadId: "t1", from: "host", to: b.id, reason: { kind: "threshold", window: "5h", utilization: 0.96, resetsAt: reset.toISOString() } },
+    ]);
+    assert.equal(f.relay.currentAccountOf("p1"), b.id);
+    // 契約の種類の env もいま選ばれるものから
+    assert.equal(f.relay.currentAccountOf("p2"), undefined);
+    // リセットを過ぎたら host へ戻る
+    clock = new Date("2026-10-08T01:00:01Z");
+    f.upstreamByToken.value = {};
+    assert.equal((await post(f.url, runner, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer REAL-ACCESS");
+    assert.deepEqual(switches.at(-1), { projectId: "p1", threadId: "t1", from: b.id, to: "host", reason: { kind: "recovered" } });
+
+    // コンテナからの要求の Thread の印は読まない
+    const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.99, new Date("2026-10-08T05:00:00Z")) } };
+    assert.equal((await post(f.url, container, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200);
+    assert.equal((await post(f.url, container, "/v1/messages", { "x-banto-thread-id": "t1" })).status, 200);
+    assert.deepEqual(switches.at(-1), { projectId: "p1", from: "host", to: b.id, reason: { kind: "threshold", window: "5h", utilization: 0.99, resetsAt: "2026-10-08T05:00:00.000Z" } });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Project の並びがあればそれで選ぶ（既定の並びとは別）", async () => {
+  const f = await fixture();
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS", subscriptionType: "pro" } });
+    f.accounts.setProjectOrder("p2", [b.id]);
+    const p1 = (await f.relay.envFor("p1", "http://x"))!;
+    const p2 = (await f.relay.envFor("p2", "http://x"))!;
+    assert.equal(p1.CLAUDE_CODE_SUBSCRIPTION_TYPE, "max");
+    assert.equal(p2.CLAUDE_CODE_SUBSCRIPTION_TYPE, "pro");
+    assert.equal((await post(f.url, p1.CLAUDE_CODE_OAUTH_TOKEN!)).status, 200);
+    assert.equal((await post(f.url, p2.CLAUDE_CODE_OAUTH_TOKEN!)).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer B-ACCESS"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("上限の 429（rejected）は並びの次へ順に送り直し、3つ目で通る。全部断ったら 429 を見出しごと返し x-should-retry: false", async () => {
+  const switches: Array<{ from: string; to: string; reason: { kind: string } }> = [];
+  const f = await fixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const c = f.accounts.add({ email: "c@example.com", oauth: { accessToken: "C-ACCESS" } });
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, secret)).status, 200);
+    const reset = new Date("2026-10-08T02:00:00Z");
+    const rejected = { status: 429, headers: limitHeaders(0.5, reset, "rejected") };
+    f.upstreamByToken.value = { "REAL-ACCESS": rejected, "B-ACCESS": rejected };
+    const through = await post(f.url, secret);
+    assert.equal(through.status, 200);
+    assert.equal(through.headers.get("x-should-retry"), null);
+    assert.deepEqual(f.seen.slice(1).map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer B-ACCESS", "Bearer C-ACCESS"]);
+    // 同じ本文を送り直している
+    assert.deepEqual(switches, [{ projectId: "p1", from: "host", to: c.id, reason: { kind: "rejected", resetsAt: reset.toISOString() } }]);
+    // 次の要求は C から（host と B は rejected と覚えている）
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer C-ACCESS");
+    assert.equal(f.seen.length, 5);
+
+    // 全部が断る：上流の 429 を見出しごと返し、試し直さない旗を付ける
+    f.upstreamByToken.value = { "REAL-ACCESS": rejected, "B-ACCESS": rejected, "C-ACCESS": rejected };
+    const refused = await post(f.url, secret);
+    assert.equal(refused.status, 429);
+    assert.equal(refused.headers.get("x-should-retry"), "false");
+    assert.equal(refused.headers.get("anthropic-ratelimit-unified-status"), "rejected");
+    // C（rejected と分かった）→ 残りも全部 rejected と覚えているが、この要求ではまだ試していないものは試す
+    assert.deepEqual(f.seen.slice(5).map((x) => x.auth), ["Bearer C-ACCESS", "Bearer REAL-ACCESS", "Bearer B-ACCESS"]);
+    // 断られた返事では切り替えを知らせない
+    assert.equal(switches.length, 1);
+    assert.equal(b.id !== c.id, true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("見出しの無い 429（上限ではない）は送り直さず、旗も付けずにそのまま返す", async () => {
+  const f = await fixture();
+  try {
+    f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamByToken.value = { "REAL-ACCESS": { status: 429, headers: {} } };
+    const r = await post(f.url, secret);
+    assert.equal(r.status, 429);
+    assert.equal(r.headers.get("x-should-retry"), null);
+    assert.equal(f.seen.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("並びの全部が閾値を越えたら一番早くリセットされるもので続け、カードは並びごとに1回。どれかが戻ったら閉じる（要求が来なくても）", async () => {
+  let clock = new Date("2026-10-08T00:00:00Z");
+  const events: string[] = [];
+  const f = await fixture({
+    now: () => clock,
+    onAllOverThreshold: (info) => events.push(`open ${info.key} ${info.projectId} using=${info.using}`),
+    onBackUnderThreshold: (key) => events.push(`close ${key}`),
+  });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const key = `host,${b.id}`;
+    // まだ見ていない並びは開いている扱い——最初に選んだときに（起こし直す前の）カードを閉じに行く
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(events, [`close ${key}`]);
+    // host は1時間後、B は 50ms 後に戻る
+    f.upstreamByToken.value = {
+      "REAL-ACCESS": { headers: limitHeaders(0.97, new Date("2026-10-08T01:00:00Z")) },
+      "B-ACCESS": { headers: limitHeaders(0.98, new Date(clock.getTime() + 2_000)) },
+    };
+    assert.equal((await post(f.url, secret)).status, 200); // host が 97% と分かる
+    assert.equal((await post(f.url, secret)).status, 200); // B が 98% と分かる
+    assert.equal((await post(f.url, secret)).status, 200); // 全部越え：B（早く戻る）で続ける
+    assert.equal((await post(f.url, secret)).status, 200); // 開いている間は出さない
+    assert.deepEqual(f.seen.slice(-2).map((x) => x.auth), ["Bearer B-ACCESS", "Bearer B-ACCESS"]);
+    assert.deepEqual(events, [`close ${key}`, `open ${key} p1 using=${b.id}`]);
+    // 同じ並びの別の Project でも増やさない
+    const other = (await f.relay.runnerEnvFor("p2", "t2", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, other)).status, 200);
+    assert.equal(events.length, 2);
+    // B のリセットを過ぎる——要求が来なくても、時計が見直して閉じる
+    clock = new Date(clock.getTime() + 3_000);
+    await new Promise((r) => setTimeout(r, 3_200));
+    assert.deepEqual(events, [`close ${key}`, `open ${key} p1 using=${b.id}`, `close ${key}`]);
+  } finally {
+    f.relay.close();
     await f.close();
   }
 });

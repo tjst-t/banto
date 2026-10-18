@@ -27,6 +27,7 @@ import type {
   TurnEndReason,
   ContinuationCancelledBy,
   TurnRecord,
+  ClaudeAccountSwitchReasonRecord,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -209,7 +210,13 @@ export type ProjectThreadEvent =
       payload: { threadId: string; turnId: string; outcome: TurnOutcome; reason?: TurnEndReason; continueAt?: string };
     }
   // **上限の待ちを消した**（「待つのをやめる」・止めるボタン）。閉じた Fork・Clear は `abandonedBy` で消える
-  | { type: "turn.continuation_cancelled"; payload: { threadId: string; turnId: string; by: ContinuationCancelledBy } };
+  | { type: "turn.continuation_cancelled"; payload: { threadId: string; turnId: string; by: ContinuationCancelledBy } }
+  // **Claude のアカウントを切り替えた**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
+  // `threadId` は本体の要求の `x-banto-thread-id`（その Project の Thread のときだけ）。コンテナからの要求では無い
+  | {
+      type: "claude_account.switched";
+      payload: { projectId: string; threadId?: string; from: string; to: string; reason: ClaudeAccountSwitchReasonRecord };
+    };
 
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
@@ -864,6 +871,15 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           // （決定・2026-09-05）——次のターンは新しいキャッシュ境界から始まる。
           t.memoryBaselineSeq = raw.seq;
         }
+        return next;
+      }
+      case "claude_account.switched": {
+        const { projectId, threadId, from, to, reason } = event.payload;
+        const record = { seq: raw.seq, at: raw.ts, from, to, reason };
+        const p = next.projects.get(projectId);
+        if (p) next.projects.set(projectId, { ...p, lastClaudeAccountSwitch: record });
+        const t = threadId ? next.threads.get(threadId) : undefined;
+        if (t && t.projectId === projectId) t.accountSwitches = [...(t.accountSwitches ?? []), record];
         return next;
       }
       case "thread.compacted": {

@@ -372,6 +372,8 @@ async function main(): Promise<void> {
   });
   /** アカウントごとの「取り直せなかった」カード（dedupeKey にアカウントの id——別のアカウントが通っても閉じない） */
   const claudeLoginCardKey = (accountId: string) => `claude-login-upstream-unauthorized:${accountId}`;
+  /** 並びの全部が閾値を越えたカード（Project の並びごとに1枚——鍵に並びの中身） */
+  const claudeAllOverCardKey = (orderKey: string) => `claude-accounts-all-over:${orderKey}`;
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     refreshEnabled: relayRefresh.enabled,
     accounts: claudeAccounts,
@@ -411,6 +413,32 @@ async function main(): Promise<void> {
       for (const key of keys) {
         void inbox.acknowledgeNoticesByKey(key).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
       }
+    },
+    // **切り替えたら Event Store に1件**（§2「Claude のアカウントを複数持つ」の 6.）。Thread が分かれば（本体の要求の印が
+    // その Project の Thread なら）その会話にも1行——画面だけの印で、AI の文脈には入れない。記録の失敗で推論は止めない
+    onAccountSwitched: (change) => {
+      const label = (id: string) => claudeAccounts.get(id)?.label ?? id;
+      console.log(`[host] Project ${change.projectId} の Claude のアカウントを ${label(change.from)} から ${label(change.to)} に切り替えました（${change.reason.kind}）`);
+      void projectThread.recordClaudeAccountSwitch(change).catch((err: unknown) => console.warn("[host] Claude のアカウントの切り替えを記録できませんでした:", err));
+    },
+    // **並びの全部が閾値を越えたら受信箱に1枚**（Project の並びごと。鍵に並びの中身）。どれかが下に戻ったら自動で閉じる
+    onAllOverThreshold: ({ key, projectId, order, using }) => {
+      const name = projectThread.getProject(projectId)?.name ?? projectId;
+      const labels = order.map((id) => claudeAccounts.get(id)?.label ?? id);
+      const th = claudeAccounts.thresholds();
+      void inbox
+        .raiseNotice({
+          dedupeKey: claudeAllOverCardKey(key),
+          title: `Project ${name} の Claude のアカウントが全部閾値を越えました`,
+          detail:
+            `並び（${labels.join("・")}）のどれも、使用率が閾値（5時間 ${Math.round(th.fiveHour * 100)}%・週 ${Math.round(th.sevenDay * 100)}%）を越えています。` +
+            `いちばん早くリセットされる ${claudeAccounts.get(using)?.label ?? using} で続けています。` +
+            "設定「Claude のアカウント」でアカウントを足すか、閾値を上げてください。どれかが閾値の下に戻れば、このカードは自動で閉じます",
+        })
+        .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
+    },
+    onBackUnderThreshold: (key) => {
+      void inbox.acknowledgeNoticesByKey(claudeAllOverCardKey(key)).catch((err: unknown) => console.warn("[host] お知らせを閉じられませんでした:", err));
     },
   });
   /**
