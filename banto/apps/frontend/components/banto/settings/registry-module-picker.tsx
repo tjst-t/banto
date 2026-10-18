@@ -21,7 +21,6 @@ import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/components/banto/shell/segmented-tabs";
 import {
   searchRealModuleRegistry,
-  type RealCuratedEntry,
   type RealRegistryAnswer,
   type RealRegistryEntry,
   type RealRegistryProvenance,
@@ -81,13 +80,6 @@ export interface RegistryModulePickerProps {
   existingNames: readonly string[];
   onChange(pick: RegistryPick | null): void;
   /**
-   * **banto が選んだ目録**（追加・2026-09-22）。渡されたときは検索欄を出さず、
-   * この並びだけを出す。**解決と入力欄と取得は、registry を探すときと同じ道**
-   * を通る（規則3——「目録から入れる」と「自分で探して入れる」で別々の経路を
-   * 作ると、片方だけ直る）。
-   */
-  pinned?: readonly RealCuratedEntry[];
-  /**
    * **その1件だけを扱う**（追加・2026-09-22、貼られた `server.json` 用）。
    * 渡されたときは探す面を出さず、**選んだ後の画面**（名前・要る設定・承知）
    * だけを出す——貼り付け専用の画面を別に作らない（規則3）。
@@ -98,7 +90,6 @@ export interface RegistryModulePickerProps {
 export function RegistryModulePicker({
   existingNames,
   onChange,
-  pinned,
   only,
 }: RegistryModulePickerProps) {
   const [query, setQuery] = useState("");
@@ -171,37 +162,6 @@ export function RegistryModulePicker({
     [onChange],
   );
 
-  /**
-   * **目録の1件を、registry から引き直して選ぶ**。
-   *
-   * 目録は「registry のどれか」しか持っていない（`curated.ts`——起動の指定を
-   * 写しで持つと、相手が版を上げたときに食い違う）。なのでここで引き直す。
-   */
-  const pickPinned = useCallback(
-    async (e: RealCuratedEntry) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await searchRealModuleRegistry(e.registryName);
-        const found = res.entries.find((x) => x.name === e.registryName);
-        if (!found) {
-          // **黙って諦めない**（規則2）——目録と registry が食い違ったら、そう言う
-          throw new Error(
-            `${e.label} が目録にある名前（${e.registryName}）で registry に見つかりませんでした。` +
-              "相手が公開をやめた可能性があります",
-          );
-        }
-        pick(found);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setLoading(false);
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- pick は描画ごとに作られるが中身は安定
-    [],
-  );
-
   function pick(entry: RealRegistryEntry) {
     setPicked(entry);
     // **名前を決めるのは host**（規則3——`suggestedName`）。`/` の後ろをそのまま
@@ -238,14 +198,7 @@ export function RegistryModulePicker({
 
   return (
     <div className="flex flex-col gap-3" data-testid="add-module-registry">
-      {only ? null : pinned ? (
-        <p className="text-xs text-ink-3">
-          <strong>banto が出所を確かめたもの</strong>——そのサービスのドメインの持ち主が
-          公開していることまで確認しています。
-          <strong className="text-foreground">中のコードは監査していません</strong>
-          （何をするかは提供元の責任です）。
-        </p>
-      ) : (
+      {only ? null : (
         <>
           <p className="text-xs text-ink-3">
             公開されている MCP サーバの目録（
@@ -282,26 +235,7 @@ export function RegistryModulePicker({
       ) : null}
 
       <div className={only ? "hidden" : "flex max-h-72 flex-col gap-1 overflow-y-auto"}>
-        {pinned ? (
-          pinned.map((e) => (
-            <button
-              key={e.id}
-              type="button"
-              data-testid={`add-module-curated-${e.id}`}
-              data-state={picked?.name === e.registryName ? "active" : "inactive"}
-              onClick={() => void pickPinned(e)}
-              className={
-                "flex flex-col items-start gap-0.5 rounded-md border p-2.5 text-left " +
-                (picked?.name === e.registryName ? "border-accent bg-accent-soft/40" : "border-border")
-              }
-            >
-              <span className="text-sm font-medium text-foreground">{e.label}</span>
-              <span className="text-xs text-ink-3">{e.description}</span>
-              {/* **なぜ載っているか**をそのまま出す（規則2——根拠を隠さない） */}
-              <span className="text-[10px] text-ink-3">{e.why}</span>
-            </button>
-          ))
-        ) : query.trim() === "" ? (
+        {query.trim() === "" ? (
           // **検索していないときに、それらしい一覧を出さない**（上の useEffect）
           <p
             className="rounded-md border border-dashed border-border p-4 text-center text-xs text-ink-3"

@@ -110,11 +110,13 @@ import {
   type AnsweredInput,
 } from "../modules/registry/to-declaration.js";
 import { modulePackageDirOf } from "../modules/registry/install/paths.js";
-import { CURATED_REGISTRY_CATALOG } from "../modules/registry/curated.js";
 import {
   ModuleDeclarationError,
   addModuleDeclaration,
   BUNDLED_CATALOG,
+  catalogInstalled,
+  catalogRequires,
+  installCatalogBulk,
   installFromCatalog,
   acknowledgeEgress,
   forgetEgress,
@@ -2101,6 +2103,7 @@ export function createApp(deps: AppDeps) {
       // **同梱の目録**（追加・2026-09-20、ユーザー決定）。既定には入れていない
       // が banto が同梱している実装——要る人が「Module を追加」から入れる。
       if (url.pathname === "/api/modules/catalog" && req.method === "GET") {
+        const installed = deps.runtimeConfig ? catalogInstalled(deps.runtimeConfig) : new Map<string, string[]>();
         json(
           res,
           200,
@@ -2112,15 +2115,31 @@ export function createApp(deps: AppDeps) {
             // 一覧の中身も出す——**何が増えるのかを、入れる前に言う**（規則13）
             satisfies: (e.meta as { satisfies?: string[] }).satisfies ?? [],
             scope: (e.meta as { scope?: string }).scope ?? "instance",
+            // **まとめて入れる**（追加・2026-10-18）：一緒に入っていないと動かない目録の Module・接続先ごとか・
+            // いま入れてある名前。どれも host が目録から決める（画面に依存を組み立てさせない）
+            requires: catalogRequires(e),
+            perConnection: e.perConnection === true,
+            installed: installed.get(e.id) ?? [],
           })),
         );
         return;
       }
-      // **banto が選んだ目録**（追加・2026-09-22、ユーザー決定）。
-      // registry をそのまま人に見せるのは伴走ではない（`curated.ts` の実測）。
-      // **持つのは「registry のどれか」だけ**——繋ぎ方は host が引き直す（規則3）
-      if (url.pathname === "/api/modules/curated" && req.method === "GET") {
-        json(res, 200, CURATED_REGISTRY_CATALOG);
+      // **目録から何本かをまとめて入れる**（追加・2026-10-18、ユーザー決定）。画面が送るのは目録の id だけ
+      // ——依存・名前・入れてあるかは host が決め、行ごとの結果を返す（`installCatalogBulk`）
+      if (url.pathname === "/api/modules/catalog/bulk" && req.method === "POST") {
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as { ids?: unknown };
+        if (!Array.isArray(body.ids) || body.ids.length === 0 || !body.ids.every((x) => typeof x === "string")) {
+          return json(res, 400, { error: "ids（目録の id の配列）が要ります" });
+        }
+        try {
+          json(res, 200, { results: await installCatalogBulk(deps.runtimeConfig, body.ids as string[]) });
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError || err instanceof ModuleMetaError) {
+            return json(res, 400, { error: err.message });
+          }
+          throw err;
+        }
         return;
       }
 

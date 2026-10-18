@@ -3959,8 +3959,9 @@ read model）が決まってから詰める。
 | 口 | 何をするか |
 |---|---|
 | `GET /api/modules` | banto 全体の一覧。**止めたものも残す**（消えたのか止めたのか区別が付くように・規則2）。`origin`・`scope`・`satisfies`・`dependsOn`・閉じ込め・立っているか・`removable` |
-| `GET /api/modules/catalog` | **公式だが既定には入れていない実装**の一覧（`BUNDLED_CATALOG`）。id・名前・説明・既定の名前・役割・立つ場所 |
+| `GET /api/modules/catalog` | **公式だが既定には入れていない実装**の一覧（`BUNDLED_CATALOG`）。id・名前・説明・既定の名前・役割・立つ場所・`requires`（一緒に入っていないと動かない目録の id。required の `dependsOn` のうち既定が名乗らない役割を、名乗る目録の1本に引き当てたもの）・`perConnection`（接続先ごとに名前を付けて1本ずつ入れるもの）・`installed`（目録と同じコードを指す、いま入れてある宣言の名前） |
 | `POST /api/modules/catalog/:id` | 目録から1本入れる。`{name}` だけを受ける——**宣言を組み立てるのは host** |
+| `POST /api/modules/catalog/bulk` | **目録から何本かをまとめて入れる**（追加・2026-10-18、ユーザー）。`{ids}` だけを受ける。要るもの（`requires`）を host が先に足し（その役割をもう名乗る宣言があれば足さない）、入れてあるものは入れ直さず（`already`）、名前は既定の名前（ぶつかれば `-2`…）。1本ずつ入れて行ごとの結果 `{id, name?, status: installed／already／failed, requiredBy?, error?}` を返す——途中で失敗してもほかは入り、要るものが入らなかったものは入れない。`perConnection`・`hidden`・知らない id は全体を断る |
 | `POST /api/modules` | 宣言を1本足す。同じ名前は使えない |
 | `PUT /api/modules/:name` | `{enabled}`。止めたらプロセスも落とす |
 | `DELETE /api/modules/:name` | **設定に書かれた宣言を消す**。既定はコードにあるので消すものが無い（`removable: false`。無効にはできる）。**データは消さない**——その Module のデータ置き場も、Vault に置いた秘密も。まとめて消すのは別の操作（取り返しがつかないので別の確認を挟む） |
@@ -4022,7 +4023,8 @@ read model）が決まってから詰める。
 常に1本出るうえ、**要る人は1本しか持てない**（接続先ごとに1本要るのに、既定は
 コードにあるので増やせない）。
 
-**要る人が「Module を追加」から、好きな名前で何本でも入れる。** 置き場は
+**要る人が「Module を追加」から、好きな名前で何本でも入れる。**（`perConnection`。まとめて入れる対象にはせず、画面は
+1本ずつ名前を聞いて入れる——2026-10-18）置き場は
 `${moduleDataDir}` で名前ごとに分かれるので、何本入れても混ざらない。
 
 **画面に役割を組み立てさせない。** `satisfies` を入力できる欄を画面に作ると、

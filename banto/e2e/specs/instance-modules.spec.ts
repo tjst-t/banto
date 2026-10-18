@@ -197,7 +197,7 @@ test("外から足した Module を止めても、消えずに一覧へ残り、
 // ——宣言を組み立てるのは host で、画面が送るのは目録の id と名前だけ。
 // ここを人が打てるようにすると、**貼り付けた JSON が金庫の窓口を名乗る経路**が
 // 画面から復活する。
-test("「Module を追加」の公式モジュールのタブから、同じものを何本でも入れられる", async ({ page }) => {
+test("「Module を追加」の banto の Module のタブから、接続先ごとのものは同じものを何本でも入れられる", async ({ page }) => {
   await openModuleSettings(page);
 
   // **既定に入っていないこと**は core の単体試験が見ている（既定は4本）。
@@ -208,7 +208,8 @@ test("「Module を追加」の公式モジュールのタブから、同じも�
     await page.getByRole("button", { name: "Module を追加" }).click();
     // **開いたときの既定が公式モジュールのタブ**（いちばん楽な道を安全なほうに置く）
     await expect(page.getByTestId("add-module-bundled")).toBeVisible({ timeout: 10_000 });
-    await page.getByTestId("add-module-bundled-vault-infisical").click();
+    // **接続先ごとに入れるものは、まとめて入れる対象ではなく1本ずつ名前を付けて入れる**（改訂・2026-10-18）
+    await page.getByTestId("add-module-bundled-vault-infisical-add").click();
     // **名前は埋まって出る**（人が考えなくてよい）。**同じ名前は勧めない**
     const nameField = page.getByLabel("名前", { exact: true });
     const suggested = await nameField.inputValue();
@@ -218,9 +219,12 @@ test("「Module を追加」の公式モジュールのタブから、同じも�
       `もう在る名前を勧めている: ${suggested}`,
     ).toHaveCount(0);
     // **役割も起動の指定も聞かれない**（聞かれていたら、この形が崩れている）
-    await expect(page.getByLabel("コマンド")).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "コマンド" })).toHaveCount(0);
     await nameField.fill(name);
-    await page.getByRole("button", { name: "追加", exact: true }).click();
+    await page.getByTestId("add-module-bundled-vault-infisical-submit").click();
+    // 入れたら「入れてあります」にその名前が出る（ダイアログは開いたまま）
+    await expect(page.getByTestId("add-module-bundled-vault-infisical")).toContainText(name, { timeout: 30_000 });
+    await page.keyboard.press("Escape");
     await expect(page.locator(`[data-module="${name}"]`)).toBeVisible({ timeout: 30_000 });
   };
 
@@ -266,6 +270,50 @@ test("「Module を追加」の公式モジュールのタブから、同じも�
 });
 
 // **既定には削除が出ない**——消せないのではなく、設定に消すものが無い
+// **banto の Module をまとめて入れる**（決定・2026-10-18、ユーザー「Module をまとめて入れる」）。
+// 選んだものに要る目録の Module は「〜に要るので一緒に入れます」で付き、入れる口（host）も同じものを足す。
+// 入れてあるものは薄くチェック済みで外せない
+test("banto の Module はチェックしてまとめて入れられ、要るものは一緒に付く", async ({ page }) => {
+  await openModuleSettings(page);
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await expect(page.getByTestId("add-module-tabs-recommended"), "タブ名が違う").toHaveText("banto の Module");
+  const factory = page.getByTestId("add-module-bundled-factory");
+  const backlog = page.getByTestId("add-module-bundled-backlog");
+  await expect(factory).toBeVisible({ timeout: 30_000 });
+  // **外部の MCP（Stripe など）は出ない**
+  await expect(page.getByTestId("add-module-bundled")).not.toContainText("Stripe");
+
+  await factory.click();
+  await expect(backlog, "Factory に要る Backlog が付いていない").toContainText("Factory に要るので一緒に入れます");
+  await expect(backlog.locator('input[type="checkbox"]')).toBeChecked();
+  await expect(backlog.locator('input[type="checkbox"]'), "要るものを外せてしまう").toBeDisabled();
+  await expect(page.getByTestId("add-module-bundled-summary")).toHaveText("2 本を入れます：Backlog、Factory");
+
+  await page.getByTestId("add-module-bundled-install").click();
+  await expect(page.getByTestId("add-module-bundled-result")).toContainText("2 本を入れました", { timeout: 60_000 });
+
+  // **画面の言い分ではなく host に聞く**（規則1）
+  const list = (await (
+    await page.request.get(`${CORE_BASE_URL}/api/modules`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })
+  ).json()) as Array<{ name: string; satisfies: string[] }>;
+  for (const [name, role] of [["backlog", "backlog"], ["factory", "factory"]] as const) {
+    expect(list.find((m) => m.name === name)?.satisfies, `${name} が host に入っていない`).toEqual([role]);
+  }
+
+  // 開き直すと、入れたものは「入れてあります」で外せない
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Module を追加" }).click();
+  await expect(factory).toHaveAttribute("data-state", "installed", { timeout: 30_000 });
+  await expect(factory).toContainText("入れてあります");
+  await expect(factory.locator('input[type="checkbox"]')).toBeDisabled();
+  // 「まだ入れていないものを全部」は入れてあるものを数えない
+  const all = page.getByTestId("add-module-bundled-all");
+  await expect(all).not.toContainText("Factory");
+  await all.click();
+  await expect(page.getByTestId("add-module-bundled-summary")).not.toContainText("Factory");
+  await page.keyboard.press("Escape");
+});
+
 test("既定の行の「…」には削除が出ない", async ({ page }) => {
   await openModuleSettings(page);
   await page.getByTestId("module-menu-vault-local").click();

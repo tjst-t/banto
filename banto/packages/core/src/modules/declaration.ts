@@ -405,6 +405,11 @@ export interface BundledCatalogEntry {
   meta: unknown;
   /** 画面の目録に出さない（試験のための同梱 Module。入れる口・同梱の判定はほかと同じ） */
   hidden?: true;
+  /**
+   * **接続先ごとに名前を付けて何本でも入れるもの**（追加・2026-10-18、ユーザー決定）。入れたあと設定で接続先を入れる
+   * ——まとめて入れる（`installCatalogBulk`）の対象にしない。画面は1本ずつ名前を聞いて入れる
+   */
+  perConnection?: true;
 }
 
 export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
@@ -414,6 +419,7 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
     description:
       "Infisical に秘密を預ける Vault。接続先ごとに1本入れます（自前ホストと Cloud を並べる、など）",
     suggestedName: "vault-infisical",
+    perConnection: true,
 
     // **vault 役割の2本目**（Infisical、2026-09-12）。役割は同じ `vault` で、
     // 違うのは「秘密をどこに置くか」と「メタデータをどこに置くか」だけ
@@ -1639,6 +1645,138 @@ export async function installFromCatalog(
   const entry = BUNDLED_CATALOG.find((e) => e.id === id);
   if (!entry) throw new ModuleDeclarationError(`知らない同梱 Module です: ${id}`);
   await addModuleDeclaration(config, { name, launch: entry.launch, meta: entry.meta });
+}
+
+/** 宣言の launch が目録のどの1本のコードか（command と args が一致。`refreshFromCatalog` と同じ見分け方） */
+function catalogEntryForLaunch(launch: ModuleLaunch): BundledCatalogEntry | undefined {
+  if (isRemoteLaunch(launch)) return undefined;
+  return BUNDLED_CATALOG.find(
+    (e) =>
+      !isRemoteLaunch(e.launch) &&
+      e.launch.command === launch.command &&
+      e.launch.args.length === launch.args.length &&
+      e.launch.args.every((a, i) => a === launch.args[i]),
+  );
+}
+
+/**
+ * **目録の1本が「一緒に入っていないと動かない」目録の Module**（追加・2026-10-18、ユーザー決定「Module をまとめて入れる」）。
+ *
+ * `dependsOn` の required の役割ごとに、**既定（`DEFAULT_MODULE_DECLARATIONS`）が名乗っていない**ものだけを、その役割を
+ * 名乗る目録の1本（画面に出す・接続先ごとでない）に引き当てる。いま入れてあるかは見ない（静的な関係）——入れてあるかは
+ * 呼ぶ側が `catalogInstalled` で見る
+ */
+export function catalogRequires(entry: BundledCatalogEntry): string[] {
+  const deps = ((entry.meta as { dependsOn?: Array<{ role: string; required?: boolean }> }).dependsOn ?? []).filter(
+    (d) => d.required,
+  );
+  const out: string[] = [];
+  for (const d of deps) {
+    const byDefault = DEFAULT_MODULE_DECLARATIONS.some((def) =>
+      ((def.meta as { satisfies?: string[] }).satisfies ?? []).includes(d.role),
+    );
+    if (byDefault) continue;
+    const provider = BUNDLED_CATALOG.find(
+      (e) =>
+        e.id !== entry.id &&
+        !e.hidden &&
+        !e.perConnection &&
+        ((e.meta as { satisfies?: string[] }).satisfies ?? []).includes(d.role),
+    );
+    if (provider && !out.includes(provider.id)) out.push(provider.id);
+  }
+  return out;
+}
+
+/** **目録の1本ごとに、いま入れてある宣言の名前**（有効・無効を問わない。目録と同じコードを指す宣言） */
+export function catalogInstalled(config: RuntimeConfigStore): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const m of listInstanceModules(config)) {
+    const entry = catalogEntryForLaunch(m.launch);
+    if (!entry) continue;
+    out.set(entry.id, [...(out.get(entry.id) ?? []), m.name]);
+  }
+  return out;
+}
+
+export interface CatalogBulkResult {
+  id: string;
+  /** 入れた名前（入れたとき） */
+  name?: string;
+  status: "installed" | "already" | "failed";
+  /** 人が選んだのではなく、選んだものに要るので足したとき、それを要った目録の id */
+  requiredBy?: string[];
+  error?: string;
+}
+
+/**
+ * **目録から何本かをまとめて入れる**（追加・2026-10-18、ユーザー決定）。
+ *
+ * - **依存は host が決める**：選んだものの `catalogRequires` を辿り、入っていないものを先に足す（画面の言い分は使わない）。
+ *   依存の役割をもう名乗っている宣言があれば足さない
+ * - **入れてあるものは入れ直さない**（`already`）。名前は目録の既定の名前で、ぶつかれば `-2`…
+ * - **1本ずつ入れて、行ごとに結果を返す**——途中で失敗しても、ほかは入る。要るものが入らなかったものは入れない
+ * - 画面に出さないもの（`hidden`）と接続先ごとのもの（`perConnection`）は断る（1本ずつの口で入れる）
+ */
+export async function installCatalogBulk(config: RuntimeConfigStore, ids: readonly string[]): Promise<CatalogBulkResult[]> {
+  for (const id of ids) {
+    const e = BUNDLED_CATALOG.find((x) => x.id === id);
+    if (!e || e.hidden) throw new ModuleDeclarationError(`知らない同梱 Module です: ${id}`);
+    if (e.perConnection) {
+      throw new ModuleDeclarationError(`${e.name} は接続先ごとに名前を付けて1本ずつ入れます（まとめて入れる対象ではありません）`);
+    }
+  }
+  const installed = catalogInstalled(config);
+  const satisfiedRoles = new Set(listInstanceModules(config).flatMap((m) => m.satisfies));
+  // 依存を先に並べる（深さ優先）。required-by は「人が選んでいない」ものにだけ付ける
+  const order: string[] = [];
+  const requiredBy = new Map<string, string[]>();
+  const chosen = new Set(ids);
+  const visit = (id: string, from?: string, seen = new Set<string>()) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const e = BUNDLED_CATALOG.find((x) => x.id === id)!;
+    for (const dep of catalogRequires(e)) {
+      const depEntry = BUNDLED_CATALOG.find((x) => x.id === dep)!;
+      const roles = (depEntry.meta as { satisfies?: string[] }).satisfies ?? [];
+      if (installed.has(dep) || (!chosen.has(dep) && roles.some((r) => satisfiedRoles.has(r)))) continue;
+      visit(dep, id, seen);
+    }
+    if (from && !chosen.has(id)) requiredBy.set(id, [...(requiredBy.get(id) ?? []), from]);
+    if (!order.includes(id)) order.push(id);
+  };
+  for (const id of ids) visit(id);
+
+  const results: CatalogBulkResult[] = [];
+  const failed = new Set<string>();
+  for (const id of order) {
+    const e = BUNDLED_CATALOG.find((x) => x.id === id)!;
+    const by = requiredBy.get(id);
+    const base = { id, ...(by ? { requiredBy: by } : {}) };
+    const existing = installed.get(id);
+    if (existing) {
+      results.push({ ...base, name: existing[0], status: "already" });
+      continue;
+    }
+    const missing = catalogRequires(e).filter((d) => failed.has(d));
+    if (missing.length > 0) {
+      failed.add(id);
+      const names = missing.map((d) => BUNDLED_CATALOG.find((x) => x.id === d)?.name ?? d).join("・");
+      results.push({ ...base, status: "failed", error: `要る ${names} を入れられなかったので入れていません` });
+      continue;
+    }
+    const taken = new Set(listInstanceModules(config).map((m) => m.name));
+    let name = e.suggestedName;
+    for (let i = 2; taken.has(name); i += 1) name = `${e.suggestedName}-${i}`;
+    try {
+      await installFromCatalog(config, id, name);
+      results.push({ ...base, name, status: "installed" });
+    } catch (err) {
+      failed.add(id);
+      results.push({ ...base, status: "failed", error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return results;
 }
 
 /**

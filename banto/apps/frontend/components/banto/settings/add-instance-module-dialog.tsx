@@ -8,9 +8,9 @@
 //
 // 手で書く欄も残すが、**二番手**にする。
 //
-// **いちばん上は「banto 同梱」**（追加・2026-09-20、ユーザー決定）。`vault-infisical`
-// のように **banto のコードだが誰もが使うわけではない**ものは、既定に入れずここに
-// 置く。要る人が、好きな名前で何本でも入れる（接続先ごとに1本）。
+// **いちばん上は「banto の Module」**（追加・2026-09-20、改訂・2026-10-18 ユーザー決定）。banto のコードだが誰もが
+// 使うわけではないもの（目録 `BUNDLED_CATALOG`）を、チェックで選んで**まとめて入れる**（`bundled-modules-section`）。
+// 外部の MCP の目録（Stripe など）は 2026-10-18 に外した——外部の MCP は「カスタム」の「MCP Registry を探す」から。
 // **宣言を組み立てるのは host**——画面は目録の id と名前しか送らない。役割を
 // 画面に組み立てさせると、貼り付けた JSON が金庫の窓口を名乗る経路が復活する。
 //
@@ -34,16 +34,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PillTabs, SegmentedTabs } from "@/components/banto/shell/segmented-tabs";
 import {
-  installRealModuleFromCatalog,
-  listRealModuleCatalog,
   installRealModuleFromRegistry,
   installRealModuleFromServerJson,
   inspectRealServerJson,
-  listRealCuratedModules,
-  type RealCatalogEntry,
-  type RealCuratedEntry,
   type RealRegistryEntry,
 } from "@/lib/backend/client";
+import { BundledModulesSection } from "@/components/banto/settings/bundled-modules-section";
 import {
   RegistryModulePicker,
   type RegistryPick,
@@ -136,10 +132,10 @@ export function AddInstanceModuleDialog({
   existingNames,
   onInstalled,
 }: AddInstanceModuleDialogProps) {
-  // **外のタブは2つ**——「おすすめ」と「カスタム」。
+  // **外のタブは2つ**——「banto の Module」と「カスタム」（改訂・2026-10-18、ユーザー）。
   //
-  // おすすめ ＝ **banto が出所を確かめたもの**（同梱のコード＋目録、`curated.ts`）。
-  // カスタム ＝ **自分で足す道**（JSON を貼る／手で書く／MCP Registry を探す）。
+  // banto の Module ＝ **banto に入っているコード**（同梱の目録）。まとめて入れる。
+  // カスタム ＝ **自分で足す道**（JSON を貼る／手で書く／MCP Registry を探す）。外部の MCP はここから。
   //
   // **MCP Registry は「カスタム」の中に置く**（決定・2026-09-22、ユーザー
   // 「あまりに玉石混交すぎて、そのままユーザに提示はつらい」）。一時は同じ高さに
@@ -168,12 +164,6 @@ export function AddInstanceModuleDialog({
   const [fromVault, setFromVault] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // **同梱の目録**（既定には入れていないが banto が持っている実装）
-  const [catalog, setCatalog] = useState<RealCatalogEntry[] | null>(null);
-  const [picked, setPicked] = useState<string | null>(null);
-  const [catalogName, setCatalogName] = useState("");
-  // **banto が選んだ目録**（第三者だが、出所を確かめたもの）
-  const [curated, setCurated] = useState<RealCuratedEntry[] | null>(null);
   /**
    * **貼られたものが `server.json` だったとき**（追加・2026-09-22、ユーザー要望）。
    * 読むのは host（`/api/modules/registry/inspect`）——画面は返ってきた1件を
@@ -181,26 +171,6 @@ export function AddInstanceModuleDialog({
    */
   const [pastedEntry, setPastedEntry] = useState<RealRegistryEntry | null>(null);
   const [pastedError, setPastedError] = useState<string | null>(null);
-
-  // **開いたときに読む**（閉じている間は聞かない）
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    listRealCuratedModules()
-      .then((list) => !cancelled && setCurated(list))
-      .catch(() => !cancelled && setCurated([]));
-    listRealModuleCatalog()
-      .then((list) => !cancelled && setCatalog(list))
-      // **読めなかったことを「無い」と混同しない**（規則2）
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setCatalog([]);
-        setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   /**
    * **貼られたものが `server.json` の形か**（`mcpServers` ではないか）。
@@ -289,8 +259,6 @@ export function AddInstanceModuleDialog({
     setError(null);
     setMode("recommended");
     setCustomMode("json");
-    setPicked(null);
-    setCatalogName("");
     setRegistryPick(null);
     setPastedEntry(null);
     setPastedError(null);
@@ -298,9 +266,7 @@ export function AddInstanceModuleDialog({
 
   const canSubmit =
     (mode === "recommended"
-      ? // 同梱を選んでいれば名前が要る。目録を選んでいれば registry と同じ判定
-        (picked !== null && catalogName.trim().length > 0) ||
-        (registryPick !== null && registryPick.ready)
+      ? false // 「banto の Module」は自分の口で入れる（`BundledModulesSection`）
       : customMode === "registry"
       ? registryPick !== null && registryPick.ready
       : customMode === "json"
@@ -334,84 +300,18 @@ export function AddInstanceModuleDialog({
           value={mode}
           onChange={(id) => setMode(id as typeof mode)}
           tabs={[
-            {
-              id: "recommended",
-              label: "おすすめ",
-              count: (catalog?.length ?? 0) + (curated?.length ?? 0),
-            },
+            { id: "recommended", label: "banto の Module" },
             { id: "custom", label: "カスタム" },
           ]}
         />
 
-        {mode === "recommended" && curated && curated.length > 0 ? (
-          <div className="flex flex-col gap-2" data-testid="add-module-curated">
-            <p className="text-xs font-medium text-foreground">よく使うサービス</p>
-            <RegistryModulePicker
-              existingNames={existingNames}
-              onChange={setRegistryPick}
-              pinned={curated}
-            />
-          </div>
-        ) : null}
-
         {mode === "recommended" ? (
-          <div className="flex flex-col gap-3" data-testid="add-module-bundled">
-            <p className="text-xs font-medium text-foreground">banto 同梱</p>
-            <p className="text-xs text-ink-3">
-              banto 自身のコードのうち、<strong>最初から入っていないもの</strong>。
-              接続先ごとに1本入れます——同じものを何本入れても構いません。
-            </p>
-            {catalog === null ? (
-              <p className="text-xs text-ink-3">読み込み中…</p>
-            ) : catalog.length === 0 ? (
-              <p className="rounded-md border border-dashed border-border p-4 text-center text-xs text-ink-3">
-                入れられる同梱 Module はありません
-              </p>
-            ) : (
-              <div className="flex flex-col gap-1">
-                {catalog.map((e) => (
-                  <button
-                    key={e.id}
-                    type="button"
-                    data-testid={`add-module-bundled-${e.id}`}
-                    data-state={picked === e.id ? "active" : "inactive"}
-                    onClick={() => {
-                      setPicked(e.id);
-                      // **同じ名前が在れば、番号を足して出す**（人が考えなくてよい）
-                      const taken = new Set(existingNames);
-                      let next = e.suggestedName;
-                      for (let i = 2; taken.has(next); i += 1) next = `${e.suggestedName}-${i}`;
-                      setCatalogName(next);
-                    }}
-                    className={
-                      "flex flex-col items-start gap-0.5 rounded-md border p-2.5 text-left " +
-                      (picked === e.id ? "border-accent bg-accent-soft/40" : "border-border")
-                    }
-                  >
-                    <span className="text-sm font-medium text-foreground">{e.name}</span>
-                    <span className="text-xs text-ink-3">{e.description}</span>
-                    <span className="text-xs text-ink-3">
-                      役割：{e.satisfies.join("・") || "—"}・
-                      {e.scope === "instance" ? "banto 全体で1本" : "Project ごとに1本"}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {picked ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="add-module-bundled-name">名前</Label>
-                <Input
-                  id="add-module-bundled-name"
-                  value={catalogName}
-                  onChange={(e) => setCatalogName(e.target.value)}
-                />
-                <p className="text-xs text-ink-3">
-                  設定画面と置き場は、この名前ごとに分かれます
-                </p>
-              </div>
-            ) : null}
-          </div>
+          <BundledModulesSection
+            open={open}
+            existingNames={existingNames}
+            onInstalled={onInstalled}
+            onClose={() => onOpenChange(false)}
+          />
         ) : null}
 
         {mode === "custom" ? (
@@ -663,6 +563,7 @@ export function AddInstanceModuleDialog({
           </p>
         ) : null}
 
+        {mode === "recommended" ? null : (
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             キャンセル
@@ -674,7 +575,7 @@ export function AddInstanceModuleDialog({
               setBusy(true);
               setError(null);
               try {
-                if (registryPick && (mode === "custom" ? customMode === "registry" : picked === null)) {
+                if (registryPick && customMode === "registry") {
                   // **画面は「どれか・名前・値」しか送らない**——起動の指定は
                   // host が `server.json` を引き直して作る（`v4-security.md`）
                   await installRealModuleFromRegistry(
@@ -682,9 +583,6 @@ export function AddInstanceModuleDialog({
                     registryPick!.name,
                     registryPick!.answers,
                   );
-                  await onInstalled();
-                } else if (mode === "recommended") {
-                  await installRealModuleFromCatalog(picked!, catalogName.trim());
                   await onInstalled();
                 } else if (customMode === "json" && pastedEntry) {
                   // **貼られた `server.json`**——宣言を組み立てるのは host
@@ -739,6 +637,7 @@ export function AddInstanceModuleDialog({
             追加
           </Button>
         </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );
