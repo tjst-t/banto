@@ -9349,6 +9349,29 @@
       "updatedAt": "2026-10-18T00:59:19.261Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "browser-listnetwork-url-ai",
+      "number": 388,
+      "kind": "bug",
+      "title": "Browser の listNetwork の出力が長い URL で大きくなりすぎ、AI に返せない",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "browser"
+      ],
+      "body": "## 起きたこと\n2026-10-17、Google 検索のタブの通信を見るため、AI が listNetwork を `urlContains: \"google\"`・`limit: 200` で呼んだ（種類 type では絞らなかった）。結果は 203 行・154,064 字になり、tool の結果の上限を超えた。本文はファイルに逃がされ、AI は読み直す羽目になった。\n\n## 原因\n1 件 1 行の形で、URL を全部そのまま出している。Google の `/xjs/_/ss/k=…/am=…/m=…`、`/async/hpba?…`、`/search?…&gs_lp=…` は、1 本で 1,000〜3,000 字ある。\n- 既定の件数 50（`limit` を省いたとき。tools.ts の NETWORK_QUERY）でも、こういうページなら 1 行平均 1,500 字×50 ≒ 7.5 万字になる見込み（測っていない）。\n- 今回は AI が limit を 200 にしたので、余計に膨らんだ。\n\n## 直し方の案\n1. **一覧では URL を切る**：たとえば頭 200 字＋「…（全 N 字）」。全部の URL は getNetworkRequest で見られる。クエリ文字列を `?…(12 個)` に畳む形もある。\n2. **出力全体に上限を設ける**：たとえば 3 万字を超えたら、そこで打ち切って「残り n 件。since か type で絞ってください」と書く。新しい順なので、切れるのは古い側。\n3. **既定の件数を下げる**：50 → 20 程度。あわせて limit の最大 500 も見直す。\n4. 道具の説明に「まず type（document・xhr・fetch）で絞る」と書く。\n\n1 と 2 があれば、3 は無くても溢れない。1 と 2 を本命にする。\n\n## 確かめ方\n長い URL を 200 本出す試験用のページ（test-page）で listNetwork を `limit: 500` で呼んでも、出力が上限（例 3 万字）を超えないこと。切った行に、全体の長さと getNetworkRequest への案内が出ること。",
+      "doneWhen": "長い URL（1 本 2,000 字）の通信が 200 件ある状態で listNetwork を limit 500 で呼んでも、出力が決めた上限（例 3 万字）以下で返り、切った URL と打ち切った件数がその旨とともに示される（単体テストで確かめる）",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-18T01:24:11.217Z",
+      "updatedAt": "2026-10-18T01:24:11.217Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
