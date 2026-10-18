@@ -77,7 +77,7 @@ export function describeMemoryRevision(
  * その間に人が取り消していた行は飛ばして結果に書く
  */
 export async function reviseMemory(
-  deps: { store: ProjectThreadStore; ask: AskInThreadDeps },
+  deps: { store: ProjectThreadStore; ask: AskInThreadDeps; autoApprove?: () => boolean },
   input: { projectId: string; threadId: string; reason: string; changes: MemoryChangeRequest[]; signal?: AbortSignal },
 ): Promise<{ ok: boolean; text: string }> {
   const memory = deps.store.getProject(input.projectId)?.memory ?? [];
@@ -97,6 +97,9 @@ export async function reviseMemory(
     choices: MEMORY_REVISE_CHOICES,
     signal: input.signal,
     logTag: "memory",
+    // 「承認をすべて自動で許可する」がオンなら聞かずに通す（改訂・2026-10-18、ユーザー。v4-frontend.md §6.4）。引くのは
+    // 頼まれたその時——保存した時点で走っているターンにも効く
+    autoApprove: deps.autoApprove?.() === true,
   });
   if (!answer.allowed) return { ok: false, text: `人が変えないと答えたので、Memory は変えていません。${answer.note}` };
 
@@ -125,6 +128,8 @@ export function createMemoryMcpServer(
   threadId: string,
   /** 人に聞く口。無ければ revise_memory は断る（試験の構成） */
   ask?: AskInThreadDeps,
+  /** 「承認をすべて自動で許可する」がオンか（その時点の設定を引く）。オンなら revise_memory は聞かずに通す */
+  autoApprove?: () => boolean,
 ) {
   return createSdkMcpServer({
     name: "banto-memory",
@@ -148,8 +153,8 @@ export function createMemoryMcpServer(
         REVISE_MEMORY_TOOL_NAME,
         "この Project の Memory の行を取り消す・改める（置き換える）。行は Memory の [#番号] で指す。1回の呼び出しに複数の変更を" +
           "まとめられる：changes の1件ごとに retract の行々を取り消し、text があればその代わりに新しい行を1つ足す（複数の行を" +
-          "まとめて1行に改めることもできる）。足すだけなら remember_decision。会話のカードで人に必ず聞き、許されたときだけ変わる" +
-          "（全部か何もしないか）。",
+          "まとめて1行に改めることもできる）。足すだけなら remember_decision。会話のカードで人に聞き、許されたときだけ変わる" +
+          "（全部か何もしないか）。Project の「承認をすべて自動で許可する」がオンなら聞かずに変わる。",
         {
           reason: z.string().describe("なぜ変えるか（人がカードで読む。取り消しの記録にも残る）"),
           changes: z
@@ -165,7 +170,7 @@ export function createMemoryMcpServer(
           if (!ask) return { content: [{ type: "text", text: "この banto では Memory を取り消す口がつながっていません。" }], isError: true };
           const signal = (extra as { signal?: AbortSignal } | undefined)?.signal;
           const result = await reviseMemory(
-            { store, ask },
+            { store, ask, ...(autoApprove ? { autoApprove } : {}) },
             { projectId, threadId, reason, changes: changes.map((c) => ({ retract: c.retract, ...(c.text !== undefined ? { text: c.text } : {}) })), ...(signal ? { signal } : {}) },
           );
           return { content: [{ type: "text", text: result.text }], ...(result.ok ? {} : { isError: true }) };

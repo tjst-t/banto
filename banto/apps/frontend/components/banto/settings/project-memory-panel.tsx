@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { isImeComposing } from "@/lib/ime";
 import { appendRealMemory, invalidateRealMemory, listRealMemory, type RealProjectMemory } from "@/lib/backend/client";
-import { cn } from "@/lib/utils";
 
 export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
   const [memory, setMemory] = useState<RealProjectMemory[] | null>(null);
@@ -60,7 +59,7 @@ export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div>
+    <div data-testid="project-memory-panel">
       <h1 className="mb-0.5 flex items-center gap-2 text-lg font-semibold text-foreground">
         <BookMarked className="size-4 text-ink-3" />
         Memory
@@ -101,30 +100,20 @@ export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
               key={m.seq}
               className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1.5"
             >
-              {/* 番号は AI が revise_memory で行を指すのと同じもの（アーキ §2.2、2026-10-15） */}
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className={cn("text-xs text-ink-2", m.invalidated && "text-ink-3 line-through")}>
-                  <span className="mr-1.5 font-mono text-ink-3 no-underline">#{m.seq}</span>
-                  {m.text}
-                </span>
-                {m.invalidated && (m.invalidatedReason || m.replacedBy !== undefined) ? (
-                  <span className="text-xs text-ink-3">
-                    {m.replacedBy !== undefined ? `#${m.replacedBy} に改めました` : "取り消しました"}
-                    {m.invalidatedReason ? `（${m.invalidatedReason}）` : ""}
-                  </span>
-                ) : null}
+              {/* 番号は AI が revise_memory で行を指すのと同じもの（アーキ §2.2、2026-10-15）。取り消した行は host が返さない（2026-10-18） */}
+              <span className="min-w-0 text-xs text-ink-2">
+                <span className="mr-1.5 font-mono text-ink-3">#{m.seq}</span>
+                {m.text}
               </span>
-              {!m.invalidated ? (
-                <button
-                  type="button"
-                  onClick={() => handleInvalidate(m.seq)}
-                  disabled={busy}
-                  className="shrink-0 rounded p-1 text-ink-3 hover:bg-accent hover:text-destructive"
-                  aria-label="この決定事項を取り消す"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              ) : null}
+              <button
+                type="button"
+                onClick={() => handleInvalidate(m.seq)}
+                disabled={busy}
+                className="shrink-0 rounded p-1 text-ink-3 hover:bg-accent hover:text-destructive"
+                aria-label="この決定事項を取り消す"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
             </li>
           ))}
         </ul>

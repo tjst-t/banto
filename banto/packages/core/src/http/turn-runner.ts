@@ -305,8 +305,8 @@ async function* runThreadTurnInner(
     /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
     automationTools?: AutomationTools;
     /**
-     * **Memory を取り消す・改めるときに人に聞く口**（追加・2026-10-15、§2.2）。承認モードにも自動許可にも依らず会話の
-     * カードで聞く。渡されなければ `revise_memory` は断る
+     * **Memory を取り消す・改めるときに人に聞く口**（追加・2026-10-15、§2.2）。承認モードに依らず会話のカードで聞く
+     * （「承認をすべて自動で許可する」がオンなら聞かずに通す、改訂・2026-10-18）。渡されなければ `revise_memory` は断る
      */
     memoryAsk?: AskInThreadDeps;
     /**
@@ -487,7 +487,13 @@ async function* runThreadTurnInner(
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
-  mcpServers["banto-memory"] = createMemoryMcpServer(deps.projectThread, thread.projectId, input.threadId, deps.memoryAsk);
+  mcpServers["banto-memory"] = createMemoryMcpServer(
+    deps.projectThread,
+    thread.projectId,
+    input.threadId,
+    deps.memoryAsk,
+    deps.autoApproveAll ? () => deps.autoApproveAll?.(thread.projectId, input.threadId) === true : undefined,
+  );
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
@@ -611,7 +617,7 @@ async function* runThreadTurnInner(
       allowedTools: [
         `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
         ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
-        // Memory を取り消す・改めるも tool の中で必ず人に聞く（2回聞かない。§2.2）
+        // Memory を取り消す・改めるも tool の中で人に聞く（自動許可がオンなら tool の中で通す。2回聞かない。§2.2）
         `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
         // 判断役の答えは聞かずに通す——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事（§4.3「守り」）
         `mcp__banto-thread__${ANSWER_DECISION_TOOL_NAME}`,

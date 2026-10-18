@@ -20,7 +20,7 @@ const PROJECT_NAME = "E2E Global Memory Mid Thread";
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
 
-test("Global Memoryに人が足す→出る→取り消す→取り消し線になる", async ({ page }) => {
+test("Global Memoryに人が足す→出る→取り消す→一覧から消える", async ({ page }) => {
   await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);
 
   // 繋がっているセクションだけがnavに出る
@@ -39,16 +39,15 @@ test("Global Memoryに人が足す→出る→取り消す→取り消し線に�
 
   const row = page.getByText("呼び方は「たくみ」");
   await expect(row).toBeVisible({ timeout: 10_000 });
-  await expect(row).not.toHaveClass(/line-through/);
 
   await page.getByRole("button", { name: "この記憶を取り消す" }).click();
-  await expect(row).toHaveClass(/line-through/, { timeout: 10_000 });
-  // 取り消し済みは無効化のまま一覧に残る（物理削除ではない、規則3）
-  await expect(page.getByRole("button", { name: "この記憶を取り消す" })).not.toBeVisible();
+  // 取り消した行は一覧に出さない（記録には残る。改訂・2026-10-18、アーキ §2.2）
+  await expect(row).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.getByText("まだ無い")).toBeVisible();
 });
 
 // **日本語入力の「変換確定」の Enter で足さない**（`memory-input-ime-enter`、2026-09-10）。
-// Memory は追記オンリー（取り消し線でしか消せない）ので、まだ書き終えていない文が
+// Memory は追記オンリー（取り消しても記録には残る）ので、まだ書き終えていない文が
 // 入ると実害が残る。**変換中の Enter は「候補で確定する」という意味**でしかない。
 test("変換確定の Enter では足さない——確定した後の Enter でだけ足す", async ({ page }) => {
   await page.goto(`/settings?bantoHost=${CORE_BROWSER_URL}`);

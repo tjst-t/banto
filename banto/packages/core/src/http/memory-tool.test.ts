@@ -148,3 +148,40 @@ test("止められたターンでは聞かずに断る", async () => {
     assert.ok(store.getProject(projectId)!.memory.every((m) => m.invalidatedAtSeq === undefined));
   });
 });
+
+// **「承認をすべて自動で許可する」がオンなら聞かずに通す**（改訂・2026-10-18、ユーザー。v4-frontend.md §6.4）。判断待ちは出し、
+// host が「自動で許可しました」と答えて決着させる（会話には答え済みのカードが残る）
+test("自動で許可がオンなら聞かずに変え、カードは答え済みで残す", async () => {
+  await withSetup(async ({ store, inbox, pending, projectId, threadId, seqs, published }) => {
+    const answered: { id: string; answer: string }[] = [];
+    const result = await reviseMemory(
+      {
+        store,
+        ask: { inbox, pendingApprovals: pending, publishJudgment: (_t, j) => published.push(j), publishAnswered: (_t, a) => answered.push(a) },
+        autoApprove: () => true,
+      },
+      { projectId, threadId, reason: "古い", changes: [{ retract: [seqs[0]!], text: "新しい" }] },
+    );
+    assert.equal(result.ok, true, result.text);
+    assert.equal(published.length, 1, "カードは出す");
+    assert.deepEqual(answered, [{ id: published[0]!.id, answer: "自動で許可しました（承認をすべて自動で許可する がオン）" }]);
+    const judgment = inbox.get(published[0]!.id);
+    assert.equal(judgment?.kind === "judgment" ? judgment.liveness : undefined, "answered", "受信箱に未解決を残さない");
+    const memory = store.getProject(projectId)!.memory;
+    assert.ok(memory.find((m) => m.seq === seqs[0])!.invalidatedAtSeq !== undefined);
+    assert.ok(memory.some((m) => m.text === "新しい"));
+  });
+});
+
+test("自動で許可がオフなら今どおり聞く", async () => {
+  await withSetup(async ({ store, inbox, pending, projectId, threadId, seqs, published }) => {
+    const running = reviseMemory(
+      { store, ask: { inbox, pendingApprovals: pending, publishJudgment: (_t, j) => published.push(j) }, autoApprove: () => false },
+      { projectId, threadId, reason: "古い", changes: [{ retract: [seqs[0]!] }] },
+    );
+    while (published.length === 0) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(store.getProject(projectId)!.memory.find((m) => m.seq === seqs[0])!.invalidatedAtSeq, undefined, "答える前に変えている");
+    pending.resolve(published[0]!.id, { behavior: "allow", updatedInput: {} });
+    assert.equal((await running).ok, true);
+  });
+});
