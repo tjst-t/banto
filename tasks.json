@@ -9476,7 +9476,7 @@
       "number": 393,
       "kind": "task",
       "title": "vault-infisical の getSecrets（値の一覧1回）と markUsedMany（v4 の一括更新）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "vault-kit-resolvealiases-getsecrets-mark"
@@ -9486,12 +9486,12 @@
       "labels": [],
       "body": "仕様は docs/specs/v4-modules.md「秘密をまとめて引く」の「Infisical の getSecrets」。（Project・環境・グループの根）ごとに listSecrets（recursive・viewSecretValue true・expandSecretReferences false）を1回、頼まれた値だけを返し残りは捨てる。分け合う一覧（shared）に値を入れない。見つからないものだけ getSecret、値を読む権限が無ければ全部 getSecret。markUsedMany は PATCH /api/v4/secrets/batch（projectId・environment・secretPath・secrets[].secretKey・secretComment、値は渡さない、mode は既定）を接続の認証で直に呼ぶ（SDK 5.0.2 に口が無い。listEnvironments と同じ形、429 は retryOnRateLimit と同じ待ち方）。失敗したら1件ずつに落とす。分け合う一覧の行の lastUsedAt も直す。偽の Infisical（src/testing）に v4 の batch を足す。",
       "doneWhen": "vault-infisical の単体テスト：30件の resolveAliases で listSecrets が（一覧・値とも）グループの数だけ、使った日の書き込みが（環境・フォルダ）の数だけ。権限が無いとき・batch が失敗したときは1件ずつに落ちる。分け合う一覧に値が入らない。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/vault-infisical-getsecrets-1-markusedman）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:40:05.092Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T09:55:54.461Z",
+      "closedAt": "2026-10-18T09:55:54.461Z",
       "extra": {}
     },
     {
