@@ -9389,11 +9389,11 @@
       ],
       "body": "## 報告（2026-10-18、ansible-nas の Base Thread c04700af-a68e-4d91-871a-8a29de6e7e91 から）\nShell の runCommand で envSecrets に Vault の alias を25件渡すと毎回断られる（23件なら通る、1件でも通る）。エラーは vault-directory の lookupAlias の「alias \"generated/JELLYFIN_API_KEY\" は見つかりませんでしたが、読めていない Vault があります：vault-infisical（… listSecrets recursive=true … StatusCode=429 Rate limit exceeded. Please try again in 13 seconds）」。ansible-nas は予行・本番反映で25〜27件渡すため、今は流せない。直ったら上の Thread に send_message で知らせる（向こうで27件で予行して確かめる）。\n\n## 原因（コードで確かめた、2026-10-18）\n- shell/src/run-command.ts は alias ごとに relayClient.lookupAlias を呼ぶ（whereCache は同じ名前の重複だけを省く）。\n- vault-directory/src/server.ts の lookupAlias は毎回 crossAliases() を呼び、繋がっている Vault 全部の listAliases を呼び直す。\n- vault-infisical の listAliases（infisical-alias-store.ts list → listIn）は紐付けた版・グループごとに listSecrets（recursive）を投げる（報告では environment=dev の / と prod の /ansible-homelab の少なくとも2回）。そのうえ resolveAlias で getSecret が1回。\n- つまり alias 1件あたり Infisical へ3回前後 → 25件で約75回になり、Infisical の回数制限に当たる。\n- 429 は crossAliases の failures に入り、lookupAlias は「見つからないが読めていない Vault がある」として断る。\n\n## 直し方の案\n1. 1回の runCommand の中では一覧を1回だけ引く：Shell が全部の alias をまとめて引ける口（例 lookupAliases(names[])）を窓口に足すか、窓口の crossAliases を短い間（数秒）だけ共有する。\n2. vault-infisical の listAliases にも数秒の memo（同時に来た呼び出しは同じ Promise を共有）。\n3. 429 は「読めていない」と区別できるように返す——Retry-After（\"try again in N seconds\"）に従って、上限つき（例 合計30秒まで）で待って試し直す。それでも駄目なら「Infisical の回数制限で読めませんでした（N 秒後に）」とはっきり返す。\n4. resolveAlias の getSecret も件数ぶん出るので、同じ置き場の値はまとめて引けるならまとめる（要検討）。",
       "doneWhen": "偽の Infisical（回数制限を入れたもの）で、envSecrets に30件渡した runCommand が通り、Infisical への listSecrets が Vault の版・グループの数だけ（alias の数に比例しない）であることを単体テストで確かめる。429 が続くときは「回数制限で読めませんでした」と分かる文で断る。ansible-nas の Thread に知らせ、27件の予行が通ったと返事をもらう。",
-      "resolution": "Factory が取り込みました（factory/vault-runcommand-envsecrets-alias-25-inf）",
+      "resolution": "Factory で実装（dbb26a0f）。GitHub の main 6c964fa5・release ef469133 に入れた（2026-10-18）。host での反映は人。ansible-nas への知らせは反映のあと。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T07:49:49.096Z",
-      "updatedAt": "2026-10-18T08:28:34.048Z",
+      "updatedAt": "2026-10-18T08:33:36.934Z",
       "closedAt": "2026-10-18T08:28:34.048Z",
       "extra": {}
     }
