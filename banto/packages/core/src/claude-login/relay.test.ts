@@ -6,6 +6,11 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_LOGIN_PATH, ClaudeLoginRelay, hostClaudeCredentialsPath, type ClaudeLoginListener, type ClaudeLoginRelayDeps } from "./relay.js";
 import { createRelayListener } from "../relay/relay-listener.js";
+import { ClaudeAccountStore } from "./accounts.js";
+
+/** 台帳と最初の1つの置き場（試験の置き場を指す） */
+const accountsAt = (dataDir: string, hostCredentialsPath: string, now?: () => Date) =>
+  new ClaudeAccountStore({ dataDir, hostCredentialsPath, ...(now ? { now } : {}) });
 
 const CORE: ClaudeLoginListener = { acceptsProject: () => true, bindSource: true };
 
@@ -18,6 +23,7 @@ test("本体の資格情報の置き場は、CLI と同じ順で決まる", () =
 
 interface Fixture {
   relay: ClaudeLoginRelay;
+  accounts: ClaudeAccountStore;
   /** 中継を載せた待ち受け（core の口と同じ形） */
   url: string;
   seen: { url: string; auth: string; beta: string }[];
@@ -26,6 +32,8 @@ interface Fixture {
   unauthorized: string[];
   authorized: { count: number };
   upstreamStatus: { value: number };
+  /** 上流が返す見出し（使用率） */
+  upstreamHeaders: { value: Record<string, string> };
   /** これを決めると、上流はこのトークンのときだけ 200・ほかは 401（upstreamStatus より優先） */
   upstreamAccepts: { value: string | undefined };
   /** 上流が返す前に1回呼ぶ（本体の CLI が途中で書き換えた形を作る） */
@@ -41,7 +49,10 @@ async function listen(server: Server): Promise<string> {
   return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 
-async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: ClaudeLoginListener = CORE): Promise<Fixture> {
+async function fixture(
+  overrides: Partial<ClaudeLoginRelayDeps> & { credentialsPath?: string } = {},
+  listener: ClaudeLoginListener = CORE,
+): Promise<Fixture> {
   const dir = mkdtempSync(join(tmpdir(), "claude-login-relay-"));
   writeFileSync(
     join(dir, ".credentials.json"),
@@ -49,6 +60,7 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
   );
   const seen: Fixture["seen"] = [];
   const upstreamStatus = { value: 200 };
+  const upstreamHeaders: Fixture["upstreamHeaders"] = { value: {} };
   const upstreamAccepts: Fixture["upstreamAccepts"] = { value: undefined };
   const beforeUpstreamReply: Fixture["beforeUpstreamReply"] = { fn: undefined };
   const upstream = createServer((req, res) => {
@@ -58,7 +70,7 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
     hook?.();
     const status =
       upstreamAccepts.value === undefined ? upstreamStatus.value : req.headers.authorization === `Bearer ${upstreamAccepts.value}` ? 200 : 401;
-    res.writeHead(status, { "content-type": "application/json" }).end('{"ok":"upstream"}');
+    res.writeHead(status, { "content-type": "application/json", ...upstreamHeaders.value }).end('{"ok":"upstream"}');
   });
   const upstreamUrl = await listen(upstream);
   const tokenReply: Fixture["tokenReply"] = { status: 400, body: { error: "invalid_grant" } };
@@ -75,8 +87,10 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
   const authorized = { count: 0 };
   const enabled = new Set(["p1", "p2"]);
   const unauthorized: string[] = [];
+  const { credentialsPath, ...rest } = overrides;
+  const accounts = accountsAt(dir, credentialsPath ?? join(dir, ".credentials.json"), () => new Date("2026-10-08T00:00:00Z"));
   const relay = new ClaudeLoginRelay({
-    credentialsPath: join(dir, ".credentials.json"),
+    accounts,
     secretsPath: join(dir, "secrets.json"),
     upstream: upstreamUrl,
     enabled: (id) => enabled.has(id),
@@ -85,12 +99,13 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
     onUpstreamAuthorized: () => authorized.count++,
     tokenUrl: `${tokenUrl}/v1/oauth/token`,
     now: () => new Date("2026-10-08T00:00:00Z"),
-    ...overrides,
+    ...rest,
   });
   const front = createServer((req, res) => void relay.handle(req, res, listener));
   const url = await listen(front);
   return {
     relay,
+    accounts,
     url,
     seen,
     enabled,
@@ -98,6 +113,7 @@ async function fixture(overrides: Partial<ClaudeLoginRelayDeps> = {}, listener: 
     unauthorized,
     authorized,
     upstreamStatus,
+    upstreamHeaders,
     upstreamAccepts,
     beforeUpstreamReply,
     tokenReply,
@@ -156,7 +172,7 @@ test("合言葉は固定：起こし直しても同じ。スイッチを切っ�
     assert.equal((await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN, first);
     // banto を起こし直した（置き場から読み直す）——Service がコンテナの起動で勝手に起きても、同じ合言葉で通る
     const again = new ClaudeLoginRelay({
-      credentialsPath: join(f.dir, ".credentials.json"),
+      accounts: accountsAt(f.dir, join(f.dir, ".credentials.json")),
       secretsPath: join(f.dir, "secrets.json"),
       enabled: () => true,
     });
@@ -402,7 +418,7 @@ test("合言葉の置き場が壊れていたら止まる（黙って全部の�
   try {
     writeFileSync(join(dir, "secrets.json"), JSON.stringify({ p1: 3 }));
     assert.throws(
-      () => new ClaudeLoginRelay({ credentialsPath: "/x", secretsPath: join(dir, "secrets.json"), enabled: () => true }),
+      () => new ClaudeLoginRelay({ accounts: accountsAt(dir, "/x"), secretsPath: join(dir, "secrets.json"), enabled: () => true }),
       /壊れています/,
     );
   } finally {
@@ -461,6 +477,110 @@ test("専用の待ち受け：中継だけを受け、送り元の代わりに�
   } finally {
     dedicated.closeAllConnections();
     await new Promise((r) => dedicated.close(r));
+    await f.close();
+  }
+});
+
+// **アカウント1つ＝置き場1つ＝取り直し役1つ＝カード1枚**（§2「Claude のアカウントを複数持つ」の 3.・7.）
+test("アカウントが2つ：それぞれの置き場で取り直し、書き戻す先も別々", async () => {
+  const f = await fixture();
+  try {
+    const hostPath = join(f.dir, ".credentials.json");
+    const soon = new Date("2026-10-08T00:04:00Z").getTime();
+    const host = JSON.parse(readFileSync(hostPath, "utf8"));
+    host.claudeAiOauth.expiresAt = soon;
+    writeFileSync(hostPath, JSON.stringify(host));
+    const b = f.accounts.add({
+      email: "b@example.com",
+      subscriptionType: "pro",
+      oauth: { accessToken: "B-ACCESS", refreshToken: "B-REFRESH", expiresAt: soon, subscriptionType: "pro", rateLimitTier: "tier-b" },
+    });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.tokenReply.status = 200;
+
+    // 既定の並びの先頭（最初の1つ）
+    f.tokenReply.body = { access_token: "HOST-NEW", expires_in: 3600 };
+    assert.equal((await post(f.url, secret)).status, 200);
+    // 先頭を B にすると B の置き場で取り直す
+    f.accounts.setDefaultOrder([b.id, "host"]);
+    assert.equal((await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_SUBSCRIPTION_TYPE, "pro");
+    f.tokenReply.body = { access_token: "B-NEW", expires_in: 3600 };
+    assert.equal((await post(f.url, secret)).status, 200);
+
+    assert.deepEqual(f.tokenCalls.map((c) => (c as { refresh_token: string }).refresh_token), ["never-leaves", "B-REFRESH"]);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer HOST-NEW", "Bearer B-NEW"]);
+    assert.equal(JSON.parse(readFileSync(hostPath, "utf8")).claudeAiOauth.accessToken, "HOST-NEW");
+    const bPath = f.accounts.credentialsPathOf(b.id);
+    assert.equal(JSON.parse(readFileSync(bPath, "utf8")).claudeAiOauth.accessToken, "B-NEW");
+    // 取り直しても置き場は本人だけが読める
+    assert.equal(statSync(bPath).mode & 0o777, 0o600);
+  } finally {
+    await f.close();
+  }
+});
+
+test("片方のアカウントの 401 のカードは、もう片方が通っても閉じない（閉じるのはそのアカウントで通ったとき）", async () => {
+  const unauthorized: string[] = [];
+  const authorized: string[] = [];
+  const f = await fixture({
+    onUpstreamUnauthorized: (_p, _reason, accountId) => unauthorized.push(accountId),
+    onUpstreamAuthorized: (accountId) => authorized.push(accountId),
+  });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS", refreshToken: "B-REFRESH", subscriptionType: "pro" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // 最初の1つで通る（起こし直す前のカードを閉じるので1回）
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(authorized, ["host"]);
+    // 最初の1つが 401、取り直しも invalid_grant（人が直すしかない）→ そのアカウントのカード
+    f.upstreamAccepts.value = "B-ACCESS";
+    assert.equal((await post(f.url, secret)).status, 401);
+    assert.deepEqual(unauthorized, ["host"]);
+    // B に切り替えて通る——閉じるのは B の分だけ（最初の1回）。最初の1つのカードは閉じない
+    f.accounts.setDefaultOrder([b.id, "host"]);
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(authorized, ["host", b.id]);
+    // 最初の1つに戻してログインし直す（refresh token が替わる）と、そこで閉じる
+    f.accounts.setDefaultOrder(["host", b.id]);
+    f.upstreamAccepts.value = undefined;
+    const hostPath = join(f.dir, ".credentials.json");
+    const creds = JSON.parse(readFileSync(hostPath, "utf8"));
+    creds.claudeAiOauth.refreshToken = "RELOGGED";
+    writeFileSync(hostPath, JSON.stringify(creds));
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(authorized, ["host", b.id, "host"]);
+    assert.deepEqual(unauthorized, ["host"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("返事の見出しの使用率を、使ったアカウントにだけ覚える", async () => {
+  const f = await fixture();
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // 見出しの無い返事では何も覚えない
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal(f.accounts.get("host")!.usage, undefined);
+    const reset5h = Date.parse("2026-10-08T03:00:00Z") / 1000;
+    f.upstreamHeaders.value = {
+      "anthropic-ratelimit-unified-status": "allowed",
+      "anthropic-ratelimit-unified-reset": String(reset5h),
+      "anthropic-ratelimit-unified-5h-utilization": "0.42",
+      "anthropic-ratelimit-unified-5h-reset": String(reset5h),
+      "anthropic-ratelimit-unified-5h-status": "allowed",
+    };
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(f.accounts.get("host")!.usage, {
+      fiveHour: { utilization: 0.42, resetsAt: "2026-10-08T03:00:00.000Z", status: "allowed" },
+      status: "allowed",
+      statusResetsAt: "2026-10-08T03:00:00.000Z",
+      readAt: "2026-10-08T00:00:00.000Z",
+    });
+    assert.equal(f.accounts.get(b.id)!.usage, undefined);
+  } finally {
     await f.close();
   }
 });

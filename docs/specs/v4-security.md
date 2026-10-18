@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-10-17（§1「向こうとの道」：実行場所の SSH 鍵は core だけが使える置き場に置く——Backlog #361。置き場の外にある鍵は受信箱に出して「移す」・登録の画面で鍵を作る——Backlog #375）
+> 最終更新：2026-10-18（§2「Claude のアカウントを複数持つ」：台帳・置き場・アカウントごとの取り直しとカード・`~/.claude` を1つ目に——Backlog #398）
 
 ## 1. セキュリティ境界
 
@@ -1229,7 +1229,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
   **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
-### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。下書き・未実装）
+### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。3. の台帳・置き場・アカウントごとの取り直しとカード、7. の使用率を覚えること、8. の移り方は実装・2026-10-18、Backlog #398（`claude-login/accounts.ts`）。ほかは未実装）
 
 **何をするか**：banto が Claude のアカウント（ブラウザでログインしたサブスクリプションのもの）を複数持ち、
 (1) 使用率が人の決めた閾値（5時間と週で別々）を超えたら次のアカウントへ切り替え、(2) Project ごとに使うアカウント
@@ -1316,8 +1316,13 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      いまの中継は置き場・取り直し役・開いている知らせを1つずつ持つので、これをアカウントの数だけ持つ形に改める——
      あるアカウントが通ったことで別のアカウントのカードを閉じない
    - 台帳 `<データ置き場>/claude-accounts.json`：id・表示名（既定はメールアドレス）・メールアドレス・契約の種類と上限の段
-     （`subscriptionType`・`rateLimitTier`、秘密ではない）・置き場・足した日時・最後に読んだ使用率（5時間と週の率と
-     リセットの時刻、読んだ時刻）。トークンは台帳に書かない
+     （`subscriptionType`・`rateLimitTier`、秘密ではない）・置き場の種類（`host`＝`~/.claude`／`banto`＝上の置き場）・足した日時・
+     既定の並び・最後に読んだ使用率（5時間と週の率・リセットの時刻・窓ごとの status、全体の status とそのリセットの時刻・
+     `-representative-claim`、読んだ時刻）。トークンは台帳に書かない。**置き場の道は書かない**——種類と id から決まる
+     （`host` は起動のときの `hostClaudeCredentialsPath()`。写しを持つと E2E・`CLAUDE_CONFIG_DIR` で指す先とずれる、規則3）。
+     最初の1つの id は `host`。台帳が壊れていたら起動を止める（作り直すと足したアカウントと並びが消える）
+   - 受信箱の「取り直せなかった」カードの dedupeKey は `claude-login-upstream-unauthorized:<id>`。最初の1つで通ったときは、
+     アカウントを分ける前の `claude-login-upstream-unauthorized` も閉じる
 4. **ブラウザでログインして足す**：banto 全体の設定「Claude のアカウント」の「アカウントを足す」から、CLI の
    `claude auth login` と同じ手書きの写しの形（PKCE）で行う
    1. core が `code_verifier`・`state` を作り（メモリに10分）、画面に認可の URL（CLI と同じ `https://claude.com/cai/oauth/authorize`、
