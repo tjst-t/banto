@@ -1419,6 +1419,32 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      スリープ」の起こす入口）を通して起こしてから続ける。Project を移すときも待ちは Event Store ごと残る
    - **対象は会話の本体のターン**。コンテナの中の Claude（サブエージェント・Factory の段・Shell から打った `claude`）が
      上限で落ちたときは、その結果が頼んだ Thread に届き、その Thread の AI が判断する（中継で何時間も要求を抱えない）
+   - **形**（実装・2026-10-18、Backlog #402。`delivery/rate-limit-continuation.ts`・`project-thread/rate-limit-wait.ts`）：
+     - `turn.ended` の `outcome` は今までどおり（CLI は result まで返すので `completed`）で、`reason: "rate_limit"` を足す。上限で
+       終わったターンには受信箱のレビュー待ちを出さない（`reviewDueAfterTurn`）
+     - **中継の一番早いリセット**＝その Project の並びのうち、status が rejected のアカウントの `-reset`（`statusResetsAt`）の一番早い
+       もの（`ClaudeLoginRelay.earliestResetFor`）。rejected でないアカウントの時刻は使わない。本体が中継を通らない banto では持って
+       いない扱い。どちらも無ければ（時刻が分からない）待たずに受信箱で聞く（下の「6回」と同じ形、題は「リセットの時刻が分からない
+       ので、自動では続けません」）
+     - 続きは送り手 banto の届いたもの（題「Claude の使用量の上限が戻ったので、止まったところから続けます」）で、`continues` に
+       `reason: "rate_limit"` を付ける——`turn.started.continues.reason` に残り、続けた回数（`attempt`）を起こし直しで切れた回数
+       （`RESUME_CUT_LIMIT`）と混ぜない（上限の続きのターンが切れたら、切れた回数は 0 から数える）
+     - **6回で受信箱**：続けた回数（上限の続きの `attempt`）が 6（`RATE_LIMIT_CONTINUE_LIMIT`）のターンがまた上限で終わったら、時刻を
+       付けずに終わりを書き、続きは待ち行列に積むが起こさず、`resume` つきのお知らせ（「…自動で続けるのをやめました」）を出す
+       ——起こし直しで切れ続けたときと同じ形（`resumeHoldReason` で留め、「続ける」で `attempt` 0 から、人が送れば引き継ぐ）
+     - 待っている間の届いたものは `ThreadDeliveries` の `wait` で留める（受信箱に出さない）。続きを届けたら留めは外れ、続きが先頭、
+       留めていたものが後ろに積まれる
+     - **閉じた Fork・Clear は `turn.continuation_cancelled` を書かない**——fold の `abandonedBy`（閉じた・Clear）で待ちが消える
+       （同じことを2か所に書かない、規則3）。`turn.continuation_cancelled` は人の操作（`by: "human"`＝待つのをやめる、`"stopped"`＝
+       止めるボタン）だけ。消したときに届けたが始まっていない上限の続きがあれば捨てる。留めていた届いたものは待ち行列に残し、
+       起こさない（人がやめた直後に AI を動かさない。次に人が送ったターン・次に届いたもので起こすターンに積む）
+     - 時刻が来たとき Project を別の実行場所へ移している途中なら、30秒ごとに見直す（移している間に届けると「自動では起こしません
+       でした」のお知らせが出るため）
+     - **HTTP の口**（人のセッション）：`POST /api/threads/:id/rate-limit-wait/continue`（今すぐ続ける）・
+       `POST /api/threads/:id/rate-limit-wait/cancel`（待つのをやめる）。待っていなければ 409。止めるボタン
+       （`POST /api/threads/:id/stop`）は、止めるターンが無く待っていれば待ちを消す（返事に `waitCancelled: true`）。待ちの中身は
+       Thread の `lastTurn.rateLimit.continueAt`（と `continuationCancelled`）で読める
+     - 余白（リセットの1分後）は E2E だけが `BANTO_TEST_RATE_LIMIT_MARGIN_MS` で縮める
 
 #### 実装の前に確かめること（#397）
 

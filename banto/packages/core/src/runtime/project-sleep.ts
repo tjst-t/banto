@@ -25,6 +25,7 @@ import {
   type ProjectWokeCause,
 } from "../project-thread/index.js";
 import type { ThreadState } from "../project-thread/types.js";
+import { rateLimitWaitOf } from "../project-thread/rate-limit-wait.js";
 import { reviewAttentionOf } from "../inbox/automation-review.js";
 import type { AwaitedModule } from "../automation/keep-awake.js";
 import type { RunningItem } from "./project-move.js";
@@ -68,7 +69,8 @@ export function errandLeftoversOf(
   const reasons: string[] = [];
   for (const t of threads) {
     const where = t.title ?? "会話";
-    if ((t.deliveries?.length ?? 0) > 0) reasons.push(`まだ渡していない届いたものがあります（${where}）`);
+    // 上限が戻るのを待っている Thread の届いたものは、続けたターンに積む——眠ってよい（v4-security.md §2 の 9.。時刻が来たら起こす）
+    if ((t.deliveries?.length ?? 0) > 0 && !rateLimitWaitOf(t)) reasons.push(`まだ渡していない届いたものがあります（${where}）`);
     if (t.liveJudgment) reasons.push(`判断待ちがあります（${where}）`);
     else if (t.lastTurn && t.lastTurn.startedAt >= since && reviewAttentionOf(t, false)) reasons.push(`ターンの結末が人を待っています（${where}）`);
   }

@@ -22,7 +22,7 @@ export interface InterruptedTurn {
   stackedMessages: number;
   startedAt: string;
   cause: TurnCause;
-  /** 切れたターンが何回目の続きだったか（ふつうのターンは0） */
+  /** 切れたターンが、起こし直しで切れて何回目の続きだったか（ふつうのターン・上限で止まったターンの続きは0） */
   attempt: number;
   /**
    * 続ける会話の id。`system/init` で分かったもの、無ければ host が先に決めて渡したもの（新しい会話・Fork の最初の
@@ -91,7 +91,9 @@ function lastTurnOf(thread: ThreadState, turn: TurnRecord): InterruptedTurn {
     stackedMessages: stacked.length,
     startedAt: turn.startedAt,
     cause: turn.cause,
-    attempt: turn.attempt,
+    // 上限で止まったターンの続き（`continuesReason: "rate_limit"`）の `attempt` は上限で続けた回数——起こし直しで切れた
+    // 回数ではないので、切れた回数は 0 から数える（混ぜると、上限で4回続けた会話が1回切れただけで「続けるのをやめた」になる）
+    attempt: turn.continuesReason === "rate_limit" ? 0 : turn.attempt,
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(turn.resumePoint !== undefined ? { resumePoint: turn.resumePoint } : {}),
     ...(turn.rewindTo !== undefined ? { rewindTo: turn.rewindTo } : {}),

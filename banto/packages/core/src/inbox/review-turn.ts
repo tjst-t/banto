@@ -47,6 +47,9 @@ export function reviewDueAfterTurn(
   thread: Pick<ThreadState, "lastTurn" | "awaitingReplies" | "deliveries"> | undefined,
 ): boolean {
   if (!thread) return true;
+  // **上限で終わったターンは出さない**（v4-security.md §2 の 9.）——人の番ではない（リセットのあと自動で続ける）。続けるのを
+  // やめたときは「続ける」のお知らせが出ている
+  if (thread.lastTurn?.rateLimit) return false;
   const outcome = outcomeOf(thread, false);
   if (outcome !== undefined && outcome !== "completed") return true;
   return (thread.awaitingReplies?.length ?? 0) === 0 && (thread.deliveries?.length ?? 0) === 0;

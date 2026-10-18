@@ -123,7 +123,17 @@ export interface FakePlan {
    * 「この Fork を閉じる」を、失敗したターンでやめて会話に印を残す試験（`close-fork-dropped.spec.ts`）が使う
    */
   fail?: string;
+  /**
+   * **Claude の使用量の上限で断られたふりをする**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 9.）。
+   * 本物の CLI と同じ形（#397 の実測）——`rate_limit_event`（rejected・`resetsAt`＝今から `resetInMs` 後の UNIX 秒）、
+   * `error: "rate_limit"` の assistant、`is_error` の result。`times` 回（既定1）続けて断る——数えるのは会話ごとなので、
+   * 同じ会話を続けたターン（banto の続き。指示の印は無い）もまた断られる。数はこのプロセスのメモリだけ（起こし直すと忘れる）
+   */
+  rateLimit?: { resetInMs: number; times?: number };
 }
+
+/** 会話ごとの、あと何回上限で断るか（`FakePlan.rateLimit`） */
+const rateLimitLeft = new Map<string, { left: number; resetInMs: number }>();
 
 /** `saySystemPrompt` のブロックの区切り */
 export const SYSTEM_PROMPT_BLOCK_SEPARATOR = "\n<<<block>>>\n";
@@ -556,6 +566,22 @@ export async function* runTurn(opts: {
 
   const instructions = await collectInstructions(servers);
   yield { type: "message", message: initMessage(sessionId, servers) };
+
+  const limit = plan.rateLimit ? { left: plan.rateLimit.times ?? 1, resetInMs: plan.rateLimit.resetInMs } : rateLimitLeft.get(sessionId);
+  if (limit && limit.left > 0) {
+    limit.left -= 1;
+    rateLimitLeft.set(sessionId, limit);
+    const resetsAt = Math.ceil((Date.now() + limit.resetInMs) / 1000);
+    console.warn(`[fake-runner] 上限で断る session=${sessionId} resetsAt=${resetsAt} 残り=${limit.left}`);
+    yield {
+      type: "message",
+      message: { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" }, uuid: `fake-rl-${resetsAt}`, session_id: sessionId },
+    };
+    const text = `You've hit your session limit · resets ${new Date(resetsAt * 1000).toISOString()}`;
+    yield { type: "message", message: { ...assistantMessage(sessionId, [{ type: "text", text }]), error: "rate_limit" } };
+    yield { type: "message", message: { ...resultMessage(sessionId, text), subtype: "error_during_execution", is_error: true } };
+    return { sessionId, compactionCount: 0 };
+  }
 
   if (opts.images && opts.images.length > 0) {
     // **画像が Runner まで届いたかを、発言の中身で見る**（追加・2026-09-26、`composer-image-paste.spec.ts`）。

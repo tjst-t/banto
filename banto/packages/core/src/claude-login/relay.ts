@@ -318,8 +318,30 @@ export class ClaudeLoginRelay {
    * **その Project の要求に使うアカウント**。いまは既定の並びの先頭（Project ごとの並びと閾値での切り替えは
    * §2 の 5.・6.、まだ無い）。並びが空なら undefined
    */
-  private accountFor(_projectId: string): string | undefined {
-    return this.deps.accounts.defaultOrder()[0];
+  private accountFor(projectId: string): string | undefined {
+    return this.orderFor(projectId)[0];
+  }
+
+  /** その Project の並び（いまは既定の並び。Project ごとの並びは §2 の 5.、まだ無い） */
+  private orderFor(_projectId: string): string[] {
+    return this.deps.accounts.defaultOrder();
+  }
+
+  /**
+   * **その Project の並びで一番早いリセットの時刻**（ミリ秒、§2 の 9.——上限で止まったターンを続ける時刻）。断っている
+   * （status が rejected の）アカウントの、断りが効く時刻（`-reset`）のうち一番早いもの。中継が持っていなければ undefined
+   * ——本体が中継を通らない banto（取り直せない）では、ここに本体の返事は来ないので持っていない扱い
+   */
+  earliestResetFor(projectId: string): number | undefined {
+    if (this.deps.refreshEnabled === false) return undefined;
+    let earliest: number | undefined;
+    for (const id of this.orderFor(projectId)) {
+      const usage = this.deps.accounts.get(id)?.usage;
+      if (usage?.status !== "rejected" || usage.statusResetsAt === undefined) continue;
+      const at = Date.parse(usage.statusResetsAt);
+      if (Number.isFinite(at) && (earliest === undefined || at < earliest)) earliest = at;
+    }
+    return earliest;
   }
 
   /** **アカウントを外した**：その取り直し役と開いている知らせを忘れる（同じ id が戻ることは無い） */

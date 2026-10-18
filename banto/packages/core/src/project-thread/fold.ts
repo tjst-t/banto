@@ -24,6 +24,8 @@ import type {
   DeliveryAuthor,
   ExternalContent,
   TurnOutcome,
+  TurnEndReason,
+  ContinuationCancelledBy,
   TurnRecord,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
@@ -193,14 +195,21 @@ export type ProjectThreadEvent =
         rewindTo?: string;
         /** 新しい会話の最初のターン・Fork の最初のターンで、host が先に決めて Runner に渡した session id */
         sessionId?: string;
-        /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（`TurnContinuation`） */
-        continues?: { turnId: string; fromSeq: number };
+        /** 起こし直しで切れたターンの続きなら、続けたターンとその会話の始まり（`TurnContinuation`）。上限で止まったターンの続きは `reason` */
+        continues?: { turnId: string; fromSeq: number; reason?: "rate_limit" };
       };
     }
   // Runner の `system/init` で会話の id が分かった。**resume-point は変えない**——resume-point は今どおりターンの
   // 最後に書く（走っている途中に人が Fork を切ったら前の完了した状態から分かれ、Clear の防御も今のまま効く）
   | { type: "turn.session_known"; payload: { threadId: string; turnId: string; sessionId: string } }
-  | { type: "turn.ended"; payload: { threadId: string; turnId: string; outcome: TurnOutcome } };
+  // `reason: "rate_limit"`＝Claude の使用量の上限で終わった。`continueAt` があれば、その時刻に自動で続ける（追加・2026-10-18、
+  // v4-security.md §2「Claude のアカウントを複数持つ」の 9.——待ちの真実はここだけ。別の台帳を持たない）
+  | {
+      type: "turn.ended";
+      payload: { threadId: string; turnId: string; outcome: TurnOutcome; reason?: TurnEndReason; continueAt?: string };
+    }
+  // **上限の待ちを消した**（「待つのをやめる」・止めるボタン）。閉じた Fork・Clear は `abandonedBy` で消える
+  | { type: "turn.continuation_cancelled"; payload: { threadId: string; turnId: string; by: ContinuationCancelledBy } };
 
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
@@ -879,6 +888,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             ...(p.rewindTo !== undefined ? { rewindTo: p.rewindTo } : {}),
             ...(p.sessionId !== undefined ? { assignedSessionId: p.sessionId } : {}),
             ...(p.continues ? { continuesTurnId: p.continues.turnId } : {}),
+            ...(p.continues?.reason ? { continuesReason: p.continues.reason } : {}),
             // 切れたターンより後に Clear があれば、その会話の始まりは引き継がない（Clear より前から分けて、Clear の
             // あとの会話にならないように）
             ...(p.continues && !t.markers.some((m) => m.kind === "clear" && m.seq > p.continues!.fromSeq)
@@ -899,7 +909,23 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "turn.ended": {
         const t = next.threads.get(event.payload.threadId);
         if (t?.lastTurn?.turnId === event.payload.turnId) {
-          t.lastTurn = { ...t.lastTurn, outcome: event.payload.outcome };
+          const p = event.payload;
+          t.lastTurn = {
+            ...t.lastTurn,
+            outcome: p.outcome,
+            ...(p.reason === "rate_limit" ? { rateLimit: p.continueAt !== undefined ? { continueAt: p.continueAt } : {} } : {}),
+          };
+        }
+        return next;
+      }
+      case "turn.continuation_cancelled": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t?.lastTurn?.turnId === event.payload.turnId && !t.lastTurn.continuationCancelled) {
+          t.lastTurn = { ...t.lastTurn, continuationCancelled: event.payload.by };
+          // 届けたがまだ始まっていない上限の続きも捨てる（ほかの届いたものは残す——次に人が送ったターンに積む）
+          if (t.deliveries?.some((d) => d.continues?.reason === "rate_limit" && d.continues.turnId === event.payload.turnId)) {
+            t.deliveries = t.deliveries.filter((d) => !(d.continues?.reason === "rate_limit" && d.continues.turnId === event.payload.turnId));
+          }
         }
         return next;
       }

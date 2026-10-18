@@ -194,8 +194,10 @@ export async function* runThreadTurn(
     // 起き直したときに切れたターンに見える——黙らずに書き残す（規則2）。人が止めたときは止めると決めた時点で
     // 先に書いている（`turn.ended`）——二度は書かない
     if (turn.id !== undefined && !turn.ended) {
+      // **Claude の使用量の上限で終わった**（v4-security.md §2 の 9.）——人が止めたのでなければ、終わりに印と続ける時刻を書く
+      const end = turn.rateLimited && outcome !== "stopped" ? await rateLimitEnd(deps, input.threadId, turn.resetsAt) : undefined;
       await deps.projectThread
-        .endTurn(input.threadId, turn.id, outcome)
+        .endTurn(input.threadId, turn.id, outcome, end)
         .catch((err: unknown) => console.warn(`[host] ${input.threadId} のターンの終わりを記録できませんでした:`, err));
     }
     // **閉じるのは、ターンの終わりまで書いたあと**——resume-point と返事を記録し、`turn.ended` も書いたあと。先に閉じると
@@ -242,6 +244,32 @@ interface TurnProgress {
   id?: string;
   /** `turn.ended` をもう書いた（人が止めたとき、止めると決めた時点で書く） */
   ended?: boolean;
+  /**
+   * **Claude の使用量の上限で断られた**（追加・2026-10-18、v4-security.md §2 の 9.）。見分けは Runner の1か所——CLI が試し直しを
+   * 尽くしたあと assistant のメッセージに付ける `error: "rate_limit"`。`rate_limit_event` は途中経過なので見分けに使わない
+   */
+  rateLimited?: boolean;
+  /** このターンの最後の `rate_limit_event` の `resetsAt`（UNIX 秒）。中継がリセットの時刻を持たないときに使う */
+  resetsAt?: number;
+}
+
+/**
+ * **上限で終わったターンの終わりに書くもの**：印と、自動で続ける時刻（決めるのは `rateLimitContinueAt`。続けない——続けた
+ * 回数が上限に達した・時刻が分からない——なら時刻は無く、決める側が受信箱で人に聞く）。決められなければ時刻を付けずに
+ * 書き残す（ターンの終わりは必ず書く）
+ */
+async function rateLimitEnd(
+  deps: Parameters<typeof runThreadTurnInner>[0],
+  threadId: string,
+  resetsAt: number | undefined,
+): Promise<{ reason: "rate_limit"; continueAt?: string }> {
+  try {
+    const continueAt = await deps.rateLimitContinueAt?.(threadId, resetsAt);
+    return { reason: "rate_limit", ...(continueAt !== undefined ? { continueAt } : {}) };
+  } catch (err) {
+    console.warn(`[host] ${threadId} の上限のあと続ける時刻を決められませんでした（自動では続けません）:`, err);
+    return { reason: "rate_limit" };
+  }
 }
 
 /** このターンで AI が予約した Fork（`fork-tool.ts`）と、立てたかどうか */
@@ -334,6 +362,12 @@ async function* runThreadTurnInner(
      * ときに1回引く。渡されなければ Runner の既定（process.env に付随の通信を止める印）
      */
     runnerEnv?(projectId: string, threadId: string): Promise<Record<string, string | undefined>>;
+    /**
+     * **上限で終わったターンを、いつ自動で続けるか**（追加・2026-10-18、v4-security.md §2 の 9.）。ターンの終わりを書く直前に
+     * 呼ぶ（Thread の最後のターンはまだそのターン）。`resetsAt` はそのターンの最後の `rate_limit_event` の時刻（UNIX 秒）。
+     * 続けないなら undefined（受信箱で人に聞くのは呼ばれた側）。渡されなければ印だけ書いて続けない
+     */
+    rateLimitContinueAt?(threadId: string, resetsAt: number | undefined): Promise<string | undefined>;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
@@ -447,7 +481,9 @@ async function* runThreadTurnInner(
     ...(resumeFrom !== undefined ? { resumePoint: resumeFrom } : {}),
     ...(rewindTo ? { rewindTo } : {}),
     ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
-    ...(continuation ? { continues: { turnId: continuation.turnId, fromSeq: continuation.fromSeq } } : {}),
+    ...(continuation
+      ? { continues: { turnId: continuation.turnId, fromSeq: continuation.fromSeq, ...(continuation.reason ? { reason: continuation.reason } : {}) } }
+      : {}),
   });
   // 画面に出す「走り始めた時刻」も、記録に残した始まりにそろえる（2つの時刻を持たない）。始まりの seq は流し直しの
   // 境界——このターンの AI の発言は、これより後ろの記録に書き終えるごとに入る（画面は流し直す分を記録から外す）
@@ -715,7 +751,9 @@ async function* runThreadTurnInner(
           yield { type: "error", message: initError };
           return;
         }
-        const m = event.message as { type?: string; subtype?: string; session_id?: string };
+        const m = event.message as { type?: string; subtype?: string; session_id?: string; error?: unknown; rate_limit_info?: { resetsAt?: unknown } };
+        if (m.type === "assistant" && m.error === "rate_limit") turn.rateLimited = true;
+        if (m.type === "rate_limit_event" && typeof m.rate_limit_info?.resetsAt === "number") turn.resetsAt = m.rate_limit_info.resetsAt;
         if (m.type === "system" && m.subtype === "init" && typeof m.session_id === "string") {
           initSessionId = m.session_id;
           // 会話の id を残す（最初のターンでも）。resume-point は変えない——今どおりターンの最後に書く

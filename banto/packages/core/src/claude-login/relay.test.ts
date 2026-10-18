@@ -718,3 +718,23 @@ test("返事の見出しの使用率を、使ったアカウントにだけ覚�
     await f.close();
   }
 });
+
+test("並びで一番早いリセット：断っているアカウントの -reset のうち一番早いもの。断っていなければ・取り直せない banto では無し", async () => {
+  const f = await fixture();
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    assert.equal(f.relay.earliestResetFor("p1"), undefined);
+    const headers = (status: string, reset: string) =>
+      new Headers({ "anthropic-ratelimit-unified-status": status, "anthropic-ratelimit-unified-reset": String(Date.parse(reset) / 1000) });
+    f.accounts.recordUsage("host", headers("rejected", "2026-10-08T05:00:00Z"));
+    f.accounts.recordUsage(b.id, headers("rejected", "2026-10-08T02:00:00Z"));
+    assert.equal(f.relay.earliestResetFor("p1"), Date.parse("2026-10-08T02:00:00Z"));
+    // 断っていないアカウントの時刻は使わない（使えるので、待つ時刻ではない）
+    f.accounts.recordUsage(b.id, headers("allowed", "2026-10-08T01:00:00Z"));
+    assert.equal(f.relay.earliestResetFor("p1"), Date.parse("2026-10-08T05:00:00Z"));
+    const off = new ClaudeLoginRelay({ accounts: f.accounts, secretsPath: join(mkdtempSync(join(tmpdir(), "claude-login-relay-")), "s.json"), enabled: () => true, refreshEnabled: false });
+    assert.equal(off.earliestResetFor("p1"), undefined);
+  } finally {
+    await f.close();
+  }
+});
