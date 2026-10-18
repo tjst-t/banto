@@ -9499,7 +9499,7 @@
       "number": 394,
       "kind": "task",
       "title": "Shell：envSecrets・secretFiles を lookupAliases 1回と Vault ごとの resolveAliases 1回で引く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "host-dev-banto-batchof-1",
@@ -9514,7 +9514,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:03:58.408Z",
+      "updatedAt": "2026-10-18T09:40:07.375Z",
       "closedAt": null,
       "extra": {}
     },
