@@ -3,10 +3,10 @@
 // 見ること（画面だけで操作し、中身は host の台帳・会話の記録と突き合わせる）：
 //   1. Command Palette の「自動化」で、会話の隣に自動化の画面（Canvas）が開く。まだ無ければ「まだありません」
 //   2. その場のフォームで時刻の自動化を作ると一覧に1行出る——名前・きっかけ・届け先・次の時刻・「まだ動いていません」。
-//      サイドバーの目次に「自動化（1）」、専用の Fork が稲妻の印で出る
+//      サイドバーの専用の Fork が稲妻の印で出る（目次に「自動化（n）」の行は出さない）
 //   3. 「今すぐ動かす」で専用の Fork にターンが走り、直近の回に「終わりました（今すぐ動かした回）」が出る
 //   4. 「会話を開く」で専用の Fork が隣に開き、上に帯（自動化の名前・いつ・毎回まっさら・次は）と AI の返事が出る
-//   5. 入口3つ（専用の Fork の帯の「一覧」・サイドバーの「自動化（1）」・Command Palette）が、どれも開いている会話を
+//   5. 入口3つ（専用の Fork の帯の「一覧」・サイドバーの専用の Fork の「…」の「自動化の設定を開く」・Command Palette）が、どれも開いている会話を
 //      閉じずに隣に開く
 //   6. 別タブでも開ける（どの Project のものかを運ぶ）
 //   7. 専用の Fork を閉じるときは「自動化を一時停止します」と確かめ、閉じると一覧で一時停止中になる
@@ -45,6 +45,15 @@ async function expectCanvasBesideFork(page: Page, forkId: string, via: string): 
   await expect(page.getByTestId("automation-band"), `${via}から開いたら専用の Fork の面が消えた`).toBeVisible();
 }
 
+/** サイドバーの専用の Fork の行の「…」から「自動化の設定を開く」を押す */
+async function openAutomationsFromForkMenu(page: Page, forkTitle: string): Promise<void> {
+  const sidebar = page.locator('[data-sidebar="sidebar"]');
+  const item = sidebar.locator("li", { has: page.getByTestId("sidebar-fork-name").filter({ hasText: forkTitle }) }).last();
+  await item.hover();
+  await item.getByTestId("sidebar-item-more").click();
+  await page.getByRole("menuitem", { name: "自動化の設定を開く" }).click();
+}
+
 async function closeCanvas(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
   await expect(page.getByTestId("automations")).toBeHidden({ timeout: 15_000 });
@@ -68,7 +77,7 @@ test("画面から時刻の自動化を作り、今すぐ動かすと専用の F
   await expect(page.getByTestId("automations-how")).toContainText("前の回がまだ動いている");
   expect(new URL(page.url()).searchParams.get("canvas")).toBe("banto:triggers");
   await expect(page.getByPlaceholder(/に送る/).first(), "自動化を開いたら会話が消えた").toBeVisible();
-  // 無い Project では目次を増やさない
+  // 目次に「自動化（n）」の行は出さない（2026-10-18、ユーザー）
   await expect(page.getByTestId("sidebar-automations")).toHaveCount(0);
 
   // ---- 2. その場のフォームで作る ----------------------------------------------------------------------------
@@ -110,9 +119,8 @@ test("画面から時刻の自動化を作り、今すぐ動かすと専用の F
   await expect(row.getByTestId("automation-last-run")).toHaveText("まだ動いていません");
   await expect(row.getByTestId("automation-paused")).toHaveCount(0);
 
-  // サイドバー：目次に「自動化（1）」、専用の Fork は稲妻の印で出る（host が立てた Fork を取り直して足す）
+  // サイドバー：専用の Fork は稲妻の印で出る（host が立てた Fork を取り直して足す）。目次に「自動化（n）」の行は無い
   const sidebar = page.locator('[data-sidebar="sidebar"]');
-  await expect(sidebar.getByTestId("sidebar-automations")).toHaveText("自動化（1）", { timeout: 15_000 });
   const forkRow = sidebar.locator("a", { has: page.getByTestId("sidebar-fork-name").filter({ hasText: AUTOMATION_NAME }) });
   await expect(forkRow, "専用の Fork がサイドバーに出ない").toHaveCount(1, { timeout: 30_000 });
   await expect(forkRow.locator("svg.lucide-zap"), "専用の Fork の印が稲妻でない").toHaveCount(1);
@@ -157,8 +165,9 @@ test("画面から時刻の自動化を作り、今すぐ動かすと専用の F
   await expectCanvasBesideFork(page, forkId, "専用の Fork の帯の「一覧」");
 
   await closeCanvas(page);
-  await sidebar.getByTestId("sidebar-automations").click();
-  await expectCanvasBesideFork(page, forkId, "サイドバーの「自動化（1）」");
+  await expect(sidebar.getByTestId("sidebar-automations"), "目次に「自動化（n）」の行が出ている").toHaveCount(0);
+  await openAutomationsFromForkMenu(page, AUTOMATION_NAME);
+  await expectCanvasBesideFork(page, forkId, "サイドバーの専用の Fork の「…」の「自動化の設定を開く」");
 
   await closeCanvas(page);
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
@@ -187,7 +196,9 @@ test("画面から時刻の自動化を作り、今すぐ動かすと専用の F
   await expect(warning.getByTestId("close-fork-automation")).toContainText(`自動化「${AUTOMATION_NAME}」を一時停止します。`);
   await warning.getByRole("button", { name: "それでも閉じる" }).click();
   await expect.poll(async () => (await list())[0]!.paused, { message: "閉じたのに一時停止にならない" }).toBe(true);
-  await sidebar.getByTestId("sidebar-automations").click();
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByPlaceholder(/検索/).first().fill("自動化");
+  await page.getByRole("option", { name: /^自動化/ }).click();
   await expect(page.getByTestId("automation-row").getByTestId("automation-paused"), "一覧に一時停止中が出ない").toHaveText("一時停止中", {
     timeout: 15_000,
   });

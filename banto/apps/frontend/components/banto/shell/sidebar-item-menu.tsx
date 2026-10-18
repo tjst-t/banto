@@ -13,7 +13,7 @@
 // 掴めない場面**（キーボード、細いレール、タッチ）でも並べ替えられるようにする。
 // 出ている操作が、その場の入力手段で必ず効く（規則13）。
 import { Fragment, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Check, FolderInput, FolderPlus, Moon, MoreHorizontal, Pencil } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, FolderInput, FolderPlus, Moon, MoreHorizontal, Pencil, Zap } from "lucide-react";
 import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   ContextMenu,
@@ -66,6 +66,7 @@ export function SidebarItemMenu({
   onMoveDown,
   onClose,
   onFork,
+  onOpenAutomations,
   onSleep,
   groupMenu,
   moreClassName,
@@ -83,6 +84,8 @@ export function SidebarItemMenu({
   onClose?: () => void;
   /** 「ここから Fork…」（Thread の行。Base でも Fork でも、2026-10-11） */
   onFork?: () => void;
+  /** 「自動化の設定を開く」（自動化の届け先の Thread の行だけ、§6.42）。無ければ項目を出さない */
+  onOpenAutomations?: () => void;
   /** 「スリープにする」（Project の行だけ、v4-frontend.md §6.43）。無ければ項目を出さない */
   onSleep?: () => void;
   /** 「グループへ移す」の中身。無ければ項目を出さない */
@@ -95,6 +98,7 @@ export function SidebarItemMenu({
   const [renaming, setRenaming] = useState(false);
 
   const entries: MenuEntry[] = [
+    ...(onOpenAutomations ? [{ label: "自動化の設定を開く", icon: Zap, onSelect: onOpenAutomations }] : []),
     ...(onFork ? [{ label: "ここから Fork…", icon: ForkIcon, onSelect: onFork }] : []),
     ...(onRename ? [{ label: "名前を変える…", icon: Pencil, onSelect: () => setRenaming(true) }] : []),
     // 並べ替えられない行（Base Thread）には出さない

@@ -2578,7 +2578,8 @@ Project を別の実行場所へ移している間（`project.runtime_move_start
 - **印**：`canvas=banto:triggers`。`renderCanvas`（`app/(shell)/p/[projectId]/project-panels.tsx`）は今、tool の結果の画面・入口の
   `ui://` の画面（どちらも `ModuleCanvas`）・モックの面に振り分けている——**core の画面の枝をモックの落ち先より前**に足す。
   別タブ（`/canvas-window`）にも同じ枝を足し、core の画面は Project が要るので `project` を必須にする。見出しは「自動化」
-- **入口**：サイドバーの Project の目次に「自動化（n）」の1行（自動化がある Project だけ。無ければ目次を増やさない）／専用の Fork の
+- **入口**：サイドバーの、自動化の届け先の Thread（専用の Fork・届け先にした既存の Thread）の行の「…」（右クリックも同じ）の
+  「自動化の設定を開く」——その会話を開いて隣に出す（改訂・2026-10-18、ユーザー。目次の「自動化（n）」の1行はやめた）／専用の Fork の
   上の帯の「一覧」／AI が作ったあとのカードの「一覧を開く」／Command Palette の「操作」の「自動化」（「cron」「予定」「webhook」
   「きっかけ」でも引ける）。どれも、いま開いている会話を閉じずに隣に開く
 - **一覧**：1行に1件。名前・きっかけ（「平日 9:00（東京時間）」「Webhook を受けたとき」）・届け先と起こし方・次の時刻（Webhook は最後に
