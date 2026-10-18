@@ -1381,6 +1381,96 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
   ——代わりに**契約の種類と上限の段**（`subscriptionType`・`rateLimitTier`。資格情報ファイルに並ぶが
   **秘密ではない**）を env で渡し、既定を本体と揃える（アーキ仕様 §4.1）
 
+### Claude のアカウントを複数持つ——使用率で切り替え、Project ごとに選ぶ（決定・2026-10-18、ユーザー。Fork「複数の Claude 認証情報」。下書き・未実装）
+
+**何をするか**：banto が Claude のアカウント（ブラウザでログインしたサブスクリプションのもの）を複数持ち、
+(1) 使用率が人の決めた閾値（5時間と週で別々）を超えたら次のアカウントへ切り替え、(2) Project ごとに使うアカウント
+（の並び）を決められるようにする。いまは本体の `~/.claude` の1つを、会話の本体（Runner）もコンテナの中の Claude も
+共有していて、分ける口はサブエージェントの `envSecrets` しか無い。
+
+**形（案1）**：**会話の本体も上の中継を通す**。アカウントは banto（core）がまとめて持ち、中継が要求ごとに
+「その Project の並び」と「各アカウントの使用率」から差し替えるアカウントを選ぶ。本体とコンテナで同じ判断になり、
+使用率は中継が毎回の返事から読む。採らなかった形：本体にアカウントごとの `CLAUDE_CONFIG_DIR` を渡す（CLI は会話の
+記録をその下に置くので、切り替えた会話が続けられなくなる）。
+
+#### 実測（2026-10-18、Agent SDK 0.3.281。Runner と同じ設定で `ANTHROPIC_BASE_URL` を記録係に向け、直に出るものも TLS を開けて見た。`tmp/claude-paths-probe/`）
+
+- `ANTHROPIC_BASE_URL` に来るのは **`POST /v1/messages?beta=true` だけ**（WebSearch も messages の中。WebFetch・MCP の
+  tool を使っても同じ）——いまの中継の通す道（`/v1/messages`・`count_tokens`）で足りる
+- **使用率は返事のたびに見出しで返る**：`anthropic-ratelimit-unified-5h-utilization`（0〜1）・`-5h-reset`（UNIX 秒）・
+  `-5h-status`・`-7d-utilization`・`-7d-reset` ほか。SDK も `rate_limit_event`（`unifiedWindows.five_hour／seven_day`）で出す
+- **`ANTHROPIC_BASE_URL` を無視して api.anthropic.com へ直に出るもの**がある：`/api/eval/sdk-…`（機能の旗、渡した
+  トークンを Bearer で付ける）・`/api/event_logging/v2/batch`（付けることがある）・`/api/claude_cli/bootstrap`（合言葉だと
+  401）・`/api/web/domain_info`（WebFetch の前、認証なし）・Datadog。**いまのコンテナの中の Claude も合言葉をここへ送っている**
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を付けると、直に出るのは `domain_info` だけになり、会話はそのまま通った
+- 測っていない：自動の要約（compact）・長い会話・resume。実装の最初にこれも流して、`/v1/messages` 以外が来ないことを確かめる
+
+#### 決めたこと
+
+1. **付随の通信は止める**（決定・2026-10-18、ユーザー、案ア）：本体の Runner と、コンテナに入れる環境（Shell・
+   サブエージェント・Service・Terminal が受け取るもの）の両方に `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を足す。
+   中継の合言葉を banto の外へ出さない。機能の旗・利用の記録・bootstrap を取らなくなるのは承知のうえ
+2. **会話の本体は中継を通す**：Runner の `query()` の `env` に `ANTHROPIC_BASE_URL=http://127.0.0.1:<core の口>/claude-login`・
+   `CLAUDE_CODE_OAUTH_TOKEN=<本体用の合言葉>`・選んだアカウントの `CLAUDE_CODE_SUBSCRIPTION_TYPE`／`CLAUDE_CODE_RATE_LIMIT_TIER`・
+   上の 1. を入れる。`CLAUDE_CONFIG_DIR`（会話の記録の置き場）は今のまま1つ
+   - **本体用の合言葉はコンテナの合言葉と別**（Project ごとに1つ）。受けるのは host の 127.0.0.1 から来た要求だけ
+     （新しい `ClaudeLoginListener`：受ける合言葉の種類は本体用だけ、送り元は loopback）。コンテナの口・別のサーバの専用の
+     待ち受けに本体用の合言葉が来たら断る（逆も断る）。別のサーバのトンネルは専用のポートに来るので混ざらない
+   - Project 設定の「この Project に Claude のログインを使わせる」は今どおり**コンテナの中だけ**を決める。本体は
+     オフでも中継を通る（今もその Project の本体は同じログインで動いている）
+   - 中継は core の中にあり Runner と同じプロセスの寿命なので、「中継が止まって会話だけ止まる」は起きない
+3. **アカウントの置き場は banto 本体（host）**：AI に渡してはいけないもの（§1 の表）。Vault には置かない（Vault の
+   値は Module の口で渡せる形のもので、このトークンは中継だけが使う）
+   - **最初の1つは今の `~/.claude`**（「このマシンの Claude Code のログイン」）。人が host で `claude` を使うことも
+     あるので、この置き場の取り直しは今の手順（CLI と同じ鍵）のまま
+   - **足したアカウントは banto だけが触る置き場**：`<データ置き場>/claude-accounts/<id>/.credentials.json`（フォルダ 0700・
+     ファイル 0600、中身の形は CLI と同じ `claudeAiOauth`）。取り直しは上の手順をそのフォルダで行う（鍵の作法も同じにして、
+     手順を1つに保つ）
+   - 台帳 `<データ置き場>/claude-accounts.json`：id・表示名（既定はメールアドレス）・メールアドレス・契約の種類と上限の段
+     （`subscriptionType`・`rateLimitTier`、秘密ではない）・置き場・足した日時・最後に読んだ使用率（5時間と週の率と
+     リセットの時刻、読んだ時刻）。トークンは台帳に書かない
+4. **ブラウザでログインして足す**：banto 全体の設定「Claude のアカウント」の「アカウントを足す」から、CLI の
+   `claude auth login` と同じ手書きの写しの形（PKCE）で行う
+   1. core が `code_verifier`・`state` を作り（メモリに10分）、画面に認可の URL（CLI と同じ `https://claude.com/cai/oauth/authorize`、
+      `client_id` は Claude Code の公開のもの、`redirect_uri` は `https://platform.claude.com/oauth/code/callback`、scope は CLI の
+      claude.ai のログインと同じもの）を出す。人は別のタブで開いてログインする
+   2. 向こうの画面に出たコードを、人が banto の画面に貼る。core が `state` を確かめ、`POST https://platform.claude.com/v1/oauth/token`
+      （`authorization_code`）で交換し、`/api/oauth/profile` でメールアドレスと契約の種類を読んで台帳に足す
+   3. 同じメールアドレスのアカウントがもうあれば、足さずにそのトークンで置き換える（ログインし直し。受信箱の「ログインが
+      壊れた」のカードを閉じる道もこれ）
+   - 版の CLI の URL・client id・scope は `refresh.ts` と同じく**確かめた SDK の版に結びつける**（SDK を上げたら確かめ直す）
+   - 足す・外す・ログインし直すはログインした人だけ（step-up は求めない——banto に推論の権利を足すだけで、人の権限は広がらない）。
+     AI の tool は作らない
+   - 外すと置き場を消す。`~/.claude` のものは外せない（置き場は人の CLI のもの）——並びから抜くだけ
+5. **Project ごとの並び**：banto 全体に「既定の並び」（アカウントの優先順）を1つ持ち、Project 設定「Claude のアカウント」で
+   「既定のまま」か「この Project の並び」（1つ以上）を選ぶ。1つだけなら固定、2つ以上ならその順に切り替える。
+   外したアカウントは並びから消し、Project の並びが空になったら既定に戻す
+6. **閾値で切り替える**：閾値は **5時間と週で別々**（banto 全体の設定、既定は未決——下）
+   - 中継は返事の見出しから、そのアカウントの使用率（5時間・週の率とリセットの時刻）を台帳のメモリの写しに書く
+     （ファイルへは間引いて書く）
+   - 要求ごとに、その Project の並びの先頭から「**5時間の率が5時間の閾値未満、かつ週の率が週の閾値未満**」の最初の
+     アカウントを使う。リセットの時刻を過ぎた値は「分からない」とし、分からないものは使える扱い（使えば見出しで分かる）
+   - ゆえに**閾値を越えたら次の要求から次のアカウント**、リセットを過ぎれば自然に前のアカウントへ戻る。ターンの途中でも
+     切り替わる（その要求はプロンプトのキャッシュが効かず一度重くなる、承知）
+   - 上流が上限で断った（429、`-status` が rejected）ときは、その要求を**次のアカウントで1回だけ**送り直す（401 の試し直しと
+     同じく本文を持てるときだけ）
+   - 切り替えたら Event Store に1件（Project・前と後・理由の率）、Project 設定の観測に出す
+7. **観測と知らせ**：設定「Claude のアカウント」にアカウントごとの使用率（5時間・週、リセットまでの時間）と、どの Project が
+   いまどれを使っているか。ログインが壊れた・401 が続く等のカードは今の決まりのまま**アカウントごと**に1枚
+   （dedupeKey にアカウントの id を入れる）。使用率は使っていないアカウントでも、設定を開いたときに `/api/oauth/usage` で
+   読み直す（中継は通さず core が直に、そのアカウントのトークンで）
+8. **移り方**：入れた最初の起動で `~/.claude` を1つ目として台帳に載せ、既定の並びをそれだけにする——足すまで今と同じに動く
+
+#### 未決（人に聞く）
+
+- 閾値の既定（例：5時間 90%・週 90%）と、アカウントごとに閾値を変えられるようにするか
+- **並びの全部が閾値を越えたとき**：(a) 一番早くリセットされるもので続けて受信箱に1枚、(b) 止めて受信箱で聞く、(c) 閾値を
+  無視して先頭で続ける
+- 切り替えたことを会話にも出すか（薄い1行「アカウントを B に切り替えました（5時間 91%）」）
+- コンテナの環境の `CLAUDE_CODE_SUBSCRIPTION_TYPE`／`RATE_LIMIT_TIER` は起こすときに決まる——並びに契約の違うもの（Max と Pro）が
+  混ざると、切り替えたあとの既定のモデルと文脈の上限が食い違う。並びの先頭のもので入れるか、混ぜることを断るか
+- 利用規約：上限を避けるために複数のアカウントを回す使い方が Anthropic の規約に照らして問題ないかは、人が確かめる
+
 ### コンテナが縛らないもの（把握して設計する）
 
 | | 扱い |
