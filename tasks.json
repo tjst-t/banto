@@ -9596,7 +9596,7 @@
       "number": 398,
       "kind": "task",
       "title": "中継がアカウントを複数持つ（台帳・置き場・アカウントごとの取り直しとカード・~/.claude を1つ目に）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-probe"
@@ -9606,12 +9606,12 @@
       "labels": [],
       "body": "v4-security.md §2 の 3.・7.・8.。<データ置き場>/claude-accounts.json と claude-accounts/<id>/.credentials.json（0700/0600）。アカウント1つ＝置き場1つ＝CredentialRefresher 1つ＝受信箱のカード1枚（dedupeKey に id）。最初の起動で ~/.claude を1つ目にし既定の並びをそれだけにする（足すまで今と同じ動き）。使用率（見出しの 5h/7d の率とリセット、status）をアカウントごとに覚え、リセットを過ぎたら分からないに戻す。",
       "doneWhen": "core の単体テストで、2つの置き場をそれぞれ取り直し、片方の 401 のカードが他方の成功で閉じないこと、移行の初回で ~/.claude が1つ目になることが通る。既存の E2E claude-login-relay が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-relay-accounts）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T11:26:02.554Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T11:47:32.589Z",
+      "closedAt": "2026-10-18T11:47:32.589Z",
       "extra": {}
     },
     {
