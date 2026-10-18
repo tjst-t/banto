@@ -22,6 +22,8 @@
 //  13. 高精細の画面（devicePixelRatio 2）：開くと倍率を覚え、起こし直したブラウザは倍率2で描く——host を通って届く絵が
 //      絵を出す場所の物理ピクセルの大きさ（CSS の大きさ×2、ページの2倍まで）で、流れが切れない（1通 1 MiB を越えない）。
 //      ページからも倍率2に見える（Backlog #266）
+//  14. 狭い Canvas（会話の横、幅 約390px）：上の帯は2段とも1行のまま、幅を変えても高さが変わらない。しまった
+//      「ブラウザの記録を消す」は「…」（もっと見る）から2回押しで使え、「…」はキーボードでも開け閉めできる（Backlog #384）
 import { test, expect, loginContext, type FrameLocator, type Page } from "../test-base.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -29,7 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
+import { clearBrowserData, createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(1_500_000);
@@ -45,6 +47,8 @@ const TOKEN_VALUE = "token-secret-value-456";
 
 let projectId = "";
 let threadId = "";
+/** 会話の画面の URL（後の試験が同じ会話を開く） */
+let threadUrl = "";
 let turns = 0;
 let testPage: ChildProcess | undefined;
 
@@ -335,6 +339,7 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     watching: 0,
     screencasting: false,
   });
+  threadUrl = page.url();
   expect((await uiCall(page, "getBrowserStatus")).running, "画面を閉じただけでブラウザを止めた").toBe(true);
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
   const entry = page.locator('[role="option"][data-value^="launcher:browser:"]');
@@ -378,12 +383,15 @@ test("人の画面：カードから開いて映し、人の入力がページ�
 
   // ---- 10. 「ブラウザの記録を消す」（2回押す）----------------------------------------------------------
   await expect(f.getByRole("button", { name: /^通信/ })).not.toHaveAccessibleName("通信0");
-  await f.getByRole("button", { name: "ブラウザの記録を消す" }).click();
-  // 1回目は確かめるだけ（まだ消さない）
-  await f.getByRole("button", { name: "もう一度押すと消します" }).click();
+  // 1回目は確かめるだけ（まだ消さない）。帯が狭ければ「…」から
+  const viaMenu = await clearBrowserData(f);
   await expect(f.getByRole("button", { name: /^通信/ }), "記録を消しても通信の件数が 0 にならない").toHaveAccessibleName("通信0", { timeout: 30_000 });
   await expect(f.getByRole("button", { name: /^コンソール/ })).toHaveAccessibleName("コンソール0");
-  await expect(f.getByRole("button", { name: "ブラウザの記録を消す" })).toBeVisible();
+  if (viaMenu) {
+    await f.getByRole("button", { name: "もっと見る" }).click();
+    await expect(f.getByRole("menuitem", { name: "ブラウザの記録を消す" })).toBeVisible();
+    await f.getByRole("button", { name: "もっと見る" }).press("Escape");
+  } else await expect(f.getByRole("button", { name: "ブラウザの記録を消す" })).toBeVisible();
   // ブラウザは止めて起こし直した：前のタブは無く、記録も無い
   await expect(tab1, "消したのに前のタブが残っている").toHaveCount(0, { timeout: 30_000 });
   await expect.poll(async () => {
@@ -443,8 +451,7 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     await expect.poll(async () => (await uiCall(page, "getSettings")).viewScale, { timeout: 20_000, message: "倍率2の画面を開いたのに倍率を覚えない" }).toBe(2);
     expect((await uiCall(page, "getBrowserStatus")).scale).toBe(1);
     // 起こし直す（「ブラウザの記録を消す」）——倍率2で起きる
-    await hf.getByRole("button", { name: "ブラウザの記録を消す" }).click();
-    await hf.getByRole("button", { name: "もう一度押すと消します" }).click();
+    await clearBrowserData(hf);
     await expect.poll(async () => {
       const st = await uiCall(page, "getBrowserStatus");
       return { running: st.running, scale: st.scale };
@@ -491,5 +498,131 @@ test("人の画面：カードから開いて映し、人の入力がページ�
     await hidpi.close();
   }
 
+  expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
+});
+
+test("狭い Canvas（会話の横、幅 約390px）：上の帯は2段とも1行のまま幅を変えても高さが変わらず、しまった「ブラウザの記録を消す」は「…」から2回押しで使える。「…」はキーボードでも開け閉めできる（Backlog #384）", async ({ page }) => {
+  expect(threadUrl, "前の試験が会話を開いていない").not.toBe("");
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await openApp(page);
+  await page.goto(threadUrl);
+  // 会話の browserOpen のカードから、会話の横に開く（会話は最新の 20 件だけ描く——無ければ前を出す）
+  const card = page.getByTestId("tool-entry-card").filter({ hasText: `ブラウザで開いた：${BASE}/whoami` });
+  for (let i = 0; i < 10 && (await card.count()) === 0 && (await page.getByTestId("show-earlier-messages").count()) > 0; i += 1) await page.getByTestId("show-earlier-messages").click();
+  await card.getByRole("button", { name: "開く" }).click();
+  const f = canvasFrame(page);
+  await expect(f.getByTestId("browser-state"), "流れが開かない").toHaveAttribute("data-state", "open", { timeout: 60_000 });
+  await expect(f.getByTestId("viewport")).toHaveText(/^ページ \d+×\d+$/, { timeout: 20_000 });
+
+  /** Canvas の幅（人の画面の中から見た幅） */
+  const canvasWidth = () => f.locator("body").evaluate(() => window.innerWidth);
+  /** 上の帯2段の高さ・中身が1行に収まっているか（どれも帯の中・はみ出しなし） */
+  const bars = () =>
+    f.locator(".bar").evaluateAll((els) =>
+      els.map((bar) => {
+        const r = bar.getBoundingClientRect();
+        const shown = [...bar.children].filter((e) => e.getClientRects().length > 0);
+        const outside = shown.filter((e) => {
+          const c = e.getBoundingClientRect();
+          return c.top < r.top - 0.5 || c.bottom > r.bottom + 0.5 || c.left < r.left - 0.5 || c.right > r.right + 0.5;
+        });
+        return { height: r.height, outside: outside.map((e) => e.id || e.className), overflow: bar.scrollWidth - bar.clientWidth };
+      }),
+    );
+  // 広いときの帯の高さ（1行の高さ）
+  const wide = await bars();
+  expect(wide.map((b) => [b.outside, b.overflow]), "広い Canvas で帯の中身がはみ出している").toEqual([[[], 0], [[], 0]]);
+
+  // 境界を右端（会話が半分）まで寄せ、窓を縮めて Canvas を約390px にする
+  const split = page.getByRole("separator", { name: "Base Thread と Canvas の境界" });
+  await split.focus();
+  for (let i = 0; i < 10; i += 1) await split.press("ArrowRight");
+  for (let i = 0; i < 8; i += 1) {
+    const w = await canvasWidth();
+    if (Math.abs(w - 390) <= 6) break;
+    // Canvas は会話の半分の残り（窓の幅の約半分）
+    await page.setViewportSize({ width: Math.round(page.viewportSize()!.width + (390 - w) * 2), height: 800 });
+    await expect.poll(canvasWidth, { message: "窓を縮めても Canvas の幅が変わらない" }).not.toBe(w);
+  }
+  const narrowWidth = await canvasWidth();
+  expect(Math.abs(narrowWidth - 390), `Canvas の幅が約390px にならない（${narrowWidth}px）`).toBeLessThanOrEqual(6);
+  test.info().annotations.push({ type: "canvas", description: `狭い Canvas ${narrowWidth}px` });
+
+  // **帯は2段とも1行**：高さは広いときと同じ、中身は帯の中
+  await expect.poll(bars, { message: "狭い Canvas で帯が1行にならない" }).toEqual(wide.map((b) => ({ ...b })));
+  // 「AI に触らせない」「画面に合わせる」は出たまま。「ブラウザの記録を消す」は「…」にしまってある
+  await expect(f.getByTestId("ai-blocked")).toBeVisible();
+  await expect(f.getByTestId("fit")).toBeVisible();
+  await expect(f.getByTestId("browser-state")).toHaveText("繋がっています");
+  await expect(f.getByRole("textbox", { name: "URL" })).toBeVisible();
+  const more = f.getByRole("button", { name: "もっと見る" });
+  await expect(more, "狭いのに「…」が出ない").toBeVisible();
+  await expect(f.getByRole("button", { name: "ブラウザの記録を消す" }), "狭いのに「ブラウザの記録を消す」が帯に残っている").toHaveCount(0);
+
+  // **幅を変えても帯の高さは変わらない**（境界を少しずつ戻して Canvas を広げる）
+  const seen = new Set<number>();
+  for (let i = 0; i < 12; i += 1) {
+    const w = await canvasWidth();
+    seen.add(w);
+    await expect.poll(bars, { message: `Canvas の幅 ${w}px で帯の高さが変わった・はみ出した` }).toEqual(wide);
+    await split.press("ArrowLeft");
+    await expect.poll(canvasWidth).not.toBe(w);
+  }
+  expect(seen.size, "Canvas の幅が変わっていない").toBeGreaterThan(5);
+  // 十分に広げれば帯に戻る（窓を広げる）
+  const narrowViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 1600, height: 800 });
+  await expect(f.getByRole("button", { name: "ブラウザの記録を消す" }), `広げても（${await canvasWidth()}px）「ブラウザの記録を消す」が帯に戻らない`).toBeVisible();
+  await expect(more).toBeHidden();
+  expect(await bars(), "広げた帯の高さが変わった").toEqual(wide);
+  // 狭く戻す
+  await page.setViewportSize(narrowViewport);
+  await split.focus();
+  for (let i = 0; i < 12; i += 1) await split.press("ArrowRight");
+  await expect.poll(canvasWidth).toBe(narrowWidth);
+  await expect(more).toBeVisible();
+
+  // **「…」はキーボードで開け閉めできる**：開くと中の1つ目に移り、Escape で閉じて「…」に戻る
+  await more.focus();
+  await page.keyboard.press("Enter");
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await expect(f.getByRole("menuitem", { name: "ブラウザの記録を消す" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await expect(f.getByRole("menuitem", { name: "ブラウザの記録を消す" })).toBeHidden();
+  await expect(more).toBeFocused();
+  // 1回押して閉じると、2回目を待つのをやめる（開き直すと元の名前）
+  await more.click();
+  await f.getByRole("menuitem", { name: "ブラウザの記録を消す" }).click();
+  await expect(f.getByRole("menuitem", { name: "もう一度押すと消します" })).toBeVisible();
+  // 開いているあいだも帯は1行（「…」の中身は帯の外に重ねて出す）
+  expect(await bars()).toEqual(wide);
+  await page.keyboard.press("Escape");
+  await more.click();
+  await expect(f.getByRole("menuitem", { name: "ブラウザの記録を消す" }), "閉じたのに「もう一度押すと消します」のまま").toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+
+  // **「…」から記録を消す**：通信を作ってから、2回押しで消す
+  const urlBar = f.getByRole("textbox", { name: "URL" });
+  await urlBar.fill(`${BASE}/`);
+  await urlBar.press("Enter");
+  await expect(f.locator(".tab[aria-selected=true]")).toContainText("Browser 試験のページ", { timeout: 30_000 });
+  await expect(f.getByRole("button", { name: /^通信/ })).not.toHaveAccessibleName("通信0", { timeout: 20_000 });
+  expect(await clearBrowserData(f), "狭いのに「…」から押していない").toBe(true);
+  await expect(f.getByRole("button", { name: /^通信/ }), "「…」から消しても通信の件数が 0 にならない").toHaveAccessibleName("通信0", { timeout: 30_000 });
+  await expect(f.getByRole("button", { name: /^コンソール/ })).toHaveAccessibleName("コンソール0");
+  await expect(f.locator(".tab", { hasText: "Browser 試験のページ" }), "消したのに前のタブが残っている").toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => {
+    const st = await uiCall(page, "getBrowserStatus");
+    return { running: st.running, records: (st.log as { records: number }).records };
+  }, { timeout: 30_000 }).toEqual({ running: true, records: 0 });
+  // 消したあとも帯は1行で、「ブラウザの記録を消す」は「…」の中
+  await expect.poll(bars).toEqual(wide);
+  await more.click();
+  await expect(f.getByRole("menuitem", { name: "ブラウザの記録を消す" })).toBeVisible();
+  await page.keyboard.press("Escape");
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

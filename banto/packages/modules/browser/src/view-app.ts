@@ -1,6 +1,6 @@
 // **人の画面「ブラウザ」**（launcher、v4-modules.md §4.1「人の画面」）。
 //
-// 上に戻る/進む/読み直し・URL 欄・タブの並び・「AI に触らせない」・「画面に合わせる」・「ブラウザの記録を消す」、
+// 上に戻る/進む/読み直し・URL 欄・タブの並び・「AI に触らせない」・「画面に合わせる」・「ブラウザの記録を消す」（帯は1行で、狭ければ「…」にしまう）、
 // 真ん中にページの絵、下に通信とコンソールの欄（DevTools の Network と Console に倣う）。絵と入力は共通の流れの口
 // （アーキ仕様 §5.8、`@banto/stream-client` を埋め込む）に乗る。流れの名前は `browser`、params は
 // `{ width, height, dpr, visible, codec, audio }`（絵を出す場所の CSS ピクセルと devicePixelRatio、描ける形、音を出しているか）。
@@ -68,14 +68,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 #app { display: flex; flex-direction: column; height: 100%; }
-.bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; }
+.bar > * { flex: none; }
 .btn { height: 28px; min-width: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); cursor: pointer; white-space: nowrap; }
 .btn:hover:not(:disabled) { background: var(--bg-3); }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn[data-armed] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
-.url { flex: 1 1 240px; min-width: 0; display: flex; }
+.bar > .url { flex: 1 1 240px; min-width: 96px; display: flex; }
 .url input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); font-family: var(--mono); font-size: var(--t-xs); }
-.state { color: var(--ink-3); font-size: var(--t-xs); white-space: nowrap; }
+.bar > .state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); font-size: var(--t-xs); white-space: nowrap; }
 .state[data-state="open"] { color: var(--ink-2); }
 .state[data-state="reconnecting"] { color: var(--warn); }
 .toggle { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); cursor: pointer; user-select: none; font-size: var(--t-xs); white-space: nowrap; }
@@ -83,6 +84,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .toggle.block:has(input:checked) { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .toggle input { margin: 0; }
 .dim { color: var(--ink-3); font-size: var(--t-xs); white-space: nowrap; }
+.bar > .dim { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bar > .spacer { flex: 1 1 0; min-width: 0; }
+.more { position: relative; }
+.menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 10; display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); box-shadow: 0 4px 12px rgba(0,0,0,.18); }
+.menu .btn { text-align: left; }
 
 .tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .tab { display: inline-flex; align-items: center; max-width: 220px; height: 28px; border-radius: var(--r-sm); border: 1px solid transparent; flex: none; }
@@ -734,7 +740,10 @@ const SCRIPT = String.raw`
     $("ai-blocked").checked = view.aiBlocked;
     $("block-note").hidden = !view.aiBlocked;
     $("fit").checked = view.fit;
-    $("viewport").textContent = view.viewport ? "ページ " + view.viewport.width + "×" + view.viewport.height + (view.fitByOther ? "（ほかの画面に合わせています）" : "") : "";
+    const vp = $("viewport");
+    vp.textContent = view.viewport ? "ページ " + view.viewport.width + "×" + view.viewport.height + (view.fitByOther ? "（ほかの画面に合わせています）" : "") : "";
+    vp.title = vp.textContent;
+    fitBar();
     $("count-network").textContent = String(view.log.records);
     $("count-console").textContent = String(view.log.console);
     renderEmpty();
@@ -781,15 +790,22 @@ const SCRIPT = String.raw`
     sendMsg({ type: "fit", on: wantFit });
   });
   let clearArmed = 0;
+  /** 2回目を待つのをやめる（4 秒たった・押した・「…」を閉じた） */
+  function disarmClear() {
+    if (!clearArmed) return;
+    const b = $("clear-data");
+    window.clearTimeout(clearArmed); clearArmed = 0; delete b.dataset.armed; b.textContent = "ブラウザの記録を消す";
+  }
   $("clear-data").addEventListener("click", async () => {
     const b = $("clear-data");
     if (!clearArmed) {
       b.dataset.armed = "";
       b.textContent = "もう一度押すと消します";
-      clearArmed = window.setTimeout(() => { clearArmed = 0; delete b.dataset.armed; b.textContent = "ブラウザの記録を消す"; }, 4000);
+      clearArmed = window.setTimeout(() => { disarmClear(); fitBar(); }, 4000);
       return;
     }
-    window.clearTimeout(clearArmed); clearArmed = 0; delete b.dataset.armed; b.textContent = "ブラウザの記録を消す";
+    disarmClear();
+    closeMenu(false);
     try {
       await call("clearBrowserData", {});
       frame = null;
@@ -797,6 +813,56 @@ const SCRIPT = String.raw`
       if (panel) loadPanel();
     } catch (err) { showError("消せませんでした：" + err.message); }
   });
+
+  // ---- 2段目の帯は1行（v4-modules.md §4.1「人の画面」）----
+  // 折り返すと絵を出す場所が1行ぶん低くなり、「画面に合わせる」のページの大きさまで替わる。幅が足りなければ
+  // 「ブラウザの記録を消す」を「…」（もっと見る）にしまい、それでも足りなければ「ページ W×H」を省く（CSS の text-overflow）。
+  // 「AI に触らせない」「画面に合わせる」は最後まで出す
+  const bar2 = $("more").parentElement;
+  const more = $("more");
+  const moreButton = $("more-button");
+  const moreMenu = $("more-menu");
+  function fitBar() {
+    // 開いている間・2回目を待っている間は動かさない（押そうとしているものが動く）——閉じた・戻ったときに決め直す
+    if (!moreMenu.hidden || clearArmed) return;
+    const b = $("clear-data");
+    // 測るために一度帯に戻す（同じ処理の中なので、途中の形は描かれない）
+    if (b.parentElement !== bar2) bar2.insertBefore(b, more);
+    b.removeAttribute("role");
+    more.hidden = true;
+    const cs = window.getComputedStyle(bar2);
+    const room = bar2.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const items = [...bar2.children].filter((e) => !e.hidden);
+    // 省ける「ページ W×H」は省く前の幅（scrollWidth）で数える——それが省かれる前にしまう。空きを埋める spacer は数えない
+    // （収まっていれば空きのぶん広がり、数えると合計がいつも帯の幅になる）
+    const need = items.reduce((sum, e) => sum + (e.classList.contains("spacer") ? 0 : e.id === "viewport" ? e.scrollWidth : e.getBoundingClientRect().width), 0) + (parseFloat(cs.columnGap) || 0) * (items.length - 1);
+    if (need <= room + 0.5) return;
+    moreMenu.append(b);
+    b.setAttribute("role", "menuitem");
+    more.hidden = false;
+  }
+  function openMenu() {
+    moreMenu.hidden = false;
+    moreButton.setAttribute("aria-expanded", "true");
+    const first = moreMenu.querySelector("button");
+    if (first) first.focus();
+  }
+  function closeMenu(focusButton) {
+    if (moreMenu.hidden) return;
+    moreMenu.hidden = true;
+    moreButton.setAttribute("aria-expanded", "false");
+    if (focusButton) moreButton.focus();
+    disarmClear();
+    fitBar();
+  }
+  moreButton.addEventListener("click", () => { if (moreMenu.hidden) openMenu(); else closeMenu(false); });
+  more.addEventListener("keydown", (e) => { if (e.key === "Escape" && !moreMenu.hidden) { e.preventDefault(); closeMenu(true); } });
+  document.addEventListener("pointerdown", (e) => { if (!more.contains(e.target)) closeMenu(false); });
+  // 帯の幅のほか、出しているものの幅（表示の文字の大きさが後から届く）が変わっても決め直す
+  const barObserver = new ResizeObserver(() => fitBar());
+  for (const e of [bar2, $("ai-blocked").parentElement, $("fit").parentElement]) barObserver.observe(e);
+  fitBar();
+
   $("keyboard").hidden = !TOUCH;
   $("keyboard").addEventListener("click", () => { ime.focus({ preventScroll: true }); });
 
@@ -1052,8 +1118,12 @@ export function browserViewHtml(): string {
     <label class="toggle block" title="AI の操作の道具（開く・操作・評価・タブの切り替えと閉じる）を断る"><input type="checkbox" id="ai-blocked" data-testid="ai-blocked" />AI に触らせない</label>
     <label class="toggle" title="ページの大きさをこの画面に合わせる（携帯で見るとき）"><input type="checkbox" id="fit" data-testid="fit" />画面に合わせる</label>
     <span class="dim" id="viewport" data-testid="viewport"></span>
-    <span style="flex:1"></span>
+    <span class="spacer"></span>
     <button class="btn" id="clear-data" type="button" title="Cookie・localStorage 等のログイン状態と、通信の記録を消す">ブラウザの記録を消す</button>
+    <div class="more" id="more" hidden>
+      <button class="btn" id="more-button" type="button" title="もっと見る" aria-label="もっと見る" aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu" data-testid="more">…</button>
+      <div class="menu" id="more-menu" role="menu" aria-label="もっと見る" hidden></div>
+    </div>
   </div>
   <div class="tabs" id="tabs" role="tablist" aria-label="タブ"></div>
   <div class="notice" id="block-note" data-testid="block-note" hidden>

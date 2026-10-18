@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
+import { clearBrowserData, createProject, fakeTurn, openApp, waitForProjectModule } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 // **初回はブラウザを入れるのに数分かかる**（改訂・2026-10-17）——字体・GStreamer・音・Chrome・Xvfb を apt と取ってくるので、
@@ -453,8 +453,7 @@ test("倍率が端数の画面（1.5・1.25・1.75）：「画面に合わせる
       let f = await openCanvas();
       // 開いた画面の倍率で起こし直す（倍率は起こすときにしか決まらない）——「ブラウザの記録を消す」
       await expect.poll(async () => (await uiCall(h, "getSettings")).viewScale, { timeout: 20_000, message: `倍率 ${scale} を覚えない` }).toBe(scale);
-      await f.getByRole("button", { name: "ブラウザの記録を消す" }).click();
-      await f.getByRole("button", { name: "もう一度押すと消します" }).click();
+      await clearBrowserData(f);
       await expect.poll(async () => {
         const st = await uiCall(h, "getBrowserStatus");
         return { running: st.running, scale: st.scale };
