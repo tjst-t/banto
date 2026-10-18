@@ -1162,17 +1162,26 @@ Repositories の持つ鍵を無効にするだけになる。しかも JSON に�
 2. **置いてある値をそのまま返す**のは次のときだけ：
    - 呼び元の Module（host が刻んだ `dev.banto/callerModule` の **`name`——宣言の名前**）が、その行の持ち主（`owner`）と同じ
      ——持ち主は自分の組（refresh token 込み）が要る
-   - 人の管理操作の中（host が刻んだ `admin`）——窓口の「Vault をまたいで移す」は値を丸ごと運ぶ（`importOwnedSecret`）
-   - **banto 本体（host）が中継を通さずに直接呼んだ**（`dev.banto/callerModule` の刻印が無い）——core がリモート MCP の
-     OAuth（`oauth-<名前>`）を読む道（窓口で在りかを引いてから金庫の `resolveAlias` を直接呼ぶ）。AI・Module の呼び出しは
-     必ず中継を通り刻印が付くので、刻印が無いのは banto 自身のコードだけ
+   - **host が中継を通さずに直接呼んだ**（`dev.banto/callerModule` の刻印が無い）——リモート MCP のログインの読み（窓口で
+     在りかを引いてから金庫の `resolveAlias` を直接呼ぶ）・人の画面の API（`admin`）。AI・Module の呼び出しは必ず中継を
+     通り刻印が付く。**ただし起動のときの差し込み `${secret:…}` は、同じ直接の道でも種別 `oauth-token` を断る**（下）
+   - `admin` の刻印があっても、**呼び元の Module の刻印があれば（Module の画面から中継で来た）持ち主でない呼び元として
+     扱う**——外から入れた Module の画面から `resolveAlias` を呼ばれ人が承認しても、カードの文（「X に vault-local の
+     resolveAlias を呼ばせてよいか」）からは refresh token が出ることが分からない。窓口の「Vault をまたいで移す」が
+     `oauth-token` を丸ごと運ぶのは、**新しい口 `exportOwnedSecret({name, group})`** に移す（人の管理操作の中だけ——
+     `assertHuman`、可視性 `module`、値を返す。同梱どうしの窓口でなければ中継の承認に掛かり、カードに口の名前が出る）
 3. **持ち主の記録が無い行**（2026-10-06 より前に置かれ、まだ置き換えられていないもの）は断る：「`<alias>` は banto が
-   置いたログインですが、どの Module が置いたかの記録がありません。置いた Module でもう一度ログインすると使えます」
+   置いたログインですが、どの Module が置いたかの記録がありません。置いた Module でもう一度ログインすると使えます」。
+   **持ち主自身の読みも同じく断られる**（記録が無いので持ち主かどうか決められない）——Repositories は今、読んで取り
+   直して書き戻すときに持ち主が付く（`putSecret`）ので、2026-10-06 以降に一度も使っていないアカウントは clone・
+   `push_branch`・「確かめる」も止まり、ログインし直しになる。**入れる前に本番の Vault で持ち主の無い `oauth-token` の
+   行を数えて、ここに書く**（規則1）
    （Repositories はログインし直すと同じ置き場を置き換え、`putSecret` が持ち主を刻む。別の Vault へ移しても——
    `importOwnedSecret` は持ち主ごと運ぶので——記録の無いものは無いまま）
 4. 持ち主がいれば、**持ち主の `presentOwnedSecret({name, group, value})`** を中継で呼ぶ（受けた呼び出しの印
    `dev.banto/callId` を添える——host が親の呼び出しをたどって Project・人待ちを継ぎ、持ち主の中の `putSecret` もその下に
-   繋がる）。`name`・`group` はその行の
+   繋がる）。`name`・`group` は**窓口の `lookupAlias` が返すのと同じ形**（版付きのグループの書き方を含む）で渡す——持ち主は
+   記録した在りかと文字列で比べる。`name`・`group` はその行の
    置き場（参照なら元の置き場）、`value` は**いま置いてある値**——持ち主が中継で `resolveAlias` を呼び直さずに済む
    （呼び直すと、その中継が値を返す口として別の承認カードに掛かる）。持ち主の答え（文字列）を、その alias の値として返す
 5. **持ち主が答えなかったら断る**——持ち主がもう登録されていない（Repositories を外した等）・`presentOwnedSecret` を
@@ -1193,6 +1202,11 @@ Repositories の持つ鍵を無効にするだけになる。しかも JSON に�
    の2つで追う
 9. 承認：`resolveAlias`・`resolveAliases` への中継は今までどおり alias ごとに聞く。Vault → 持ち主の中継は聞かない
    （アーキ仕様 §2.5「持ち主が、自分の置いた秘密から渡す値を作る口」）
+
+**起動のときの差し込み `${secret:…}`**：種別 `oauth-token` は差し込まない——引けない alias と同じく、その Module を起こさず
+理由を出す（「`<alias>` は banto が置いたログインなので、起動の設定には差し込めません」）。差し込んだ値は Module の環境
+（リモート MCP なら毎回外へ送る見出し）に入るので、切れた値と refresh token がそのまま出る。正当な使い道は無い（リモート
+MCP のログインは banto 本体が読み、Repositories のログインは JSON）。種別は core が窓口で在りかを引くときに見る
 
 **持ち主の口 `presentOwnedSecret({name, group, value})`**（可視性 `module`、`_meta["dev.banto/presentsOwnedSecret"]: true`、
 識別子 `name`・`group`）
@@ -1243,6 +1257,8 @@ Repositories の持つ鍵を無効にするだけになる。しかも JSON に�
   banto が止まっていた間・起きた直後は古いまま渡る。「裏で定期的に取り直すことはしない」（§2.4）も崩す
 - **Shell が種別を見て持ち主を呼ぶ**：Shell 以外（Subagent・第三者の Module）から引いたときに効かない。秘密を渡す
   関所は Vault に1つ
+- **`admin` の刻印があれば丸ごと返す**（2回目までの案）：Module の画面から中継で来た呼び出しにも `admin` が付くので、外から
+  入れた Module に refresh token が渡りうる
 - **持ち主がいない・口を持たないときは置いてある値を返す**（1回目の案）：上の 5.。持ち主を外す・一覧を一時的に読めない、
   だけで refresh token 込みの値が渡る
 - **持ち主に「最後に置いた組」を持たせず、Vault が置き場ごとに `presentOwnedSecret` を1本ずつ並べる**：Repositories が

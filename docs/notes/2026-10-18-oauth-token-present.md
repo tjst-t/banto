@@ -78,3 +78,17 @@
   起こし直しでの扱い）。security の表にも
 - 依存の確かめを外す範囲（Project の縛りは残す）と host の順序、Vault が `callId` を添えること、`importOwnedSecret` は
   持ち主の無いものを無いまま運ぶこと
+
+## Fable のレビュー（3回目）を受けて変えたこと
+
+判断は「`${secret:…}` を決めてから」。直したもの：
+
+- **起動のときの差し込み `${secret:…}` も刻印なしの直接の道で、`oauth-token` を Module の環境・リモート MCP の見出しへ丸ごと
+  渡す**——差し込まないことにした（正当な使い道が無い）
+- **`admin` の例外が広い**——Module の画面から中継で来た呼び出しにも `admin` が付き、外から入れた Module に refresh token が
+  渡りうる。刻印のある呼び出しは持ち主でない呼び元として扱い、窓口の移動は新しい `exportOwnedSecret`（`assertHuman`）に移す
+- **持ち主の記録が無い行は、持ち主自身の読みも断られる**——明記し、入れる前に本番で数えることにした
+- `presentOwnedSecret` の `name`・`group` は窓口の `lookupAlias` と同じ形で渡す
+
+実装の条件（Backlog #405 の完了条件に入れる）：Vault が `resolveAliases` の途中で持ち主を待つ間に、持ち主が同じ Vault へ
+`putSecret` で書き戻せること・GitHub の往復を含めて中継の時間の上限に収まることを、試験で確かめる。
