@@ -106,6 +106,7 @@ import type { CallerIdentity } from "./relay/host-relay-endpoint.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { RateLimitContinuations } from "./delivery/rate-limit-continuation.js";
+import { rateLimitWaitOf } from "./project-thread/rate-limit-wait.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
@@ -374,6 +375,7 @@ async function main(): Promise<void> {
   const claudeLoginCardKey = (accountId: string) => `claude-login-upstream-unauthorized:${accountId}`;
   /** 並びの全部が閾値を越えたカード（Project の並びごとに1枚——鍵に並びの中身） */
   const claudeAllOverCardKey = (orderKey: string) => `claude-accounts-all-over:${orderKey}`;
+  const CLAUDE_ACCOUNTS_ALL_OVER_TITLE = "Claude のアカウントが全部、閾値を越えました";
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     refreshEnabled: relayRefresh.enabled,
     accounts: claudeAccounts,
@@ -423,19 +425,20 @@ async function main(): Promise<void> {
       console.log(`[host] Project ${change.projectId} の Claude のアカウントを ${label(change.from)} から ${label(change.to)} に切り替えました（${change.reason.kind}）`);
       void projectThread.recordClaudeAccountSwitch(change).catch((err: unknown) => console.warn("[host] Claude のアカウントの切り替えを記録できませんでした:", err));
     },
-    // **並びの全部が閾値を越えたら受信箱に1枚**（Project の並びごと。鍵に並びの中身）。どれかが下に戻ったら自動で閉じる
+    // **並びの全部が閾値を越えたら受信箱に1枚**（Project の並びごと。鍵に並びの中身）。どれかが下に戻ったら自動で閉じる。
+    // 画面は `claudeAccounts` でカード（並び・続けているもの・メーター）を組む（v4-frontend.md §6.46）。本文は文だけで読む先の分
     onAllOverThreshold: ({ key, projectId, order, using }) => {
-      const name = projectThread.getProject(projectId)?.name ?? projectId;
       const labels = order.map((id) => claudeAccounts.get(id)?.label ?? id);
       const th = claudeAccounts.thresholds();
       void inbox
         .raiseNotice({
           dedupeKey: claudeAllOverCardKey(key),
-          title: `Project ${name} の Claude のアカウントが全部閾値を越えました`,
+          title: CLAUDE_ACCOUNTS_ALL_OVER_TITLE,
           detail:
             `並び（${labels.join("・")}）のどれも、使用率が閾値（5時間 ${Math.round(th.fiveHour * 100)}%・週 ${Math.round(th.sevenDay * 100)}%）を越えています。` +
-            `いちばん早くリセットされる ${claudeAccounts.get(using)?.label ?? using} で続けています。` +
-            "設定「Claude のアカウント」でアカウントを足すか、閾値を上げてください。どれかが閾値の下に戻れば、このカードは自動で閉じます",
+            `一番早くリセットされる「${claudeAccounts.get(using)?.label ?? using}」で続けています。` +
+            "上限に当たると会話は止まり、リセットのあと自動で続けます。どれかが閾値の下に戻ったら、このカードは自動で閉じます",
+          claudeAccounts: { projectId, order: [...order], using },
         })
         .catch((err: unknown) => console.warn("[host] お知らせを出せませんでした:", err));
     },
@@ -655,6 +658,18 @@ async function main(): Promise<void> {
     inbox,
     deliveries,
     earliestReset: (projectId) => claudeLogin.earliestResetFor(projectId),
+    // 待ちが変わったら画面に知らせる（会話の待ちの帯・サイドバーの1行、v4-frontend.md §6.46）。真実は Event Store（`rateLimitWaitOf`）
+    // 走っている間は待っていない（そのターンが始まれば最後のターンが替わる——始まりの記録より先に鍵が取られる）
+    onChange: (threadId) => {
+      const thread = projectThread.getThread(threadId);
+      const wait = threadTurns.isRunning(threadId) ? undefined : rateLimitWaitOf(thread);
+      appEvents.publish({
+        type: "rate_limit_wait.changed",
+        threadId,
+        ...(thread?.projectId ? { projectId: thread.projectId } : {}),
+        ...(wait ? { continueAt: wait.continueAt } : {}),
+      });
+    },
     // E2E だけが縮める（リセットの1分後を待たずに続くところを見る）
     ...(process.env.BANTO_TEST_RATE_LIMIT_MARGIN_MS !== undefined ? { marginMs: Number(process.env.BANTO_TEST_RATE_LIMIT_MARGIN_MS) } : {}),
   });

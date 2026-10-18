@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, NoticeRuntimeKey, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
+import type { InboxItem, JudgmentItem, JudgmentSource, NoticeClaudeAccounts, NoticeItem, NoticeRuntimeKey, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -202,6 +202,8 @@ export class InboxStore {
     resume?: { threadId: string; turnId: string };
     /** 実行場所の SSH 鍵が置き場の外にある（`NoticeItem.runtimeKey`） */
     runtimeKey?: NoticeRuntimeKey;
+    /** 並びの Claude のアカウントが全部閾値を越えた（`NoticeItem.claudeAccounts`） */
+    claudeAccounts?: NoticeClaudeAccounts;
   }): Promise<NoticeItem> {
     const open = this.listOpen().find(
       (i): i is NoticeItem =>

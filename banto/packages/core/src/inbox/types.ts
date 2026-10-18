@@ -146,8 +146,24 @@ export interface NoticeItem {
    * 人が「移す」を押せる（`POST /api/runtimes/:name/move-key`）。無ければ理由と入口だけ
    */
   runtimeKey?: NoticeRuntimeKey;
+  /**
+   * **並びの Claude のアカウントが全部閾値を越えた**（追加・2026-10-18、v4-frontend.md §6.46・v4-security.md §2「Claude の
+   * アカウントを複数持つ」の 6.）。画面はこれでカード（並び・続けているもの・アカウントごとのメーター）を組む。お知らせ自体は
+   * banto 全体のもの（`projectId` は持たない——鍵は並びの中身で、同じ並びの Project で1枚）
+   */
+  claudeAccounts?: NoticeClaudeAccounts;
   acknowledged: boolean;
   createdAt: string;
+}
+
+/** どの並びが全部閾値を越えたか（`NoticeItem.claudeAccounts`） */
+export interface NoticeClaudeAccounts {
+  /** 全部越えに気づいた要求の Project（「Project の設定を開く」の行き先） */
+  projectId: string;
+  /** 並び（アカウントの id の優先順） */
+  order: string[];
+  /** 続けているアカウント（一番早くリセットされるもの） */
+  using: string;
 }
 
 /** どの実行場所のどの鍵の話か（`NoticeItem.runtimeKey`） */

@@ -8,6 +8,7 @@ import {
   reopenRealThread,
   setRealForkOrder,
 } from "../backend/client";
+import type { RealThread } from "../backend/client";
 
 // デモ用の台本つきThreadは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
 // 実Threadはregisterrealthread/hydrateRealProjects経由でここへ登録される
@@ -176,13 +177,24 @@ function renumberDefaultForkTitles(projectId: string): void {
 /** Clear等でbanto host側の状態が変わった後、そのThreadの表示データだけを
  *  再取得して差し替える（決定・2026-09-04）——ローカルに楽観的なコピーは
  *  持たない（真実は一箇所、規則3）。 */
+/** host の Thread の記録から、会話の中の印（アカウントの切り替え・上限で終わったターン）を引く */
+export function realThreadExtraOf(record: RealThread): Pick<MockThread, "realAccountSwitches" | "realRateLimited"> {
+  return { realAccountSwitches: record.accountSwitches, realRateLimited: record.lastTurn?.rateLimit !== undefined };
+}
+
 export function updateRealThreadData(
   threadId: string,
   realMessages: MockThread["realMessages"],
   realMarkers: MockThread["realMarkers"],
   realUsage?: MockThread["realUsage"],
+  /** 会話の中の印（アカウントの切り替え・上限で終わったターン、追加・2026-10-18） */
+  extra?: Pick<MockThread, "realAccountSwitches" | "realRateLimited">,
 ): void {
-  mockThreads = mockThreads.map((t) => (t.id === threadId ? { ...t, realMessages, realMarkers, realUsage } : t));
+  mockThreads = mockThreads.map((t) =>
+    t.id === threadId
+      ? { ...t, realMessages, realMarkers, realUsage, realAccountSwitches: extra?.realAccountSwitches, realRateLimited: extra?.realRateLimited }
+      : t,
+  );
   notifyMockStoreChange();
 }
 
@@ -281,7 +293,7 @@ export function refreshRealThreadData(id: string): Promise<void> {
   let pending = realThreadFetches.get(id);
   if (!pending) {
     pending = getRealThread(id)
-      .then((updated) => updateRealThreadData(id, updated.messages, updated.markers, updated.usage))
+      .then((updated) => updateRealThreadData(id, updated.messages, updated.markers, updated.usage, realThreadExtraOf(updated)))
       .finally(() => realThreadFetches.delete(id));
     realThreadFetches.set(id, pending);
   }

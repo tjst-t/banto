@@ -375,6 +375,8 @@ export interface ClaudeAccountSwitchRecord {
   from: string;
   to: string;
   reason: ClaudeAccountSwitchReasonRecord;
+  /** 並びの全部が閾値を越えていて、一番早くリセットされる `to` で続けた（会話の1行を warn の形にする、v4-frontend.md §6.46） */
+  allOver?: true;
 }
 
 export interface ClaudeAccountSwitchReasonRecord {

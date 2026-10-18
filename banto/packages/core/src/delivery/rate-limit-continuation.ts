@@ -53,6 +53,11 @@ export interface RateLimitContinuationsDeps {
    * `rate_limit_event.resetsAt` を使う
    */
   earliestReset?(projectId: string): number | undefined;
+  /**
+   * **待ちが変わったかもしれない**（掛け直した・やめた）。画面に知らせる口（`rate_limit_wait.changed`、v4-frontend.md §6.46）。
+   * 同じ待ちのままでも呼ぶ——知らせる側が今の待ちを読んで送る
+   */
+  onChange?(threadId: string): void;
   /** リセットのあと何ミリ秒で続けるか（無ければ `RATE_LIMIT_CONTINUE_MARGIN_MS`。E2E だけが縮める） */
   marginMs?: number;
   now?: () => number;
@@ -116,6 +121,7 @@ export class RateLimitContinuations {
   arm(threadId: string): void {
     this.clear(threadId);
     const wait = rateLimitWaitOf(this.deps.projectThread.getThread(threadId));
+    this.deps.onChange?.(threadId);
     if (!wait) return;
     this.schedule(threadId, Date.parse(wait.continueAt) - this.now());
   }
@@ -148,6 +154,7 @@ export class RateLimitContinuations {
     if (!wait) return { ok: false, status: 409, error: "この会話は上限が戻るのを待っていません" };
     this.clear(threadId);
     await this.deps.projectThread.cancelContinuation(threadId, wait.turnId, by);
+    this.deps.onChange?.(threadId);
     return { ok: true };
   }
 

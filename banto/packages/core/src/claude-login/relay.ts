@@ -191,6 +191,8 @@ export interface ClaudeAccountSwitch {
   from: string;
   to: string;
   reason: ClaudeAccountSwitchReason;
+  /** 並びの全部が閾値を越えていて、一番早くリセットされる `to` で続けている（会話の1行を warn の形にする） */
+  allOver?: true;
 }
 
 /** 並びの全部が閾値を越えた（受信箱に1枚。鍵は並びの中身——Project の並びごとに1枚） */
@@ -545,6 +547,9 @@ export class ClaudeLoginRelay {
       } as RequestInit);
     let upstreamRes: Response | undefined;
     let accountId = first.accountId;
+    /** 返事をしたアカウントを選んだとき、並びの全部が閾値を越えていたか */
+    let allOver = first.allOver;
+    let candidateAllOver = first.allOver;
     /** 並びの全部が上限で断った（送り直しを尽くした） */
     let exhausted = false;
     try {
@@ -559,6 +564,7 @@ export class ClaudeLoginRelay {
           const next = resendable ? this.choose(projectId, tried) : undefined;
           if (next) {
             candidate = next.accountId;
+            candidateAllOver = next.allOver;
             continue;
           }
           if (!upstreamRes) {
@@ -571,6 +577,7 @@ export class ClaudeLoginRelay {
         if (upstreamRes) await upstreamRes.body?.cancel().catch(() => {});
         upstreamRes = attempt.res;
         accountId = candidate;
+        allOver = candidateAllOver;
         if (!rejectedByLimit(upstreamRes) || !resendable) break;
         const next = this.choose(projectId, tried);
         if (!next) {
@@ -578,6 +585,7 @@ export class ClaudeLoginRelay {
           break;
         }
         candidate = next.accountId;
+        candidateAllOver = next.allOver;
       }
     } finally {
       this.bufferedBytes -= held;
@@ -593,7 +601,7 @@ export class ClaudeLoginRelay {
     if (!rejectedByLimit(upstreamRes)) {
       // Thread の印は本体用の合言葉で来たときだけ読む（コンテナから来たものは無視する）
       const threadHeader = caller.kind === "runner" ? req.headers[THREAD_ID_HEADER] : undefined;
-      this.noteServed(projectId, accountId, order, typeof threadHeader === "string" && threadHeader ? threadHeader : undefined);
+      this.noteServed(projectId, accountId, order, typeof threadHeader === "string" && threadHeader ? threadHeader : undefined, allOver);
     }
     const headers: Record<string, string> = {};
     // fetch は圧縮を解いて渡すので、長さと符号化の見出しは付け直さない
@@ -666,7 +674,7 @@ export class ClaudeLoginRelay {
   }
 
   /** **返事を返したアカウントを覚え、替わっていたら切り替えを知らせる**（起こしてから最初の1回は比べる相手が無い） */
-  private noteServed(projectId: string, accountId: string, order: readonly string[], threadId: string | undefined): void {
+  private noteServed(projectId: string, accountId: string, order: readonly string[], threadId: string | undefined, allOver: boolean): void {
     const prev = this.current.get(projectId);
     this.current.set(projectId, accountId);
     if (prev === undefined || prev === accountId) return;
@@ -678,7 +686,7 @@ export class ClaudeLoginRelay {
         : order.indexOf(accountId) < order.indexOf(prev)
           ? { kind: "recovered" }
           : { kind: "unavailable" });
-    this.deps.onAccountSwitched?.({ projectId, ...(threadId ? { threadId } : {}), from: prev, to: accountId, reason });
+    this.deps.onAccountSwitched?.({ projectId, ...(threadId ? { threadId } : {}), from: prev, to: accountId, reason, ...(allOver ? { allOver: true as const } : {}) });
   }
 
   /**

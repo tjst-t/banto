@@ -141,7 +141,7 @@ import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
 import { ClaudeAccountLoginError, type ClaudeAccountLogin, type ClaudeLoginFailure } from "../claude-login/account-login.js";
-import type { ClaudeAccountStore } from "../claude-login/accounts.js";
+import { freshUsage, type ClaudeAccountStore } from "../claude-login/accounts.js";
 import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
@@ -430,7 +430,7 @@ export interface AppDeps {
    * **上限の待ちを人が動かす口**（追加・2026-10-18、v4-security.md §2 の 9.）——「今すぐ続ける」「待つのをやめる」と、止めるボタン。
    * 渡されなければ口は断る（止めるボタンは待ちに触らない）
    */
-  rateLimitWaits?: Pick<RateLimitContinuations, "continueNow" | "cancel">;
+  rateLimitWaits?: Pick<RateLimitContinuations, "continueNow" | "cancel"> & Partial<Pick<RateLimitContinuations, "arm">>;
   /**
    * **MCP Registry を引くときの fetch**（試験用の差し替え口、追加・2026-09-21）。
    *
@@ -1254,11 +1254,22 @@ function judgmentCardsOf(inbox: InboxStore, ids: readonly string[]) {
   });
 }
 
-function toThreadDetail(thread: ThreadState, inbox: InboxStore) {
+function toThreadDetail(thread: ThreadState, inbox: InboxStore, accounts: ClaudeAccountStore | undefined) {
   // 届け直せる札（Backlog #324）も札そのものを持つ——画面には出さない
-  const { awaitingReplies, redeliverableReplies: _redeliverable, ...rest } = thread;
+  const { awaitingReplies, redeliverableReplies: _redeliverable, accountSwitches, ...rest } = thread;
+  const labelOf = (id: string) => accounts?.get(id)?.label;
   return {
     ...rest,
+    // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）。記録は id だけ——名前は読むときに台帳から引く（変えられる、規則3）
+    ...(accountSwitches
+      ? {
+          accountSwitches: accountSwitches.map((r) => {
+            const fromLabel = labelOf(r.from);
+            const toLabel = labelOf(r.to);
+            return { ...r, ...(fromLabel !== undefined ? { fromLabel } : {}), ...(toLabel !== undefined ? { toLabel } : {}) };
+          }),
+        }
+      : {}),
     // 中継の承認のカード：記録の id に、受信箱の中身を添える（`judgmentIds` は画面に渡さない）
     messages: thread.messages.map(({ judgmentIds, ...m }) =>
       judgmentIds && judgmentIds.length > 0 ? { ...m, judgments: judgmentCardsOf(inbox, judgmentIds) } : m,
@@ -1325,6 +1336,31 @@ function projectOfRequestPath(pathname: string, deps: Pick<AppDeps, "projectThre
 }
 
 export function createApp(deps: AppDeps) {
+  /**
+   * **全部越えのカードに、いまの使用率を添える**（追加・2026-10-18、v4-frontend.md §6.46）。記録は並びの id だけ——名前・
+   * メーター・閾値は読むたびに台帳から引く（規則3）。リセットを過ぎた窓は分からない（無い）
+   */
+  function withClaudeAccountsView<T extends object>(item: T, card: { projectId: string; order: string[]; using: string }) {
+    const store = deps.claudeAccounts?.store;
+    if (!store) return item;
+    const now = new Date();
+    const accounts = card.order.flatMap((id) => {
+      const a = store.get(id);
+      if (!a) return [];
+      const usage = a.usage ? freshUsage(a.usage, now) : undefined;
+      return [
+        {
+          id,
+          label: a.label,
+          ...(usage?.fiveHour ? { fiveHour: usage.fiveHour } : {}),
+          ...(usage?.sevenDay ? { sevenDay: usage.sevenDay } : {}),
+          ...(usage?.status ? { status: usage.status, ...(usage.statusResetsAt ? { statusResetsAt: usage.statusResetsAt } : {}) } : {}),
+        },
+      ];
+    });
+    const projectName = deps.projectThread.getProject(card.projectId)?.name;
+    return { ...item, claudeAccounts: { ...card, ...(projectName ? { projectName } : {}), accounts, thresholds: store.thresholds() } };
+  }
   // 選べるモデルの一覧（少しのあいだ覚える、`runner/models.ts`）
   const modelCatalog = new ModelCatalog(deps.listModels ?? listModelsFromCli);
   // **起動したら、モデルの一覧を裏で先に取っておく**（追加・2026-09-26、実測）。一覧はターンの前に
@@ -2684,7 +2720,7 @@ export function createApp(deps: AppDeps) {
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });
-        json(res, 200, toThreadDetail(thread, deps.inbox));
+        json(res, 200, toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store));
         return;
       }
 
@@ -2967,6 +3003,15 @@ export function createApp(deps: AppDeps) {
             .filter((t) => (t.awaitingReplies?.length ?? 0) > 0)
             .map((t) => ({ threadId: t.id, projectId: p.id, items: backgroundItemsOf(t.awaitingReplies) })),
         );
+        // **上限が戻るのを待っている Thread も渡す**（追加・2026-10-18、v4-frontend.md §6.46）——会話の待ちの帯とサイドバーの1行。
+        // 以後は rate_limit_wait.changed で置き換える
+        const rateLimitWaits = deps.projectThread.listProjects().flatMap((p) =>
+          deps.projectThread.listThreadsForProject(p.id).flatMap((t) => {
+            // 走っている間は待っていない（続けた・人が送ったターンの始まりの記録より先に鍵が取られる）
+            const wait = deps.threadTurns?.isRunning(t.id) ? undefined : rateLimitWaitOf(t);
+            return wait ? [{ threadId: t.id, projectId: p.id, continueAt: wait.continueAt }] : [];
+          }),
+        );
         // **混んでいる Project とこの機械も渡す**（追加・2026-10-09、§6.36）——サイドバーの印。以後は resources.busy で置き換える
         const resources = deps.resources?.busy();
         // **移している Project も渡す**（追加・2026-10-12、Backlog #270）——以後は runtime_move.changed で置き換える
@@ -2976,7 +3021,7 @@ export function createApp(deps: AppDeps) {
         // **3 分を超えて繋がらない別のサーバ**（追加・2026-10-17、Backlog #383）——以後は runtimes.unreachable で置き換える
         const unreachable = deps.unreachableRuntimes?.();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);
@@ -3108,6 +3153,8 @@ export function createApp(deps: AppDeps) {
       if (clearMatch && req.method === "POST") {
         try {
           await deps.projectThread.clearThread(clearMatch[1]!);
+          // Clear で上限の待ちは消える（fold の abandonedBy）——時計を外し、画面にも知らせる
+          deps.rateLimitWaits?.arm?.(clearMatch[1]!);
           json(res, 200, { ok: true });
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
@@ -4158,6 +4205,7 @@ export function createApp(deps: AppDeps) {
         };
         const items = await Promise.all(
           deps.inbox.listOpen().map(async (item) => {
+            if (item.kind === "notice" && item.claudeAccounts) return withPlace(withClaudeAccountsView(item, item.claudeAccounts));
             if (item.kind !== "review") return withPlace(item);
             const thread = deps.projectThread.getThread(item.threadId);
             if (!thread) return item;

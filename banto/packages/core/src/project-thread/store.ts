@@ -934,6 +934,7 @@ export class ProjectThreadStore {
     from: string;
     to: string;
     reason: ClaudeAccountSwitchReasonRecord;
+    allOver?: true;
   }): Promise<void> {
     if (!this.getProject(input.projectId)) throw new NotFoundError(`project ${input.projectId} not found`);
     const thread = input.threadId ? this.getThread(input.threadId) : undefined;

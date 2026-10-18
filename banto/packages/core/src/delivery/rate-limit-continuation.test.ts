@@ -66,7 +66,7 @@ interface Host {
 }
 
 /** cli.ts と同じ形に組む：届けものの留め・時計・ターンの終わりで時計を掛け直す。`earliest` は中継が持つ一番早いリセット */
-async function boot(dir: string, run: ReturnType<typeof runner>, opts: { earliest?: number } = {}): Promise<Host> {
+async function boot(dir: string, run: ReturnType<typeof runner>, opts: { earliest?: number; onChange?: (threadId: string) => void } = {}): Promise<Host> {
   const log = new EventLog(dir);
   await log.init();
   const store = new ProjectThreadStore(dir, log);
@@ -90,6 +90,7 @@ async function boot(dir: string, run: ReturnType<typeof runner>, opts: { earlies
     deliveries,
     marginMs: 0,
     ...(opts.earliest !== undefined ? { earliestReset: () => opts.earliest } : {}),
+    ...(opts.onChange ? { onChange: opts.onChange } : {}),
   });
   const r = rateLimits;
   turns.onChange((change) => r.arm(change.threadId));
@@ -365,6 +366,35 @@ test("上限の続きのターンが起こし直しで切れても、切れた�
       await host.store.appendMessage(threadId, "user", "続き", undefined, { from: "banto", title: "t", hop: 0, deliveryId: "d1" });
       const [cut] = host.store.listInterruptedTurns();
       assert.equal(cut?.attempt, 0);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+test("待ちが立った・外れた・やめたら、そのたびに知らせる（画面の待ちの帯とサイドバーの1行）", async () => {
+  await withDir(async ({ dir, threadId }) => {
+    let host: Host | undefined;
+    /** 知らせを受けたときに読んだ待ち（知らせる側が今の待ちを読んで送るのと同じ） */
+    const seen: string[] = [];
+    host = await boot(dir, runner([limited(secondsFromNow(3_600_000)), [say("はい")], limited(secondsFromNow(3_600_000))]), {
+      // cli.ts と同じ読み方：走っている間は待っていない
+      onChange: (id) =>
+        seen.push(`${id === threadId ? "t" : id}:${!host!.turns.isRunning(id) && rateLimitWaitOf(host!.store.getThread(id))?.continueAt ? "waiting" : "-"}`),
+    });
+    try {
+      await host.send(threadId, "作って");
+      // ターンが始まった（待ちは無い）→ 終わった（待っている）
+      assert.deepEqual(seen.slice(-1), ["t:waiting"]);
+      // 人が送ると外れる
+      seen.length = 0;
+      await host.send(threadId, "どう？");
+      assert.equal(seen[0], "t:-");
+      // また止まって、やめる
+      await host.send(threadId, "もう一度");
+      assert.equal(seen.at(-1), "t:waiting");
+      await host.rateLimits.cancel(threadId, "human");
+      assert.equal(seen.at(-1), "t:-");
     } finally {
       host.stop();
     }

@@ -186,15 +186,16 @@ test("GET /api/events は繋いだ時点で走っている Thread を hello に�
         return JSON.parse(text.slice(text.indexOf("data: ") + 6, text.indexOf("\n\n")));
       };
 
-      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [] });
+      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [], rateLimitWaits: [] });
       const release = threadTurns.tryAcquire(thread.id, 0)!;
       assert.deepEqual(await helloOf(), {
         type: "hello",
         running: [{ threadId: thread.id, projectId: project.id }],
         background: [],
+        rateLimitWaits: [],
       });
       release();
-      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [] });
+      assert.deepEqual(await helloOf(), { type: "hello", running: [], background: [], rateLimitWaits: [] });
 
       // **バックグラウンドの仕事も載る**（追加・2026-10-03、§6.33）。札（replyTo）は画面に出さない
       await deps.projectThread.recordAwaitingReply({

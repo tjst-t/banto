@@ -45,6 +45,7 @@ import { keepComposerDraft } from "@/lib/composer-drafts";
 import { registerQuoteComposer } from "@/lib/canvas-quotes";
 import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 import { ProjectCodeTransferLine } from "@/components/banto/shell/code-transfer";
+import { AccountSwitchLine, RateLimitStoppedBand, RateLimitWaitBanner } from "@/components/banto/thread/claude-account-lines";
 
 export interface ThreadMarker {
   id: string;
@@ -186,6 +187,14 @@ export function ThreadPanel({
     // Fork では親の分の横線（Clear 等）は出さない——その発言を描いていない
     for (const marker of forkOwnPart(thread, thread.realMarkers ?? [])) {
       put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
+    }
+    // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）——切り替えた要求が出た場所（同じ seq の物差し）
+    for (const change of forkOwnPart(thread, thread.realAccountSwitches ?? [])) {
+      put(anchorOf(change.seq), <AccountSwitchLine key={`account-switch-${change.seq}`} change={change} />);
+    }
+    // **最後のターンが上限で終わった**——会話の終わりに帯（§6.46）。待ちの帯は入力欄の上（下の hint）
+    if (thread.realRateLimited && msgs.length > 0) {
+      put(`real-${msgs.at(-1)!.seq}`, <RateLimitStoppedBand key="rate-limit-stopped" />);
     }
     // **分岐した場所に「この Fork を開く」を置く**（決定・2026-09-07、ユーザー要望）。
     // Fork は横のレールからも開けるが、**会話のどこで分けたのか**はそこからは
@@ -370,6 +379,8 @@ function ThreadRuntime({
     <>
       {/* 別のサーバへコードを送っている間は、AI が tool を呼べずに止まって見える——そのわけを出す（Backlog #269） */}
       <ProjectCodeTransferLine projectId={projectId} testId="thread-code-transfer" className="mb-2" />
+      {/* 上限が戻るのを待っている——自動で続ける時刻と「今すぐ続ける」「待つのをやめる」（§6.46） */}
+      <RateLimitWaitBanner threadId={threadId} />
       <ThreadMarkers markers={markers} />
     </>
   );

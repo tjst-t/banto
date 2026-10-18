@@ -216,7 +216,7 @@ export type ProjectThreadEvent =
   // `threadId` は本体の要求の `x-banto-thread-id`（その Project の Thread のときだけ）。コンテナからの要求では無い
   | {
       type: "claude_account.switched";
-      payload: { projectId: string; threadId?: string; from: string; to: string; reason: ClaudeAccountSwitchReasonRecord };
+      payload: { projectId: string; threadId?: string; from: string; to: string; reason: ClaudeAccountSwitchReasonRecord; allOver?: true };
     };
 
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
@@ -885,8 +885,8 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         return next;
       }
       case "claude_account.switched": {
-        const { projectId, threadId, from, to, reason } = event.payload;
-        const record = { seq: raw.seq, at: raw.ts, from, to, reason };
+        const { projectId, threadId, from, to, reason, allOver } = event.payload;
+        const record = { seq: raw.seq, at: raw.ts, from, to, reason, ...(allOver ? { allOver } : {}) };
         const p = next.projects.get(projectId);
         if (p) next.projects.set(projectId, { ...p, recentClaudeAccountSwitches: [...(p.recentClaudeAccountSwitches ?? []), record].slice(-RECENT_ACCOUNT_SWITCHES) });
         const t = threadId ? next.threads.get(threadId) : undefined;

@@ -1,6 +1,6 @@
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
-import type { InboxReadModel, JudgmentItem, JudgmentSource, NoticeRuntimeKey, ReviewAutomation, ReviewJudge } from "./types.js";
+import type { InboxReadModel, JudgmentItem, JudgmentSource, NoticeClaudeAccounts, NoticeRuntimeKey, ReviewAutomation, ReviewJudge } from "./types.js";
 
 export type InboxEvent =
   | {
@@ -45,6 +45,7 @@ export type InboxEvent =
         detail: string;
         resume?: { threadId: string; turnId: string };
         runtimeKey?: NoticeRuntimeKey;
+        claudeAccounts?: NoticeClaudeAccounts;
       };
     }
   | { type: "inbox.notice_acknowledged"; payload: { id: string } };
@@ -129,6 +130,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           detail: event.payload.detail,
           ...(event.payload.resume ? { resume: event.payload.resume } : {}),
           ...(event.payload.runtimeKey ? { runtimeKey: event.payload.runtimeKey } : {}),
+          ...(event.payload.claudeAccounts ? { claudeAccounts: event.payload.claudeAccounts } : {}),
           acknowledged: false,
           createdAt: raw.ts,
         });
