@@ -9619,7 +9619,7 @@
       "number": 399,
       "kind": "task",
       "title": "会話の本体を中継に通す（本体用の合言葉・loopback の待ち受け・env・取り直せない banto・E2E の偽 API を1つに）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-relay-accounts"
@@ -9633,7 +9633,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T11:57:52.249Z",
+      "updatedAt": "2026-10-18T14:30:56.666Z",
       "closedAt": null,
       "extra": {}
     },
