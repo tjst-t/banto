@@ -9517,6 +9517,30 @@
       "updatedAt": "2026-10-18T09:03:58.408Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "1-resolvealias-200-scope",
+      "number": 395,
+      "kind": "bug",
+      "title": "1件ずつの resolveAlias は名前が200字を超えると識別子を拾えず scope {} の鍵で聞いて通す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "relay",
+        "security"
+      ],
+      "body": "Fable のレビュー（2026-10-18、#390 の仕様）で見つかった。host-relay-endpoint.ts は auditArgs の値が200字を超えると拾わず、コンテナからの呼び出しでも scope {} の鍵で聞いて通す。まとめて引く口（#390）は「required な識別子が拾えなければ断る」なので、それより緩い。識別子を名乗る口で required な識別子が拾えなければ1件でも断る、に揃える。仕様 v4-modules.md「秘密をまとめて引く」の未決 (c)。",
+      "doneWhen": "コンテナから name が201字の resolveAlias を呼ぶと中継が断る単体テスト。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-18T09:04:03.662Z",
+      "updatedAt": "2026-10-18T09:04:03.662Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
