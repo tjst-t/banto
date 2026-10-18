@@ -8928,7 +8928,7 @@
       "number": 367,
       "kind": "task",
       "title": "containers の実行場所：登録と前提の確かめ、core が sudo -n で行う準備",
-      "status": "in-progress",
+      "status": "done",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "ssh-project-project"
@@ -8938,12 +8938,12 @@
       "labels": [],
       "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「実行場所の種類」「root の要る準備は core が sudo -n で済ませる」「置き場（pool）」「VM は banto 専用」。\n\n- 登録に動かし方（machine／containers）。同じ host 鍵＋ユーザーに machine と containers を並べられない\n- 前提の確かめ：Incus 6.0.6 以降・自分の区画でコンテナを作れる・sudo -n・linger（containers では断る）。Docker・tmux は要らない\n- 準備（何度流しても同じ）：restricted.devices.proxy=allow・subuid/subgid と raw.idmap（uid/gid）・pool banto・linger。sudo -n が通らなければ足りないものと打つコマンドを名指しして断る。繋ぐたびに「何もしないこと」を確かめる\n- 画面：実行場所の登録で動かし方を選ぶ。新しい Project で containers は「1つに1つ」で薄くしない",
       "doneWhen": "登録で動かし方（machine／containers）を選べ、containers の前提の確かめと sudo -n の準備（proxy=allow・subuid/subgid と raw.idmap・pool banto・linger）が何度流しても同じ結果になる。sudo できない相手・machine と同じ宛先では名指しして断る。単体テスト（偽の RunIncus・偽の sudo）と、E2E の SSH の相手（入れ子のコンテナ）で登録と断りを確かめる。本物の VM での確かめは banto-dev-vm を使わず、まっさらな VM で人が別に行う（Factory の中では行わない）——subuid を書き換えたあと Incus の起こし直しが要るかもそこで測る。フル E2E は流さない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/containers-core-sudo-n）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-18T03:56:44.005Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T04:20:20.871Z",
+      "closedAt": "2026-10-18T04:20:20.871Z",
       "extra": {}
     },
     {
