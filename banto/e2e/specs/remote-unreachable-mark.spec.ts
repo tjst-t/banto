@@ -63,8 +63,18 @@ async function outageNotices(host: OwnHost, name: string): Promise<Notice[]> {
 
 /** 印が頭文字の左上にあり、頭文字と重なる（右下の裏の仕事の数とはぶつからない側） */
 async function expectTopLeftOf(mark: Locator, initial: Locator, what: string): Promise<void> {
-  const m = (await mark.boundingBox())!;
-  const i = (await initial.boundingBox())!;
+  // サイドバーを畳む・開くは幅が動く（アニメーション）ので、印と頭文字の位置が2回続けて同じになってから比べる
+  let m = (await mark.boundingBox())!;
+  let i = (await initial.boundingBox())!;
+  for (let n = 0; n < 40; n++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const m2 = (await mark.boundingBox())!;
+    const i2 = (await initial.boundingBox())!;
+    const same = m2.x === m.x && m2.y === m.y && i2.x === i.x && i2.y === i.y;
+    m = m2;
+    i = i2;
+    if (same) break;
+  }
   expect(m.x, `${what}：印が頭文字の左にはみ出していない`).toBeLessThan(i.x);
   expect(m.y, `${what}：印が頭文字の上にはみ出していない`).toBeLessThan(i.y);
   expect(m.x + m.width, `${what}：印が頭文字の左上の角に掛かっていない`).toBeGreaterThan(i.x);
