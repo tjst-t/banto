@@ -1,12 +1,14 @@
 // Module 間中継の初回承認ゲートと監査（アーキ仕様 §2.5・v4-frontend.md
 // 「Module 間中継の承認（入れ子の承認）」）。
 //
-// 見るのは4つ：
-//   1. **初回だけ**人に聞く——Shell が Vault の resolveAlias を呼ぶ手前で止まる
+// 見るのは5つ：
+//   1. **初回だけ**人に聞く——Shell が Vault の resolveAliases を呼ぶ手前で止まる
 //   2. `bypassPermissions` でも出る（AI への信用と、Project の配線への信用は別の軸）
 //   3. 許可すると中継が通り、**秘密の値が実際にコマンドへ届く**（規則14——
 //      「カードを押せた」で終わらせず、画面に出る中身まで見る）
 //   4. 2回目は聞かれない（同じ Project 内で自動許可）。記録は Event Store に残る
+//   5. **まとめて引くとき、カードは1枚で、まだ許していない alias だけを並べる**（2026-10-18、v4-modules.md
+//      「秘密をまとめて引く」）——許したあとは同じ呼び出しがカード無しで通る
 import { test, expect } from "../test-base.js";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +24,8 @@ const PROJECT_NAME = "E2E Relay Approval Project";
 /** 「中継が通ったときにしか画面に出ない」一意な値。 */
 const SECRET = `RELAY-OK-${Date.now()}`;
 const ALIAS = `e2e-relay-${Date.now()}`;
+/** まとめて引く試し用の、まだ許していない alias（値は SECRET に印を足したもの） */
+const BATCH = ["b1", "b2", "b3"].map((k) => ({ alias: `${ALIAS}-${k}`, value: `${SECRET}-${k}` }));
 
 const PROMPT =
   "秘密を環境変数に入れて echo してください。" +
@@ -52,17 +56,19 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
-  // Vault に alias を1つ置く（人の管理操作＝admin 可視性なので、画面の口から）
-  const created = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
-    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-    data: {
-      server: "vault-local",
-      tool: "createAlias",
-      // scope は instance——この試験が見たいのは中継の承認で、対象の割り当てではない
-      arguments: { name: ALIAS, kind: "secret", value: SECRET },
-    },
-  });
-  expect(created.ok()).toBe(true);
+  // Vault に alias を置く（人の管理操作＝admin 可視性なので、画面の口から）
+  for (const { alias, value } of [{ alias: ALIAS, value: SECRET }, ...BATCH]) {
+    const created = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+      data: {
+        server: "vault-local",
+        tool: "createAlias",
+        // scope は instance——この試験が見たいのは中継の承認で、対象の割り当てではない
+        arguments: { name: alias, kind: "secret", value },
+      },
+    });
+    expect(created.ok()).toBe(true);
+  }
 
   await openApp(page);
   await createProject(page, PROJECT_NAME, projectRoot);
@@ -102,13 +108,13 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // 1. 中継の手前で止まる（bypassPermissions でも出る）
   //
   // **秘密1つに中継が4本**（改訂・2026-09-12）。Shell は宛先の Vault を
-  // 決め打ちしないので、経路がこうなる：
+  // 決め打ちしないので、経路がこうなる（まとめて引く口・2026-10-18。秘密がいくつでも、窓口へ1本・Vault ごとに1本）：
   //
   // ```
-  // shell → vault-directory    lookupAlias    「その名前はどこ？」
+  // shell → vault-directory    lookupAliases   「その名前たちはどこ？」
   //   vault-directory → vault-local     listAliases   （窓口が横断して探す）
   //   vault-directory → vault-infisical listAliases
-  // shell → vault-local        resolveAlias   「値をください」
+  // shell → vault-local        resolveAliases  「値をください」
   // ```
   //
   // **承認は（呼び出し元・宛先・tool）ごとに初回1回**なので、初回のターンでは
@@ -116,7 +122,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // ——さもないと窓口の問い合わせは「どのターンか分からない」で止まる。
   const firstCard = page.locator('[data-role="judgment-card"]').first();
   await expect(
-    firstCard.getByText(/shell が vault-directory の lookupAlias を呼ぼうとしています/),
+    firstCard.getByText(/shell が vault-directory の lookupAliases（まとめて 1 件のうち、まだ許していない 1 件）を呼ぼうとしています/),
     "最初に聞かれるのは「在りかを聞いてよいか」のはず",
   ).toBeVisible({ timeout: 120_000 });
   // **何を承認するのかが、答える前に見えている**（§6.0）
@@ -148,7 +154,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
 
   // **聞かれた中身が、経路のとおりであること**（規則14——押せたで終わらせない）
   const asked = await page.locator('[data-role="judgment-card"]').allInnerTexts();
-  for (const expected of ["shell が vault-directory の lookupAlias", "shell が vault-local の resolveAlias"]) {
+  for (const expected of ["shell が vault-directory の lookupAliases", "shell が vault-local の resolveAliases"]) {
     expect(asked.join("\n"), `「${expected}」を人に聞いていない`).toContain(expected);
   }
   // **値を返さない口は聞かない**（決定・2026-09-12、v4-security.md）。窓口が
@@ -169,7 +175,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // 1ターン目だけで既に4件あるので**待たずに通り抜ける**——実際そうなった
   await expect
     .poll(
-      () => mine().filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAlias").length,
+      () => mine().filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAliases").length,
       { timeout: 180_000, message: "2回目のターンで値が取られるまで" },
     )
     .toBeGreaterThanOrEqual(2);
@@ -189,7 +195,8 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   const grants = events.filter((e) => e.type === "relay.grant_created");
   // **許可は（呼び出し元・宛先・tool）ごとに1回**——2回目のターンでは増えない。
   // 窓口が横断する先の数は環境で変わる（`vault-infisical` が設定されていない
-  // ホストもある）ので、**順序と件数ではなく、要る組み合わせが在ることを見る**
+  // ホストもある）ので、**順序と件数ではなく、要る組み合わせが在ることを見る**。
+  // まとめて引く口で許しても、覚えるのは1件ずつの口（lookupAlias・resolveAlias）の鍵——どちらの口にも効く
   const pairs = grants.map((g) => `${g.payload.callerModule}→${g.payload.targetModule}:${g.payload.name}`);
   expect(pairs).toContain("shell→vault-directory:lookupAlias");
   expect(pairs).toContain("shell→vault-local:resolveAlias");
@@ -214,8 +221,8 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // **2ターンとも、経路を全部通っていること**（件数の合計ではなく中身で見る
   // ——窓口が横断する先の数は環境で変わる）
   const named = (n: string) => calls.filter((c) => c.payload.name === n).length;
-  expect(named("lookupAlias"), `在りかの問い合わせが2回記録されていない: ${JSON.stringify(calls.map((c) => c.payload.name))}`).toBeGreaterThanOrEqual(2);
-  expect(named("resolveAlias"), "値の取得が2回記録されていない").toBeGreaterThanOrEqual(2);
+  expect(named("lookupAliases"), `在りかの問い合わせが2回記録されていない: ${JSON.stringify(calls.map((c) => c.payload.name))}`).toBeGreaterThanOrEqual(2);
+  expect(named("resolveAliases"), "値の取得が2回記録されていない").toBeGreaterThanOrEqual(2);
   for (const call of calls) {
     expect(call.payload.allowed).toBe(true);
     // **宛先で失敗したものも記録に残る**（規則2——監査で見たいのはむしろそちら）。
@@ -226,6 +233,74 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
     // **どの記録にも、値は載らない**
     expect(JSON.stringify(call.payload)).not.toContain(SECRET);
   }
+
+  // 5. **まとめて引く**——許してある1件と、まだ許していない3件を1回で渡す。カードは1枚で、並ぶのは3件だけ
+  await waitTurnEnded(page, threadId, 2, 120_000);
+  const sinceBatch = Math.max(0, ...relayEvents().map((e) => e.seq));
+  const batchEnv = Object.fromEntries(BATCH.map(({ alias }, i) => [`B${i + 1}`, alias]));
+  const batchPrompt =
+    "4つの秘密を echo してください。" +
+    fakeTurn({
+      tools: [
+        {
+          server: "shell",
+          name: "runCommand",
+          args: { command: 'echo "batch=$MY|$B1|$B2|$B3"', envSecrets: { MY: ALIAS, ...batchEnv } },
+        },
+      ],
+    });
+  const batchOut = `batch=${SECRET}|${BATCH.map((b) => b.value).join("|")}`;
+  await composer.fill(batchPrompt);
+  await composer.press("Enter");
+  const batchCard = page
+    .locator('[data-role="judgment-card"]')
+    .filter({ hasText: "shell が vault-local の resolveAliases（まとめて 4 件のうち、まだ許していない 3 件）を呼ぼうとしています" });
+  await expect(batchCard, "まだ許していない3件を1枚で聞いていない").toHaveCount(1, { timeout: 120_000 });
+  // 並ぶのは、まだ許していない3件だけ（許してある ALIAS は出ない）。1行1件
+  const targets = batchCard.getByTestId("relay-targets");
+  await expect(targets).toContainText("対象（3 件）");
+  await expect(targets.locator("tbody tr")).toHaveCount(3);
+  for (const { alias } of BATCH) await expect(targets.getByText(alias, { exact: true })).toBeVisible();
+  await expect(targets.getByText(ALIAS, { exact: true })).toHaveCount(0);
+  await expect(batchCard.getByText(SECRET)).toHaveCount(0);
+  // ほかのカードは出ていない（窓口の lookupAliases は前のターンで許してある）
+  await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(askedCount + 1);
+  await expect(page.getByText(batchOut)).toHaveCount(0);
+
+  await batchCard.getByRole("button", { name: "許可する" }).click();
+  await expect(page.getByText(batchOut).first(), "許可したのに4件の値がコマンドに届いていない").toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(askedCount + 1);
+  await waitTurnEnded(page, threadId, 3, 120_000);
+
+  // 覚えたのは並べた3件の1件ずつ（resolveAlias の鍵）。監査は alias 1件ごとに1行、まとめた呼び出しの印つき
+  const batchEvents = () => relayEvents().filter((e) => e.seq > sinceBatch);
+  const batchGrants = batchEvents().filter((e) => e.type === "relay.grant_created");
+  expect(
+    batchGrants.map((g) => `${g.payload.name}:${(g.payload.scope as { name?: string } | undefined)?.name}`).sort(),
+    "許可で覚えたものが、並べた3件の1件ずつになっていない",
+  ).toEqual(BATCH.map((b) => `resolveAlias:${b.alias}`).sort());
+  const batchCalls = batchEvents().filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAliases");
+  expect(
+    batchCalls.map((c) => (c.payload.identifiers as { name?: string } | undefined)?.name).sort(),
+    "監査が alias 1件ごとに残っていない",
+  ).toEqual([ALIAS, ...BATCH.map((b) => b.alias)].sort());
+  for (const c of batchCalls) {
+    expect(c.payload.batch).toEqual({ size: 4 });
+    expect(JSON.stringify(c.payload)).not.toContain(SECRET);
+  }
+
+  // 許したあとは、同じ呼び出しがカード無しで通る
+  const sinceAgain = Math.max(0, ...relayEvents().map((e) => e.seq));
+  await composer.fill(batchPrompt);
+  await composer.press("Enter");
+  await waitTurnEnded(page, threadId, 4, 120_000);
+  await expect(page.getByText(batchOut)).toHaveCount(2, { timeout: 30_000 });
+  await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(askedCount + 1);
+  const again = relayEvents().filter((e) => e.seq > sinceAgain);
+  expect(again.filter((e) => e.type === "relay.grant_created"), "許したあとなのに、また覚え直している").toHaveLength(0);
+  expect(again.filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAliases")).toHaveLength(4);
+  const stillOpen = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();
+  expect(stillOpen.filter((i: { source?: string }) => i.source === "relay")).toHaveLength(0);
 
   expect(pageErrors).toEqual([]);
 });
