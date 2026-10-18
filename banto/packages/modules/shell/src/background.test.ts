@@ -34,6 +34,7 @@ import { BackgroundCommands, type DeliverInput } from "./background.js";
 import { DetachedLauncher, SystemdLauncher, type BackgroundLauncher, type Exec } from "./background-launcher.js";
 import { tailLines, type JobRecord, type StartedRecord } from "./background-files.js";
 import type { HostRelayClient } from "./host-relay-client.js";
+import { fakeRelayClient } from "./testing/fake-relay-client.js";
 
 const WRAPPER = fileURLToPath(new URL("./background-wrapper.js", import.meta.url));
 const THREAD = { projectId: "p1", threadId: "t1" };
@@ -50,12 +51,7 @@ interface Dirs {
 }
 
 function fakeRelay(): HostRelayClient {
-  return {
-    lookupAlias: async (_d: string, name: string) => ({ implementation: "vault", name, group: "instance" }),
-    resolveAlias: async () => SECRET,
-    startSshAgent: async () => ({ socketPath: "/tmp/unused.sock" }),
-    close: async () => undefined,
-  } as unknown as HostRelayClient;
+  return fakeRelayClient({ resolve: () => SECRET, startSshAgent: () => ({ socketPath: "/tmp/unused.sock" }) });
 }
 
 /** 同じ置き場で Shell を立てる（起き直しは、同じ置き場で立て直すこと） */

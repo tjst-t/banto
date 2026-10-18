@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
-import type { AliasPlace, HostRelayClient } from "./host-relay-client.js";
+import { NoBatchToolError, type AliasPlace, type HostRelayClient } from "./host-relay-client.js";
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 import type { BackgroundCommands } from "./background.js";
 import { inWorkScope } from "@banto/module-contract";
@@ -167,28 +167,6 @@ async function prepareCommand(input: RunCommandInput, deps: RunCommandDeps): Pro
     }
   }
 
-  // **どの Vault にあるかは、名前から引く**（改訂・2026-09-12）。以前は
-  // `"vault"` を決め打ちしていたので、2本目の backend（`vault-infisical`）に
-  // 預けた秘密には**構造的に届かなかった**。窓口に聞いてから、その backend を
-  // 直接呼ぶ——**値は窓口を通らない**（アーキ仕様 §2.5）。
-  //
-  // 1回の runCommand の中では同じ名前を2度引かない（`envSecrets` と
-  // `secretFiles` に同じ alias が出ることがある）。**跨いでは持たない**
-  // ——別のホストが預け先を変えたとき、古い在りかを見せることになる（規則3）。
-  //
-  // **引くのは「在りか」＝(Vault, グループ, 名前) の三つ組**（訂正・2026-09-15）。
-  // 以前は実装名だけを覚えて、`resolveAlias` には AI が書いた文字列を渡していた
-  // ——**修飾名（`vault-infisical:npm-token`）では backend にその名前が無い**ので、
-  // 一覧に出た名前をそのまま書いても使えなかった
-  const whereCache = new Map<string, Promise<AliasPlace>>();
-  const vaultOf = (alias: string, note: (n: string) => string): Promise<AliasPlace> => {
-    let found = whereCache.get(alias);
-    if (!found) {
-      found = deps.relayClient.lookupAlias(directoryModule, alias, (n) => deps.onProgress?.(note(n)));
-      whereCache.set(alias, found);
-    }
-    return found;
-  };
   const writtenSecretFiles: string[] = [];
 
   // 落とした名前をenvSecretsで復活させられては同じこと。黙って無視すると
@@ -200,18 +178,16 @@ async function prepareCommand(input: RunCommandInput, deps: RunCommandDeps): Pro
   }
 
   try {
+    // 中継の初回は host が人に承認を聞く——待っている間の合図をそのまま
+    // 上（AI のターン）へ流し、外側の tool 呼び出しが先に切れないようにする
+    const values = await resolveSecrets(input, deps, directoryModule);
+
     for (const [envName, alias] of Object.entries(input.envSecrets ?? {})) {
-      // 中継の初回は host が人に承認を聞く——待っている間の合図をそのまま
-      // 上（AI のターン）へ流し、外側の tool 呼び出しが先に切れないようにする
-      const place = await vaultOf(alias, (n) => `envSecrets: ${envName}——${n}`);
-      env[envName] = await deps.relayClient.resolveAlias(place, (note) =>
-        deps.onProgress?.(`envSecrets: ${envName}——${note}`),
-      );
-      deps.onProgress?.(`envSecrets: ${envName} を解決しました`);
+      env[envName] = values.value(alias);
     }
 
     if (input.sshIdentity) {
-      const place = await vaultOf(input.sshIdentity, (n) => `sshIdentity——${n}`);
+      const place = values.place(input.sshIdentity);
       const { socketPath } = await deps.relayClient.startSshAgent(place, (note) =>
         deps.onProgress?.(`sshIdentity——${note}`),
       );
@@ -220,13 +196,9 @@ async function prepareCommand(input: RunCommandInput, deps: RunCommandDeps): Pro
     }
 
     for (const [relPath, alias] of Object.entries(input.secretFiles ?? {})) {
-      const place = await vaultOf(alias, (n) => `secretFiles: ${relPath}——${n}`);
-      const value = await deps.relayClient.resolveAlias(place, (note) =>
-        deps.onProgress?.(`secretFiles: ${relPath}——${note}`),
-      );
       const absPath = resolve(deps.projectRoot, relPath);
       await mkdir(dirname(absPath), { recursive: true });
-      await writeFile(absPath, value, { mode: 0o600 });
+      await writeFile(absPath, values.value(alias), { mode: 0o600 });
       writtenSecretFiles.push(absPath);
       deps.onProgress?.(`secretFiles: ${relPath} を書き出しました`);
     }
@@ -237,6 +209,83 @@ async function prepareCommand(input: RunCommandInput, deps: RunCommandDeps): Pro
     await removeSecretFiles(writtenSecretFiles);
     throw err;
   }
+}
+
+/**
+ * **1回の runCommand で使う秘密を、Vault ごとにまとめて引く**（決定・2026-10-18、`docs/specs/v4-modules.md`「秘密をまとめて引く」）。
+ * 以前は alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias` を呼んでいたので、コンテナからは承認のカードが
+ * alias の数だけ出て、Infisical へも alias の数に比例して往復していた（27件でカード27枚・54回、Backlog #389）。
+ *
+ * 1. envSecrets・secretFiles・sshIdentity の alias を重複を除いて集め、窓口の `lookupAliases` を1回（100件ずつ）。
+ *    **引けない名前があれば、全部の名前と理由を1つの文で断る**（コマンドは流さない）
+ * 2. 在りかを Vault ごとに分け、Vault ごとに `resolveAliases` を1回（100件ずつ）。宛先がその口を持たなければ（第三者の
+ *    Vault）、今までどおり1件ずつの `resolveAlias` に落とす——**ほかの理由で断られたら落とさない**
+ *
+ * sshIdentity は在りかだけを引く（値は Vault が持ったまま、`startSshAgent` で渡す）。
+ * **値は窓口を通らない**（アーキ仕様 §2.5）。**引くのは在りか＝(Vault, グループ, 名前) の三つ組**（訂正・2026-09-15）
+ * ——修飾名（`vault-infisical:npm-token`）では backend にその名前が無いので、窓口が返した名前と置き場で引く。
+ * **1回の runCommand を跨いでは持たない**——別のホストが預け先を変えたとき、古い在りかを見せることになる（規則3）
+ */
+async function resolveSecrets(
+  input: RunCommandInput,
+  deps: RunCommandDeps,
+  directoryModule: string,
+): Promise<{ place(alias: string): AliasPlace; value(alias: string): string }> {
+  const valued = [...new Set([...Object.values(input.envSecrets ?? {}), ...Object.values(input.secretFiles ?? {})])];
+  const names = [...new Set([...valued, ...(input.sshIdentity ? [input.sshIdentity] : [])])];
+  const places = new Map<string, AliasPlace>();
+  const values = new Map<string, string>();
+  const found = {
+    place: (alias: string) => places.get(alias)!,
+    value: (alias: string) => values.get(alias)!,
+  };
+  if (names.length === 0) return found;
+
+  const what = [input.envSecrets && "envSecrets", input.secretFiles && "secretFiles", input.sshIdentity && "sshIdentity"]
+    .filter(Boolean)
+    .join("・");
+  const looked = await deps.relayClient.lookupAliases(directoryModule, names, (n) => deps.onProgress?.(`${what}——${n}`));
+  const failures: string[] = [];
+  names.forEach((name, i) => {
+    const r = looked[i]!;
+    if ("error" in r) failures.push(r.error);
+    else places.set(name, r.place);
+  });
+  if (failures.length > 0) {
+    throw new Error(
+      `${names.length} 件のうち ${failures.length} 件の alias を引けませんでした（コマンドは流していません）：` + failures.join("／"),
+    );
+  }
+
+  // Vault ごとに、同じ在りか（グループと名前）は1つに
+  const byVault = new Map<string, Map<string, { place: AliasPlace; aliases: string[] }>>();
+  for (const alias of valued) {
+    const place = places.get(alias)!;
+    const perVault = byVault.get(place.implementation) ?? new Map();
+    byVault.set(place.implementation, perVault);
+    const key = JSON.stringify([place.group ?? null, place.name]);
+    const entry = perVault.get(key) ?? { place, aliases: [] };
+    entry.aliases.push(alias);
+    perVault.set(key, entry);
+  }
+  const label = [input.envSecrets && "envSecrets", input.secretFiles && "secretFiles"].filter(Boolean).join("・");
+  for (const [implementation, perVault] of byVault) {
+    const entries = [...perVault.values()];
+    const note = (n: string) => deps.onProgress?.(`${label}：${implementation}——${n}`);
+    let got: string[];
+    try {
+      got = await deps.relayClient.resolveAliases(implementation, entries.map((e) => e.place), note);
+    } catch (err) {
+      if (!(err instanceof NoBatchToolError)) throw err;
+      got = [];
+      for (const e of entries) got.push(await deps.relayClient.resolveAlias(e.place, note));
+    }
+    entries.forEach((e, i) => {
+      for (const alias of e.aliases) values.set(alias, got[i]!);
+    });
+    deps.onProgress?.(`${label}：${implementation} から ${entries.length} 件を引きました`);
+  }
+  return found;
 }
 
 async function removeSecretFiles(paths: string[]): Promise<void> {

@@ -155,7 +155,8 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   // 3. 覚えない——grant は増えず、記録の理由に「自動で許可」
   const events = mine();
   expect(events.filter((e) => e.type === "relay.grant_created"), "自動で通したものを grant として覚えた").toHaveLength(0);
-  const resolved = events.filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAlias");
+  // Shell は秘密をまとめて引く（resolveAliases、監査は alias 1件ごとに1行）
+  const resolved = events.filter((e) => e.type === "relay.call_recorded" && e.payload.name === "resolveAliases");
   expect(resolved.length).toBeGreaterThanOrEqual(1);
   for (const e of resolved) {
     expect(e.payload.allowed).toBe(true);
@@ -197,8 +198,9 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   // 中継の確認も人に聞く（覚えていないので、前のターンで通した組み合わせでも）
   const relayCard = page.locator('[data-role="judgment-card"]').filter({ hasText: "shell が vault-directory の lookupAlias" }).last();
   await expect(relayCard.getByRole("button", { name: "拒否する" })).toBeVisible({ timeout: 60_000 });
-  // 人に聞く形の注記（自動で通したときの注記ではない）。Shell はコンテナの中なので、対象つきの言い方になる
-  await expect(relayCard).toContainText("許可すると、この Project では同じ組み合わせ");
+  // 人に聞く形の注記（自動で通したときの注記ではない）。Shell はコンテナの中から窓口の lookupAliases（まとめて引く口）を
+  // 呼ぶので、対象を1件ずつ覚える言い方になる
+  await expect(relayCard).toContainText("許可すると、この Project では並べた対象を1件ずつ覚え");
   await relayCard.getByRole("button", { name: "拒否する" }).click();
   await expect(page.locator('[data-role="assistant"]').filter({ hasText: "二度目が終わりました。" })).toBeVisible({
     timeout: 120_000,
