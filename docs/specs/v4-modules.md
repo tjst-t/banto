@@ -1169,7 +1169,10 @@ Repositories の持つ鍵を無効にするだけになる。しかも JSON に�
      扱う**——外から入れた Module の画面から `resolveAlias` を呼ばれ人が承認しても、カードの文（「X に vault-local の
      resolveAlias を呼ばせてよいか」）からは refresh token が出ることが分からない。窓口の「Vault をまたいで移す」が
      `oauth-token` を丸ごと運ぶのは、**新しい口 `exportOwnedSecret({name, group})`** に移す（人の管理操作の中だけ——
-     `assertHuman`、可視性 `module`、値を返す。同梱どうしの窓口でなければ中継の承認に掛かり、カードに口の名前が出る）
+     `assertHuman`、可視性 `module`、値を返す。同梱どうしの窓口でなければ中継の承認に掛かり、カードに口の名前が出る）。
+     **移動の中の読みは全部この口**——写す前の読み（移し元）も、写したあとの確かめの読み（移し先）も。置き場の紐付けを
+     変えて複数をまとめて移す道も同じ移し方を通る。**種別 `oauth-token` だけを受け**（ほかの種別・参照は断る——参照は
+     移動の側が先に断っている）、識別子は `name`・`group`（監査に名乗る）
 3. **持ち主の記録が無い行**（2026-10-06 より前に置かれ、まだ置き換えられていないもの）は断る：「`<alias>` は banto が
    置いたログインですが、どの Module が置いたかの記録がありません。置いた Module でもう一度ログインすると使えます」。
    **持ち主自身の読みも同じく断られる**（記録が無いので持ち主かどうか決められない）——Repositories は今、読んで取り
@@ -1206,7 +1209,9 @@ Repositories の持つ鍵を無効にするだけになる。しかも JSON に�
 **起動のときの差し込み `${secret:…}`**：種別 `oauth-token` は差し込まない——引けない alias と同じく、その Module を起こさず
 理由を出す（「`<alias>` は banto が置いたログインなので、起動の設定には差し込めません」）。差し込んだ値は Module の環境
 （リモート MCP なら毎回外へ送る見出し）に入るので、切れた値と refresh token がそのまま出る。正当な使い道は無い（リモート
-MCP のログインは banto 本体が読み、Repositories のログインは JSON）。種別は core が窓口で在りかを引くときに見る
+MCP のログインは banto 本体が読み、Repositories のログインは JSON）。種別は core が窓口で在りかを引くとき（`lookupAlias`
+の答えに `kind` がある）に、**差し込みの解決（`resolveSecretPlaceholders`）でだけ**見る——同じ引き方を使うリモート MCP の
+ログインの読み（`oauth-<名前>`、種別 `oauth-token`）には掛けない
 
 **持ち主の口 `presentOwnedSecret({name, group, value})`**（可視性 `module`、`_meta["dev.banto/presentsOwnedSecret"]: true`、
 識別子 `name`・`group`）

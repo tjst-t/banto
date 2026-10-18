@@ -92,3 +92,10 @@
 
 実装の条件（Backlog #405 の完了条件に入れる）：Vault が `resolveAliases` の途中で持ち主を待つ間に、持ち主が同じ Vault へ
 `putSecret` で書き戻せること・GitHub の往復を含めて中継の時間の上限に収まることを、試験で確かめる。
+
+## Fable のレビュー（4回目）
+
+判断は「1行足してから入れてよい」。足したもの：窓口の移動の中の読みは、写したあとの確かめの読みも `exportOwnedSecret`
+（`resolveAlias` のままだと持ち主でない呼び元として Repositories を呼び、在りかが違うで断られて移動が止まる）。
+`${secret:…}` の種別の確かめは差し込みの解決でだけ（共有の引き方に入れるとリモート MCP のログインが自分で断られる）。
+`exportOwnedSecret` は `oauth-token` だけを受ける。
