@@ -9396,6 +9396,36 @@
       "updatedAt": "2026-10-18T08:47:59.905Z",
       "closedAt": "2026-10-18T08:28:34.048Z",
       "extra": {}
+    },
+    {
+      "id": "lookupaliases-resolvealiases-alias-1",
+      "number": 390,
+      "kind": "story",
+      "title": "秘密をまとめて引く（lookupAliases・resolveAliases、承認は alias ごと・カードは1枚）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "vault",
+        "shell",
+        "relay"
+      ],
+      "body": "1回の runCommand の envSecrets・secretFiles を、窓口の lookupAliases 1回と Vault ごとの resolveAliases 1回で引く。承認の鍵は今までどおり alias ごと（dev.banto/batchOf で resolveAlias の鍵に写す）だが、カードは1回の呼び出しに1枚にし、まだ許していないものだけを並べる。Infisical へは一覧1〜2回・値1〜2回・使った日の書き込み1〜2回。仕様は GitHub の main de18a85a（Fable のレビュー2回、最後は「main に入れてよい」）。きっかけは #389（ansible-nas で27件、カード27枚と Infisical への54回）。",
+      "doneWhen": "コンテナの Shell から envSecrets に27件渡した runCommand で、承認のカードが1枚（未許可のものだけ）、自動で許可のときも1枚。Infisical（偽物）への呼び出しが alias の数に比例しない。既に resolveAlias で許した alias はカード無しで通る。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md「秘密をまとめて引く」",
+        "docs/specs/v4-security.md §3 コンテナの中から値を返す口を呼ぶ",
+        "docs/specs/v4-frontend.md「Module 間中継の承認」",
+        "docs/notes/2026-10-18-batch-resolve.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-18T09:02:43.669Z",
+      "updatedAt": "2026-10-18T09:02:43.669Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
