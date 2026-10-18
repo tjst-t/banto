@@ -8905,7 +8905,7 @@
       "number": 366,
       "kind": "task",
       "title": "別のサーバの SSH の接続・待ち受け・トンネルを Project ごとにする作り直し（実行場所＋Project の層）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "a-proxy-device-security-uid-symlink-subu"
@@ -8915,12 +8915,12 @@
       "labels": [],
       "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「SSH の接続は Project ごとに1本」。machine の振る舞いは変えない（machine は1つに1つなので実際は今と同じ）作り替え。\n\n- RemoteSshRuntime（packages/core/src/runtime/remote-ssh.ts）の実行場所ごとの表（接続・待ち受け・ソケットの置き場・release()）を「実行場所＋Project」の層に。ControlPath・逆向きのトンネル・relay-listener も Project ごと\n- トンネルの VM の側を Project ごとの決まったパスの UNIX ソケットに（-R <パス>:127.0.0.1:<待ち受け>）。machine でもそうしてよいかは実装で決める\n- Project を畳む・眠らせる・閉じても、同じ実行場所のほかの Project を落とさない\n- isRemoteProject のような2択（core/src の約9ファイル・47箇所）を洗い出し、種類を足せる形に\n- 起こし直しの続き（#324）・繋がらないお知らせ（#339）の鍵を Project ごとの接続に",
       "doneWhen": "machine の別のサーバの E2E（remote-runtime-ssh・remote-runtime-sockets・remote-runtime-host-side・remote-resume-restart・runtime-move）が今どおり通る。単体テストで「同じ実行場所の2つの Project の接続が別々で、片方を閉じてももう片方が残る」を確かめる。フル E2E は流さない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/ssh-project-project）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-18T01:33:56.850Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T02:21:19.618Z",
+      "closedAt": "2026-10-18T02:21:19.618Z",
       "extra": {}
     },
     {
