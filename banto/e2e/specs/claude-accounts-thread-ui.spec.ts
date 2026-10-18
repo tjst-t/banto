@@ -204,10 +204,23 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         await expect(projectSettings).toHaveText("Project の設定を開く");
         await expect(projectSettings).toHaveAttribute("href", `/settings?project=${projectId}&section=project-claude-accounts`);
         await expect(addAccount).toHaveText("アカウントを足す");
-        await expect(addAccount).toHaveAttribute("href", "/settings?section=claude-accounts");
-        // 押した先が、その画面になっている（並びを変える画面・「アカウントを足す」のある画面）
+        await expect(addAccount).toHaveAttribute("href", "/settings?section=claude-accounts&add=1");
+        // 押した先が、その画面になっている（足すダイアログが開いた banto 全体の設定・Project の並びの画面）
         await addAccount.click();
-        await expect(page.getByTestId("claude-accounts-add"), "「アカウントを足す」の先に足すボタンが無い").toBeVisible({ timeout: 30_000 });
+        const addDialog = page.getByTestId("claude-account-login-dialog");
+        await expect(addDialog.getByRole("heading", { name: "Claude のアカウントを足す" }), "「アカウントを足す」で足すダイアログが開かない").toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(addDialog.getByTestId("claude-account-login-open"), "足すダイアログが手続きを始めていない").toBeVisible();
+        await expect(page.getByTestId("claude-accounts-panel")).toBeVisible();
+        // 閉じたら URL から外れる——読み直しても開き直さない
+        await addDialog.getByRole("button", { name: "キャンセル" }).click();
+        await expect(addDialog).toHaveCount(0);
+        await expect.poll(() => new URL(page.url()).searchParams.has("add"), { message: "閉じても URL に add が残る" }).toBe(false);
+        expect(new URL(page.url()).searchParams.get("section")).toBe("claude-accounts");
+        await page.reload();
+        await expect(page.getByTestId("claude-accounts-panel")).toBeVisible({ timeout: 30_000 });
+        await expect(addDialog).toHaveCount(0);
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&overlay=inbox`);
         await expect(card).toHaveCount(1, { timeout: 30_000 });
         await card.getByTestId("inbox-claude-accounts-project-settings").click();

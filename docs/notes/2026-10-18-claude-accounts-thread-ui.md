@@ -31,15 +31,26 @@ warn の形（「並びのアカウントがどれも閾値を越えています
 §6.46 のカードのボタンは「Project の設定を開く」「アカウントを足す」。
 
 - 「Project の設定を開く」→ Project 設定の「Claude のアカウント」（`section=project-claude-accounts`、Project の並びを変える画面）
-- 「アカウントを足す」→ banto 全体の設定の「Claude のアカウント」（`section=claude-accounts`、「アカウントを足す」のボタンがある）
+- 「アカウントを足す」→ banto 全体の設定の「Claude のアカウント」の足すダイアログ（`section=claude-accounts&add=1`。下の追記）
 
 どちらも設定の節が出るとき（`CONNECTED_FEATURES.claudeAccounts`）だけ置く。E2E は href と、押した先にその画面
-（`project-claude-accounts-panel`・`claude-accounts-add`）が出ることを見る。
+（`project-claude-accounts-panel`・足すダイアログ）が出ることを見る。
 
 **最初の版は仕様から外れていた**：行き先の節（#403）が分岐点の main に無かったので「アカウントを足す」を置かず、「Project の
 設定を開く」は「Claude のログイン」の節がある「一般」へ飛ばしていた（規則13）。#403 を含む main（47350207）の上に載せ直した
 あとも、この節は「#403 がまだ無い」を理由に残したままで、食い違いの理由が事実と合わなくなっていた（レビュー指摘、規則8）。
 載せ直した版で行き先はあるので、仕様どおりに繋いだ。
+
+**「アカウントを足す」は足すダイアログまで開く（追記・2026-10-18、Backlog #406）。** 上の版は節を開くだけで、人がもう一度
+「アカウントを足す」を押す必要があった。href を `section=claude-accounts&add=1` にし、`ClaudeAccountsPanel` は `add=1` で
+開いたらダイアログを開いた形で始まる。閉じたら URL から `add` を外す（`replace`）——読み直すたびに開かないため。E2E は
+カードから押して足すダイアログ（見出し・「ログインの画面を開く」）が出ること、閉じて読み直しても開き直さないことを見る。
+
+同じ #406 で #403 のレビューの2点：足すダイアログは一覧の読み直し（`onAdded`）が済んでから「足しました」を出す（先に出すと、
+古い一覧で「並びにはまだ入っていません」と「既定の並びの最後に足す」が一瞬出てから替わった。E2E は MutationObserver で
+一度でも出たかを見る——直す前の形に戻すと落ちることを確かめた）。check-tokens の「turn 以外の役色を塗りに使っている」に
+許可リスト（ファイルと行の文字列）を足し、使用率のメーターの `over ? "bg-warn"`（設定の UsageMeter と受信箱のカードの
+メーター）を載せた。
 
 カードは banto 全体のお知らせのまま（`projectId` を持たない）。鍵が並びの中身で、閉じる側（`onBackUnderThreshold`）は鍵しか
 知らないため。気づいた Project は `claudeAccounts.projectId` に持ち、カードの頭と「Project の設定を開く」に使う。名前・

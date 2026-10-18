@@ -68,7 +68,7 @@ export function ClaudeAccountsAllOverNotice({ card }: { card: RealNoticeClaudeAc
       </div>
       <p className="text-xs text-ink-3">どれかが閾値の下に戻ったら、このカードは自動で閉じます。</p>
       {/* 並びを直す入口（§6.46「受信箱」）——Project の並び（Project 設定「Claude のアカウント」）と、アカウントを足す
-          （banto 全体の設定「Claude のアカウント」の「アカウントを足す」）。設定の節が出ないときは置かない（規則13） */}
+          （banto 全体の設定「Claude のアカウント」の足すダイアログを開いて）。設定の節が出ないときは置かない（規則13） */}
       {CONNECTED_FEATURES.claudeAccounts ? (
         <div className="flex justify-end gap-2">
           <Link
@@ -79,7 +79,7 @@ export function ClaudeAccountsAllOverNotice({ card }: { card: RealNoticeClaudeAc
             Project の設定を開く
           </Link>
           <Button asChild size="sm" className="h-8 text-xs">
-            <Link href="/settings?section=claude-accounts" data-testid="inbox-claude-accounts-add">
+            <Link href="/settings?section=claude-accounts&add=1" data-testid="inbox-claude-accounts-add">
               アカウントを足す
             </Link>
           </Button>
