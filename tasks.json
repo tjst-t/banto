@@ -8928,7 +8928,7 @@
       "number": 367,
       "kind": "task",
       "title": "containers の実行場所：登録と前提の確かめ、core が sudo -n で行う準備",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "ssh-project-project"
@@ -8942,7 +8942,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-18T03:56:38.040Z",
+      "updatedAt": "2026-10-18T03:56:44.005Z",
       "closedAt": null,
       "extra": {}
     },
