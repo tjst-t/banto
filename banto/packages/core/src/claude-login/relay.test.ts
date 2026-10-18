@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Agent, createServer, request, type Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_LOGIN_PATH, ClaudeLoginRelay, hostClaudeCredentialsPath, type ClaudeLoginListener, type ClaudeLoginRelayDeps } from "./relay.js";
 import { createRelayListener } from "../relay/relay-listener.js";
@@ -12,7 +12,7 @@ import { ClaudeAccountStore } from "./accounts.js";
 const accountsAt = (dataDir: string, hostCredentialsPath: string, now?: () => Date) =>
   new ClaudeAccountStore({ dataDir, hostCredentialsPath, ...(now ? { now } : {}) });
 
-const CORE: ClaudeLoginListener = { acceptsProject: () => true, bindSource: true };
+const CORE: ClaudeLoginListener = { acceptsProject: () => true, bindSource: true, acceptsRunner: true };
 
 // 本体の CLI と同じ順で置き場を決める——E2E・疎通確認は CLAUDE_SECURESTORAGE_CONFIG_DIR で本物を指す
 test("本体の資格情報の置き場は、CLI と同じ順で決まる", () => {
@@ -27,6 +27,8 @@ interface Fixture {
   /** 中継を載せた待ち受け（core の口と同じ形） */
   url: string;
   seen: { url: string; auth: string; beta: string }[];
+  /** 上流に届いた Thread の印（中継が剥がすので、届けば undefined 以外） */
+  seenThreadHeader: Array<string | undefined>;
   enabled: Set<string>;
   dir: string;
   unauthorized: string[];
@@ -59,12 +61,14 @@ async function fixture(
     JSON.stringify({ claudeAiOauth: { accessToken: "REAL-ACCESS", refreshToken: "never-leaves", subscriptionType: "max", rateLimitTier: "tier-x" } }),
   );
   const seen: Fixture["seen"] = [];
+  const seenThreadHeader: Fixture["seenThreadHeader"] = [];
   const upstreamStatus = { value: 200 };
   const upstreamHeaders: Fixture["upstreamHeaders"] = { value: {} };
   const upstreamAccepts: Fixture["upstreamAccepts"] = { value: undefined };
   const beforeUpstreamReply: Fixture["beforeUpstreamReply"] = { fn: undefined };
   const upstream = createServer((req, res) => {
     seen.push({ url: req.url ?? "", auth: req.headers.authorization ?? "", beta: String(req.headers["anthropic-beta"] ?? "") });
+    seenThreadHeader.push(req.headers["x-banto-thread-id"] as string | undefined);
     const hook = beforeUpstreamReply.fn;
     beforeUpstreamReply.fn = undefined;
     hook?.();
@@ -108,6 +112,7 @@ async function fixture(
     accounts,
     url,
     seen,
+    seenThreadHeader,
     enabled,
     dir,
     unauthorized,
@@ -128,10 +133,10 @@ async function fixture(
   };
 }
 
-const post = (url: string, secret: string, path = "/v1/messages?beta=true") =>
+const post = (url: string, secret: string, path = "/v1/messages?beta=true", extra: Record<string, string> = {}) =>
   fetch(`${url}${CLAUDE_LOGIN_PATH}${path}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${secret}`, "anthropic-beta": "oauth-2025-04-20" },
+    headers: { authorization: `Bearer ${secret}`, "anthropic-beta": "oauth-2025-04-20", ...extra },
     body: "{}",
   });
 
@@ -392,6 +397,135 @@ test("送り元の縛り：その Project のコンテナからでなければ�
     }
     assert.equal(asked.length, 2);
   } finally {
+    await f.close();
+  }
+});
+
+// **会話の本体も中継を通す**（§2「Claude のアカウントを複数持つ」の 2.）
+test("本体の環境：上流の変数を外し、中継の住所・本体用の合言葉・契約の種類・付随の通信を止める印・Thread の印を足す", async () => {
+  const f = await fixture();
+  try {
+    const outer = {
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      CLAUDE_CONFIG_DIR: "/home/u/.claude",
+      ANTHROPIC_API_KEY: "sk-ant-outer",
+      ANTHROPIC_AUTH_TOKEN: "outer",
+      ANTHROPIC_UNIX_SOCKET: "/s",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_CODE_USE_VERTEX: "1",
+      CLAUDE_CODE_USE_FOUNDRY: "1",
+      ANTHROPIC_BASE_URL: "http://outer",
+      CLAUDE_CODE_OAUTH_TOKEN: "outer-token",
+    };
+    const env = await f.relay.runnerEnvFor("p1", "t1", "http://127.0.0.1:4737", outer);
+    const secret = env.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.match(secret, /^banto-runner-/);
+    assert.deepEqual(env, {
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      CLAUDE_CONFIG_DIR: "/home/u/.claude",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:4737/claude-login",
+      CLAUDE_CODE_OAUTH_TOKEN: secret,
+      CLAUDE_CODE_SUBSCRIPTION_TYPE: "max",
+      CLAUDE_CODE_RATE_LIMIT_TIER: "tier-x",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      ANTHROPIC_CUSTOM_HEADERS: "x-banto-thread-id: t1",
+    });
+    // Project ごとに1つ（Thread が替わっても同じ）。コンテナ用とは別のもの。置き場には書かない
+    assert.equal((await f.relay.runnerEnvFor("p1", "t2", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
+    assert.notEqual((await f.relay.runnerEnvFor("p2", "t3", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
+    const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.notEqual(container, secret);
+    assert.doesNotMatch(readFileSync(join(f.dir, "secrets.json"), "utf8"), new RegExp(secret));
+  } finally {
+    await f.close();
+  }
+});
+
+test("中継が取り直せない banto では、本体は中継を通さない（今の環境に付随の通信を止める印だけ）", async () => {
+  const f = await fixture({ refreshEnabled: false });
+  try {
+    const env = await f.relay.runnerEnvFor("p1", "t1", "http://127.0.0.1:4737", { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-outer" });
+    assert.deepEqual(env, { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-outer", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("本体用の合言葉：host の loopback から通り、Thread の印は上流へ流さない。スイッチと revoke に依らず、観測は別に数える", async () => {
+  const asked: string[] = [];
+  const f = await fixture({
+    sourceMatches: async (projectId, remote) => {
+      asked.push(`${projectId} ${remote}`);
+      return false;
+    },
+  });
+  try {
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const ok = await post(f.url, secret, "/v1/messages?beta=true", { "x-banto-thread-id": "t1" });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(f.seen, [{ url: "/v1/messages?beta=true", auth: "Bearer REAL-ACCESS", beta: "oauth-2025-04-20" }]);
+    assert.deepEqual(f.seenThreadHeader, [undefined]);
+    // 本体用の要求では Incus に送り元を聞かない
+    assert.deepEqual(asked, []);
+    // 「Claude のログインを使わせる」を切っても本体は止まらない（それはコンテナの中だけを決める）
+    f.enabled.delete("p1");
+    f.relay.revoke("p1");
+    assert.equal((await post(f.url, secret)).status, 200);
+    // 推論以外は断るのは同じ
+    assert.equal((await post(f.url, secret, "/api/oauth/profile")).status, 403);
+    assert.deepEqual(f.relay.runnerStatsFor("p1"), { requests: 2, lastRequestAt: "2026-10-08T00:00:00.000Z" });
+    // コンテナの観測（Project 設定の今の表示）には数えない
+    assert.deepEqual(f.relay.statsFor("p1"), { requests: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+test("取り違えた合言葉は断る：本体用をコンテナの口・別のサーバの待ち受けへ、コンテナ用を本体の口（loopback）へ", async () => {
+  // 送り元はコンテナのアドレスと比べる（本番と同じ——コンテナは loopback にならない）
+  const f = await fixture({ sourceMatches: async (_projectId, remote) => remote === "10.99.0.5" });
+  const dedicated = createRelayListener({
+    relayEndpoint: { handleRequest: async (_req, res) => void res.writeHead(500).end() },
+    claudeLogin: f.relay,
+    acceptsProject: () => true,
+    readJsonBody: async () => ({}),
+  });
+  const dedicatedUrl = await listen(dedicated);
+  // core の口と同じく 0.0.0.0 で待ち受け、loopback 以外の自分のアドレスから届ける（コンテナから来たのと同じ形）
+  const wide = createServer((req, res) => void f.relay.handle(req, res, CORE));
+  await new Promise<void>((r) => wide.listen(0, "0.0.0.0", r));
+  const lan = Object.values(networkInterfaces())
+    .flat()
+    .find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+  try {
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // コンテナ用を host の loopback から（本体の口）：コンテナではないので断る
+    const swapped = await post(f.url, container);
+    assert.equal(swapped.status, 403);
+    assert.match(JSON.stringify(await swapped.json()), /その Project のコンテナからしか使えません/);
+    // 本体用を別のサーバの専用の待ち受けへ：送り元が 127.0.0.1 でも断る
+    const viaTunnel = await post(dedicatedUrl, runner);
+    assert.equal(viaTunnel.status, 403);
+    assert.match(JSON.stringify(await viaTunnel.json()), /banto 本体の会話からしか使えません/);
+    // 本体用をコンテナの口（loopback 以外の送り元）へ
+    if (lan) {
+      const port = (wide.address() as { port: number }).port;
+      const fromLan = await post(`http://${lan}:${port}`, runner);
+      assert.equal(fromLan.status, 403);
+      assert.match(JSON.stringify(await fromLan.json()), new RegExp(`banto 本体の会話からしか使えません（送り元 ${lan.replace(/\./g, "\\.")}）`));
+    } else {
+      console.warn("loopback 以外の IPv4 が無いので、本体用の合言葉を loopback 以外から送る確かめは飛ばしました");
+    }
+    assert.equal(f.seen.length, 0);
+    assert.deepEqual(f.relay.runnerStatsFor("p1"), { requests: 0 });
+    assert.deepEqual(f.relay.statsFor("p1"), { requests: 0 });
+  } finally {
+    dedicated.closeAllConnections();
+    wide.closeAllConnections();
+    await Promise.all([new Promise((r) => dedicated.close(r)), new Promise((r) => wide.close(r))]);
     await f.close();
   }
 });

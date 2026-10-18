@@ -329,6 +329,11 @@ async function* runThreadTurnInner(
      * Project の全 Thread の system prompt の末尾に入る。渡されなければ無し
      */
     projectInstruction?(projectId: string): string | undefined;
+    /**
+     * **会話の本体の CLI の環境**（§2「Claude のアカウントを複数持つ」の 2.——Claude のログインの中継を通す）。ターンを始める
+     * ときに1回引く。渡されなければ Runner の既定（process.env に付随の通信を止める印）
+     */
+    runnerEnv?(projectId: string, threadId: string): Promise<Record<string, string | undefined>>;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
@@ -585,7 +590,9 @@ async function* runThreadTurnInner(
     // （追加・2026-09-26）。ターンは答えが揃った時点で終わり、CLI の後片づけは
     // 裏で続く（`RunnerTurnResult.exited`）。ふつうは人が次を打つより先に終わっている
     if (resumeFrom !== undefined) await cliExits.get(resumeFrom);
+    const env = await deps.runnerEnv?.(thread.projectId, input.threadId);
     const gen = (deps.runTurn ?? runTurn)({
+      ...(env ? { env } : {}),
       signal: abortTurn.signal,
       resumeSessionId: resumeFrom,
       // 前のターンで人が発言を取り消した——CLI のセッションに書かれていても、その手前で切って続ける（§6.31）

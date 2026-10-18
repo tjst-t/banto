@@ -3,7 +3,6 @@
 // config.jsonが無いまま既定値＝本番と同じport/dataDirで立ち上がりEADDRINUSEになった）
 // ので、ここで確実にconfig.jsonを書いてからcli.jsを読み込む
 import { closeSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import globalSetup from "./global-setup.ts";
@@ -28,6 +27,7 @@ import { startGithubLoginFixture } from "./github-login-fixture.ts";
 import { startInfisicalFixture } from "./infisical-fixture.ts";
 import { startOutsideRunGroup } from "./outside-group.ts";
 import { startAgentBinaryFixture } from "./agent-binary-fixture.ts";
+import { startFakeAnthropic } from "./fake-anthropic.ts";
 
 // どの core かは webServer が渡す `BANTO_E2E_CORE_INDEX`（`config.ts`）。設定の置き場もその core のものにする
 process.env.BANTO_CONFIG_PATH = CONFIG_PATH;
@@ -145,23 +145,10 @@ writeFileSync(
 );
 process.env.BANTO_CLAUDE_RELAY_CREDENTIALS = CLAUDE_RELAY_CREDENTIALS;
 {
-  const upstream = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => {
-      // **取り直しの口の偽物**（§2「中継も、切れかけたら取り直す」）：いつも refresh token が無効と答える——本物の鍵を
-      // 回さず、人が直すしかない知らせの道を通すため
-      if (req.url === "/v1/oauth/token") {
-        res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "invalid_grant" }));
-        return;
-      }
-      // 見出し x-e2e-upstream-status で上流の状態を決められる（中継は見出しをそのまま上流へ渡す）
-      const status = Number(req.headers["x-e2e-upstream-status"] ?? 200);
-      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ fakeUpstream: true, path: req.url, auth: req.headers.authorization ?? null }));
-    });
-  });
-  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  process.env.BANTO_CLAUDE_RELAY_UPSTREAM = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
-  process.env.BANTO_CLAUDE_RELAY_TOKEN_URL = `${process.env.BANTO_CLAUDE_RELAY_UPSTREAM}/v1/oauth/token`;
+  // 上流の偽物は1つの実装（`fake-anthropic.ts`——本物の CLI を当てる spec も、自前の host の上流に同じものを立てる）
+  const upstream = await startFakeAnthropic();
+  process.env.BANTO_CLAUDE_RELAY_UPSTREAM = upstream.url;
+  process.env.BANTO_CLAUDE_RELAY_TOKEN_URL = `${upstream.url}/v1/oauth/token`;
 }
 // 鍵の取り込み元も偽物に向ける——人のものを読まない
 writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));

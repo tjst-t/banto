@@ -36,7 +36,7 @@ export function createRelayListener(deps: RelayListenerDeps): Server {
         return;
       }
       if (deps.claudeLogin && path.startsWith(`${CLAUDE_LOGIN_PATH}/`)) {
-        await deps.claudeLogin.handle(req, res, { acceptsProject: deps.acceptsProject, bindSource: false });
+        await deps.claudeLogin.handle(req, res, { acceptsProject: deps.acceptsProject, bindSource: false, acceptsRunner: false });
         return;
       }
       // ほかの口（`/api/*`・人のログイン・`/agent-relay`）はこの待ち受けには無い

@@ -52,3 +52,19 @@ Factory はローカルの `main`（origin/main と分かれている）の上�
   refresh token が替わったのを見て新しいほうを採る（`replaceCredentialsFile`）
 - **取り直すかどうかは引き続き全部のアカウントで1つ**：足したアカウントだけ分ける理由は見つからなかった（SDK の版の
   確かめは同じ手順に掛かる）
+
+## 会話の本体を中継に通す（#399、2026-10-18）
+
+- **本体用の合言葉はメモリに持つ**（置き場に書かない）。使うのは core の子の CLI だけで、core を起こし直せば CLI も
+  起こし直る。書くと「起こし直しても同じ」が要らないのに漏れる置き場が1つ増える。コンテナ用は Service がコンテナの起動で
+  勝手に起きるので書く（今まで通り）
+- **コンテナ用の合言葉が host の loopback から来たときに、中継で先に断る分岐は足さなかった**。送り元の縛り
+  （`sourceMatches`）がコンテナのアドレスと比べるので、loopback はそこで 403 になる（単体試験で確かめた）。先に断る分岐を
+  足すと、既存の単体試験（全部 127.0.0.1 から送り、`sourceMatches` を真にしている）を作り直すことになる
+- **観測**：本体の分は `runnerStats` として API にだけ出した。画面に出すかは決めていない（Project 設定の今の表示は
+  コンテナの分のまま）
+- **E2E の偽の上流は `e2e/fake-anthropic.ts` 1つ**。会話（`messages` のある本文）には文で返し、見出し
+  `x-e2e-upstream-status` があるか本文が会話でなければ、受けた Authorization とパスを返す（`claude-login-relay.spec.ts`）。
+  E2E の core（`start-core.ts`）と、本物の CLI を当てる自前の host（`runtime-move-back.spec.ts`）がそれぞれ1つずつ立てる
+- **`listModels()`（モデルの一覧を聞くだけの `query()`）も付随の通信を止めた**。API は呼ばないが、機能の旗・bootstrap は
+  直に出るため。中継は通さない（推論しない）

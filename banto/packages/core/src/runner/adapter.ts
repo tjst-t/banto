@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 
 import { getSessionMessages, query, type SDKMessage, type PermissionResult, type Options, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { ImageMediaType } from "../images/store.js";
+import { NONESSENTIAL_TRAFFIC_ENV } from "../claude-login/relay.js";
 
 /**
  * **SDK に claude の実行ファイルの場所を渡す**（2026-10-10、Fork「資源の逼迫」、`docs/specs/v4-architecture.md` §5.4-0）。
@@ -131,6 +132,11 @@ export interface RunnerTurnOptions {
    * （`report_turn`）にだけ使う
    */
   allowedTools?: string[];
+  /**
+   * **CLI の環境**（SDK の `env`——process.env に足すのではなく置き換える）。会話の本体を Claude のログインの中継に通すとき
+   * core が組み立てて渡す（`ClaudeLoginRelay.runnerEnvFor`）。渡さなければ process.env に付随の通信を止める印だけを足す
+   */
+  env?: Record<string, string | undefined>;
   signal?: AbortSignal;
 }
 
@@ -305,6 +311,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
       cwd: opts.cwd,
+      env: opts.env ?? { ...process.env, ...NONESSENTIAL_TRAFFIC_ENV },
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
       ...(opts.allowedTools && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
       ...(opts.onStop || opts.onToolUsed
@@ -510,6 +517,8 @@ export async function listModels(): Promise<ModelInfo[]> {
       settingSources: [],
       strictMcpConfig: true,
       tools: [],
+      // API は呼ばないが、付随の通信（機能の旗・bootstrap）は止める（§2「Claude のアカウントを複数持つ」の 1.）
+      env: { ...process.env, ...NONESSENTIAL_TRAFFIC_ENV },
       abortController,
       ...(claudeExecutablePath() ? { pathToClaudeCodeExecutable: claudeExecutablePath() } : {}),
     },
