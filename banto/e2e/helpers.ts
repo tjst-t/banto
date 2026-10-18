@@ -1,5 +1,5 @@
 // specから共通で使う手順。真実は一箇所（規則3）——同じ待ちを各specに写さない。
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type FrameLocator, type Page } from "@playwright/test";
 import { CORE_BASE_URL, CORE_BROWSER_URL, AUTH_TOKEN } from "./config.js";
 import { FAKE_RUNNER_MARKER, FAKE_RUNNER_REPLY_MARKER, type FakePlan } from "./fake-runner.js";
 
@@ -522,4 +522,28 @@ export async function openPaletteEntry(page: Page, name: RegExp): Promise<void> 
   const entry = page.getByRole("option", { name });
   await expect(entry, `Command Palette に入口 ${name} が出ない（その Module が立っていない？）`).toBeVisible({ timeout: 60_000 });
   await entry.click();
+}
+
+/**
+ * Browser の人の画面で「ブラウザの記録を消す」を2回押す（1回目は確かめるだけ）。帯が狭くて「…」（もっと見る）に
+ * しまってあれば、「…」を開いて押す（v4-modules.md §4.1「人の画面」——帯は1行で、狭ければ「…」にしまう）。
+ * 返すのは「…」から押したか
+ */
+export async function clearBrowserData(f: FrameLocator): Promise<boolean> {
+  // しまうかは帯の中身の幅で決まる——「ページ W×H」が出てから見る
+  await expect(f.getByTestId("viewport")).toHaveText(/^ページ \d+×\d+/, { timeout: 20_000 });
+  const more = f.getByRole("button", { name: "もっと見る" });
+  if (!(await more.isVisible())) {
+    await f.getByRole("button", { name: "ブラウザの記録を消す" }).click();
+    await f.getByRole("button", { name: "もう一度押すと消します" }).click();
+    return false;
+  }
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await f.getByRole("menuitem", { name: "ブラウザの記録を消す" }).click();
+  // 1回目は確かめるだけ。「…」は開いたまま、同じ項目が「もう一度押すと消します」になる
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  await f.getByRole("menuitem", { name: "もう一度押すと消します" }).click();
+  await expect(more, "消したのに「…」が閉じない").toHaveAttribute("aria-expanded", "false");
+  return true;
 }
