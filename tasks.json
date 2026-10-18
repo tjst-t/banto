@@ -9753,6 +9753,33 @@
       "updatedAt": "2026-10-18T09:09:54.261Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "oauth-token-envsecrets-accesstoken-githu",
+      "number": 405,
+      "kind": "bug",
+      "title": "oauth-token を envSecrets 等で渡すとき、期限切れの accessToken がそのまま渡る（GitHub のブラウザログイン）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "vault",
+        "repositories"
+      ],
+      "body": "## 何が起きたか（ansible-nas の Base Thread c04700af-a68e-4d91-871a-8a29de6e7e91 からの報告、2026-10-18）\nShell の runCommand の envSecrets で `repositories-github-tjst-t`（kind oauth-token、owner repositories、format github-app-user-token/1）を渡して git push に使っている。09:22 UTC は通ったが、11:19 UTC は `Invalid username or token` で断られた。中の accessToken の expiresAt は 09:50:43Z で切れていた（refreshToken は 2027-04-18 まで有効）。\n\n## 原因\nRepositories の `AccountManager.tokenFor`（packages/modules/repositories/src/accounts.ts）は「使う直前に期限を見て取り直し、Vault に書き戻す」が、これは Repositories 自身が使うとき（clone・publish・設定の「確かめる」等）だけ。Vault の resolveAlias／resolveAliases（Shell の envSecrets・secretFiles 経由）は oauth-token の期限を見ず、持ち主に取り直させもせず、置いてある JSON をそのまま返す。AI 側は refresh token を使うと GitHub が refresh token も回すうえ Vault に書けないので、直せない。\n\n## 直し方の案（仕様で決める）\n- oauth-token を渡す前に、期限が近ければ持ち主（owner の Module）に取り直させてから最新を渡す（host 経由で owner に「新しくして」と頼む口。取り直しは持ち主の1本ずつの列に乗せる）。\n- 取り直せなかったら期限切れの値を渡さず「期限切れで、持ち主が更新できなかった（理由）」で断る。\n- AI に JSON ではなく使える accessToken だけを渡す形（例：alias の修飾で欄を選ぶ）も検討。git 用の GIT_ASKPASS の手当ても候補。\n- MCP の OAuth（core/src/oauth/provider.ts が置く oauth-token）も同じ問題があるか確かめる。\n\n## 当面の回避\nRepositories の設定でそのアカウントの「確かめる」を押すと tokenFor が通り、取り直した組が Vault に書き戻される（そこから約8時間は使える）。\n\n## 直ったら\nansible-nas の Base Thread に知らせる（手元の main に未 push のコミット 733d940 があり、向こうで push して確かめる）。",
+      "doneWhen": "期限の切れた（か5分以内に切れる）github-app-user-token の alias を Shell の envSecrets で渡すと、Repositories が取り直して Vault に書き戻した新しい accessToken が渡ること、取り直せないときは期限切れの値を渡さず理由つきで断ることを、単体テストと E2E（偽の GitHub）で確かめる",
+      "resolution": null,
+      "refs": [
+        "packages/modules/repositories/src/accounts.ts",
+        "packages/modules/vault-directory/src/server.ts"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-18T11:54:54.340Z",
+      "updatedAt": "2026-10-18T11:54:54.340Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
