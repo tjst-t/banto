@@ -61,6 +61,57 @@ export class InfisicalBackend implements VaultBackend {
     return got.secretValue;
   }
 
+  /**
+   * **まとめて読む**（2026-10-18、仕様 §2.1「Infisical の getSecrets」）。頼まれたパスを（環境・グループの根）ごとに分け、
+   * それぞれ `listSecrets` を1回（`getSecret` と同じ読み方——参照を展開させない）。**頼まれた値だけを返し、残りはその場で
+   * 捨てる**（台帳の分け合う一覧には入れない）。一覧に見つからないもの・値を読む権限が無くて一覧が値を返さない根は
+   * `getSecret` の1件ずつに落とす（読めなければそこで投げる）
+   */
+  async getSecrets(paths: readonly string[]): Promise<Map<string, string>> {
+    const roots = new Map<string, { env: string | undefined; group: string; paths: Set<string> }>();
+    for (const path of paths) {
+      const { group, env } = placeOf(path);
+      const key = `${env ?? ""}|${group}`;
+      const root = roots.get(key) ?? { env, group, paths: new Set<string>() };
+      root.paths.add(path);
+      roots.set(key, root);
+    }
+    const out = new Map<string, string>();
+    const leftover: string[] = [];
+    await Promise.all(
+      [...roots.values()].map(async (root) => {
+        let listed: Awaited<ReturnType<ReturnType<InfisicalConnection["secrets"]>["listSecrets"]>>;
+        try {
+          listed = await this.conn.secrets().listSecrets({
+            ...this.conn.scopeFor(root.env),
+            secretPath: `/${root.group}`,
+            recursive: true,
+            viewSecretValue: true,
+            expandSecretReferences: false,
+          });
+        } catch (err) {
+          // 値を読む権限が無い・フォルダが無い——1件ずつ読めば、読めるものは読め、読めないものは getSecret の理由で落ちる
+          if (!isPermissionDenied(err) && !isFolderMissing(err)) throw err;
+          leftover.push(...root.paths);
+          return;
+        }
+        const secrets = listed.secrets ?? [];
+        if (secrets.some((s) => s.secretValueHidden === true)) {
+          leftover.push(...root.paths);
+          return;
+        }
+        for (const s of secrets) {
+          const path = backendPathOf(s.secretPath ?? "/", s.secretKey, root.env);
+          if (path === undefined || !root.paths.has(path) || typeof s.secretValue !== "string") continue;
+          out.set(path, s.secretValue);
+        }
+        for (const path of root.paths) if (!out.has(path)) leftover.push(path);
+      }),
+    );
+    for (const path of leftover) out.set(path, await this.getSecret(path));
+    return out;
+  }
+
   async putSecret(path: string, value: string | Buffer): Promise<void> {
     const place = placeOf(path);
     const { folder, key } = place;
@@ -318,6 +369,12 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** 権限が無くて断られた（値を読む権限が無い等）。文言か状態符号 403 で見る。 */
+export function isPermissionDenied(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /StatusCode=403|permission|forbidden/i.test(message);
 }
 
 /**

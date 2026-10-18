@@ -109,6 +109,14 @@ export interface InfisicalConfig {
   environment: string;
 }
 
+/** 1つの（環境・フォルダ）の注記の一括更新（`InfisicalConnection.batch`）。 */
+export interface BatchCommentUpdate {
+  projectId: string;
+  environment: string;
+  secretPath: string;
+  secrets: Array<{ secretKey: string; secretComment: string }>;
+}
+
 /** 足りない設定を**黙って既定に倒さない**（規則2）——立たないなら理由を言って立たない。 */
 export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): InfisicalConfig {
   const required = {
@@ -202,6 +210,14 @@ export class InfisicalConnection {
     return retryOnRateLimit(this.ready().folders());
   }
 
+  /**
+   * **注記をまとめて書く**（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。1つの（環境・フォルダ）の秘密の注記だけを
+   * 1回で書き換える。回数制限は `secrets()` と同じ待ち方（`retryOnRateLimit`）
+   */
+  batch(): { updateSecrets(o: BatchCommentUpdate): Promise<void> } {
+    return retryOnRateLimit({ updateSecrets: (o: BatchCommentUpdate) => this.patchSecretsBatch(o) });
+  }
+
   /** どの Project・どの環境か。呼び出しのたびに要る共通の引数（接続設定の環境＝既定の版）。 */
   get scope(): { projectId: string; environment: string } {
     return { projectId: this.config.projectId, environment: this.config.environment };
@@ -210,6 +226,39 @@ export class InfisicalConnection {
   /** 版（環境）を指定した共通の引数。無ければ接続設定の環境（2026-10-06）。 */
   scopeFor(env: string | undefined): { projectId: string; environment: string } {
     return { projectId: this.config.projectId, environment: env ?? this.config.environment };
+  }
+
+  /**
+   * `PATCH /api/v4/secrets/batch`。SDK 5.0.2 に口が無いので直に呼ぶ（`listEnvironments` と同じ形）。**値は渡さない**
+   * ——渡すと上書きしてしまう。`mode` は既定（`failOnNotFound`）のまま——消えた秘密があれば呼び出しごと失敗する。
+   * 失敗の文言は SDK と同じ形（`[StatusCode=N]`）にする——`retryOnRateLimit` が 429 を見分けられるように
+   */
+  private async patchSecretsBatch(o: BatchCommentUpdate): Promise<void> {
+    const token = this.ready().auth().getAccessToken();
+    if (!token) throw new Error("Infisical のアクセストークンがありません（ログインし直してください）");
+    const base = this.config.siteUrl.replace(/\/+$/, "");
+    const path = "/api/v4/secrets/batch";
+    const res = await fetch(`${base}${path}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: o.projectId,
+        environment: o.environment,
+        secretPath: o.secretPath,
+        secrets: o.secrets.map((s) => ({ secretKey: s.secretKey, secretComment: s.secretComment })),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.ok) return;
+    const text = await res.text().catch(() => "");
+    let message = text;
+    try {
+      const body = JSON.parse(text) as { message?: unknown };
+      if (typeof body.message === "string") message = body.message;
+    } catch {
+      // JSON でなければ本文をそのまま言う
+    }
+    throw new Error(`[URL=${path}] [Method=patch] [StatusCode=${res.status}] ${message}`);
   }
 
   /**
