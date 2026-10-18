@@ -1133,3 +1133,33 @@ test("末尾に改行の無い鍵・CRLF の鍵を貼っても、公開鍵が導
     await rm(keyDir, { recursive: true, force: true });
   }
 });
+
+test("resolveAliases：本物の Vault で順に値を返し、1件でも引けなければ値を返さず全部の理由で断る", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "createAlias", arguments: { name: "a-only", kind: "secret", forProject: "proj-a", value: "va" } });
+    await client.callTool({ name: "createAlias", arguments: { name: "for-all", kind: "secret", value: "vall" } });
+
+    const got = JSON.parse(
+      textOf(
+        await client.callTool({
+          name: "resolveAliases",
+          arguments: { items: [{ name: "for-all" }, { name: "a-only" }] },
+          _meta: forProject("proj-a"),
+        }),
+      ),
+    ) as { values: Array<{ name: string; value: string }> };
+    assert.deepEqual(got.values.map((v) => [v.name, v.value]), [["for-all", "vall"], ["a-only", "va"]]);
+
+    const refused = await client
+      .callTool({
+        name: "resolveAliases",
+        arguments: { items: [{ name: "for-all" }, { name: "a-only" }, { name: "無い" }] },
+        _meta: forProject("proj-b"),
+      })
+      .then(() => assert.fail("断られなかった"), (e: Error) => e.message);
+    assert.match(refused, /3 件のうち 2 件を引けませんでした/);
+    assert.match(refused, /alias "a-only" はこの Project からは使えません/);
+    assert.match(refused, /alias "無い" not found/);
+    assert.equal(refused.includes("vall"), false, "引けたものの値が理由に混じっている");
+  });
+});

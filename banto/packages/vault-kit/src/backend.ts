@@ -11,6 +11,12 @@ export type AliasKind = "secret" | "ssh-identity" | "file" | "oauth-token";
 
 export interface VaultBackend {
   getSecret(path: string): Promise<string | Buffer>;
+  /**
+   * **まとめて読む**（任意、追加・2026-10-18、仕様 §2.1「秘密をまとめて引く」）。頼まれたパスごとの値を返す
+   * ——1つでも読めなければ投げる（黙って欠かさない）。名乗らない backend には kit が `getSecret` を1件ずつ呼ぶ
+   * （手元のファイルを読む backend はそれで足りる——往復が無い）
+   */
+  getSecrets?(paths: readonly string[]): Promise<Map<string, string | Buffer>>;
   putSecret(path: string, value: string | Buffer): Promise<void>;
   deleteSecret(path: string): Promise<void>;
   listPaths(prefix?: string): Promise<string[]>;

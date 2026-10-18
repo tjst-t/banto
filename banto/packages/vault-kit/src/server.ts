@@ -23,6 +23,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   AUDIT_ARGS_META_KEY,
+  BATCH_MAX_ITEMS,
+  BATCH_OF_META_KEY,
   CALLER_OWNED_META_KEY,
   callerModuleOf,
   callerOf,
@@ -116,6 +118,22 @@ function requiredString(value: unknown, label: string): string {
 function normalizePrivateKey(value: string): string {
   const lf = value.replace(/\r/g, "");
   return lf.endsWith("\n") ? lf : `${lf}\n`;
+}
+
+/**
+ * まとめて呼ぶ口の `items`（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。**`items` 以外の引数は受けない**
+ * ——host も断るが、ここでも断る（承認の鍵に入らない引数を黙って使わない）
+ */
+function batchItems(args: Record<string, unknown>): Record<string, unknown>[] {
+  const extra = Object.keys(args).filter((k) => k !== "items");
+  if (extra.length > 0) throw new Error(`items のほかの引数は受けません: ${extra.join(", ")}`);
+  const items = args.items;
+  if (!Array.isArray(items) || items.length === 0) throw new Error("items（1件以上の配列）が要ります");
+  if (items.length > BATCH_MAX_ITEMS) throw new Error(`items は1回に ${BATCH_MAX_ITEMS} 件までです（${items.length} 件）`);
+  return items.map((item, i) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error(`items[${i}] はオブジェクトです`);
+    return item as Record<string, unknown>;
+  });
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -429,6 +447,29 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           "aliasを値に解決する",
           { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
           "module",
+        ),
+        tool(
+          "resolveAliases",
+          "複数の alias をまとめて値に解決する（並びは items と同じ）。全部か何もなし——1件でも引けなければ、値は返さず" +
+            `引けなかったもの全部を理由つきで断る。1回に ${BATCH_MAX_ITEMS} 件まで`,
+          {
+            type: "object",
+            properties: {
+              items: {
+                type: "array",
+                maxItems: BATCH_MAX_ITEMS,
+                items: {
+                  type: "object",
+                  properties: { name: { type: "string" }, group: { type: "string" } },
+                  required: ["name"],
+                },
+              },
+            },
+            required: ["items"],
+          },
+          "module",
+          // **承認は1件ずつの resolveAlias と同じ鍵**——host が要素ごとに写す
+          { [BATCH_OF_META_KEY]: { tool: "resolveAlias", items: "items" } },
         ),
         tool(
           "getPublicKey",
@@ -1042,6 +1083,73 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         assertNotEmpty(value, name, source, callMeta);
         await registry.markUsed(meta.backendPath);
         return { content: [{ type: "text", text: String(value) }] };
+      }
+      case "resolveAliases": {
+        // **resolveAlias と同じ確かめを1件ずつ**（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。違うのは、台帳を1回だけ
+        // 読む・値をまとめて読む・使った日をまとめて書くこと。**全部か何もなし**——1件でも引けなければ値は1つも返さない
+        const asked = batchItems(args).map((item, i) => ({
+          name: requiredString(item.name, `items[${i}].name`),
+          group: optionalString(item.group, `items[${i}].group`),
+        }));
+        const named = isAdmin(callMeta) ? asked.flatMap((a) => (a.group ? [a.group] : [])) : [];
+        const all = await listAll(named);
+        const reasons: string[] = [];
+        const picked: Array<{ name: string; meta: AliasMeta; source: SecretAliasMeta } | undefined> = asked.map(({ name, group }) => {
+          try {
+            const meta = pickAlias(all, name, group, callMeta);
+            if (!meta) throw new Error(`alias "${name}" not found`);
+            assertUsable(meta, name, callMeta);
+            return { name, meta, source: valueSource(meta, name, all, callMeta) };
+          } catch (e) {
+            reasons.push((e as Error).message);
+            return undefined;
+          }
+        });
+        const refuse = () =>
+          new Error(
+            `${asked.length} 件のうち ${reasons.length} 件を引けませんでした（値は1つも渡していません）：` + reasons.join("／"),
+          );
+        // 引けないものが分かっているなら、値を読みに行かない
+        if (reasons.length > 0) throw refuse();
+        const found = picked as Array<{ name: string; meta: AliasMeta; source: SecretAliasMeta }>;
+        const paths = [...new Set(found.map((f) => f.source.backendPath))];
+        let values: Map<string, string | Buffer>;
+        if (backend.getSecrets) {
+          values = await backend.getSecrets(paths);
+        } else {
+          values = new Map();
+          for (const path of paths) {
+            try {
+              values.set(path, await backend.getSecret(path));
+            } catch (e) {
+              const who = found.filter((f) => f.source.backendPath === path).map((f) => `"${f.name}"`).join("・");
+              reasons.push(`alias ${who} を読めませんでした: ${(e as Error).message}`);
+            }
+          }
+        }
+        for (const f of found) {
+          const value = values.get(f.source.backendPath);
+          if (value === undefined) {
+            // getSecret の1件ずつで落ちたものは上で言ってある
+            if (backend.getSecrets) reasons.push(`alias "${f.name}" の値が返ってきませんでした`);
+            continue;
+          }
+          try {
+            assertNotEmpty(value, f.name, f.source, callMeta);
+          } catch (e) {
+            reasons.push((e as Error).message);
+          }
+        }
+        if (reasons.length > 0) throw refuse();
+        const used = [...new Set(found.map((f) => f.meta.backendPath))];
+        if (registry.markUsedMany) await registry.markUsedMany(used);
+        else for (const path of used) await registry.markUsed(path);
+        const resolved = found.map((f) => ({
+          name: f.meta.name,
+          group: canon(groupOf(f.meta)),
+          value: String(values.get(f.source.backendPath)),
+        }));
+        return { content: [{ type: "text", text: JSON.stringify({ values: resolved }) }] };
       }
       case "getPublicKey": {
         const name = requiredString(args.name, "name");

@@ -21,12 +21,17 @@ import type { RelayLike } from "./relay-client.js";
 const ADMIN = { "dev.banto/caller": { admin: true } } as const;
 const forProject = (project: string) => ({ "dev.banto/caller": { project } });
 
-function relayTo(vaults: Map<string, Client>, broken: Map<string, string> = new Map()): RelayLike {
+function relayTo(
+  vaults: Map<string, Client>,
+  broken: Map<string, string> = new Map(),
+  calls: string[] = [],
+): RelayLike {
   return {
     async listTargets() {
       return [...[...vaults.keys()], ...broken.keys()].map((name) => ({ name, roles: ["vault"] }));
     },
     async callTool(targetModule, name, args) {
+      calls.push(`${targetModule} ${name}`);
       const failure = broken.get(targetModule);
       if (failure) throw new Error(failure);
       const client = vaults.get(targetModule);
@@ -42,6 +47,8 @@ function relayTo(vaults: Map<string, Client>, broken: Map<string, string> = new 
 interface Ctx {
   ui: Client;
   vaults: Map<string, Client>;
+  /** 窓口が中継で呼んだ口（`<宛先> <tool>`） */
+  relayCalls: string[];
 }
 
 async function withUi(
@@ -50,6 +57,7 @@ async function withUi(
 ): Promise<void> {
   const dirs: string[] = [];
   const vaults = new Map<string, Client>();
+  const relayCalls: string[] = [];
   try {
     for (const name of opts.vaultNames ?? ["vault-local"]) {
       const dir = await mkdtemp(join(tmpdir(), "banto-vault-directory-test-"));
@@ -67,7 +75,7 @@ async function withUi(
     }
 
     const uiServer = createVaultDirectoryServer({
-      relay: relayTo(vaults, opts.broken),
+      relay: relayTo(vaults, opts.broken, relayCalls),
       dataDir: opts.dataDir,
     });
     const [us, uc] = InMemoryTransport.createLinkedPair();
@@ -81,7 +89,7 @@ async function withUi(
     ui.readResource = ((params: Record<string, unknown>, ...rest: unknown[]) =>
       rawRead({ _meta: ADMIN, ...params } as never, ...(rest as []))) as typeof ui.readResource;
 
-    await fn({ ui, vaults });
+    await fn({ ui, vaults, relayCalls });
     await ui.close();
     for (const client of vaults.values()) await client.close();
   } finally {
@@ -108,6 +116,7 @@ test("窓口の面は3段に分かれている——AI には1本と目録だけ
     // ものなので AI が読めてよい。秘密鍵は通らない
     getPublicKey: "agent",
     lookupAlias: "module", // 名前 → 在りか（値は返さない）
+    lookupAliases: "module", // まとめて引く（2026-10-18）
   };
   await withUi(async ({ ui }) => {
     const { tools } = await ui.listTools();
@@ -177,6 +186,76 @@ test("lookupAlias は在りかを返す——値は返さない", async () => {
     },
     { vaultNames: ["vault-local", "vault-keychain"] },
   );
+});
+
+test("lookupAliases は一覧を1回だけ読み、名前ごとに在りか（lookupAlias と同じ）か理由を返す", async () => {
+  await withUi(
+    async ({ ui, relayCalls }) => {
+      await ui.callTool({ name: "createAlias", arguments: { name: "A", kind: "secret", value: "va" } });
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { implementation: "vault-keychain", name: "B", kind: "secret", value: "vb" },
+      });
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { name: "P", kind: "secret", forProject: "other", group: "other-group", value: "vp" },
+      });
+      await ui.callTool({ name: "setGroupBinding", arguments: { projectId: "other", group: "other-group" } });
+      const names = ["A", "vault-keychain:B", "無い名前", "P"];
+      const single = await Promise.all(
+        ["A", "vault-keychain:B"].map(async (name) =>
+          parse(await ui.callTool({ name: "lookupAlias", arguments: { name }, _meta: forProject("p") })),
+        ),
+      );
+      relayCalls.length = 0;
+      const { results } = parse(
+        await ui.callTool({ name: "lookupAliases", arguments: { items: names.map((name) => ({ name })) }, _meta: forProject("p") }),
+      );
+      // 繋がっている Vault の数（2本）だけ一覧を読む——名前の数（4つ）に比例しない
+      assert.deepEqual(relayCalls.sort(), ["vault-keychain listAliases", "vault-local listAliases"]);
+      assert.deepEqual(
+        results.map((r: { name: string }) => r.name),
+        names,
+        "並びが items と違う",
+      );
+      assert.deepEqual(results[0].found, single[0]);
+      assert.deepEqual(results[1].found, single[1]);
+      assert.equal(results[1].found.name, "B", "backend での本当の名前ではない");
+      assert.match(results[2].error, /"無い名前" はどの Vault にもありません/);
+      // 別の Project のものは、この Project からは引けない（lookupAlias と同じ）
+      assert.match(results[3].error, /"P" はどの Vault にもありません/);
+      assert.equal(JSON.stringify(results).includes('"va"'), false, "値が返っている");
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});
+
+test("lookupAliases：読めない Vault があればそれを理由に言う・items の形が違えば断る", async () => {
+  await withUi(
+    async ({ ui }) => {
+      const { results } = parse(await ui.callTool({ name: "lookupAliases", arguments: { items: [{ name: "X" }] } }));
+      assert.match(results[0].error, /読めていない Vault があります：vault-broken（つながらない）/);
+      for (const [args, why] of [
+        [{ items: [] }, /1件以上の配列/],
+        [{ items: "X" }, /1件以上の配列/],
+        [{ items: [{ name: "X" }], name: "Y" }, /items のほかの引数は受けません: name/],
+        [{ items: ["X"] }, /items\[0\] はオブジェクトです/],
+        [{ items: [{}] }, /items\[0\]\.name が要ります/],
+        [{ items: Array.from({ length: 101 }, (_, i) => ({ name: `n${i}` })) }, /100 件まで/],
+      ] as const) {
+        await assert.rejects(() => ui.callTool({ name: "lookupAliases", arguments: args }), why);
+      }
+    },
+    { broken: new Map([["vault-broken", "つながらない"]]) },
+  );
+});
+
+test("lookupAliases は承認を lookupAlias と同じ鍵で受ける（dev.banto/batchOf）", async () => {
+  await withUi(async ({ ui }) => {
+    const { tools } = await ui.listTools();
+    const batch = tools.find((t) => t.name === "lookupAliases")!;
+    assert.deepEqual(batch._meta?.["dev.banto/batchOf"], { tool: "lookupAlias", items: "items" });
+  });
 });
 
 // **同じ名前が2つあっても止まらない**（改訂・2026-09-13、設計し直し）。

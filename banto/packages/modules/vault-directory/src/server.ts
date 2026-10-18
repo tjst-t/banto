@@ -9,9 +9,9 @@
 //
 //   通らない（窓口が持つ）        通る（backend へ直行のまま）
 //   ─────────────────────       ──────────────────────────
-//   requestAlias（AI 向け）       resolveAlias
+//   requestAlias（AI 向け）       resolveAlias・resolveAliases
 //   vault://aliases（横断）        startSshAgent
-//   lookupAlias（名前→在りか）
+//   lookupAlias・lookupAliases（名前→在りか）
 //   人の管理操作（admin）
 //
 // **なぜ値を通さないか**：仕様 §2.1 冒頭が単一 Module 方式を選んだ理由は
@@ -37,6 +37,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   AUDIT_ARGS_META_KEY,
+  BATCH_MAX_ITEMS,
+  BATCH_OF_META_KEY,
   callerOf,
   VISIBILITY_META_KEY,
   MODULE_META_KEY,
@@ -74,6 +76,19 @@ const FALLBACK_DEFAULT_VAULT = "vault-local";
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error(`${label} が要ります`);
   return value;
+}
+
+/** まとめて呼ぶ口の `items`。**`items` 以外の引数は受けない**（vault-kit の `resolveAliases` と同じ確かめ） */
+function batchItems(args: Record<string, unknown>): Record<string, unknown>[] {
+  const extra = Object.keys(args).filter((k) => k !== "items");
+  if (extra.length > 0) throw new Error(`items のほかの引数は受けません: ${extra.join(", ")}`);
+  const items = args.items;
+  if (!Array.isArray(items) || items.length === 0) throw new Error("items（1件以上の配列）が要ります");
+  if (items.length > BATCH_MAX_ITEMS) throw new Error(`items は1回に ${BATCH_MAX_ITEMS} 件までです（${items.length} 件）`);
+  return items.map((item, i) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error(`items[${i}] はオブジェクトです`);
+    return item as Record<string, unknown>;
+  });
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -361,6 +376,40 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     await deps.relay.callTool(fromImpl, "deleteAlias", { name, group: fromGroup });
   }
 
+  /**
+   * 名前 → 在りか（`lookupAlias` の答え）。引けなければ理由つきで投げる。
+   * **呼び出し元から使えるものだけ**——使えない alias の在りかを
+   * 教えても、その先で backend に断られるだけ（先に、理由の分かる形で止める）。
+   * **素の名前は Project ＞ 共通の既定、既定の外は修飾名**（決定・2026-09-13）
+   * ——候補が複数になって止まる、という状態がここで無くなった
+   */
+  function locate(
+    name: string,
+    { aliases, failures }: { aliases: TaggedAlias[]; failures: Array<{ implementation: string; error: string }> },
+    caller: ReturnType<typeof callerOf>,
+    defaultVault: string,
+  ): Record<string, unknown> {
+    const found = resolveName(name, aliases, caller, defaultVault);
+    if (!found) {
+      // **読めなかった backend があるなら、それを言う**（規則2）。
+      // 「どこにもありません」と「片方が読めていません」は別の事実で、
+      // 混ぜると**設定の壊れが「そんな名前は無い」に化ける**
+      if (failures.length > 0) {
+        throw new Error(
+          `alias "${name}" は見つかりませんでしたが、読めていない Vault があります：` +
+            failures.map((f) => `${f.implementation}（${f.error}）`).join("、"),
+        );
+      }
+      throw new Error(`alias "${name}" はどの Vault にもありません`);
+    }
+    // 参照の指す先は渡さない（呼び出し元は参照の置き場のまま resolveAlias すればよい）
+    const { implementation, linkTo: _linkTo, ...meta } = found;
+    // **値は返さない**——在りかと、値を使わずに分かることまで。
+    // **`name` は backend での本当の名前**（修飾名で引かれても、その先の
+    // `resolveAlias` は素の名前で呼ぶ必要がある）
+    return { implementation, ...meta };
+  }
+
   /** **監査に残してよい引数**（識別子だけ。値は決して含めない）。 */
   const AUDIT_IDENTIFIERS = ["name", "group", "identity", "toGroup", "toName", "implementation", "projectId"];
 
@@ -435,6 +484,26 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           required: ["name"],
         },
         _meta: { [VISIBILITY_META_KEY]: "module" },
+      },
+      {
+        name: "lookupAliases",
+        description:
+          "複数の alias の名前から、それぞれ**どの Vault にあるか**をまとめて引く（値は返さない）。" +
+          "名前ごとに在りか（lookupAlias と同じ）か、引けない理由を返す。" +
+          `1回に ${BATCH_MAX_ITEMS} 件まで。引いたあとは Vault ごとに resolveAliases を**直接**呼ぶ`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              maxItems: BATCH_MAX_ITEMS,
+              items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+            },
+          },
+          required: ["items"],
+        },
+        // 承認は lookupAlias と同じ鍵（識別子を名乗らない口なので、今までどおり Project ごとに1回）
+        _meta: { [VISIBILITY_META_KEY]: "module", [BATCH_OF_META_KEY]: { tool: "lookupAlias", items: "items" } },
       },
       tool("listVaults", "繋がっている vault 実装の一覧", {}),
       tool("listAliases", "全実装を横断した alias の一覧（値は含まない）", {}),
@@ -784,30 +853,24 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
 
       case "lookupAlias": {
         const name = requiredString(args.name, "name");
-        const { aliases, failures } = await crossAliases();
-        // **呼び出し元から使えるものだけ**——使えない alias の在りかを
-        // 教えても、その先で backend に断られるだけ（先に、理由の分かる形で止める）。
-        // **素の名前は Project ＞ 共通の既定、既定の外は修飾名**（決定・2026-09-13）
-        // ——候補が複数になって止まる、という状態がここで無くなった
-        const found = resolveName(name, aliases, callerOf(callMeta), await defaultVault());
-        if (!found) {
-          // **読めなかった backend があるなら、それを言う**（規則2）。
-          // 「どこにもありません」と「片方が読めていません」は別の事実で、
-          // 混ぜると**設定の壊れが「そんな名前は無い」に化ける**
-          if (failures.length > 0) {
-            throw new Error(
-              `alias "${name}" は見つかりませんでしたが、読めていない Vault があります：` +
-                failures.map((f) => `${f.implementation}（${f.error}）`).join("、"),
-            );
+        return text(locate(name, await crossAliases(), callerOf(callMeta), await defaultVault()));
+      }
+
+      case "lookupAliases": {
+        // **一覧（crossAliases）は1回だけ読み、名前ごとに在りかか理由を返す**（2026-10-18、仕様 §2.1「秘密をまとめて引く」）。
+        // 引けない名前があっても引けたものは返す——呼び出し側が全部の理由をまとめて出せるように
+        const names = batchItems(args).map((item, i) => requiredString(item.name, `items[${i}].name`));
+        const cross = await crossAliases();
+        const caller = callerOf(callMeta);
+        const dv = await defaultVault();
+        const results = names.map((name) => {
+          try {
+            return { name, found: locate(name, cross, caller, dv) };
+          } catch (e) {
+            return { name, error: (e as Error).message };
           }
-          throw new Error(`alias "${name}" はどの Vault にもありません`);
-        }
-        // 参照の指す先は渡さない（呼び出し元は参照の置き場のまま resolveAlias すればよい）
-        const { implementation, linkTo: _linkTo, ...meta } = found;
-        // **値は返さない**——在りかと、値を使わずに分かることまで。
-        // **`name` は backend での本当の名前**（修飾名で引かれても、その先の
-        // `resolveAlias` は素の名前で呼ぶ必要がある）
-        return text({ implementation, ...meta });
+        });
+        return text({ results });
       }
 
       case "listVaults":
