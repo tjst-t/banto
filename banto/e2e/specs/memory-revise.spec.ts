@@ -1,12 +1,11 @@
-// **AI が Memory を取り消す・改める tool と、必ず人に聞くカード**（アーキ仕様 §2.2「取り消した行は AI に渡さない・
-// AI が取り消しと『改める』を頼める」、Backlog #330）。
+// **AI が Memory を取り消す・改める tool と、確認のカード**（アーキ仕様 §2.2「AI が取り消しと『改める』を頼める」、Backlog #330。
+// 改訂・2026-10-18：「承認をすべて自動で許可する」がオンなら聞かずに通す・取り消した行は人にも見せない）。
 //
 // 見ること（画面と host の記録で）：
-//   1. 「承認をすべて自動で許可する」がオンでも、AI が revise_memory を呼ぶと会話に確認のカードが出る（理由・取り消す行の
-//      番号と文の頭・足す行の全文、「変える」「変えない」）
-//   2. 「変えない」を押すと何も変わらない
-//   3. 「変える」を押すと、新しい行が足され、元の行は取り消され、理由と置き換え先が残る。Project の設定の Memory の一覧に
-//      「#<番号> に改めました（理由）」が出る
+//   1. 自動で許可がオフなら、AI が revise_memory を呼ぶと会話に確認のカードが出る（理由・取り消す行の番号と文・足す行の全文、
+//      「変える」「変えない」）。「変えない」を押すと何も変わらない
+//   2. 自動で許可がオンなら、カードは押さずに「自動で許可しました」の答え済みで出て、新しい行が足され元の行は取り消される
+//   3. 取り消した行は host の一覧（GET /api/projects/:id/memory）にも Project の設定の Memory の一覧にも出ない
 import { test, expect } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,9 +17,9 @@ test.setTimeout(180_000);
 
 const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 
-type Memory = { seq: number; text: string; invalidated: boolean; invalidatedReason?: string; replacedBy?: number; originThreadId?: string };
+type Memory = { seq: number; text: string; invalidated: boolean; originThreadId?: string };
 
-test("AI の revise_memory は自動で許可がオンでもカードで聞き、断ると変わらず、許すと改める", async ({ page }) => {
+test("AI の revise_memory は自動で許可がオフならカードで聞き、オンなら聞かずに改め、取り消した行は見せない", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
@@ -37,11 +36,6 @@ test("AI の revise_memory は自動で許可がオンでもカードで聞き�
     (await (await page.request.get(`${CORE_BASE_URL}/api/projects/${projectId}/threads`, { headers })).json()) as Array<{ id: string; kind: string }>
   ).find((t) => t.kind === "base")!.id;
 
-  const on = await page.request.put(`${CORE_BASE_URL}/api/projects/${projectId}/auto-approve`, { headers, data: { enabled: true } });
-  expect(((await on.json()) as { enabled: boolean }).enabled).toBe(true);
-  await page.goto(`/p/${projectId}`);
-  await expect(page.getByTestId("composer-auto-approve-badge")).toHaveText("自動で許可中", { timeout: 30_000 });
-
   const composer = page.getByPlaceholder(/に送る/);
   const cards = page.locator('[data-role="judgment-card"]');
   const revise = (then: string) =>
@@ -56,11 +50,12 @@ test("AI の revise_memory は自動で許可がオンでもカードで聞き�
       then,
     });
 
-  // ---- 1・2. 変えない ----------------------------------------------------------------------------------------
+  // ---- 1. 自動で許可がオフ：カードで聞く・変えない ------------------------------------------------------------
+  await page.goto(`/p/${projectId}`);
   await composer.fill("Memory を棚卸しして。" + revise("1回目、お返事をいただきました。"));
   await composer.press("Enter");
   const denyCard = cards.filter({ hasText: "Memory の 2 行を取り消し、1 行を足してよいですか" });
-  await expect(denyCard, "自動で許可がオンなのに、Memory を変えるカードが出ない").toHaveCount(1, { timeout: 60_000 });
+  await expect(denyCard, "Memory を変えるカードが出ない").toHaveCount(1, { timeout: 60_000 });
   await expect(denyCard).toContainText("改めた古い決まりを畳む");
   await expect(denyCard).toContainText(`#${oldA!.seq}「置き場は ghq 形式」`);
   await expect(denyCard).toContainText("置き場は ~/banto");
@@ -72,29 +67,30 @@ test("AI の revise_memory は自動で許可がオンでもカードで聞き�
   await denyCard.getByRole("button", { name: "変えない", exact: true }).click();
   await expect(denyCard).toContainText("回答：変えない", { timeout: 30_000 });
   await waitTurnEnded(page, baseId, 1, 60_000);
-  expect((await memory()).every((m) => !m.invalidated), "断ったのに取り消されている").toBe(true);
-  expect(await memory()).toHaveLength(2);
+  expect((await memory()).map((m) => m.seq), "断ったのに変わっている").toEqual([oldA!.seq, oldB!.seq]);
 
-  // ---- 3. 変える -----------------------------------------------------------------------------------------------
+  // ---- 2. 自動で許可がオン：聞かずに改める --------------------------------------------------------------------
+  const on = await page.request.put(`${CORE_BASE_URL}/api/projects/${projectId}/auto-approve`, { headers, data: { enabled: true } });
+  expect(((await on.json()) as { enabled: boolean }).enabled).toBe(true);
+  await page.goto(`/p/${projectId}`);
+  await expect(page.getByTestId("composer-auto-approve-badge")).toHaveText("自動で許可中", { timeout: 30_000 });
   await composer.fill("もう一度。" + revise("2回目、お返事をいただきました。"));
   await composer.press("Enter");
-  const allowCard = cards.filter({ hasText: "Memory の 2 行を取り消し、1 行を足してよいですか" }).last();
-  await expect(cards.filter({ hasText: "Memory の 2 行を取り消し" })).toHaveCount(2, { timeout: 60_000 });
-  await allowCard.getByRole("button", { name: "変える", exact: true }).click();
-  await expect(allowCard).toContainText("回答：変える", { timeout: 30_000 });
   await waitTurnEnded(page, baseId, 2, 60_000);
+  // 途中で読み込み直したので、前のターンのカードは描かれない——このターンのカードだけを見る
+  const autoCard = cards.filter({ hasText: "Memory の 2 行を取り消し" }).last();
+  await expect(autoCard).toContainText("回答：自動で許可しました", { timeout: 30_000 });
+  await expect(autoCard.getByRole("button", { name: "変える", exact: true })).toHaveCount(0);
 
+  // ---- 3. 取り消した行は host の一覧にも設定の画面にも出ない ---------------------------------------------------
   const after = await memory();
-  const added = after.find((m) => m.text === "置き場は ~/banto")!;
-  expect(added, "新しい行が足されていない").toBeTruthy();
-  expect(added.invalidated).toBe(false);
-  expect(added.originThreadId).toBe(baseId);
-  for (const seq of [oldA!.seq, oldB!.seq]) {
-    expect(after.find((m) => m.seq === seq)).toMatchObject({ invalidated: true, invalidatedReason: "改めた古い決まりを畳む", replacedBy: added.seq });
-  }
-
-  // 人の Memory の一覧に番号と「改めました」が出る
+  expect(after.map((m) => m.text), "取り消した行が一覧に残っている・新しい行が無い").toEqual(["置き場は ~/banto"]);
+  expect(after[0]).toMatchObject({ invalidated: false, originThreadId: baseId });
   await openProjectSettings(page, "Memory");
-  await expect(page.getByText(`#${added.seq} に改めました（改めた古い決まりを畳む）`)).toHaveCount(2, { timeout: 15_000 });
+  const panel = page.getByTestId("project-memory-panel");
+  await expect(panel.locator("li")).toHaveCount(1, { timeout: 15_000 });
+  await expect(panel.locator("li")).toContainText(`#${after[0]!.seq}置き場は ~/banto`);
+  await expect(panel).not.toContainText("ghq 形式");
+  await expect(panel).not.toContainText("に改める");
   expect(pageErrors).toEqual([]);
 });

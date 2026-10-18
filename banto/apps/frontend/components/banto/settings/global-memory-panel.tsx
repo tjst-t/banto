@@ -16,7 +16,6 @@ import {
   type RealProjectMemory,
 } from "@/lib/backend/client";
 import { isImeComposing } from "@/lib/ime";
-import { cn } from "@/lib/utils";
 
 export function GlobalMemoryPanel() {
   const [memory, setMemory] = useState<RealProjectMemory[] | null>(null);
@@ -106,18 +105,17 @@ export function GlobalMemoryPanel() {
               key={m.seq}
               className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1.5"
             >
-              <span className={cn("text-xs text-ink-2", m.invalidated && "text-ink-3 line-through")}>{m.text}</span>
-              {!m.invalidated ? (
-                <button
-                  type="button"
-                  onClick={() => handleInvalidate(m.seq)}
-                  disabled={busy}
-                  className="shrink-0 rounded p-1 text-ink-3 hover:bg-accent hover:text-destructive"
-                  aria-label="この記憶を取り消す"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              ) : null}
+              {/* 取り消した行は host が返さない（2026-10-18） */}
+              <span className="text-xs text-ink-2">{m.text}</span>
+              <button
+                type="button"
+                onClick={() => handleInvalidate(m.seq)}
+                disabled={busy}
+                className="shrink-0 rounded p-1 text-ink-3 hover:bg-accent hover:text-destructive"
+                aria-label="この記憶を取り消す"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
             </li>
           ))}
         </ul>

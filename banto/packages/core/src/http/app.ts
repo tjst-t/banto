@@ -1334,7 +1334,8 @@ export function createApp(deps: AppDeps) {
 
   // **AI が自動化を作る・直す口**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは
   // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない
-  // core 自身の tool が「必ず聞く」ときの口（自動化 §4.3・Memory の取り消し §2.2）。走っているターンの画面へカードを流す
+  // core 自身の tool が会話のカードで聞くときの口（自動化 §4.3・Memory の取り消し §2.2）。走っているターンの画面へカードを流す。
+  // Memory の取り消しは「承認をすべて自動で許可する」がオンなら聞かずに通す（改訂・2026-10-18、turn-runner が memory-tool に渡す）
   const askInThreadDeps: AskInThreadDeps = {
     inbox: deps.inbox,
     pendingApprovals: deps.pendingApprovals,
@@ -1348,6 +1349,8 @@ export function createApp(deps: AppDeps) {
         message: judgment.message,
         choices: judgment.choices,
       }),
+    publishAnswered: (threadId, answered) =>
+      deps.turnEvents?.publish(threadId, { type: "answered", judgmentId: answered.id, answer: answered.answer }),
   };
   const automationTools = deps.automations
     ? new AutomationTools({
@@ -3136,17 +3139,14 @@ export function createApp(deps: AppDeps) {
       if (memoryMatch && req.method === "GET") {
         const project = deps.projectThread.getProject(memoryMatch[1]!);
         if (!project) return json(res, 404, { error: "not found" });
+        // **取り消した行は返さない**（改訂・2026-10-18、ユーザー。§2.2「取り消した行は AI にも人にも見せない」）。記録（Event Store）
+        // には残る
         json(
           res,
           200,
-          project.memory.map((m) => ({
-            seq: m.seq,
-            text: m.text,
-            invalidated: m.invalidatedAtSeq !== undefined,
-            originThreadId: m.originThreadId,
-            ...(m.invalidatedReason ? { invalidatedReason: m.invalidatedReason } : {}),
-            ...(m.replacedBy !== undefined ? { replacedBy: m.replacedBy } : {}),
-          })),
+          project.memory
+            .filter((m) => m.invalidatedAtSeq === undefined)
+            .map((m) => ({ seq: m.seq, text: m.text, invalidated: false, originThreadId: m.originThreadId })),
         );
         return;
       }
@@ -3183,11 +3183,11 @@ export function createApp(deps: AppDeps) {
         json(
           res,
           200,
-          deps.globalMemory.list().map((m) => ({
-            seq: m.seq,
-            text: m.text,
-            invalidated: m.invalidatedAtSeq !== undefined,
-          })),
+          // 取り消した行は返さない（改訂・2026-10-18、Project Memory と同じ）
+          deps.globalMemory
+            .list()
+            .filter((m) => m.invalidatedAtSeq === undefined)
+            .map((m) => ({ seq: m.seq, text: m.text, invalidated: false })),
         );
         return;
       }

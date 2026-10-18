@@ -343,9 +343,6 @@ export interface RealProjectMemory {
   text: string;
   invalidated: boolean;
   originThreadId?: string;
-  /** AI が `revise_memory` で頼み人が許して取り消したときの理由と、置き換えた先の行（追加・2026-10-15、アーキ §2.2） */
-  invalidatedReason?: string;
-  replacedBy?: number;
 }
 
 /** F2/F3——ターンごとの文脈使用量。contextUsageはRunnerが返す形をそのまま

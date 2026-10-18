@@ -106,8 +106,27 @@ test("the turn context carries the four things that change per turn", () => {
   assert.ok(text.includes("このターンの開始時刻："), "「今日は〜」と断定しない書き方");
   assert.ok(text.includes("Fork Thread"));
   assert.ok(text.includes("別の枝で決まった"));
-  assert.ok(text.includes("取り消された決定"));
   assert.ok(text.includes("この操作を承認しますか"));
+});
+
+// **取り消した行の中身は AI に見せない**（改訂・2026-10-18、ユーザー。§2.2）。土台の指示に残っている行を古いまま
+// 従わないよう、Project Memory は番号だけ渡す。番号の無い Global Memory は文を渡す
+test("the turn context names retracted Project memory lines by number only", () => {
+  const text = buildTurnContext({
+    thread: { kind: "base" },
+    pendingMemory: [
+      { kind: "invalidated", seq: 3, text: "取り消した Project の決まり", changedAtSeq: 11, numbered: true },
+      { kind: "invalidated", seq: 5, text: "もう1つ", changedAtSeq: 12, numbered: true },
+      { kind: "invalidated", seq: 7, text: "取り消した全体の決まり", changedAtSeq: 13 },
+    ],
+    openJudgments: [],
+    startedAt: new Date("2026-09-05T09:03:12Z"),
+  });
+  assert.ok(!text.includes("取り消した Project の決まり"), "取り消した行の文を出している");
+  assert.ok(!text.includes("もう1つ"));
+  assert.ok(!text.includes("取り消された決定"));
+  assert.ok(text.includes("取り消した Memory の行（この番号の行にはもう従わない）：#3・#5"));
+  assert.ok(text.includes("- 取り消した全体の決まり"));
 });
 
 test("the turn context is always present, even with nothing pending", () => {

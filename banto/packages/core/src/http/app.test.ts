@@ -318,7 +318,8 @@ test("global memory append/invalidate round-trips over HTTP, 400 over the char l
     });
     assert.equal(invalidateRes.status, 200);
     const afterInvalidate = await (await fetch(`${base}/api/global/memory`, { headers })).json();
-    assert.equal(afterInvalidate[0].invalidated, true, "物理削除ではなく無効化（規則3）");
+    // 取り消した行は返さない（改訂・2026-10-18、§2.2「取り消した行は AI にも人にも見せない」）。記録には残る
+    assert.deepEqual(afterInvalidate, []);
 
     const overLimitRes = await fetch(`${base}/api/global/memory`, {
       method: "POST",
@@ -356,7 +357,7 @@ test("memory append/invalidate round-trips over HTTP, 400 over the char limit, 4
     });
     assert.equal(invalidateRes.status, 200);
     const afterInvalidate = await (await fetch(`${base}/api/projects/${project.id}/memory`, { headers })).json();
-    assert.equal(afterInvalidate[0].invalidated, true);
+    assert.deepEqual(afterInvalidate, [], "取り消した行は人の一覧に返さない（改訂・2026-10-18）");
 
     const overLimitRes = await fetch(`${base}/api/projects/${project.id}/memory`, {
       method: "POST",

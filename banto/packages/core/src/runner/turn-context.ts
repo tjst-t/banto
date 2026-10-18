@@ -46,10 +46,18 @@ export function buildTurnContext(input: TurnContextInput): string {
     for (const m of appended) lines.push(m.numbered ? `- [#${m.seq}] ${m.text}` : `- ${m.text}`);
   }
 
+  // **取り消した行の中身は出さない**（改訂・2026-10-18、ユーザー。§2.2「取り消した行は AI にも人にも見せない」）。ただし土台の
+  // 指示は確定した時点で固定（§3 のキャッシュ）で、確定より後に取り消した行はそこに残っている——黙ると AI は古い決まりに従う。
+  // 番号のある行（Project Memory）は番号だけを渡す。番号の無い Global Memory は指せないので、文を渡す（人が設定画面で取り消したときだけ）
   const invalidated = input.pendingMemory.filter((m) => m.kind === "invalidated");
-  if (invalidated.length > 0) {
-    lines.push("", "取り消された決定（もう従わない）：");
-    for (const m of invalidated) lines.push(`- ${m.text}`);
+  const retractedNumbers = invalidated.filter((m) => m.numbered).map((m) => `#${m.seq}`);
+  const retractedGlobal = invalidated.filter((m) => !m.numbered);
+  if (retractedNumbers.length > 0) {
+    lines.push("", `取り消した Memory の行（この番号の行にはもう従わない）：${retractedNumbers.join("・")}`);
+  }
+  if (retractedGlobal.length > 0) {
+    lines.push("", "取り消した banto 全体の決まり（もう従わない）：");
+    for (const m of retractedGlobal) lines.push(`- ${m.text}`);
   }
 
   if (input.openJudgments.length > 0) {
