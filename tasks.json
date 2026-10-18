@@ -9541,6 +9541,34 @@
       "updatedAt": "2026-10-18T09:04:03.662Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "multi-claude-accounts",
+      "number": 396,
+      "kind": "story",
+      "title": "Claude のアカウントを複数持つ——使用率で切り替え・Project ごとの並び・上限のあと自動で続ける",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "claude-login"
+      ],
+      "body": "banto が Claude のアカウント（ブラウザでログインしたサブスクリプション）を複数持ち、(1) 使用率が閾値（5時間・週で別々、既定 95%）を越えたら並びの次へ切り替え、(2) Project ごとに並びを決め、(3) 並びの全部が上限で断ったらリセットのあと人を待たずに続ける。\n\n形（案1、決定 2026-10-18）：会話の本体（Runner）も Claude ログインの中継を通し、中継が要求ごとにアカウントを選ぶ。会話の記録の置き場は1つのまま。本体とコンテナの両方に CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1。\n\n仕様は Fable のレビュー2回（最後は「A1・A2 を直せば入れてよい」→直した）。実測の試しは tmp/claude-paths-probe/。",
+      "doneWhen": "アカウントを2つ以上足した banto で、閾値を越えたら次のアカウントに切り替わり（会話に1行）、全部が上限で断るとリセットの時刻に自動で続くことを、偽の上流の E2E と本物の1回の確かめで示せる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §2「Claude のアカウントを複数持つ」",
+        "docs/specs/v4-frontend.md §6.46",
+        "mock/app/claude-accounts",
+        "main eba12241"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-18T09:09:21.687Z",
+      "updatedAt": "2026-10-18T09:09:21.687Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
