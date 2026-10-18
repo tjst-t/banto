@@ -68,3 +68,9 @@ Factory はローカルの `main`（origin/main と分かれている）の上�
   E2E の core（`start-core.ts`）と、本物の CLI を当てる自前の host（`runtime-move-back.spec.ts`）がそれぞれ1つずつ立てる
 - **`listModels()`（モデルの一覧を聞くだけの `query()`）も付随の通信を止めた**。API は呼ばないが、機能の旗・bootstrap は
   直に出るため。中継は通さない（推論しない）
+- **フル E2E（2026-10-18、この作業の環境）**：314 件中 297 通過・12 落ち・5 走らず。落ちた 12 件は1つ前のコミット
+  （この変更なし）でも流して比べた——11 件はそちらでも落ちた（documents の道具用のコンテナが Module の置き場に `cd` できない・
+  wide-root で shell が立たない・眠り・別のサーバ 等。この作業の環境の HOME が深い道の下にあることによるものと見ている。
+  調べてはいない）。残りの `turn-decisions.spec.ts` は間欠的に落ちる：5 回ずつ流して、このブランチ 3/5・1つ前 3/5 が落ちた
+  （`inbox.review_judged` が `decided-by-automation` のあとに `deferred`・`incomplete` を余分に持つ）。この変更とは別の不具合
+  として残す（規則6——直していない）
