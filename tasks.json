@@ -9453,7 +9453,7 @@
       "number": 392,
       "kind": "task",
       "title": "vault-kit の resolveAliases（getSecrets?・markUsedMany? の任意の契約）と窓口の lookupAliases",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [
         "host-dev-banto-batchof-1"
@@ -9467,7 +9467,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:03:58.408Z",
+      "updatedAt": "2026-10-18T09:25:04.452Z",
       "closedAt": null,
       "extra": {}
     },
