@@ -129,6 +129,11 @@ export interface AliasStore {
   delete(backendPath: string): Promise<void>;
   markUsed(backendPath: string): Promise<void>;
   /**
+   * **使った日をまとめて書く**（任意、追加・2026-10-18、仕様 §2.1「秘密をまとめて引く」）。名乗らない置き場には
+   * kit が `markUsed` を1件ずつ呼ぶ
+   */
+  markUsedMany?(backendPaths: readonly string[]): Promise<void>;
+  /**
    * **参照を置く**（追加・2026-10-04）。値は写さない。**持ち方は backend ごと**なので、
    * ここに口を置く——組み込みは台帳に行を足すだけ、Infisical は参照の置き場に
    * 「元を指す秘密」を1つ置く（台帳がフォルダの秘密とその注記だから）。
