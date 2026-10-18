@@ -28,6 +28,7 @@ import type {
   ContinuationCancelledBy,
   TurnRecord,
   ClaudeAccountSwitchReasonRecord,
+  ClaudeAccountSwitchRecord,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -329,8 +330,18 @@ function unpackModel(raw: unknown): ProjectThreadReadModel {
     threads.set(id, { ...t, messages, usage: (t.usage ?? []).slice(-1) });
   }
   const { packedMessages: _drop, ...rest } = r;
-  return { ...(rest as unknown as ProjectThreadReadModel), threads };
+  // 前の形（2026-10-18 の #401）は最後の1件だけを `lastClaudeAccountSwitch` に持っていた——最近の切り替えの1件目にする
+  const projects = new Map(
+    Array.from((rest as unknown as ProjectThreadReadModel).projects, ([id, p]) => {
+      const { lastClaudeAccountSwitch: last, ...project } = p as ProjectState & { lastClaudeAccountSwitch?: ClaudeAccountSwitchRecord };
+      return [id, last && !project.recentClaudeAccountSwitches ? { ...project, recentClaudeAccountSwitches: [last] } : project] as const;
+    }),
+  );
+  return { ...(rest as unknown as ProjectThreadReadModel), projects, threads };
 }
+
+/** Project に持つ最近の切り替えの件数（Project 設定の「最近の切り替え」） */
+const RECENT_ACCOUNT_SWITCHES = 5;
 
 export const projectThreadFold: Fold<ProjectThreadReadModel> = {
   pack: packModel,
@@ -877,7 +888,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         const { projectId, threadId, from, to, reason } = event.payload;
         const record = { seq: raw.seq, at: raw.ts, from, to, reason };
         const p = next.projects.get(projectId);
-        if (p) next.projects.set(projectId, { ...p, lastClaudeAccountSwitch: record });
+        if (p) next.projects.set(projectId, { ...p, recentClaudeAccountSwitches: [...(p.recentClaudeAccountSwitches ?? []), record].slice(-RECENT_ACCOUNT_SWITCHES) });
         const t = threadId ? next.threads.get(threadId) : undefined;
         if (t && t.projectId === projectId) t.accountSwitches = [...(t.accountSwitches ?? []), record];
         return next;

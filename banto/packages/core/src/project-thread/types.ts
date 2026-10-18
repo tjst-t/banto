@@ -356,10 +356,11 @@ export interface ProjectState {
    */
   sleep?: ProjectSleepState;
   /**
-   * **最後に Claude のアカウントを切り替えたこと**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
-   * Project 設定の観測に出す。履歴は Event Store の `claude_account.switched`
+   * **最近 Claude のアカウントを切り替えたこと**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
+   * 古い順に直近 `RECENT_ACCOUNT_SWITCHES` 件まで。Project 設定の観測（「最近の切り替え」、v4-frontend.md §6.46）に出す。
+   * 履歴の全部は Event Store の `claude_account.switched`
    */
-  lastClaudeAccountSwitch?: ClaudeAccountSwitchRecord;
+  recentClaudeAccountSwitches?: ClaudeAccountSwitchRecord[];
   createdAt: string;
 }
 

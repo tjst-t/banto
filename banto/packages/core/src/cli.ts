@@ -380,6 +380,8 @@ async function main(): Promise<void> {
     ...(process.env.BANTO_CLAUDE_RELAY_UPSTREAM ? { upstream: process.env.BANTO_CLAUDE_RELAY_UPSTREAM } : {}),
     // 取り直しの口（E2E が偽物を指す。§2「中継も、切れかけたら取り直す」）
     ...(process.env.BANTO_CLAUDE_RELAY_TOKEN_URL ? { tokenUrl: process.env.BANTO_CLAUDE_RELAY_TOKEN_URL } : {}),
+    // 使用率を読む口（設定を開いたときの読み直し。E2E が偽物を指す）
+    ...(process.env.BANTO_CLAUDE_USAGE_URL ? { usageUrl: process.env.BANTO_CLAUDE_USAGE_URL } : {}),
     secretsPath: join(bootstrap.dataDir, "claude-login-secrets.json"),
     enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
     // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
@@ -3021,7 +3023,7 @@ async function main(): Promise<void> {
     },
     relayEndpoint,
     claudeLogin,
-    claudeAccounts: { store: claudeAccounts, login: claudeAccountLogin },
+    claudeAccounts: { store: claudeAccounts, login: claudeAccountLogin, ...(relayRefresh.enabled ? {} : { noRefreshReason: relayRefresh.why }) },
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
     auth: new AuthService({

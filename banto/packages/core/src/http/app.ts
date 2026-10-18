@@ -256,7 +256,15 @@ export interface AppDeps {
    * **Claude のアカウント**（§2「Claude のアカウントを複数持つ」の 4.）。一覧・ブラウザでログインして足す・ログインし直す・
    * 外す。**人のセッションだけ**（AI の tool は作らない）。無ければその口は 404
    */
-  claudeAccounts?: { store: ClaudeAccountStore; login: ClaudeAccountLogin };
+  claudeAccounts?: {
+    store: ClaudeAccountStore;
+    login: ClaudeAccountLogin;
+    /**
+     * **中継が取り直せない banto** の理由（§2 の 2.——会話の本体は中継を通らず今のログインだけを使う）。設定の画面に出す。
+     * 取り直せるなら無い
+     */
+    noRefreshReason?: string;
+  };
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
   authToken: string;
@@ -814,6 +822,7 @@ const CLAUDE_LOGIN_FAILURE_STATUS: Record<ClaudeLoginFailure, number> = {
   malformed: 400,
   "state-mismatch": 400,
   "exchange-failed": 502,
+  "account-mismatch": 409,
 };
 
 export function claudeLoginEnabled(runtimeConfig: RuntimeConfigStore | undefined, projectId: string): boolean {
@@ -3910,8 +3919,33 @@ export function createApp(deps: AppDeps) {
           if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
           deps.auth.requireHuman(principal, { stepUp: false });
           const sub = url.pathname.slice("/api/claude-accounts".length);
-          if (sub === "" && req.method === "GET") {
-            return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder(), thresholds: store.thresholds() });
+          // 設定の画面が出すもの（v4-frontend.md §6.46）：アカウントごとの「いま使っている Project」（中継が起こしてから
+          // 覚えたもの）・決めてある Project の並び（外すと並びから消える Project）・最後に読み直した時刻・本体のログイン
+          const view = async () => {
+            const current = deps.claudeLogin?.currentAccounts() ?? new Map<string, string>();
+            const projectName = (id: string) => deps.projectThread.getProject(id)?.name ?? id;
+            const usageReadAt = deps.claudeLogin?.lastUsageReadAt();
+            return {
+              accounts: store.list().map((a) => ({
+                ...a,
+                usedBy: [...current].filter(([, accountId]) => accountId === a.id).map(([projectId]) => ({ projectId, name: projectName(projectId) })),
+              })),
+              defaultOrder: store.defaultOrder(),
+              thresholds: store.thresholds(),
+              projectOrders: Object.entries(store.projectOrders())
+                .filter(([projectId]) => deps.projectThread.getProject(projectId))
+                .map(([projectId, order]) => ({ projectId, name: projectName(projectId), order })),
+              ...(usageReadAt ? { usageReadAt } : {}),
+              ...(deps.claudeLogin ? { hostLogin: await deps.claudeLogin.hostLogin() } : {}),
+              ...(deps.claudeAccounts?.noRefreshReason ? { noRefreshReason: deps.claudeAccounts.noRefreshReason } : {}),
+            };
+          };
+          if (sub === "" && req.method === "GET") return json(res, 200, await view());
+          // **使用率を読み直す**（§2 の 7.——設定を開いたとき・人が押したとき）。読めなかったアカウントは理由を返す
+          if (sub === "/usage" && req.method === "POST") {
+            if (!deps.claudeLogin) return json(res, 501, { error: "この banto は Claude のログインの中継を持っていません" });
+            const { failures } = await deps.claudeLogin.readUsage();
+            return json(res, 200, { ...(await view()), failures });
           }
           // **既定の並びと閾値**（banto 全体の設定、§2 の 5.・6.）。閾値は 0〜1（5時間と週で別々）。渡したものだけ変える
           if (sub === "/settings" && req.method === "PUT") {
@@ -3930,16 +3964,35 @@ export function createApp(deps: AppDeps) {
             } catch (err) {
               return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
             }
-            return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder(), thresholds: store.thresholds() });
+            return json(res, 200, await view());
           }
           if (sub === "/login" && req.method === "POST") return json(res, 200, login.start());
           const finishMatch = sub.match(/^\/login\/([^/]+)$/);
           if (finishMatch && req.method === "POST") {
-            const body = (await readJsonBody(req)) as { pasted?: unknown } | undefined;
+            const body = (await readJsonBody(req)) as { pasted?: unknown; accountId?: unknown } | undefined;
             if (typeof body?.pasted !== "string") return json(res, 400, { error: "pasted に向こうの画面に出た文字列を渡してください" });
-            return json(res, 200, await login.finish(decodeURIComponent(finishMatch[1]!), body.pasted));
+            if (body.accountId !== undefined && typeof body.accountId !== "string") return json(res, 400, { error: "accountId はアカウントの id で渡してください" });
+            // `accountId` つき＝行の「ログインし直す」（違うアカウントが返ったら断る）
+            return json(
+              res,
+              200,
+              await login.finish(decodeURIComponent(finishMatch[1]!), body.pasted, body.accountId !== undefined ? { accountId: body.accountId } : {}),
+            );
           }
           const accountMatch = sub.match(/^\/([^/]+)$/);
+          // **表示名を変える**（既定はメールアドレス）
+          if (accountMatch && req.method === "PATCH") {
+            const id = decodeURIComponent(accountMatch[1]!);
+            if (!store.get(id)) return json(res, 404, { error: "not found" });
+            const body = (await readJsonBody(req)) as { label?: unknown } | undefined;
+            if (typeof body?.label !== "string") return json(res, 400, { error: "label に名前を渡してください" });
+            try {
+              store.setLabel(id, body.label);
+            } catch (err) {
+              return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+            }
+            return json(res, 200, await view());
+          }
           if (accountMatch && req.method === "DELETE") {
             const id = decodeURIComponent(accountMatch[1]!);
             const account = store.get(id);
@@ -3992,7 +4045,7 @@ export function createApp(deps: AppDeps) {
           order: store.projectOrder(projectId) ?? null,
           effectiveOrder: store.orderFor(projectId),
           ...(current ? { currentAccount: current } : {}),
-          ...(project.lastClaudeAccountSwitch ? { lastSwitch: project.lastClaudeAccountSwitch } : {}),
+          ...(project.recentClaudeAccountSwitches?.length ? { lastSwitch: project.recentClaudeAccountSwitches.at(-1), recentSwitches: project.recentClaudeAccountSwitches } : {}),
         });
         return;
       }

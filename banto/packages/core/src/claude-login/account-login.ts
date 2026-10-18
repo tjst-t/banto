@@ -48,7 +48,9 @@ export type ClaudeLoginFailure =
   /** state が合わない（別のタブ・別の手続きの写し）——交換に行かない */
   | "state-mismatch"
   /** token の口・profile の口が断った・届かない */
-  | "exchange-failed";
+  | "exchange-failed"
+  /** 「ログインし直す」で、そのアカウントとは違うアカウントが返ってきた（トークンは捨てる） */
+  | "account-mismatch";
 
 export class ClaudeAccountLoginError extends Error {
   override name = "ClaudeAccountLoginError";
@@ -126,9 +128,10 @@ export class ClaudeAccountLogin {
   /**
    * **貼られたものを確かめて交換する**。足したら `replaced: false`、同じメールアドレスの足したアカウントを置き換えたら
    * `replaced: true`。state が合わないときは手続きを残す（正しい写しを貼り直せる）。交換に行ったら成否によらず使い切る
-   * （認可コードは1回きり）
+   * （認可コードは1回きり）。`accountId` を渡すと「そのアカウントにログインし直す」——違うアカウントが返ってきたら
+   * 足さずに断る（設定の行の「ログインし直す」、v4-frontend.md §6.46）
    */
-  async finish(loginId: string, pasted: string): Promise<{ account: ClaudeAccount; replaced: boolean }> {
+  async finish(loginId: string, pasted: string, opts: { accountId?: string } = {}): Promise<{ account: ClaudeAccount; replaced: boolean }> {
     this.sweep();
     const p = this.pending.get(loginId);
     if (!p) throw new ClaudeAccountLoginError("unknown", "このログインの手続きは見つかりません。もう一度「アカウントを足す」から始めてください");
@@ -156,6 +159,16 @@ export class ClaudeAccountLogin {
       ...(profile.subscriptionType ? { subscriptionType: profile.subscriptionType } : {}),
       ...(profile.rateLimitTier ? { rateLimitTier: profile.rateLimitTier } : {}),
     };
+    if (opts.accountId !== undefined) {
+      const target = this.deps.accounts.get(opts.accountId);
+      if (!target || target.kind !== "banto") throw new ClaudeAccountLoginError("unknown", "ログインし直すアカウントが見つかりません");
+      if (target.email?.trim().toLowerCase() !== profile.email.trim().toLowerCase()) {
+        throw new ClaudeAccountLoginError(
+          "account-mismatch",
+          `返ってきたのは ${profile.email} で、${target.email ?? target.label} ではありません。開いたタブで claude.ai をいったんログアウトしてから、もう一度始めてください`,
+        );
+      }
+    }
     const same = this.deps.accounts.findByEmail(profile.email);
     if (same) {
       const account = await this.deps.accounts.replaceLogin(same.id, { ...profile, oauth: filled });

@@ -1288,6 +1288,134 @@ export async function setRealClaudeLogin(projectId: string, enabled: boolean): P
   return request<RealClaudeLogin>(`/api/projects/${projectId}/claude-login`, { method: "PUT", body: JSON.stringify({ enabled }) });
 }
 
+/**
+ * **Claude のアカウント**（決定・2026-10-18、v4-frontend.md §6.46・v4-security.md §2「Claude のアカウントを複数持つ」）。
+ * 真実は host の台帳（`packages/core/src/claude-login/accounts.ts`）。使用率は 0〜1、リセットを過ぎたものは host が落として返す
+ */
+export interface ClaudeUsageWindow {
+  utilization: number;
+  resetsAt?: string;
+  status?: string;
+}
+
+export interface ClaudeAccountView {
+  id: string;
+  /** `host`＝このマシンの Claude Code のログイン（`~/.claude`、人の claude コマンドと共有）。外せない・banto からログインし直さない */
+  kind: "host" | "banto";
+  label: string;
+  email?: string;
+  subscriptionType?: string;
+  rateLimitTier?: string;
+  addedAt: string;
+  usage?: { fiveHour?: ClaudeUsageWindow; sevenDay?: ClaudeUsageWindow; status?: string; statusResetsAt?: string; readAt: string };
+  /** いまこのアカウントを使っている Project（中継が起こしてから覚えたもの） */
+  usedBy: Array<{ projectId: string; name: string }>;
+}
+
+export interface ClaudeAccountsState {
+  accounts: ClaudeAccountView[];
+  defaultOrder: string[];
+  /** 0〜1 */
+  thresholds: { fiveHour: number; sevenDay: number };
+  /** 並びを決めてある Project（外すとその並びから消える） */
+  projectOrders: Array<{ projectId: string; name: string; order: string[] }>;
+  /** 最後に全部の使用率を読み直した時刻（起こしてから） */
+  usageReadAt?: string;
+  hostLogin?: RealClaudeLogin["hostLogin"];
+  /** 中継が取り直せない banto の理由（会話の本体は今のログインだけを使う） */
+  noRefreshReason?: string;
+}
+
+export async function fetchClaudeAccounts(): Promise<ClaudeAccountsState> {
+  return request<ClaudeAccountsState>("/api/claude-accounts");
+}
+
+/** 全部のアカウントの使用率を `/api/oauth/usage` で読み直す。読めなかったものは `failures` に理由 */
+export async function refreshClaudeAccountUsage(): Promise<ClaudeAccountsState & { failures: Array<{ accountId: string; reason: string }> }> {
+  return request("/api/claude-accounts/usage", { method: "POST" });
+}
+
+/** 既定の並び・閾値（0〜1）。渡したものだけ変える */
+export async function updateClaudeAccountSettings(patch: {
+  defaultOrder?: string[];
+  thresholds?: { fiveHour: number; sevenDay: number };
+}): Promise<ClaudeAccountsState> {
+  return request<ClaudeAccountsState>("/api/claude-accounts/settings", { method: "PUT", body: JSON.stringify(patch) });
+}
+
+export async function renameClaudeAccount(id: string, label: string): Promise<ClaudeAccountsState> {
+  return request<ClaudeAccountsState>(`/api/claude-accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ label }) });
+}
+
+export async function removeClaudeAccount(id: string): Promise<void> {
+  await request<{ ok: true }>(`/api/claude-accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function startClaudeAccountLogin(): Promise<{ loginId: string; url: string; expiresAt: string }> {
+  return request("/api/claude-accounts/login", { method: "POST" });
+}
+
+/** host が分けて返す失敗（`expired`・`state-mismatch`・`malformed`・`exchange-failed`・`unknown`・`account-mismatch`） */
+export class ClaudeAccountLoginFailed extends Error {
+  constructor(
+    readonly code: string | undefined,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * 向こうの画面に出た `<コード>#<state>` を渡して交換する。`accountId` を渡すと「そのアカウントにログインし直す」
+ * （違うアカウントが返ったら host が断る）。失敗は `ClaudeAccountLoginFailed`（画面が理由ごとに文を変える）
+ */
+export async function finishClaudeAccountLogin(
+  loginId: string,
+  pasted: string,
+  accountId?: string,
+): Promise<{ account: ClaudeAccountView; replaced: boolean }> {
+  const res = await hostFetch(`/api/claude-accounts/login/${encodeURIComponent(loginId)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pasted, ...(accountId ? { accountId } : {}) }),
+  });
+  const text = await res.text();
+  let body: { error?: unknown; code?: unknown } | undefined;
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    body = undefined;
+  }
+  if (!res.ok) {
+    const reason = typeof body?.error === "string" && body.error ? body.error : text.trim() || `banto host が ${res.status} を返しました`;
+    throw new ClaudeAccountLoginFailed(typeof body?.code === "string" ? body.code : undefined, reason);
+  }
+  return body as unknown as { account: ClaudeAccountView; replaced: boolean };
+}
+
+export interface ClaudeAccountSwitchView {
+  at: string;
+  from: string;
+  to: string;
+  reason: { kind: "threshold"; window: "5h" | "7d"; utilization: number } | { kind: "rejected" | "recovered" | "order" | "unavailable" };
+}
+
+/** Project の並び（`order: null`＝既定のまま）と観測 */
+export interface ProjectClaudeAccounts {
+  order: string[] | null;
+  effectiveOrder: string[];
+  currentAccount?: string;
+  recentSwitches?: ClaudeAccountSwitchView[];
+}
+
+export async function fetchProjectClaudeAccounts(projectId: string): Promise<ProjectClaudeAccounts> {
+  return request<ProjectClaudeAccounts>(`/api/projects/${projectId}/claude-accounts`);
+}
+
+export async function setProjectClaudeAccounts(projectId: string, order: string[] | null): Promise<ProjectClaudeAccounts> {
+  return request<ProjectClaudeAccounts>(`/api/projects/${projectId}/claude-accounts`, { method: "PUT", body: JSON.stringify({ order }) });
+}
+
 export async function updateRealProjectSettings(
   projectId: string,
   patch: { name?: string; root?: string },

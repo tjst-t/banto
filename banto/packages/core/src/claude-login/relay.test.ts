@@ -903,3 +903,38 @@ test("並びの全部が閾値を越えたら一番早くリセットされる�
     await f.close();
   }
 });
+
+// **設定を開いたときの読み直し**（§2 の 7.）：使っていないアカウントも、そのアカウントのトークンで `/api/oauth/usage` を直に
+test("使用率の読み直し：アカウントごとのトークンで usage の口を呼び台帳に覚える。読めなかったものは理由を返す。いま使っている Project も返す", async () => {
+  const usage = createServer((req, res) => {
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (token === "REAL-ACCESS") {
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({ five_hour: { utilization: 41, resets_at: "2026-10-08T03:00:00Z" }, seven_day: { utilization: 0, resets_at: null } }),
+      );
+      return;
+    }
+    res.writeHead(500).end();
+  });
+  const usageUrl = await listen(usage);
+  const f = await fixture({ usageUrl: `${usageUrl}/api/oauth/usage` });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    assert.equal(f.relay.lastUsageReadAt(), undefined);
+    const { readAt, failures } = await f.relay.readUsage();
+    assert.equal(readAt, "2026-10-08T00:00:00.000Z");
+    assert.equal(f.relay.lastUsageReadAt(), readAt);
+    assert.deepEqual(f.accounts.get("host")!.usage, { fiveHour: { utilization: 0.41, resetsAt: "2026-10-08T03:00:00.000Z" }, readAt });
+    assert.deepEqual(failures, [{ accountId: b.id, reason: "使用率の口が 500 を返しました" }]);
+    // 中継を通っていない（上流には何も来ない）
+    assert.deepEqual(f.seen, []);
+    assert.deepEqual([...f.relay.currentAccounts()], []);
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual([...f.relay.currentAccounts()], [["p1", "host"]]);
+  } finally {
+    await f.close();
+    usage.closeAllConnections();
+    await new Promise((r) => usage.close(r));
+  }
+});

@@ -149,6 +149,8 @@ process.env.BANTO_CLAUDE_RELAY_CREDENTIALS = CLAUDE_RELAY_CREDENTIALS;
   const upstream = await startFakeAnthropic();
   process.env.BANTO_CLAUDE_RELAY_UPSTREAM = upstream.url;
   process.env.BANTO_CLAUDE_RELAY_TOKEN_URL = `${upstream.url}/v1/oauth/token`;
+  // 設定「Claude のアカウント」を開いたときの使用率の読み直しも（本物の API に出さない）
+  process.env.BANTO_CLAUDE_USAGE_URL = `${upstream.url}/api/oauth/usage`;
 }
 // 鍵の取り込み元も偽物に向ける——人のものを読まない
 writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));
