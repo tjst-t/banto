@@ -9432,7 +9432,7 @@
       "number": 391,
       "kind": "task",
       "title": "host：dev.banto/batchOf の中継と承認（要素ごとの鍵・未許可だけを1枚のカード・相乗り・監査・断る形）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "lookupaliases-resolvealiases-alias-1",
       "dependsOn": [],
       "milestone": null,
@@ -9444,7 +9444,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:03:58.408Z",
-      "updatedAt": "2026-10-18T09:03:58.408Z",
+      "updatedAt": "2026-10-18T09:04:12.129Z",
       "closedAt": null,
       "extra": {}
     },
