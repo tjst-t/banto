@@ -18,11 +18,12 @@ import { claimPortSlot, PORT_SLOT_ENV, PORT_SLOTS } from "./run-lock.ts";
 const RUN_ID = (process.env.BANTO_E2E_RUN_ID ??= String(process.pid));
 
 /**
- * 既定の並列の数（2026-10-08 に測って決めた。経緯は `docs/notes/2026-10-08-e2e-parallel.md`）。この機械（4 コア・
- * 11.6GiB）で同じ 18 本を流して 1 本：787 秒・2 本：534 秒・3 本：532 秒（どれも全部通った）。3 本は CPU が詰まり
- * （/proc/pressure/cpu の some が平均 60%）、spec 1本ずつが遅くなるだけで回は縮まなかった
+ * 既定の並列の数（2026-10-08 に測って決め、2026-10-18 に測り直して 4 にした。経緯は `docs/notes/2026-10-08-e2e-parallel.md`）。
+ * 最初の機械（4 コア・11.6GiB）では 18 本で 1 本：787 秒・2 本：534 秒・3 本：532 秒（3 本は CPU が詰まり縮まなかった）。
+ * 開発 VM（16 コア・62GiB）で 16 本（32 件）を流し直すと 2 本：435 秒・4 本：349 秒・6 本：321 秒で、6 本は 4 本から
+ * ほとんど縮まず 1 件落ちた（backlog.spec.ts:577 の socket hang up）。ほかの Fork の E2E も同じ機械で並んで走るので 4 にした
  */
-export const DEFAULT_WORKERS = 2;
+export const DEFAULT_WORKERS = 4;
 /** 1回に使う port の枠（画面1つ＋core ごとに4つ）に収まる上限 */
 const MAX_WORKERS = 6;
 
