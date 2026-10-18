@@ -9665,7 +9665,7 @@
       "number": 401,
       "kind": "task",
       "title": "Project ごとの並びと閾値で切り替える（選ぶ規則・429 の送り直し・切り替えの記録・全部越えのカード）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-runner-via-relay"
@@ -9675,12 +9675,12 @@
       "labels": [],
       "body": "v4-security.md §2 の 5.・6.。banto 全体の既定の並びと閾値（5時間・週、既定 95%）、Project の並び（既定のまま／決める）。要求ごとに並びの先頭から「5h<閾値 かつ 7d<閾値 かつ status が rejected でない」を選ぶ。429 rejected は並びの残りへ順に送り直し、全部断ったら x-should-retry: false。切り替えたら Event Store に1件、x-banto-thread-id の Thread に会話の1行の出来事（AI の文脈に入れない）。全部が閾値を越えたら一番早くリセットされるもので続け、Project の並びごとに受信箱1枚、下に戻ったら自動で閉じる。",
       "doneWhen": "偽の上流（見出しで率と 429 を返す）の E2E で、閾値越えで次へ・リセットで戻る・全部越えでカードが出て閉じる・3つ目まで送り直す、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/mca-switch）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T15:17:22.591Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-18T17:21:05.422Z",
+      "closedAt": "2026-10-18T17:21:05.422Z",
       "extra": {}
     },
     {
