@@ -1261,17 +1261,26 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 2. **会話の本体は中継を通す**：Runner の `query()` の `env` に `ANTHROPIC_BASE_URL=http://127.0.0.1:<core の口>/claude-login`・
    `CLAUDE_CODE_OAUTH_TOKEN=<本体用の合言葉>`・`CLAUDE_CODE_SUBSCRIPTION_TYPE`／`CLAUDE_CODE_RATE_LIMIT_TIER`・上の 1. を入れる。
    **SDK の `env` は process.env を足すのではなく置き換える**（0.3.281 で確かめた）ので、`{ ...process.env, … }` と先に広げる
-   ——落とすと `PATH`・`HOME`・`CLAUDE_CONFIG_DIR` が消える。`CLAUDE_CONFIG_DIR`（会話の記録の置き場）は今のまま1つ
+   ——落とすと `PATH`・`HOME`・`CLAUDE_CONFIG_DIR` が消える。広げたあと、上流を決めるほかの変数（`ANTHROPIC_API_KEY`・
+   `ANTHROPIC_AUTH_TOKEN`・`ANTHROPIC_UNIX_SOCKET`・`CLAUDE_CODE_USE_BEDROCK`／`_VERTEX`／`_FOUNDRY`）を外してから足す
+   （合言葉と API キーのどちらが勝つかに頼らない）。`CLAUDE_CONFIG_DIR`（会話の記録の置き場）は今のまま1つ
+   - **どの Thread の要求かを中継に知らせる**：`ANTHROPIC_CUSTOM_HEADERS="x-banto-thread-id: <Thread の id>"` を入れる（CLI に
+     この変数がある）。中継はこれで Thread を知り（下の 6. の会話の1行のため）、上流へ流す前に剥がす。値は本体用の合言葉で
+     認めた Project の Thread のときだけ使う（コンテナから来たものは無視する）。`/v1/messages` に付くかは実装の最初に実測し、
+     付かなければ1行は「その Project で走っている Thread 全部」に出す
    - **契約の種類の env はターンの始めに決まる**（`query()` を起こすときに固定。アカウントは中継が要求ごとに選ぶ）。
      ターンの始めにその Project でいま選ばれるアカウントのもので入れる。途中で契約の違うものに切り替わったときの食い違いは
      下の未決（コンテナと同じ問題）
    - **中継が取り直せない banto では、本体は中継を通さない**（Fable のレビュー A1）：合言葉を渡された CLI は `~/.claude` を
      読まず自分では取り直さない。中継が取り直さない条件（`BANTO_CLAUDE_RELAY_REFRESH=0`・同梱の SDK が確かめた版でない・
      置き場が symlink 等）では誰も取り直さず、本体の会話まで約8時間で 401 になる。その banto では Runner は今の形
-     （env を足さず `~/.claude` を自分で読んで取り直す）で動き、足したアカウントも使わない（設定にその理由を出す）
+     （中継の env は足さず `~/.claude` を自分で読んで取り直す。ただし 1. の `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` は足す）で動き、
+     足したアカウントも使わない（設定にその理由を出す）
    - **E2E**（Fable のレビュー A2）：Runner が常に中継を通るので、host の `ANTHROPIC_BASE_URL=<偽の API>` で本物の CLI を当てて
      いた spec（`runtime-move-back` 等）は、中継の上流（`BANTO_CLAUDE_RELAY_UPSTREAM`）を同じ偽の API に向け、偽の API に
-     token の口（`/v1/oauth/token`）も持たせる。「試験だけ中継を通さない」印は作らない（本番と違う道を試さないため）
+     token の口（`/v1/oauth/token`）も持たせる。偽の API はどんな Bearer も通し、spec からは `ANTHROPIC_API_KEY` を外す。
+     `claude-login-relay.spec.ts` が頼る返し方（受けた `authorization` を返す・`x-e2e-upstream-status` で状態を返す）も偽の API に
+     持たせ、上流の偽物を1つにする。「試験だけ中継を通さない」印は作らない（本番と違う道を試さないため）
    - **本体用の合言葉はコンテナの合言葉と別**（Project ごとに1つ）。受けるのは host の loopback から来た要求だけ——
      `remoteAddress` が `127.0.0.1`・`::ffff:127.0.0.1`・`::1` のどれか（core は 0.0.0.0 で待ち受けるので3つとも来うる）。
      本体用の要求では Incus に送り元を聞かない。コンテナの口・別のサーバの専用の待ち受けに本体用の合言葉が来たら断る
@@ -1321,19 +1330,22 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 6. **閾値で切り替える**：閾値は **5時間と週で別々**（banto 全体の設定、**既定は5時間 95%・週 95%**。決定・2026-10-18、ユーザー）
    - 中継は返事の見出しから、そのアカウントの使用率（5時間・週の率とリセットの時刻）を台帳のメモリの写しに書く
      （ファイルへは間引いて書く）
-   - 要求ごとに、その Project の並びの先頭から「**5時間の率が5時間の閾値未満、かつ週の率が週の閾値未満、かつ `-status` が
+   - 要求ごとに、その Project の並びの先頭から「**5時間の率が5時間の閾値未満、かつ週の率が週の閾値未満、かつ `anthropic-ratelimit-unified-status` が
      rejected でない**」の最初のアカウントを使う（モデル別の週の窓——`seven_day_opus` 等——が先に尽きると、7d の率が低いまま
      rejected になるため。そのときのリセットの時刻は `-representative-claim` が指す窓のもの）。値は見出しを正とする
-     （SDK の `rate_limit_event` の `unifiedWindows` は公開の型に無い）。リセットの時刻を過ぎた値は「分からない」とし、分からないものは使える扱い（使えば見出しで分かる）
+     （SDK の `rate_limit_event` の `unifiedWindows` は公開の型に無い）。使う見出しは `anthropic-ratelimit-unified-status`・
+     `-representative-claim`・`-5h-utilization`・`-5h-reset`・`-7d-utilization`・`-7d-reset`（窓ごとの status は無い。名前は
+     実装の最初に実測のログで確かめ直す）。status もリセットの時刻を過ぎたら「分からない」に戻す。リセットの時刻を過ぎた値は「分からない」とし、分からないものは使える扱い（使えば見出しで分かる）
    - ゆえに**閾値を越えたら次の要求から次のアカウント**、リセットを過ぎれば自然に前のアカウントへ戻る。ターンの途中でも
      切り替わる（その要求はプロンプトのキャッシュが効かず一度重くなる、承知）
-   - 上流が上限で断った（429、`-status` が rejected）ときは、その要求を**次のアカウントで1回だけ**送り直す（401 の試し直しと
-     同じく本文を持てるときだけ）。**並びの全部が断ったら、CLI へ返す 429 に `x-should-retry: false` を付ける**——CLI の SDK は
+   - 上流が上限で断った（429、status が rejected）ときは、その要求を**並びの次のアカウントへ、使えるものが無くなるまで**
+     順に送り直す（401 の試し直しと同じく本文を持てるときだけ。持てないときは送り直さず旗も付けない）。**並びの全部が断ったら、CLI へ返す 429 に `x-should-retry: false` を付ける**——CLI の SDK は
      429 を既定で `retry-after` に従って試し直し、そのたびに中継が並びの全部へ送り直して要求が倍々になるため。付ければ
      CLI はすぐ上限のエラーでターンを終える（実装の最初に実測する）
    - 切り替えたら Event Store に1件（Project・前と後・理由の率）、Project 設定の観測に出す
    - **切り替えたことは会話にも薄い1行で出す**（決定・2026-10-18、ユーザー）：その Project で動いている Thread の、
-     切り替えた要求のところに「Claude のアカウントを B に切り替えました（A の5時間 96%）」。コンテナの中の要求
+     切り替えた要求のところに「Claude のアカウントを B に切り替えました（A の5時間 96%）」（Thread は上の 2. の
+     `x-banto-thread-id` で知る）。コンテナの中の要求
      （サブエージェント・Factory 等）で切り替えたときは、その仕事を頼んだ Thread に出す（分からなければ出さず
      Project 設定の観測だけ）。AI の文脈には入れない（画面だけの印）
    - **並びの全部が閾値を越えたら**（決定・2026-10-18、ユーザー）：**一番早くリセットされるもの**（越えているほうの窓の
@@ -1349,9 +1361,14 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    （上の 6. の送り直しも断られ）ターンが上限のエラーで終わったとき：
    - **見分け方は Runner の1か所**：CLI が試し直しを尽くしたあと assistant のメッセージに付ける `error: "rate_limit"`（と
      result の `is_error`）。`rate_limit_event` は途中経過なので見分けに使わない。中継は要求とターンを結びつけない
-   - **待つ時刻**：中継が持つアカウントごとの最新のリセットの時刻から、その Project の並びで一番早いもの＋1分。待ちは
-     **Event Store に書く**（`turn.ended` の理由を上限にし、続ける時刻を添える。別の台帳は持たない——真実を1つに）。
-     **起こし直しをまたぐ**（起きたら時刻を見直し、過ぎていればすぐ続ける）
+   - **待つ時刻**：中継が持つアカウントごとの最新のリセットの時刻から、その Project の並びで一番早いもの＋1分。中継が
+     持っていなければ（取り直せない banto で本体が中継を通らないとき等）、そのターンの最後の `rate_limit_event.resetsAt`（SDK の
+     公開の型にある）＋1分
+   - **Event Store での表し方**（別の台帳は持たない——真実を1つに）：`turn.ended` に `reason: "rate_limit"` と `continueAt` を足す。
+     待ちを消す出来事 `turn.continuation_cancelled` を1つ足す（「待つのをやめる」・止めるボタン・閉じた Fork）。**待ちが生きている**
+     ＝その Thread の最後のターンが上限で終わり、その後に `turn.started`・`turn.continuation_cancelled`・Clear・閉じが無い。
+     続けた回数は既存の `turn.started.attempt` で数える。**起こし直しをまたぐ**（起きたら fold で待ちを拾い、時刻を過ぎていれば
+     すぐ続ける）
    - **続け方**：resume の仕組み（§2.5「起こし直しをまたいで続ける」）を使い回すが、**入口は別**——§2.5 が拾うのは
      `turn.ended` の無い切れたターンで、こちらは `turn.ended` の理由が上限のターン。時刻が来たら同じセッションを resume し
      「上限が戻ったので続けてください」の旨の届けもの（`continues` を付け、1時間あたりの起こす回数の歯止めに数えない）で
@@ -1363,10 +1380,11 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
      **人の番ではないので受信箱には出さない**（上の「全部が閾値を越えた」の1枚はそのまま）
    - **人が送ったら待ちを外す**：待っている Thread に人が送ればその発言でふつうにターンを開き（それがまた断られれば
      また待つ）、自動の続きはしない。届いたもの（send_message・自動化・裏の仕事の結果）は待ちの間は留め、続けた
-     ターンに一緒に積む。止めるボタン・閉じた Fork・**人が眠らせたスリープ**では待ちを消す
-   - **待ちは「動いているもの」に数える**（Fable のレビュー A3）：`hostActivity` に入れ、用事で起きた Project の「眠りに戻す」
-     （§2.2）を止める——夜に自動化で起きた Project が上限に当たって眠りに戻り、待ちが黙って消えるのを防ぐ。人が
-     スリープを押したときは、ほかの動いているものと同じく断る（移すときと同じ条件）か、承知で眠らせて待ちを消す
+     ターンに一緒に積む。止めるボタン・閉じた Fork では待ちを消す
+   - **待ちは「動いているもの」に数えず、スリープをまたぐ**（Fable のレビュー2回目 A2）：待ちは Event Store にある host の状態で、
+     コンテナが眠っても失われない。`hostActivity` には入れない——入れると、週の窓が尽きたときの数日の待ちの間、コンテナが
+     起きたまま・移せない・眠らないになる。自動でも人の操作でも眠ってよく、時刻が来たら `wake`（§2.2「Project のグループと
+     スリープ」の起こす入口）を通して起こしてから続ける。Project を移すときも待ちは Event Store ごと残る
    - **対象は会話の本体のターン**。コンテナの中の Claude（サブエージェント・Factory の段・Shell から打った `claude`）が
      上限で落ちたときは、その結果が頼んだ Thread に届き、その Thread の AI が判断する（中継で何時間も要求を抱えない）
 
@@ -1375,7 +1393,10 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 - `/v1/messages` 以外が来ないか：自動の要約（compact）・長い会話・resume
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` で、モデルの一覧（`supportedModels()`）・effort・`getContextUsage()` が今までどおり動くか
 - 合言葉で動く本体の CLI が `/api/oauth/usage` 等へ直に出て 401 になっても会話に響かないか
-- `x-should-retry: false` で CLI が試し直さず、すぐ `error: "rate_limit"` で終わるか
+- `x-should-retry: false` で CLI が試し直さず、すぐ `error: "rate_limit"` で終わるか（中継が 429 の `anthropic-ratelimit-unified-*` を
+  そのまま返していることも一緒に見る——CLI はそれで上限の文を作る）
+- `ANTHROPIC_CUSTOM_HEADERS` の見出しが `/v1/messages` に付くか
+- 上流を決める変数を外した env で、合言葉だけで本体が動くか
 - scope `user:inference user:profile` で token の口と `/api/oauth/profile`・`/api/oauth/usage` が通るか
 
 #### 未決（人に聞く）
