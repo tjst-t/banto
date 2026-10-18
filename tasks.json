@@ -9770,11 +9770,11 @@
       "labels": [],
       "body": "#404 のレビューで、受信箱のカードの2つのボタンの行き先（banto 全体の設定「Claude のアカウント」のアカウントを足すダイアログと、Project 設定の「Claude のアカウント」節）は #403 が入ってから繋ぐ、と範囲外にされた。v4-frontend.md §6.46 の受信箱の節。\n\nあわせて #403 のレビューの任意の2点も直す：\n- claude-account-login-dialog.tsx：足せた直後に一瞬「並びにはまだ入っていません」＋「既定の並びの最後に足す」が出てから「既定の並びの最後に入りました」に替わる。finish の返事から並びに入ったかを判定するか、reload が済むまで done を出さない\n- check-tokens が claude-accounts-shared.tsx の UsageMeter の bg-warn（閾値越えのメーター、仕様どおり）に警告を出す——許可リストに足す",
       "doneWhen": "E2E で、全部越えのカードの「アカウントを足す」で足すダイアログが開き、「Project の設定を開く」でその Project の設定の Claude のアカウントの節が開く。足せた直後の文が揺れない（E2E か単体で）。check-tokens に UsageMeter の警告が出ない",
-      "resolution": "Factory が取り込みました（factory/mca-inbox-links）",
+      "resolution": "ボタンの行き先は #404 の 6088e4ca で繋がり、残りの2点（足せた直後の文の揺れ・メーターの warn の許可）は 58b7278f。main に入れた（597099c7）。main の全部入りの版でフル E2E 327件全部通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T19:49:05.671Z",
-      "updatedAt": "2026-10-18T21:00:47.278Z",
+      "updatedAt": "2026-10-18T21:41:49.636Z",
       "closedAt": "2026-10-18T21:00:47.278Z",
       "extra": {}
     },
