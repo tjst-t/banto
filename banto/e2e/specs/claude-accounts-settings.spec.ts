@@ -178,10 +178,23 @@ test("設定「Claude のアカウント」：一覧とメーター・足す・�
           "このコードは、いま開いたログインの画面のものではありません。もう一度「ログインの画面を開く」からやり直してください。",
         );
         await dialog.getByTestId("claude-account-login-code").fill(`code-b#${state}`);
+        // 足せた直後の文が揺れない——「並びにはまだ入っていません」が一瞬でも出たら覚えておく（待つ側の検査では見逃す）
+        await page.evaluate(() => {
+          const w = window as unknown as { __notInOrderSeen?: boolean };
+          w.__notInOrderSeen = false;
+          new MutationObserver(() => {
+            if (document.body.textContent?.includes("並びにはまだ入っていません")) w.__notInOrderSeen = true;
+          }).observe(document.body, { childList: true, subtree: true, characterData: true });
+        });
         await dialog.getByTestId("claude-account-login-submit").click();
         const done = dialog.getByTestId("claude-account-login-done");
         await expect(done).toContainText("b@example.com（Max）を足しました。");
         await expect(done).toContainText("既定の並びの最後に入りました。順番は「既定の並び」で入れ替えられます。");
+        expect(
+          await page.evaluate(() => (window as unknown as { __notInOrderSeen?: boolean }).__notInOrderSeen),
+          "足せた直後に「並びにはまだ入っていません」が出てから替わった",
+        ).toBe(false);
+        await expect(done.getByRole("button", { name: "既定の並びの最後に足す" })).toHaveCount(0);
         await done.getByRole("button", { name: "閉じる" }).click();
         await expect(dialog).toHaveCount(0);
         await expect(panel.getByTestId("claude-account-row")).toHaveCount(2);

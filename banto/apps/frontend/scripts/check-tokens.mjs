@@ -50,6 +50,12 @@ const RULES = [
       "「塗ってよいのは turn だけ」——ボタン等の意図した用途なら許可リストへ追加を検討",
     pattern: /\bbg-(?:stop|ok|warn|primary)\b(?!-soft)/g,
     severity: "warn",
+    // 許可リスト：ファイルと、その行に含まれる文字列。1件ごとに理由を書く
+    allow: [
+      // 使用率のメーターの棒——閾値を越えたら warn で塗る（v4-frontend.md §6.46、Backlog #406）
+      { file: "components/banto/settings/claude-accounts-shared.tsx", includes: 'over ? "bg-warn"' },
+      { file: "components/banto/inbox/claude-accounts-notice.tsx", includes: 'over ? "bg-warn"' },
+    ],
   },
 ];
 
@@ -92,6 +98,7 @@ for (const file of files) {
       const upToMatch = content.slice(0, match.index);
       const lineNo = upToMatch.split("\n").length;
       const line = lines[lineNo - 1]?.trim() ?? "";
+      if (rule.allow?.some((a) => file === a.file && line.includes(a.includes))) continue;
       const tag = rule.severity === "error" ? "✖" : "⚠";
       console.log(`${tag} ${file}:${lineNo}  ${rule.name}`);
       console.log(`   ${line}`);

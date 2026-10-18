@@ -7,6 +7,7 @@
 // 使用率は開いたときに host に読み直してもらう（`/api/oauth/usage`、使っていないアカウントも）。それまでは host が
 // 覚えている値（会話の返事の見出しから読んだもの）を出す
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Check, Pencil, Plus, RefreshCw, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
@@ -30,6 +31,7 @@ import {
   type ClaudeAccountsState,
 } from "@/lib/backend/client";
 import { describeFailure, reportFailure } from "@/lib/report-failure";
+import { navigateUrl } from "@/lib/url-nav";
 import { ClaudeAccountLoginDialog } from "@/components/banto/settings/claude-account-login-dialog";
 import { AccountOrderEditor, IconButton, UsageMeter, accountPlan, percent } from "@/components/banto/settings/claude-accounts-shared";
 
@@ -52,12 +54,16 @@ function agoText(iso: string, now: number): string {
 }
 
 export function ClaudeAccountsPanel() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [state, setState] = useState<ClaudeAccountsState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [failures, setFailures] = useState<Map<string, string>>(new Map());
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [dialog, setDialog] = useState<{ target?: ClaudeAccountView } | null>(null);
+  // `?add=1`（受信箱の全部越えのカードの「アカウントを足す」、§6.46「受信箱」）は足すダイアログを開いて来る
+  const [dialog, setDialog] = useState<{ target?: ClaudeAccountView } | null>(() => (searchParams.get("add") === "1" ? {} : null));
   const [removing, setRemoving] = useState<ClaudeAccountView | null>(null);
   const now = useMinuteClock();
 
@@ -232,10 +238,22 @@ export function ClaudeAccountsPanel() {
       {dialog ? (
         <ClaudeAccountLoginDialog
           open
-          onOpenChange={(open) => !open && setDialog(null)}
+          onOpenChange={(open) => {
+            if (open) return;
+            setDialog(null);
+            // 閉じたら URL から外す——読み直すたびに開かない
+            if (searchParams.has("add")) {
+              const params = new URLSearchParams(searchParams.toString());
+              params.delete("add");
+              navigateUrl(router, `${pathname}?${params.toString()}`, { replace: true });
+            }
+          }}
           target={dialog?.target}
           inDefaultOrder={(id) => state.defaultOrder.includes(id)}
-          onAdded={() => void reload().then(() => readUsage())}
+          onAdded={async () => {
+            await reload();
+            void readUsage();
+          }}
           onAppendToDefaultOrder={async (id) => {
             // 足した直後の一覧（host の返事）に対して足す——画面の写しが古くても重ねない
             const latest = await fetchClaudeAccounts();
