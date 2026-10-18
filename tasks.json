@@ -9735,7 +9735,7 @@
       "number": 404,
       "kind": "task",
       "title": "画面：会話の切り替えの1行・上限の待ちの帯・サイドバーの1行・受信箱のカード",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-switch",
@@ -9750,7 +9750,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T17:21:20.414Z",
       "closedAt": null,
       "extra": {}
     },
