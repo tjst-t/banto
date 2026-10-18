@@ -9688,7 +9688,7 @@
       "number": 402,
       "kind": "task",
       "title": "上限で止まったターンをリセットのあと自動で続ける",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "multi-claude-accounts",
       "dependsOn": [
         "mca-runner-via-relay"
@@ -9702,7 +9702,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-18T09:09:54.261Z",
-      "updatedAt": "2026-10-18T09:09:54.261Z",
+      "updatedAt": "2026-10-18T15:17:24.991Z",
       "closedAt": null,
       "extra": {}
     },
