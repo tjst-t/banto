@@ -50,15 +50,30 @@ export function AccountSwitchLine({ change }: { change: RealAccountSwitch }) {
   );
 }
 
-/** 最後のターンが上限で終わった（会話の終わりに出す） */
-export function RateLimitStoppedBand() {
+/**
+ * 最後のターンが上限で終わった（会話の一番下に出す）。自動では続けないときは、その理由も（§6.46——6回続けて断られたら、
+ * 待ちの帯の代わりに「続けて上限に当たったので、自動で続けるのをやめました」）。続けるのは受信箱のカードかこの会話で送る
+ */
+export function RateLimitStoppedBand({ stop }: { stop: "stopped" | "gave_up" | "unknown_reset" }) {
   return (
     <div
       data-testid="thread-rate-limit-stopped"
+      data-stop={stop}
       className="flex items-start gap-2 rounded-md border border-stop/40 bg-stop-soft px-3 py-2 text-xs text-foreground"
     >
       <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-stop" />
-      Claude の使用量の上限に当たったので、このターンは途中で止まりました。
+      <div className="flex flex-col gap-0.5">
+        <span>Claude の使用量の上限に当たったので、このターンは途中で止まりました。</span>
+        {stop === "gave_up" ? (
+          <span data-testid="thread-rate-limit-gave-up">
+            続けて上限に当たったので、自動で続けるのをやめました。続けるなら、受信箱のカードの「続ける」を押すか、この会話で次を送ってください。
+          </span>
+        ) : stop === "unknown_reset" ? (
+          <span data-testid="thread-rate-limit-gave-up">
+            上限がいつ戻るかが分からないので、自動では続けません。続けるなら、受信箱のカードの「続ける」を押すか、この会話で次を送ってください。
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

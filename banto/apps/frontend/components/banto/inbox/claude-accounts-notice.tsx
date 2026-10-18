@@ -55,7 +55,8 @@ export function ClaudeAccountsAllOverNotice({ card }: { card: RealNoticeClaudeAc
       <p className="text-sm text-ink-2" data-testid="inbox-claude-accounts-detail">
         {card.projectName ? `Project ${card.projectName} の` : "この Project の"}並び（{names}）はどれも閾値を越えています。
         {at !== undefined ? `一番早く ${clockOf(new Date(at).toISOString())} にリセットされる` : "一番早くリセットされる"}「{usingName}」で続けています。
-        上限に当たると会話は止まり、リセットのあと自動で続けます。
+        {/* 文の間に空白を入れない（JSX は改行をまたぐ文を空白でつなぐ） */}
+        {"上限に当たると会話は止まり、リセットのあと自動で続けます。"}
       </p>
       <div className="grid gap-3 rounded-md bg-surface-2 px-3 py-3 sm:grid-cols-2">
         {card.accounts.flatMap((a) => [

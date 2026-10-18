@@ -65,9 +65,12 @@ export function clockOf(iso: string): string {
   return new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-/** 残りの時間を「n時間m分」で（1分に満たなければ「1分」——切り上げる。「0分」と出して止まって見せない） */
+/**
+ * 残りの時間を「n時間m分」で。分は切り捨て（1時間ちょうどと少しを「1時間1分」と出さない）。1分に満たなければ「1分」
+ * ——「0分」と出して止まって見せない
+ */
 export function remainingOf(iso: string, now: number): string {
-  const minutes = Math.max(1, Math.ceil((Date.parse(iso) - now) / 60_000));
+  const minutes = Math.max(1, Math.floor((Date.parse(iso) - now) / 60_000));
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return h > 0 ? `${h}時間${m}分` : `${m}分`;
