@@ -72,6 +72,19 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
   await expect(nav, "Fork の面に ≡ が無い").toHaveCount(1);
   await nav.click();
   await expect(drawer).toBeVisible();
+  // Drawer の高さは会話の面と同じ h-dvh（2026-10-18、Android で一番下の行が画面の外に出ていた）——一番下の1行が画面に収まる
+  await expect.poll(() => drawer.evaluate((el) => getComputedStyle(el).height)).toBe(
+    await page.evaluate(() => {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:absolute;visibility:hidden;height:100dvh";
+      document.body.append(probe);
+      const h = getComputedStyle(probe).height;
+      probe.remove();
+      return h;
+    }),
+  );
+  const footer = drawer.locator('[data-sidebar="footer"]');
+  await expect(footer).toBeInViewport({ ratio: 1 });
   const forkName = (await drawer.getByTestId("sidebar-fork-name").first().textContent()) ?? "";
   expect(forkName).not.toBe("");
   await projectRow(PLAIN).click();

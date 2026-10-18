@@ -48,7 +48,10 @@ export function MobileNavProvider({
     <OpenMobileNavContext.Provider value={() => setOpen(true)}>
       {children}
       <Drawer open={open} onOpenChange={setOpen} direction="left">
-        <DrawerContent className="w-[86%] max-w-xs">
+        {/* **高さは会話の面（AppShell）と同じ h-dvh**（2026-10-18、ユーザー報告）。部品の既定の inset-y-0（fixed で上下 0）だと
+            Android Chrome では見えている高さより長くなり、一番下の行（履歴・設定）が画面の外に出て、Drawer を下へなでると
+            画面ごとずれて上の見出しが隠れた。AppShell は h-dvh で収まっているので同じ物差しに揃える */}
+        <DrawerContent className="w-[86%] max-w-xs data-[vaul-drawer-direction=left]:bottom-auto data-[vaul-drawer-direction=left]:h-dvh">
           {/* Drawer は Dialog なので、読み上げ用の題と説明が要る（無いと警告が出る）。
               画面には banto 自身の見出し（NavPanel の title）が出るのでこちらは隠す */}
           <DrawerTitle className="sr-only">Project と Thread の一覧</DrawerTitle>
