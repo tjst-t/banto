@@ -47,7 +47,7 @@ export function ClaudeAccountLoginDialog({
   /** 足したアカウントがいま既定の並びに入っているか（足したあとの文を変える） */
   inDefaultOrder: (accountId: string) => boolean;
   /** 足せた・ログインし直せた（一覧を読み直す）。済むまで「足しました」を出さない——古い一覧で「並びにはまだ入っていません」が
-   *  一瞬出てから替わる（Backlog #406） */
+   *  一瞬出てから替わる（Backlog の 406） */
   onAdded: () => Promise<void>;
   onAppendToDefaultOrder: (accountId: string) => Promise<void>;
 }) {
