@@ -9759,7 +9759,7 @@
       "number": 405,
       "kind": "bug",
       "title": "oauth-token を envSecrets 等で渡すとき、期限切れの accessToken がそのまま渡る（GitHub のブラウザログイン）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -9780,7 +9780,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-18T11:54:54.340Z",
-      "updatedAt": "2026-10-18T12:34:19.859Z",
+      "updatedAt": "2026-10-18T12:44:03.512Z",
       "closedAt": null,
       "extra": {}
     }
