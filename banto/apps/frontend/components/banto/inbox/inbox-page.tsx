@@ -21,7 +21,7 @@
 //
 // キー操作（パソコン）：j / k で次・前のカード、r で返信の欄へ、e で「見た」、o で行き先を開く、Esc で閉じる。
 import { ToolInputDetails } from "@/components/banto/thread/tool-input-details";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { TextMessagePartProvider } from "@assistant-ui/react";
 import {
@@ -525,6 +525,8 @@ const STATUS = {
 
 /** これより長い返事は、まとめが無いとき途中まで出して「続きを読む」 */
 const LONG_REPLY_CHARS = 220;
+/** 返信の欄が伸びる上限（px）。これより長い返事は欄の中でスクロールする */
+const REPLY_MAX_HEIGHT_PX = 320;
 
 function ReturnedBody({
   item,
@@ -554,6 +556,17 @@ function ReturnedBody({
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // 返信の欄は書いた分だけ下へ伸ばす（上限 REPLY_MAX_HEIGHT_PX、超えたら欄の中でスクロール）。
+  // field-sizing: content は Firefox・古い Safari で効かないので、高さを測って入れる
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight + (el.offsetHeight - el.clientHeight), REPLY_MAX_HEIGHT_PX);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight + (el.offsetHeight - el.clientHeight) > REPLY_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }, [draft]);
 
   function choose(index: number, text: string) {
     const next = { ...chosen, [index]: text };
@@ -889,7 +902,7 @@ function ReturnedBody({
               e.preventDefault();
               void send(trimmed);
             }}
-            rows={draft.includes("\n") ? 3 : 1}
+            rows={1}
             placeholder={
               cut ? "続けるなら「続けて」と送る" : decisions.length > 0 ? "選択肢を押すか、返事を書く" : "この会話に返信する"
             }
