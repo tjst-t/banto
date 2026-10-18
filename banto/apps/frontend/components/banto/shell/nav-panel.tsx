@@ -321,6 +321,10 @@ export function ProjectTreeItem({
                       );
                       return;
                     }
+                    // **名前を押しても目次を開け閉めする**（2026-10-18、ユーザー要望、§6.40）——いま見ている Project なら
+                    // 開く／畳むを切り替え、ほかの Project なら（「すべて畳む」で畳んでいても）開く。移る先は今までどおり
+                    if (isCurrent) onToggleExpanded();
+                    else onExpand();
                     onNavigate?.();
                   }}
                 >

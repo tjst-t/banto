@@ -2541,6 +2541,8 @@ Project を別の実行場所へ移している間（`project.runtime_move_start
   `lastForkId`）。覚えていた Fork が閉じられていれば Base Thread。設定を開いたまま押したときも、下の画面はその Thread
 - **いま見ている Project の名前**を押したときは今までどおり Base Thread へ戻る（設定を開いていれば設定を閉じる）
 - Thread の行・Command Palette・受信箱から移るときは、選んだ Thread そのものへ（覚えたものは使わない）
+- **名前を押すと目次も開け閉めする**（2026-10-18、ユーザー要望）：いま見ている Project の名前なら Thread の目次の開く／畳むを
+  切り替え、ほかの Project の名前なら（「すべて畳む」や「›」で畳んでいても）開く。右端の「›」でも今までどおり開け閉めできる
 - 携帯の Drawer は同じ部品なので同じ。Fork のある Project を選ぶと Drawer は目次を開いて残る（2026-10-02）まま、下の画面は
   覚えていた Thread になる
 
