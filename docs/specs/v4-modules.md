@@ -648,7 +648,7 @@ alias の一覧の在りか（`vault://aliases`）／値ではなく**名前**�
 | tool | 引数→戻り値 | 用途 |
 |---|---|---|
 | `resolveAliases({items})` | → `{values}`。1回で複数を引く（全部か何もなし、100件まで）。承認は alias ごと（下の「秘密をまとめて引く」、2026-10-18） | Shell の envSecrets・secretFiles |
-| `resolveAlias({name})` | → 値（文字列 or バイト列）。**静的保存か動的発行かは Vault 内部の実装詳細**——呼び出し側はどちらでも同じ形で受け取る | 汎用シークレット注入（Shell の alias 方式、アーキ仕様 §2.5）、ファイル内容、動的短命トークン |
+| `resolveAlias({name})` | → 値（文字列 or バイト列）。**静的保存か動的発行かは Vault 内部の実装詳細**——呼び出し側はどちらでも同じ形で受け取る。**持ち主のいる `oauth-token` は、持ち主でない呼び元には持ち主が作った値を渡す**（下の「banto が置く秘密は、持ち主が作った値で渡す」、2026-10-18） | 汎用シークレット注入（Shell の alias 方式、アーキ仕様 §2.5）、ファイル内容、動的短命トークン |
 | `startSshAgent({identity})` | → `{socketPath}` のみ。**秘密鍵は返さない** | ssh-agent 経由の git 認証（D5）。**旧名 `hostSshAgent` から改名**（2026-09-02）——「host」はアーキ仕様で core の配線・解決層を指す予約語（§2.5）であり、ここで別の意味（ssh-agentプロセスを起動する）に使うのは規則11（一般的な用語を使う）に反する紛らわしさがあった |
 | `verify({alias, payload, signature})` | → true/false のみ。値は一切返さない | Webhook 署名検証など、値そのものが要らない検証 |
 | `getPublicKey({name})` | → その `ssh-identity` の**公開鍵**（秘密鍵は返らない）。**保存せず、秘密鍵から `ssh-keygen -y` で導く**（規則3） | 相手方（GitHub 等）への登録。**公開鍵は秘密ではない**ので、窓口では `agent` 可視性で AI にも見せる |
@@ -1141,6 +1141,89 @@ alias ごとに窓口の `lookupAlias` と Vault の `resolveAlias`・使った�
 （返るのは `vault://aliases` が承認なしで見せている在りかと同じ）——承認の線を変えるのでユーザーが決める。
 (c) 1件ずつの `resolveAlias` は、名前が200字を超えると識別子を拾えず `scope: {}` の鍵で聞いて通す（まとめた口より緩い）
 ——識別子を名乗る口で1つも拾えなければ断る、に揃える（Backlog）。経緯は `docs/notes/2026-10-18-batch-resolve.md`。
+
+#### banto が置く秘密は、持ち主が作った値で渡す（決定・2026-10-18、ユーザー。Backlog #405）
+
+**問題**（本番、ansible-nas の報告）：Repositories の GitHub のログイン（`repositories-github-<login>`、種別
+`oauth-token`、持ち主 `repositories`）を AI が Shell の `envSecrets` で受け取って git push に使うと、8時間を過ぎた
+あとは期限の切れた access token が渡り、GitHub に断られた。Repositories が取り直すのは自分で GitHub を使うとき
+（clone・publish・「確かめる」）だけで、`resolveAlias`・`resolveAliases` は置いてある JSON をそのまま返していた。
+受け取った側は直せない——refresh token を使うと GitHub は refresh token も替えるが、AI は Vault に書けないので、
+Repositories の持つ鍵を無効にするだけになる。しかも JSON には **refresh token（半年使える鍵）まで入っていた**。
+
+**決めた形**：持ち主のいる `oauth-token` を**持ち主でない呼び元**に渡すときは、置いてある値を返さず、**持ち主に
+「いま使える値」を作らせて、それを渡す**。期限を見るのも、取り直すのも、何を渡すかを決めるのも持ち主——Vault は
+値の形（JSON の欄・期限）を知らないままでよい。
+
+**Vault（vault-kit）の `resolveAlias`・`resolveAliases`**
+
+- 引いた行（参照なら元の行）が種別 `oauth-token` で持ち主（`owner`）があり、次のどれでもないとき、**持ち主の
+  `presentOwnedSecret({name, group})`** を中継で呼ぶ（`name`・`group` はその行の置き場。参照なら元の置き場）：
+  - 呼び元の Module（host が刻んだ `dev.banto/callerModule` の `name`）が持ち主——持ち主は自分の組（refresh token 込み）が要る。
+    これが無いと、持ち主の `presentOwnedSecret` の中で引いた自分の値でまた持ち主を呼ぶ輪になる
+  - 人の管理操作の中（host が刻んだ `admin`）——窓口の「Vault をまたいで移す」は値を丸ごと運ぶ（`importOwnedSecret`）
+- 持ち主の答え（文字列）を、その alias の値として返す。**置いてある値は返さない**（読みにも行かない——`getSecrets` の
+  対象から外す）
+- **持ち主が `presentOwnedSecret` を持たないとき**（「その tool は無い」で断られた——Shell の `resolveAliases` の落とし方と
+  同じ見分け方）と、**持ち主がもう登録されていないとき**（中継が「その Module はありません」で断った）は、今までどおり
+  置いてある値を返す。今これに当たるのは、窓口が持ち主のリモート MCP の OAuth（`oauth-<名前>`）だけ
+- **持ち主がそれ以外の理由で答えなかったら断る**（繋がっていない・起きない・時間切れ・持ち主が断った）。断りの文は
+  「`<alias>` は期限のあるログインで、持ち主の `<持ち主>` が使える値を用意できませんでした：<持ち主の理由>。
+  期限の切れた値は渡しません」。**置いてある値に落とさない**——期限の切れた値を渡すと、使う側は理由の分からない
+  認証の失敗を見るだけになる（規則2）
+- `resolveAliases` は今までどおり**全部か何もなし**——1件でも持ち主が用意できなければ、値は1つも返さず、ほかの
+  引けなかったものと一緒に理由を並べて断る。持ち主への問い合わせは alias ごとに1回（同じ alias が重なれば1回）で、
+  持ち主ごとに並べて呼んでよい
+- 使った日（`markUsed`・`markUsedMany`）は今までどおり書く。監査（`relay.call_recorded`）の行も今までどおり alias
+  1件ごとで、持ち主が作った値を渡したことを `presentedBy: <持ち主>` で添える
+- 承認は変わらない——`resolveAlias`・`resolveAliases` への中継は今までどおり alias ごとに聞く。Vault から持ち主への
+  中継は聞かない（アーキ仕様 §2.5「持ち主が、自分の置いた秘密から渡す値を作る口」）
+
+**持ち主の口 `presentOwnedSecret({name, group})`**（可視性 `module`、`_meta["dev.banto/presentsOwnedSecret"]: true`）
+
+- → 渡す値（文字列）。**持ち主が決めた、使う側にとって一番素直な形**にする。断るときは理由の文を返す
+- 宛先は、**刻まれた呼び元（`dev.banto/callerModule` の `name`）が、その秘密をいま預かっている Vault と同じとき**だけ
+  答える。違えば「この秘密は <呼び元> にはありません」で断る（ほかの Vault・ほかの Module が、預かっていない秘密の
+  値を作らせる道を作らない）
+- 自分の置いたものでない名前は断る
+
+**Repositories の `presentOwnedSecret`**
+
+- 引数の置き場を、登録してあるアカウントのうち**ブラウザでログイン（GitHub App）**の記録した在りか（実装・置き場・
+  名前）と照らす。どれとも合わなければ断る。PAT のアカウントは種別 `secret`（人が預けた秘密）なので、ここには来ない
+- 呼び元の確かめは、その記録した在りかの実装と比べる
+- 「使えるトークン」（`tokenFor`、§2.4）と同じ1本ずつの列で、**残りが 30 分を切っていたら取り直してから**、**access
+  token の文字列だけ**を返す（JSON ではない。refresh token・期限は渡さない）。自分で使うときの余裕（5分）より長く
+  とるのは、受け取った側がコマンドの中でしばらく使うため
+- 取り直せなかったら、`tokenFor` と同じ理由の文で断る（「更新の鍵（refresh token）が無効になっています……もう一度
+  ブラウザでログインしてください」・GitHub に繋がらない等）。受信箱への知らせも `tokenFor` と同じ（アカウントごとに
+  開いている間は1件）。取り直した組を Vault に置けなかったときも `tokenFor` と同じ（メモリに持ち、トークンは返す）
+
+**使う側から見て変わること**
+
+- AI が `envSecrets`・`secretFiles` で GitHub のブラウザログインを受け取ると、**JSON ではなく access token の文字列**が
+  入る（`GH_TOKEN` にそのまま使える。git の https では、ユーザー名に `x-access-token` 等、パスワードにこの文字列）。
+  前の形（JSON から `accessToken` を取り出す）で書いた使い方は替える必要がある
+- 受け取った値は少なくとも 30 分使える。**それより長く持ち続けるもの**——Service の `envSecrets`（止めるまで環境に
+  残る）——では、いずれ切れる。`restartService` すれば引き直す。Service に GitHub のブラウザログインを渡す使い方は
+  勧めない（PAT を使う）
+- refresh token は、持ち主（と人の管理操作）のほかへは出なくなる
+
+**採らなかった形**
+
+- **Vault が値の JSON を読んで期限を見る**（欄の名前を持ち主が `putSecret` で名乗る）：Vault が持ち主ごとの値の形を
+  知ることになり、取り直しはどのみち持ち主に頼むしかない。名乗りの記録が無い既存の alias は、次に取り直すまで
+  直らない
+- **期限を台帳（alias の注記）に書く**：取り直すたびに注記も書き換えることになり、Infisical への書き込みが倍になる
+  （回数制限、上の「Infisical の回数制限」）
+- **持ち主が裏で定期的に取り直す**：使っていなくても refresh token を回し続け（回すたびに鍵を失う機会がある）、
+  banto が止まっていた間・起きた直後は古いまま渡る。「裏で定期的に取り直すことはしない」（§2.4）も崩す
+- **Shell が種別を見て持ち主を呼ぶ**：Shell 以外（Subagent・第三者の Module）から引いたときに効かない。秘密を渡す
+  関所は Vault に1つ
+
+**残り**：窓口が持ち主のリモート MCP の OAuth（`oauth-<名前>`）は、今までどおり持ち主でない呼び元にも JSON
+（refresh token 込み）が渡る——AI がこれを引く使い方は今のところ無い。窓口にも `presentOwnedSecret` を持たせるかは
+別に決める。経緯は `docs/notes/2026-10-18-oauth-token-present.md`。
 
 #### D. バックエンド実装者向けの内部インターフェース（MCP ではなく npm ライブラリ）
 
@@ -2104,6 +2187,9 @@ Import でき「読むだけ」と示す。GitHub の API（探す・作る）�
     返事は今までどおり「client ID を知りません」——呼ぶ場所で訳し分ける。デバイスフローのトークンは client secret 無しで
     更新できる（GitHub の文書どおり、実測）
   - **裏で定期的に取り直すことはしない**——取り直すのは使う直前だけ
+  - **AI 等が Vault から引くときも、ここで取り直してから渡す**（2026-10-18、Backlog #405）——Vault の `resolveAlias`・
+    `resolveAliases` が持ち主でない呼び元に渡すときは、この Module の `presentOwnedSecret` を呼び、残りが 30 分を
+    切っていれば取り直した access token の文字列だけを渡す（§2.1「banto が置く秘密は、持ち主が作った値で渡す」）
 - **外す**：ブラウザでログインしたものは Vault のログイン情報も消す（banto が置いた秘密——消すのがログアウト）。
   **PAT は消さない**（人が預けた秘密）。ログイン情報の Vault が読めないときは「もう無い」と見なさず、外すのを断る
 - client ID が未設定の間は、ブラウザでログインを選べない。client ID の欄の下に**使い方**を出す（client ID が無い間は
