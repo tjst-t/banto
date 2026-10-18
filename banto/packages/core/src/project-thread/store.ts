@@ -39,6 +39,7 @@ import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
 import type { SessionSkillSet } from "../skills/types.js";
 import { sameSkillSet } from "../skills/activation.js";
+import { rootIsOnThisMachine } from "../runtime/runtime-kind.js";
 
 /** Memory 1件あたりの文字数上限。超えたら追記を拒否する（item3決定）。 */
 export const MEMORY_ENTRY_MAX_CHARS = 20_000;
@@ -51,10 +52,6 @@ export class RuntimeMoveConflictError extends Error {}
 /** 眠らせられない（閉じた・もう眠っている）（409） */
 export class ProjectSleepConflictError extends Error {}
 
-/** 別のサーバの Project か（根は向こうのパスで、この機械では正規化しない） */
-export function isRemoteProject(project: Pick<ProjectState, "runtime">): boolean {
-  return project.runtime !== undefined && project.runtime !== "host-container";
-}
 export class NotFoundError extends Error {}
 export class InvalidProjectRootError extends Error {}
 /** グループの名前・色が決まりに合わない（400） */
@@ -161,7 +158,7 @@ export class ProjectThreadStore {
     const project = this.projection.current.projects.get(id);
     if (!project) return undefined;
     // 別のサーバの根は、作るときに向こうで正規化した文字列をそのまま使う（この機械の realpath に通さない）
-    if (isRemoteProject(project)) return project;
+    if (!rootIsOnThisMachine(project.runtime)) return project;
     try {
       const root = normalizeProjectRoot(project.root);
       return root === project.root ? project : { ...project, root };
@@ -177,7 +174,7 @@ export class ProjectThreadStore {
    * この機械に無い——データの置き場の中に Project の id で決まる空のフォルダを作って使う（同じ id なら起こし直しても同じ）
    */
   runnerCwd(project: Pick<ProjectState, "id" | "root" | "runtime">): string {
-    if (!isRemoteProject(project)) return normalizeProjectRoot(project.root);
+    if (rootIsOnThisMachine(project.runtime)) return normalizeProjectRoot(project.root);
     const dir = join(this.dataDir, "runner-cwd", project.id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     return dir;
@@ -230,7 +227,7 @@ export class ProjectThreadStore {
     if (!project) throw new NotFoundError(`project ${id} not found`);
     // 向こうで正規化し直す口はまだ無い——この機械の realpath で確かめると、向こうのパスを「無い」と断るか、この機械の
     // 同じ文字列のフォルダに化ける。黙ってどちらかにしない
-    if (isRemoteProject(project)) {
+    if (!rootIsOnThisMachine(project.runtime)) {
       throw new RemoteProjectError("別のサーバで動く Project の根は、まだ変えられません");
     }
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");

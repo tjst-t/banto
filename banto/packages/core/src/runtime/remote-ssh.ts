@@ -1,8 +1,10 @@
 // **実行場所の2つ目——SSH で入る別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「Project の実行場所——
 // 別のサーバ」、Backlog `remote-runtime-ssh`）。
 //
-// Project ごとに **SSH の接続を1本**（`ControlMaster`）張り、その上に Module の標準入出力（Module ごとのセッション）と
-// **逆向きのトンネル1本**（向こうの 127.0.0.1 → host の中継だけを受ける専用の待ち受け）を載せる。繋ぐときに：
+// **Project ごとに SSH の接続を1本**（`ControlMaster`。決定・2026-10-17、v4-security.md §1「SSH の接続は Project ごとに1本」）
+// 張り、その上に Module の標準入出力（Module ごとのセッション）と**逆向きのトンネル1本**（向こうの 127.0.0.1 → host の、
+// その Project の中継だけを受ける専用の待ち受け）を載せる。接続の表・待ち受け・ソケットの転送・手放す（`release`）は
+// どれも「実行場所＋Project」が鍵——同じ実行場所のほかの Project の接続には触らない。繋ぐときに：
 //   1. 前提を確かめる（`probePrerequisites`。足りなければ名指しして直し方つきで断る。linger・tmux が無いのは注意だけ）
 //   2. 接続を張る（`-M -N -R 0:127.0.0.1:<待ち受け>`。向こうの側のポートは sshd に選ばせる）
 //   3. banto のコードを照合し、違えば新しい置き場に展開して切り替える（`remote-code.ts`。前の版を1つ残す）。
@@ -82,8 +84,8 @@ export interface RemoteSshRuntimeOptions {
   runtimes: RemoteRuntimes;
   /** その Project の実行場所（別のサーバ）の名前。別のサーバでなければ undefined */
   remoteNameOf(projectId: string): string | undefined;
-  /** 中継だけを受ける専用の待ち受けを作る（実行場所ごとに1つ。受ける Project は待ち受けが聞くたびに引く） */
-  createRelayListener(runtimeName: string): Server;
+  /** 中継だけを受ける専用の待ち受けを作る（実行場所＋Project ごとに1つ。その Project だけを受ける） */
+  createRelayListener(runtimeName: string, projectId: string): Server;
   /** Shell のホームへ写す元（既定は人のホーム。E2E だけが差し替える） */
   shellHomeSource?: string;
   /** 注意（linger・tmux が無い）を受信箱へ。同じものが開いている間は増やさない（`dedupeKey`） */
@@ -94,8 +96,11 @@ export interface RemoteSshRuntimeOptions {
    * いると分かるまで残る）。大きさは縮める前のバイト数
    */
   onCodeTransfer?: (runtimeName: string, progress: CodeTransfer | undefined) => void;
-  /** 実行場所に繋がった（張り直せた）。繋がらないお知らせを閉じるのに使う（追加・2026-10-16、`modules/remote-outage.ts`） */
-  onConnected?: (runtimeName: string) => void;
+  /**
+   * 実行場所に繋がった（張り直せた）。繋がらないお知らせを閉じるのに使う（追加・2026-10-16、`modules/remote-outage.ts`）。
+   * `projectId` はその接続の Project（先に送るためだけの接続には無い）
+   */
+  onConnected?: (runtimeName: string, projectId: string | undefined) => void;
   /** ログ（既定は console） */
   log?: (line: string) => void;
   /** 宛先の名前を IPv4 に引く（既定は host の名前引き。試験だけが差し替える） */
@@ -163,16 +168,25 @@ const MASTER_CLOSE_GRACE_MS = 2_000;
 /** 縮め方（向こうに展開するコマンドがあるものを選ぶ） */
 type Codec = "zstd" | "gzip" | "none";
 
+/**
+ * 接続の表の鍵：実行場所＋Project。Project の無い鍵（`projectId` が undefined）は、先に送るためだけの接続（`warmUp`）
+ */
+export function remoteConnectionKey(runtimeName: string, projectId: string | undefined): string {
+  return `${runtimeName}\0${projectId ?? ""}`;
+}
+
 /** 張っている接続1本 */
 interface Connection {
   runtimeName: string;
+  /** この接続を使う Project。先に送るためだけの接続（`warmUp`）には無い——逆向きのトンネルも張らない */
+  projectId?: string;
   runtime: RemoteRuntime;
   controlPath: string;
   knownHostsFile: string;
   master: ChildProcess;
   alive: boolean;
-  /** 向こうの 127.0.0.1 の、逆向きのトンネルのポート */
-  remotePort: number;
+  /** 向こうの 127.0.0.1 の、逆向きのトンネルのポート（先に送るためだけの接続には無い） */
+  remotePort: number | undefined;
   /** 向こうの、この banto の置き場（絶対パス） */
   base: string;
   /** 向こうの、いま使う版のコードの置き場（絶対パス） */
@@ -181,7 +195,7 @@ interface Connection {
   exited: Promise<void>;
   /** 張っているソケットの転送（鍵は host の側のパス）。接続が閉じれば一緒に消える */
   forwards: Map<string, SocketForward>;
-  /** 注意（linger・tmux が無い）を出した Project（接続を張ったときに居なかった Project にも、使い始めたときに出す） */
+  /** 注意（linger・tmux が無い）を出した Project */
   cautioned: Set<string>;
   /** 用意している途中で実行場所の登録が外された */
   removed?: boolean;
@@ -241,16 +255,22 @@ class LauncherTransport extends StdioClientTransport {
 }
 
 export class RemoteSshRuntime {
+  /** 張っている接続（鍵は `remoteConnectionKey`——実行場所＋Project） */
   private readonly connections = new Map<string, Connection>();
   private readonly connecting = new SingleFlight<Connection>();
+  /** 中継だけを受ける待ち受け（鍵は接続と同じ。繋ぎ直しても同じものを使い、手放したら閉じる） */
   private readonly listeners = new Map<string, { server: Server; port: number }>();
+  /** コード・エージェントの本体を照合・送っている実行場所（同じ実行場所の Project の接続どうしで重ねない——置き場を取り合う） */
+  private readonly codeSyncs = new Map<string, Promise<unknown>>();
   private readonly hashes = new FileHashCache();
   private readonly log: (line: string) => void;
   private readonly launcherPath: string;
   private readonly forwarding = new SingleFlight<void>();
   /** 実行場所の登録を外した回数（名前ごと）。繋いでいる途中で外されたかを見る（`connect`） */
   private readonly removals = new Map<string, number>();
-  /** 用意している途中（コードを照合・送っている）の接続 */
+  /** Project の接続を手放した回数（鍵は接続と同じ）。繋いでいる途中で手放されたかを見る（`connect`） */
+  private readonly releases = new Map<string, number>();
+  /** 用意している途中（コードを照合・送っている）の接続（鍵は接続と同じ） */
   private readonly settingUp = new Map<string, Connection>();
   /** いまコードを送っている実行場所（送り終えたら消す） */
   private readonly transfers = new Map<string, CodeTransfer>();
@@ -284,11 +304,20 @@ export class RemoteSshRuntime {
 
   /**
    * **先に繋いでコードを送っておく**（追加・2026-10-12、Backlog #269）——実行場所を登録したとき（前提を確かめたあと）に
-   * 呼ぶ。最初のターンが送り終わるのを待たずに済む。張った接続はそのまま残し、Project が使い始めたら同じものを使う
+   * 呼ぶ。最初のターンが送り終わるのを待たずに済む。張った接続（Project の無いもの——トンネルは張らない）は、その実行場所の
+   * Project の接続が張れるまで残す（資源を読むのに使う）
    */
   async warmUp(runtimeName: string): Promise<void> {
-    if (this.connections.get(runtimeName)?.alive) return;
-    await this.connecting.run(this.flightKey(runtimeName), () => this.connect(runtimeName));
+    // Project の接続がもう張ってあれば、コードはそれが照合している
+    if (this.liveOn(runtimeName).length > 0) return;
+    await this.connecting.run(this.flightKey(runtimeName, undefined), () => this.connect(runtimeName, undefined));
+  }
+
+  /** その実行場所に張っている、生きている接続（Project の接続が先、先に送るためだけの接続は最後） */
+  private liveOn(runtimeName: string): Connection[] {
+    return [...this.connections.values()]
+      .filter((c) => c.runtimeName === runtimeName && c.alive)
+      .sort((a, b) => Number(a.projectId === undefined) - Number(b.projectId === undefined));
   }
 
   /**
@@ -323,8 +352,8 @@ export class RemoteSshRuntime {
     return Promise.all(
       this.opts.runtimes.list().map(async (r): Promise<RemoteProbe> => {
         const address = `${r.user}@${r.host}`;
-        const conn = this.connections.get(r.name);
-        if (!conn?.alive) return { runtime: r.name, address, unavailable: "繋いでいません（この実行場所の Project を使うと繋ぎます）" };
+        const conn = this.liveOn(r.name)[0];
+        if (!conn) return { runtime: r.name, address, unavailable: "繋いでいません（この実行場所の Project を使うと繋ぎます）" };
         if (this.resourceReads.has(r.name)) return { runtime: r.name, address, unavailable: "読んでいる途中です" };
         this.resourceReads.add(r.name);
         try {
@@ -361,20 +390,29 @@ export class RemoteSshRuntime {
   /** 接続が切れていれば、次に要るときに繋ぎ直す（繋がっていれば何もしない——Module が1つ落ちただけで全部を張り直さない） */
   forget(placeId: string): void {
     const name = this.opts.remoteNameOf(placeId);
-    const conn = name ? this.connections.get(name) : undefined;
-    if (conn && !conn.alive) this.connections.delete(conn.runtimeName);
+    if (!name) return;
+    const key = remoteConnectionKey(name, placeId);
+    const conn = this.connections.get(key);
+    if (conn && !conn.alive) this.connections.delete(key);
   }
 
-  /** 手放す：接続を閉じる（Module は呼び元が先に落としている。向こうの機械は止めない） */
+  /**
+   * 手放す：**その Project の**接続を閉じ、待ち受けも閉じる（Module は呼び元が先に落としている。向こうの機械は止めない）。
+   * 同じ実行場所のほかの Project の接続には触らない
+   */
   async release(placeId: string): Promise<void> {
     const name = this.opts.remoteNameOf(placeId);
-    const conn = name ? this.connections.get(name) : undefined;
-    if (!conn) return;
-    this.connections.delete(conn.runtimeName);
-    if (conn.alive) {
-      conn.master.kill("SIGTERM");
-      await conn.exited;
+    if (!name) return;
+    const key = remoteConnectionKey(name, placeId);
+    // 繋いでいる途中の接続（まだ表に入っていない）に「手放された」と分かるようにする——待ち受けはここで閉じるので、
+    // そのまま表に入ると閉じた待ち受けへのトンネルを張った接続が残る
+    this.releases.set(key, (this.releases.get(key) ?? 0) + 1);
+    const conn = this.connections.get(key);
+    if (conn) {
+      this.connections.delete(key);
+      await closeConnection(conn);
     }
+    this.closeListener(key);
   }
 
   /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（用意している途中・送っている途中でも止める） */
@@ -385,29 +423,20 @@ export class RemoteSshRuntime {
     this.clearTransfer(runtimeName);
     // 用意している途中（先に送っている最中など）なら、その接続を閉じて止める——送っている ssh が切れ、送り込みは
     // 「外されたのでやめました」で終わる
-    const pending = this.settingUp.get(runtimeName);
-    if (pending?.alive) {
-      pending.removed = true;
-      pending.master.kill("SIGTERM");
-      await pending.exited;
-    }
-    const conn = this.connections.get(runtimeName);
-    if (!conn) return;
-    this.connections.delete(runtimeName);
-    if (conn.alive) {
-      conn.master.kill("SIGTERM");
-      await conn.exited;
-    }
+    // 鍵は「名前\0Project」——名前に \0 は入らない
+    const onRuntime = (key: string) => key.startsWith(`${runtimeName}\0`);
+    const pending = [...this.settingUp].filter(([key]) => onRuntime(key)).map(([, c]) => c);
+    for (const c of pending) c.removed = true;
+    await Promise.all(pending.map(closeConnection));
+    const conns = [...this.connections].filter(([key]) => onRuntime(key));
+    for (const [key] of conns) this.connections.delete(key);
+    await Promise.all(conns.map(([, c]) => closeConnection(c)));
+    for (const key of [...this.listeners.keys()]) if (onRuntime(key)) this.closeListener(key);
   }
 
   /** 終わるとき：張っている接続を全部閉じる */
   async closeAll(): Promise<void> {
-    await Promise.all([...this.connections.values()].map(async (c) => {
-      if (c.alive) {
-        c.master.kill("SIGTERM");
-        await c.exited;
-      }
-    }));
+    await Promise.all([...this.connections.values()].map(closeConnection));
     this.connections.clear();
   }
 
@@ -419,8 +448,8 @@ export class RemoteSshRuntime {
   // ── 接続 ────────────────────────────────────────────────────────────────
 
   private async ensureConnection(name: string, place: RuntimePlace): Promise<Connection> {
-    const existing = this.connections.get(name);
-    const conn = existing?.alive ? existing : await this.connecting.run(this.flightKey(name), () => this.connect(name));
+    const existing = this.connections.get(remoteConnectionKey(name, place.id));
+    const conn = existing?.alive ? existing : await this.connecting.run(this.flightKey(name, place.id), () => this.connect(name, place.id));
     this.refuseUnusable(conn, place);
     this.raiseCautions(conn, place);
     return conn;
@@ -438,20 +467,28 @@ export class RemoteSshRuntime {
   }
 
   /**
-   * 繋ぐのを1本にまとめる鍵。**登録を外した回数を含める**——外したあとに同じ名前で登録し直したら、外す前に始まった
-   * 繋ぎ（前の host 向け）に相乗りしない
+   * 繋ぐのを1本にまとめる鍵。**登録を外した回数・手放した回数を含める**——外したあとに同じ名前で登録し直したら、外す前に
+   * 始まった繋ぎ（前の host 向け）に相乗りしない。手放したあとに使い直したら、手放す前に始まった繋ぎ（手放されたので
+   * 断って終わる）に相乗りしない
    */
-  private flightKey(name: string): string {
-    return `${name}\0${this.removals.get(name) ?? 0}`;
+  private flightKey(name: string, projectId: string | undefined): string {
+    const key = remoteConnectionKey(name, projectId);
+    return `${key}\0${this.removals.get(name) ?? 0}\0${this.releases.get(key) ?? 0}`;
   }
 
-  private async connect(name: string): Promise<Connection> {
+  /** 繋ぐ（`projectId` が無ければ、先に送るためだけの接続——逆向きのトンネルを張らない） */
+  private async connect(name: string, projectId: string | undefined): Promise<Connection> {
+    const key = remoteConnectionKey(name, projectId);
     // **繋いでいる途中で登録を外されたか**を見る印（修正・2026-10-12、レビュー）。外す側（`closeRuntime`）は、まだ前提を
     // 確かめている・親の接続を待っている段の接続を掴めない（`settingUp` に入る前）。そのまま完走させると、外した実行場所
     // （や、同じ名前で登録し直した別の host）に古い接続が残り、そこで Module が起きる。始めたときの回数と比べて断る
     const generation = this.removals.get(name) ?? 0;
     const removed = () => (this.removals.get(name) ?? 0) !== generation;
-    const listener = await this.listenerFor(name);
+    // 同じく**繋いでいる途中で手放されたか**（修正・2026-10-18、レビュー）。手放す側（`release`）は表に入る前の接続を
+    // 掴めず、待ち受けだけを閉じる——表に入れる前に見て断る
+    const releasedAtStart = this.releases.get(key) ?? 0;
+    const released = () => (this.releases.get(key) ?? 0) !== releasedAtStart;
+    const listener = projectId !== undefined ? await this.listenerFor(name, projectId) : undefined;
     const started = performance.now();
     const conn = await this.opts.runtimes.withConnection(name, async (r, files) => {
       // 1. 前提を確かめる（Module を起こす前に。v4-security.md §1「前提の確かめ」）
@@ -467,7 +504,7 @@ export class RemoteSshRuntime {
       }
 
       // 2. 接続を1本張る（多重化・逆向きのトンネル）
-      const controlPath = this.controlPathFor(name);
+      const controlPath = this.controlPathFor(name, projectId);
       rmSync(controlPath, { force: true });
       const master = spawn(
         "ssh",
@@ -478,15 +515,19 @@ export class RemoteSshRuntime {
           "-o", `ControlPath=${controlPath}`,
           "-o", "ControlPersist=no",
           "-o", "ExitOnForwardFailure=yes",
-          "-R", `0:127.0.0.1:${listener.port}`,
+          // **machine のトンネルは向こうの側も TCP**（番号は sshd に選ばせる）。Module は `bantoOrigin` の http で繋ぐ——
+          // UNIX ソケットにすると Module の側に繋ぎ方が要る。その実行場所の Project は1つなので、番号の取り違い
+          // （v4-security.md §1、Fable の A3）は起きない。containers では Project ごとの決まったパスのソケットにする
+          ...(listener ? ["-R", `0:127.0.0.1:${listener.port}`] : []),
           "--",
           r.host,
         ],
         { stdio: ["ignore", "ignore", "pipe"], env: sshEnv() },
       );
-      const { remotePort, exited, stderrTail } = await waitMasterReady(master, controlPath);
+      const { remotePort, exited, stderrTail } = await waitMasterReady(master, controlPath, { tunnel: listener !== undefined });
       const conn: Connection = {
         runtimeName: name,
+        ...(projectId !== undefined ? { projectId } : {}),
         runtime: r,
         controlPath,
         knownHostsFile: files.knownHostsFile,
@@ -502,12 +543,12 @@ export class RemoteSshRuntime {
       };
       void exited.then(() => {
         conn.alive = false;
-        if (this.connections.get(name) === conn) this.connections.delete(name);
+        if (this.connections.get(key) === conn) this.connections.delete(key);
         const why = stderrTail().split("\n").filter((l) => l.trim() && !/^Allocated port/.test(l)).slice(-3).join(" ");
-        this.log(`[host] 別のサーバ「${name}」との SSH の接続が閉じました（終了コード ${master.exitCode ?? master.signalCode}${why ? `：${why}` : ""}）`);
+        this.log(`[host] 別のサーバ「${name}」${forWhom(projectId)}との SSH の接続が閉じました（終了コード ${master.exitCode ?? master.signalCode}${why ? `：${why}` : ""}）`);
       });
       // 用意している途中の接続も、登録を外したら閉じられるようにしておく（`closeRuntime`）
-      this.settingUp.set(name, conn);
+      this.settingUp.set(key, conn);
       // ここまで（前提の確かめ・親の接続を待つ間）に外されていたら、コードを送らずにやめる
       const removedBeforeSync = removed();
       if (removedBeforeSync) conn.removed = true;
@@ -515,8 +556,13 @@ export class RemoteSshRuntime {
         if (removedBeforeSync) throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
         // 3. 向こうの置き場を決め、コードを照合する
         conn.base = await this.resolveBase(conn);
-        conn.codeDir = await this.syncCode(conn);
-        await this.pruneAgentBinaries(conn);
+        // 照合と、エージェントの本体の古い版の片づけは、同じ実行場所の送り込みと重ねない（片づけが、ほかの Project の接続が
+        // 送っている途中の本体の置き場を消さない）
+        conn.codeDir = await this.oneSyncAtATime(name, async () => {
+          const codeDir = await this.syncCode(conn);
+          await this.pruneAgentBinaries(conn);
+          return codeDir;
+        });
         if (conn.removed) throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
       } catch (err) {
         master.kill("SIGTERM");
@@ -524,23 +570,28 @@ export class RemoteSshRuntime {
         // 送っている途中で外された（`closeRuntime` が親を閉じた）なら、ssh の「途中で閉じました」ではなく外されたことを理由にする
         throw conn.removed && !removedBeforeSync ? new Error(`実行場所「${name}」が外されたので、コードを送るのをやめました`) : err;
       } finally {
-        if (this.settingUp.get(name) === conn) this.settingUp.delete(name);
+        if (this.settingUp.get(key) === conn) this.settingUp.delete(key);
       }
       return conn;
     });
     // 最後にもう一度：返ってくるまでの間に外されていたら、張った接続を残さない
     if (removed()) {
-      if (conn.alive) {
-        conn.master.kill("SIGTERM");
-        await conn.exited;
-      }
+      await closeConnection(conn);
       throw new Error(`実行場所「${name}」が外されたので、繋ぐのをやめました`);
     }
+    if (released()) {
+      await closeConnection(conn);
+      throw new Error(`別のサーバ「${name}」${forWhom(projectId)}の接続は、繋いでいる途中で手放されたので、繋ぐのをやめました`);
+    }
     // **鍵の窓口は閉じない**（未実装・2026-10-10）：Vault に窓口を閉じる口がまだ無い。多重化した接続は張ったあと鍵を使わない
-    this.connections.set(name, conn);
-    this.opts.onConnected?.(name);
+    this.connections.set(key, conn);
+    // Project の接続が張れたら、先に送るためだけの接続は要らない（コードはこの接続が照合した・資源もこれで読める）
+    if (projectId !== undefined) void this.closeWarmUp(name);
+    this.opts.onConnected?.(name, projectId);
     this.log(
-      `[host] 別のサーバ「${name}」に繋ぎました（${Math.round(performance.now() - started)}ms・向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・コード ${basename(conn.codeDir)}）`,
+      `[host] 別のサーバ「${name}」${forWhom(projectId)}に繋ぎました（${Math.round(performance.now() - started)}ms・` +
+        (listener ? `向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・` : "先に送るためだけ・") +
+        `コード ${basename(conn.codeDir)}）`,
     );
     return conn;
   }
@@ -565,7 +616,13 @@ export class RemoteSshRuntime {
     onProgress?: ProgressListener,
   ): Promise<string> {
     const conn = this.liveConnection(projectId, `${binary.title} の本体を送れ`);
-    return this.agentBinarySends.run(`${conn.runtimeName}\0${binary.name}`, (emit) => this.sendAgentBinary(conn, binary, emit), onProgress);
+    // 同じ実行場所のコードの照合・送り込み（と、繋いだときの本体の古い版の片づけ）とは重ねない——別の Project の接続が
+    // 繋いだときの片づけが、送っている途中の置き場（`.incoming-*`）を消さない
+    return this.agentBinarySends.run(
+      `${conn.runtimeName}\0${binary.name}`,
+      (emit) => this.oneSyncAtATime(conn.runtimeName, () => this.sendAgentBinary(conn, binary, emit)),
+      onProgress,
+    );
   }
 
   private async sendAgentBinary(conn: Connection, binary: { name: string; hostDir: string; fileName: string; title: string }, emit: ProgressListener): Promise<string> {
@@ -666,10 +723,36 @@ export class RemoteSshRuntime {
     if (removed.length > 0) this.log(`[host] 別のサーバ「${conn.runtimeName}」の、いまの目録に無いエージェントの本体を消しました（${removed.join("・")}）`);
   }
 
-  /** ControlPath（短く——Unix ソケットの上限に ssh の一時の名前を足して収まること） */
-  private controlPathFor(name: string): string {
+  /** 先に送るためだけに張った接続を閉じる */
+  private async closeWarmUp(name: string): Promise<void> {
+    const key = remoteConnectionKey(name, undefined);
+    const warm = this.connections.get(key);
+    if (!warm) return;
+    this.connections.delete(key);
+    await closeConnection(warm);
+  }
+
+  /**
+   * **同じ実行場所のコードの照合・送り込みは1本ずつ**——Project の接続が同時に張られても、版の置き場（`<版>-<連番>`）と
+   * 塗りの置き場を取り合わない。あとの方は、前のが送り終えた版を照合するだけになる。エージェントの本体の送り込みと、その
+   * 古い版の片づけ（`<置き場>/agent-binaries/`）も同じ列に並べる——片づけが送っている途中のものを消さない
+   */
+  private oneSyncAtATime<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.codeSyncs.get(name) ?? Promise.resolve()).catch(() => undefined).then(fn);
+    this.codeSyncs.set(name, run);
+    void run.finally(() => {
+      if (this.codeSyncs.get(name) === run) this.codeSyncs.delete(name);
+    }).catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * ControlPath（短く——Unix ソケットの上限に ssh の一時の名前を足して収まること）。実行場所＋Project ごと（先に送るため
+   * だけの接続は実行場所の名前だけから）
+   */
+  private controlPathFor(name: string, projectId: string | undefined): string {
     const dir = coreSocketDir(this.opts.dataDir);
-    const path = join(dir, `cm-${createHash("sha256").update(name).digest("hex").slice(0, 10)}`);
+    const path = join(dir, `cm-${createHash("sha256").update(projectId !== undefined ? remoteConnectionKey(name, projectId) : name).digest("hex").slice(0, 10)}`);
     if (Buffer.byteLength(path) + CONTROL_PATH_SUFFIX > SOCKET_PATH_LIMIT) {
       throw new Error(
         `SSH の接続の窓口のパスが長すぎて作れません（${path}。Unix ソケットは ${SOCKET_PATH_LIMIT} バイトまで）——banto のデータの置き場を短いパスにしてください`,
@@ -678,19 +761,34 @@ export class RemoteSshRuntime {
     return path;
   }
 
-  /** 実行場所ごとの、中継だけを受ける待ち受け（127.0.0.1。繋ぎ直しても同じポートを使い続ける） */
-  private async listenerFor(name: string): Promise<{ server: Server; port: number }> {
-    const existing = this.listeners.get(name);
+  /** 実行場所＋Project ごとの、中継だけを受ける待ち受け（127.0.0.1。繋ぎ直しても同じポートを使い続ける） */
+  private async listenerFor(name: string, projectId: string): Promise<{ server: Server; port: number }> {
+    const key = remoteConnectionKey(name, projectId);
+    const existing = this.listeners.get(key);
     if (existing) return existing;
-    const server = this.opts.createRelayListener(name);
+    const server = this.opts.createRelayListener(name, projectId);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => resolve());
     });
     server.unref();
     const entry = { server, port: (server.address() as AddressInfo).port };
-    this.listeners.set(name, entry);
+    // 待ち受けている間に手放された（同時に `listenerFor` が走っていた）なら、先にできた方を使う
+    const raced = this.listeners.get(key);
+    if (raced) {
+      server.close();
+      return raced;
+    }
+    this.listeners.set(key, entry);
     return entry;
+  }
+
+  /** 待ち受けを閉じる（その Project を手放した・実行場所を外した） */
+  private closeListener(key: string): void {
+    const l = this.listeners.get(key);
+    if (!l) return;
+    this.listeners.delete(key);
+    l.server.close();
   }
 
   /** linger・tmux が無いことは断らず、受信箱に注意を出す */
@@ -827,7 +925,7 @@ export class RemoteSshRuntime {
 
   private liveConnection(projectId: string, what: string): Connection {
     const name = this.opts.remoteNameOf(projectId);
-    const conn = name ? this.connections.get(name) : undefined;
+    const conn = name ? this.connections.get(remoteConnectionKey(name, projectId)) : undefined;
     if (!name || !conn?.alive) throw new Error(`別のサーバ「${name ?? projectId}」で${what}ません——SSH の接続がありません（Module が起きていません）`);
     return conn;
   }
@@ -851,7 +949,7 @@ export class RemoteSshRuntime {
     }
     const key = `${f.dir}:${f.hostPath}`;
     if (conn.forwards.has(key)) return;
-    await this.forwarding.run(`${conn.runtimeName}\0${key}`, async () => {
+    await this.forwarding.run(`${remoteConnectionKey(conn.runtimeName, conn.projectId)}\0${key}`, async () => {
       if (conn.forwards.has(key)) return;
       // 待ち受ける側に同じパスのファイルが残っていれば先に消す（外した転送の窓口のファイルは残る——sshd の
       // `StreamLocalBindUnlink` は root の設定なので頼らない）。`-L` の先は向こうの短い symlink
@@ -1232,10 +1330,12 @@ export class RemoteSshRuntime {
       return hostPath;
     };
     const self = this;
+    const { remotePort } = conn;
+    if (remotePort === undefined) throw new Error(`別のサーバ「${conn.runtimeName}」の接続に逆向きのトンネルがありません（先に送るためだけの接続です）`);
     return {
       name: `別のサーバ「${conn.runtimeName}」`,
       nodePath,
-      bantoOrigin: `http://127.0.0.1:${conn.remotePort}`,
+      bantoOrigin: `http://127.0.0.1:${remotePort}`,
       pathInside,
       async prepareModuleDirs({ dataDir: moduleDataDir, packageDir }) {
         await self.mustRun(conn, "Module の置き場を作れ", `mkdir -p ${shq(pathInside(moduleDataDir))} && chmod 700 ${shq(pathInside(moduleDataDir))}`);
@@ -1339,13 +1439,14 @@ export class RemoteSshRuntime {
 }
 
 /**
- * 親の接続が用意できるまで待つ：逆向きのトンネルのポート（ssh が標準エラーに出す「Allocated port N」）と、
- * 多重化の窓口ができたこと。先に終わったら、ssh の言葉を添えて投げる
+ * 親の接続が用意できるまで待つ：逆向きのトンネルのポート（ssh が標準エラーに出す「Allocated port N」。トンネルを張る
+ * ときだけ）と、多重化の窓口ができたこと。先に終わったら、ssh の言葉を添えて投げる
  */
 function waitMasterReady(
   master: ChildProcess,
   controlPath: string,
-): Promise<{ remotePort: number; exited: Promise<void>; stderrTail: () => string }> {
+  opts: { tunnel: boolean },
+): Promise<{ remotePort: number | undefined; exited: Promise<void>; stderrTail: () => string }> {
   let stderr = "";
   const exited = new Promise<void>((resolve) => master.once("close", () => resolve()));
   return new Promise((resolve, reject) => {
@@ -1359,7 +1460,7 @@ function waitMasterReady(
       if (err) {
         master.kill("SIGTERM");
         reject(err);
-      } else resolve({ remotePort: port!, exited, stderrTail: () => stderr.slice(-2000) });
+      } else resolve({ remotePort: port, exited, stderrTail: () => stderr.slice(-2000) });
     };
     master.stderr?.on("data", (c: Buffer) => {
       stderr += String(c);
@@ -1371,11 +1472,23 @@ function waitMasterReady(
     );
     master.once("error", (err) => finish(err));
     const poll = setInterval(() => {
-      if (port !== undefined && existsSync(controlPath)) finish();
+      if ((port !== undefined || !opts.tunnel) && existsSync(controlPath)) finish();
     }, 50);
     const timer = setTimeout(
       () => finish(new SshCommandError("SSH の接続を張れませんでした", { code: 255, stdout: "", stderr: `${stderr}\n（30 秒で用意ができませんでした）` })),
       30_000,
     );
   });
+}
+
+/** 接続を閉じて、閉じ終わるのを待つ */
+async function closeConnection(conn: Connection): Promise<void> {
+  if (!conn.alive) return;
+  conn.master.kill("SIGTERM");
+  await conn.exited;
+}
+
+/** ログに添える、どの Project の接続か */
+function forWhom(projectId: string | undefined): string {
+  return projectId !== undefined ? `（Project ${projectId}）` : "（先に送るため）";
 }

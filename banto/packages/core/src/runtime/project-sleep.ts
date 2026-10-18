@@ -17,7 +17,6 @@
 // まま、待たれていなければ管理操作で止めて自動起動を切る。眠っている間に待たれなくなった Module は `releaseUnawaited` が
 // 眠らせる手順の後半を同じ印の中で通す（Service を止める→台帳から外す→待たれているものがもう無ければコンテナを止める）
 import {
-  isRemoteProject,
   NotFoundError,
   ProjectSleepConflictError,
   RuntimeMoveConflictError,
@@ -29,6 +28,8 @@ import type { ThreadState } from "../project-thread/types.js";
 import { reviewAttentionOf } from "../inbox/automation-review.js";
 import type { AwaitedModule } from "../automation/keep-awake.js";
 import type { RunningItem } from "./project-move.js";
+import { remoteNameOf } from "./remote-runtimes.js";
+import { suspendsServicesToSleep } from "./runtime-kind.js";
 
 export interface ProjectSleepDeps {
   projectThread: ProjectThreadStore;
@@ -130,13 +131,13 @@ export class ProjectSleep {
       // 別のサーバでは必ず（向こうの起こし直しで勝手に起きないように）、この機械ではコンテナを残すとき（止まる道が要る）。
       // コンテナごと止めるなら中の Service も一緒に止まる。止められなければ眠らせない（止まったことにしない）
       const keep = this.keepOf(projectId);
-      if (!this.servicesKept(projectId, keep) && (isRemoteProject(project) || keep.length > 0)) {
+      if (!this.servicesKept(projectId, keep) && (suspendsServicesToSleep(project.runtime) || keep.length > 0)) {
         try {
           await this.deps.suspendServices(projectId);
         } catch (err) {
           throw new ProjectSleepError(
             502,
-            `${isRemoteProject(project) ? "別のサーバの " : ""}Service を止められなかったので、眠らせていません：${err instanceof Error ? err.message : String(err)}`,
+            `${remoteNameOf(project.runtime) ? "別のサーバの " : ""}Service を止められなかったので、眠らせていません：${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }

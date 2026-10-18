@@ -41,7 +41,8 @@ import {
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { Transform, type TransformCallback } from "node:stream";
-import { isRemoteProject, type ProjectThreadStore } from "../project-thread/store.js";
+import type { ProjectThreadStore } from "../project-thread/store.js";
+import { rootIsOnThisMachine, usesHostContainer } from "./runtime-kind.js";
 import type { ProjectLocation, ProjectState, RuntimeMoveCreated } from "../project-thread/types.js";
 import { RemoteRuntimeError, remoteNameOf, type RemoteRuntimes } from "./remote-runtimes.js";
 import { HOST_CONTAINER_RUNTIME } from "./remote-store.js";
@@ -549,7 +550,7 @@ export class ProjectMover {
       running,
       copiesClaudeRecords: this.runnerCwdChanges(from.runtime, target.runtime),
       claudeRecords: this.claudeRecordCount(project, from, target.runtime),
-      ...(!isRemoteProject({ runtime: from.runtime }) && remoteNameOf(target.runtime)
+      ...(usesHostContainer(from.runtime) && remoteNameOf(target.runtime)
         ? {
             confinementNote:
               "別のサーバでは、AI はその人のユーザーの権限で動きます（コンテナの閉じ込めはありません）。向こうのそのユーザーが読める" +
@@ -652,7 +653,7 @@ export class ProjectMover {
         }
       }
       await this.deps.releaseModules(projectId);
-      if (!isRemoteProject({ runtime: move.from.runtime })) await this.deps.hostContainers.stopProjectContainer(projectId);
+      if (usesHostContainer(move.from.runtime)) await this.deps.hostContainers.stopProjectContainer(projectId);
 
       // 写す
       progress.phase = "copying";
@@ -806,7 +807,7 @@ export class ProjectMover {
    * （記録の場所）。正規化したあとの重なりもここで見る
    */
   private async checkTargetRoot(project: ProjectState, side: Side, root: string): Promise<{ problem?: string; back?: ProjectLocation }> {
-    if (!side.runtime.startsWith("remote:")) {
+    if (rootIsOnThisMachine(side.runtime)) {
       const problem = this.hostRootShapeProblem(root.trim());
       if (problem) return { problem };
     }
@@ -901,7 +902,7 @@ export class ProjectMover {
       let resolved: string;
       let rootCreated: boolean;
       let nonEmpty = false;
-      if (!side.runtime.startsWith("remote:")) {
+      if (rootIsOnThisMachine(side.runtime)) {
         const problem = this.hostRootShapeProblem(target.root.trim());
         if (problem) throw new RuntimeMoveError(400, problem);
         const root = target.root.trim();
@@ -1002,7 +1003,7 @@ export class ProjectMover {
     // `onlyContaining`：**閉じた Project の根は、移す先がそれと同じか、それを含むときだけ断る**（決定・2026-10-14、ユーザー——
     // 閉じた Project の根の中へ移すのは通す。根そのもの・その上へは rsync --delete や写しで閉じた Project のフォルダを壊すので断る）
     const against: Array<{ path: string; what: string; onlyContaining?: boolean }> = [{ path: side.dataBase, what: "banto のデータの置き場" }];
-    if (side.runtime.startsWith("remote:")) {
+    if (!rootIsOnThisMachine(side.runtime)) {
       // 同じ別のサーバの、ほかの Project の根（閉じた Project は、その根を含むときだけ——前に居た場所へ戻すときに、ほかの Project の根を上書きしない）
       for (const p of this.deps.projectThread.listProjects()) {
         if (p.id === project.id) continue;
@@ -1014,10 +1015,10 @@ export class ProjectMover {
       against.push({ path: realOrSelf(this.deps.monorepoRoot), what: "banto のコードの置き場" });
       for (const p of this.deps.projectThread.listProjects()) {
         if (p.id === project.id) continue;
-        if (!isRemoteProject(p)) against.push({ path: p.root, what: `Project「${p.name}」の根`, onlyContaining: p.status === "closed" });
-        if (p.move && !isRemoteProject({ runtime: p.move.to.runtime })) against.push({ path: p.move.to.root, what: `Project「${p.name}」の移す先` });
+        if (rootIsOnThisMachine(p.runtime)) against.push({ path: p.root, what: `Project「${p.name}」の根`, onlyContaining: p.status === "closed" });
+        if (p.move && rootIsOnThisMachine(p.move.to.runtime)) against.push({ path: p.move.to.root, what: `Project「${p.name}」の移す先` });
       }
-      if (!isRemoteProject(project)) against.push({ path: project.root, what: "元の根" });
+      if (rootIsOnThisMachine(project.runtime)) against.push({ path: project.root, what: "元の根" });
     }
     const hit = against.find((a) => (a.onlyContaining ? pathContains(root, a.path) : pathsOverlap(root, a.path)));
     return hit ? `移す先 ${root} が${hit.what}（${hit.path}）と重なります` : undefined;
@@ -1219,7 +1220,7 @@ export class ProjectMover {
 
   /** Runner の作業ディレクトリが変わるか（この機械のコンテナが関わるときだけ） */
   private runnerCwdChanges(from: string, to: string): boolean {
-    return !isRemoteProject({ runtime: from }) || !isRemoteProject({ runtime: to });
+    return rootIsOnThisMachine(from) || rootIsOnThisMachine(to);
   }
 
   /** 写すことになる Claude の会話の記録の件数（見積もり。写さないなら 0） */
@@ -1280,7 +1281,7 @@ export class ProjectMover {
     // この Project の Service は閉じたときに止めてある。向こうでは引かない
     if (this.sourceTakenBy(project)) return [];
     let r: SshResult | undefined;
-    if (!isRemoteProject(project)) r = await this.deps.hostContainers.runInside(project.id, RUNNING_SCRIPT);
+    if (usesHostContainer(project.runtime)) r = await this.deps.hostContainers.runInside(project.id, RUNNING_SCRIPT);
     else r = await this.withSide(from, (side) => side.run(RUNNING_SCRIPT));
     if (r && r.code !== 0) throw new SshCommandError(`${hostLabel(from)}で動いているものを確かめられませんでした`, r);
     return r ? parseRunning(r.stdout) : [];

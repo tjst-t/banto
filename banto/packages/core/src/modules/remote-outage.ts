@@ -4,7 +4,11 @@
 // banto を更新するたびに、別のサーバへの経路が途切れると「browser を繋げませんでした」「terminal を…」が
 // Module ごとに何枚も並んだ。理由が「別のサーバに SSH で繋がらない」なら、Module ごとには出さず、実行場所ごとに
 // 最初に失敗した時刻を覚え、**3 分を超えて続いたときだけ**1枚出す（短い途切れは黙って繋ぎ直しを続ける）。
-// 繋がったら閉じる。待つのは時計で——試し直しの間は伸びるので、次の失敗を待つと 3 分を大きく越える
+// 繋がったら閉じる。待つのは時計で——試し直しの間は伸びるので、次の失敗を待つと 3 分を大きく越える。
+//
+// **繋がったかは Project ごとの接続で見る**（2026-10-17、v4-security.md §1「SSH の接続は Project ごとに1本」）——お知らせは
+// 実行場所ごとに1枚のまま、繋がらなかった Module を Project ごとに覚え、その Project の接続が張れたらその分を外す。
+// 動けない Module が残っている Project が無くなったら閉じる
 
 export const REMOTE_OUTAGE_NOTICE_AFTER_MS = 3 * 60_000;
 
@@ -25,7 +29,7 @@ export interface RemoteOutageOptions {
   raise(notice: RemoteOutageNotice): void;
   /** 出したものを閉じる */
   close(runtimeName: string): void;
-  /** 出しているものの理由が変わった（画面の印の言い方を替える。Backlog #383） */
+  /** 出しているものの理由・繋がらない Project が変わった（画面の印を描き直す。Backlog #383） */
   changed?(runtimeName: string): void;
   /** 試験で時計を差し替えるための穴。取り消す関数を返す */
   schedule?: (fn: () => void, ms: number) => () => void;
@@ -74,25 +78,46 @@ export class RemoteOutageWatch {
     if (o.raised && reasonChanged) this.opts.changed?.(runtimeName);
   }
 
-  /** 繋がった。出していたら閉じる。途切れていた長さを返す（途切れていなければ undefined） */
-  recordConnected(runtimeName: string): number | undefined {
+  /**
+   * その Project の接続が繋がった。その Project の Module を外し、ほかの Project の分も残っていなければ（出していたら閉じて）
+   * 途切れていた長さを返す（まだ残っている・途切れていなければ undefined）。`projectId` が無い（先に送るためだけの接続）なら
+   * 何もしない——Project の Module が繋がったことにはならない
+   */
+  recordConnected(runtimeName: string, projectId: string | undefined): number | undefined {
     const o = this.outages.get(runtimeName);
-    if (!o) return undefined;
+    if (!o || projectId === undefined) return undefined;
+    let removed = false;
+    for (const [connName, p] of o.modules) {
+      if (p !== projectId) continue;
+      o.modules.delete(connName);
+      removed = true;
+    }
+    if ([...o.modules.values()].some((p) => p !== undefined)) {
+      // 出している印から、繋がった Project を外す（画面の「!」）
+      if (removed && o.raised) this.opts.changed?.(runtimeName);
+      return undefined;
+    }
     this.end(runtimeName, o);
     return this.now() - o.since;
   }
 
-  /** その実行場所に SSH で繋がらないなら、最後の理由（繋がっている・分からないなら undefined。Backlog #324） */
-  unreachableReason(runtimeName: string): string | undefined {
-    return this.outages.get(runtimeName)?.reason;
+  /**
+   * その Project の接続が SSH で繋がらないなら、最後の理由（繋がっている・分からないなら undefined。Backlog #324）。
+   * 同じ実行場所のほかの Project が繋がらないだけなら undefined
+   */
+  unreachableReason(runtimeName: string, projectId: string | undefined): string | undefined {
+    const o = this.outages.get(runtimeName);
+    return o && [...o.modules.values()].includes(projectId) ? o.reason : undefined;
   }
 
   /**
    * **出している（3 分を超えて繋がらない）実行場所**（追加・2026-10-17、Backlog #383）。サイドバーの頭文字の「!」に使う
    * ——判定はお知らせと同じ1つ（規則3）。鍵のカードがお知らせを肩代わりしていても、ここには載る
    */
-  raised(): Array<{ runtimeName: string; reason: string; since: number }> {
-    return [...this.outages].filter(([, o]) => o.raised).map(([runtimeName, o]) => ({ runtimeName, reason: o.reason, since: o.since }));
+  raised(): Array<{ runtimeName: string; reason: string; since: number; projectIds: string[] }> {
+    return [...this.outages]
+      .filter(([, o]) => o.raised)
+      .map(([runtimeName, o]) => ({ runtimeName, reason: o.reason, since: o.since, projectIds: projectIdsOf(o) }));
   }
 
   /** 実行場所を外した——覚えていたことを捨て、出していたら閉じる */
@@ -111,7 +136,11 @@ export class RemoteOutageWatch {
     // 時間が来る前に繋がって、また途切れた——その途切れの分は、そちらの時計で待つ
     if (this.outages.get(runtimeName) !== o || o.raised) return;
     o.raised = true;
-    const projectIds = [...new Set([...o.modules.values()].filter((p): p is string => p !== undefined))];
-    this.opts.raise({ runtimeName, reason: o.reason, projectIds, modules: o.modules.size });
+    this.opts.raise({ runtimeName, reason: o.reason, projectIds: projectIdsOf(o), modules: o.modules.size });
   }
+}
+
+/** 動けない Module がある Project */
+function projectIdsOf(o: Outage): string[] {
+  return [...new Set([...o.modules.values()].filter((p): p is string => p !== undefined))];
 }

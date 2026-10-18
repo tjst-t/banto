@@ -54,7 +54,7 @@ test("(1) 3 分未満で繋がれば、お知らせは出ない", () => {
   c.advance(60_000);
   w.recordUnreachable("vm", "terminal-p1", "p1", TIMEOUT);
   c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS - 60_001);
-  assert.equal(w.recordConnected("vm"), REMOTE_OUTAGE_NOTICE_AFTER_MS - 1, "途切れていた長さを返す");
+  assert.equal(w.recordConnected("vm", "p1"), REMOTE_OUTAGE_NOTICE_AFTER_MS - 1, "途切れていた長さを返す");
   c.advance(10 * 60_000);
   assert.deepEqual(raised, [], "繋がったあとに時間が来ても出さない");
   assert.deepEqual(closed, [], "出していないものは閉じない");
@@ -86,9 +86,9 @@ test("(3) 繋がったら、出していたお知らせを閉じる。また途�
   w.recordUnreachable("vm", "browser-p1", "p1", TIMEOUT);
   c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS);
   assert.equal(raised.length, 1);
-  w.recordConnected("vm");
+  w.recordConnected("vm", "p1");
   assert.deepEqual(closed, ["vm"]);
-  assert.equal(w.recordConnected("vm"), undefined, "2 度目の繋がったは何もしない");
+  assert.equal(w.recordConnected("vm", "p1"), undefined, "2 度目の繋がったは何もしない");
   assert.deepEqual(closed, ["vm"]);
   w.recordUnreachable("vm", "browser-p1", "p1", TIMEOUT);
   c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS - 1);
@@ -131,7 +131,7 @@ test("(2)(3) 受信箱と繋ぐ：1枚だけ開き、繋がったら閉じる（
     w.recordUnreachable("vm", "terminal-p1", "p1", TIMEOUT);
     c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS);
     // 書き終わる前に繋がった
-    w.recordConnected("vm");
+    w.recordConnected("vm", "p1");
     await Promise.all(pending);
     const open = inbox.listOpen().filter((i) => i.kind === "notice");
     assert.deepEqual(open.map((i) => i.kind === "notice" && i.title), ["別"]);
@@ -178,12 +178,40 @@ test("(Backlog #383) 出している実行場所の一覧——画面の「!」�
   assert.deepEqual(w.raised(), [], "3 分になるまでは載らない");
   assert.deepEqual(changed, [], "出す前に理由が変わっても知らせない");
   c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS);
-  assert.deepEqual(w.raised(), [{ runtimeName: "vm", reason: TIMEOUT, since }]);
+  assert.deepEqual(w.raised(), [{ runtimeName: "vm", reason: TIMEOUT, since, projectIds: ["p1"] }]);
   w.recordUnreachable("vm", "terminal-p1", "p1", TIMEOUT);
   assert.deepEqual(changed, [], "同じ理由なら知らせない");
   w.recordUnreachable("vm", "terminal-p1", "p1", "SSH の接続が途中で閉じました");
   assert.deepEqual(changed, ["vm"]);
   assert.equal(w.raised()[0]?.reason, "SSH の接続が途中で閉じました");
-  w.recordConnected("vm");
+  w.recordConnected("vm", "p1");
   assert.deepEqual(w.raised(), []);
+});
+
+test("繋がったかは Project ごとの接続で見る：同じ実行場所のほかの Project が繋がらないままなら閉じない（v4-security.md §1）", () => {
+  const { c, w, raised, closed } = watch();
+  const changed: string[] = [];
+  const w2 = new RemoteOutageWatch({ raise: (n) => raised.push(n), close: (n) => closed.push(n), changed: (n) => changed.push(n), schedule: c.schedule, now: c.now });
+  for (const x of [w, w2]) {
+    x.recordUnreachable("vm", "shell-p1", "p1", TIMEOUT);
+    x.recordUnreachable("vm", "shell-p2", "p2", TIMEOUT);
+  }
+  c.advance(REMOTE_OUTAGE_NOTICE_AFTER_MS);
+  assert.equal(raised.length, 2);
+  assert.equal(w2.unreachableReason("vm", "p1"), TIMEOUT);
+  assert.equal(w2.unreachableReason("vm", "p3"), undefined, "繋がらない Module の無い Project には理由を言わない");
+  // 先に送るためだけの接続は、Project の Module が繋がったことにならない
+  assert.equal(w2.recordConnected("vm", undefined), undefined);
+  assert.equal(w2.raised().length, 1);
+  // p1 が繋がった：p2 が残っているので閉じない。印からは p1 が外れる
+  assert.equal(w2.recordConnected("vm", "p1"), undefined);
+  assert.deepEqual(closed, []);
+  assert.deepEqual(changed, ["vm"]);
+  assert.deepEqual(w2.raised().map((o) => o.projectIds), [["p2"]]);
+  assert.equal(w2.unreachableReason("vm", "p1"), undefined);
+  assert.equal(w2.unreachableReason("vm", "p2"), TIMEOUT);
+  // p2 も繋がった：閉じる
+  assert.equal(w2.recordConnected("vm", "p2"), REMOTE_OUTAGE_NOTICE_AFTER_MS);
+  assert.deepEqual(closed, ["vm"]);
+  assert.deepEqual(w2.raised(), []);
 });

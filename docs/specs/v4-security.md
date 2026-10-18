@@ -827,6 +827,17 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   実行場所ごとの表（接続・待ち受け・ソケットの置き場・`release()`）を「実行場所＋Project」の層にし、Project を畳む・眠らせる・
   閉じても同じ VM のほかの Project を落とさない。`isRemoteProject` のような2択（core/src の9ファイル・47箇所）を3つ目の種類と
   して洗い出す
+  - **実装済み（2026-10-18、Backlog #366）**：接続の表・中継の専用の待ち受け・ソケットの転送・ControlPath・`release()` の鍵は
+    「実行場所＋Project」（`remoteConnectionKey`）。待ち受けはその Project の合言葉だけを受け、手放すと閉じる。同じ実行場所の
+    コードの照合・送り込みは、エージェントの本体の送り込みと古い版の片づけも含めて1本ずつ（置き場を取り合わない）。繋いでいる
+    途中で手放されたら、繋ぎ終えても表に入れずに閉じて断る。先に送るためだけの接続（`warmUp`）は Project を持たず
+    トンネルも張らず、その実行場所の Project の接続が張れたら閉じる。繋がらないお知らせ（#339）は実行場所ごとに1枚のまま、
+    閉じるのは繋がらなかった Project の接続が**全部**繋がったとき（画面の「!」も繋がらない Project だけ）。起こし直しの続き
+    （#324）の理由も Project の接続で引く。2択は問いごとの関数（`runtime/runtime-kind.ts`——根がこの機械か・この機械のコンテナか・
+    眠らせる／閉じるときに Service を止めるか）にし、種類を足すと `switch` が型で落ちる
+  - **`machine` のトンネルは向こうの側も TCP のまま**（`-R 0:127.0.0.1:<待ち受け>`、決定・2026-10-18、実装者）：Module は
+    `bantoOrigin` の http で繋ぐので、UNIX ソケットにすると Module の側に繋ぎ方が要る。`machine` は1つの実行場所に Project が
+    1つなので、番号の取り違い（A3）は起きない。決まったパスの UNIX ソケットは `containers` で入れる（proxy device が繋ぐ先）
 - **コンテナの作りと上限**：この機械の `ProjectContainers` を、Incus の呼び方（`RunIncus`）を SSH 越しに差し替えて使う。
   上限（既定はその VM で計算、上書きは実行場所ごとに持つ）・仕事の組（banto-work.slice）・linger の印（#295）・名前と札
   （`user.banto.owner`）・アドレスは覚えず毎回 Incus に聞く（`containerAddress`）も同じ。直すところ：`hostAddress` は VM の

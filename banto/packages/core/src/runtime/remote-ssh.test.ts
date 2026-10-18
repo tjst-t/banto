@@ -14,7 +14,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RemoteSshRuntime, type CodeTransfer } from "./remote-ssh.js";
+import { RemoteSshRuntime, remoteConnectionKey, type CodeTransfer } from "./remote-ssh.js";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 
 /** 小さなワークスペース：Module 1つと、その依存（縮まない 16MB——パイプが確実に詰まる大きさ） */
 function workspace(): string {
@@ -177,7 +179,7 @@ test("接続が切れて、親の接続より先にその上の ssh が 255 で�
 
 test("用意している途中で登録を外したら（closeRuntime）、送り込みが止まって失敗し、画面の行は消える", async () => {
   await withFixture("followMaster", async ({ rt, conn, events }) => {
-    (rt as unknown as { settingUp: Map<string, unknown> }).settingUp.set("vm", conn);
+    (rt as unknown as { settingUp: Map<string, unknown> }).settingUp.set(remoteConnectionKey("vm", undefined), conn);
     const sending = syncCode(rt, conn);
     // 送り始めた（画面に「送っています」が出た）あとで外す
     const started = performance.now();
@@ -261,11 +263,11 @@ test("繋いでいる途中（前提の確かめ・親の接続を待つ間）�
     gates[0]!.open();
     await assert.rejects(first, /実行場所「vm」が外されたので、繋ぐのをやめました/);
     assert.equal(gates[0]!.result.conn.alive, false, "外した実行場所への接続が閉じていない");
-    assert.equal(connections.get("vm"), undefined, "外した実行場所への接続が残っている");
+    assert.equal(connections.get(remoteConnectionKey("vm", undefined)), undefined, "外した実行場所への接続が残っている");
 
     gates[1]!.open();
     await second;
-    assert.equal((connections.get("vm")?.runtime as { host: string }).host, "new.example", "登録し直した host に繋がっていない");
+    assert.equal((connections.get(remoteConnectionKey("vm", undefined))?.runtime as { host: string }).host, "new.example", "登録し直した host に繋がっていない");
     // 繋がっていれば、もう一度頼んでも新しく繋がない
     await rt.warmUp("vm");
     assert.equal(gates.length, 2);
@@ -336,8 +338,8 @@ test("先に送る順番：一度に1台ずつ、失敗しても次へ進み、�
     await b;
     await c;
     assert.deepEqual(started, ["a", "b"]);
-    assert.equal((connections.get("b")?.runtime as { host: string }).host, "b.example");
-    assert.equal(connections.get("c"), undefined);
+    assert.equal((connections.get(remoteConnectionKey("b", undefined))?.runtime as { host: string }).host, "b.example");
+    assert.equal(connections.get(remoteConnectionKey("c", undefined)), undefined);
   } finally {
     for (const g of gates.values()) g.result.master.kill("SIGKILL");
     await rt.closeAll();
@@ -440,4 +442,161 @@ test("依存はパッケージごとに照合し、向こうに無い・書き�
   const many = await run(60);
   assert.deepEqual(many, few, "往復の数がパッケージの数で変わった");
   assert.equal(few.same, 1);
+});
+
+// **SSH の接続は Project ごとに1本**（2026-10-17、v4-security.md §1「SSH の接続は Project ごとに1本」）。同じ実行場所の
+// 2つの Project は、接続・中継の待ち受けを別々に持ち、片方を手放して（畳む・眠らせる・閉じる）ももう片方は残る。
+// 先に送るためだけの接続は、Project の接続が張れたら閉じる。実行場所を外したら全部閉じる
+test("同じ実行場所の2つの Project の接続は別々で、片方を手放してももう片方が残る", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "banto-remote-ssh-data-"));
+  const made: Array<{ conn: Record<string, unknown>; master: ChildProcess }> = [];
+  const runtimes = {
+    withConnection: async () => {
+      const c = fakeConnection("vm.example");
+      made.push(c);
+      return c.conn;
+    },
+  };
+  const listeners: Array<{ runtime: string; projectId: string; server: Server }> = [];
+  const connected: Array<[string, string | undefined]> = [];
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: dataDir,
+    runtimes: runtimes as never,
+    remoteNameOf: (id) => (id === "p1" || id === "p2" ? "vm" : undefined),
+    createRelayListener: (runtime, projectId) => {
+      const server = createServer();
+      listeners.push({ runtime, projectId, server });
+      return server;
+    },
+    notify: async () => undefined,
+    onConnected: (runtime, projectId) => connected.push([runtime, projectId]),
+    log: () => undefined,
+  });
+  const connections = (rt as unknown as { connections: Map<string, Record<string, unknown>> }).connections;
+  const place = (id: string) => ({ id, root: "/home/u/work" }) as never;
+  try {
+    // 先に送るためだけの接続（Project の無いもの）
+    await rt.warmUp("vm");
+    const warm = connections.get(remoteConnectionKey("vm", undefined));
+    assert.ok(warm?.alive);
+
+    const [a, b] = await Promise.all([rt.prepare(place("p1")), rt.prepare(place("p2"))]);
+    const c1 = connections.get(remoteConnectionKey("vm", "p1"));
+    const c2 = connections.get(remoteConnectionKey("vm", "p2"));
+    assert.ok(c1 && c2, "Project ごとの接続が無い");
+    assert.notEqual(c1, c2, "2つの Project が同じ接続を使っている");
+    assert.notEqual(c1.master, c2.master);
+    assert.deepEqual(listeners.map((l) => [l.runtime, l.projectId]).sort(), [["vm", "p1"], ["vm", "p2"]], "待ち受けが Project ごとでない");
+    assert.deepEqual(connected.slice(1).map(([, p]) => p).sort(), ["p1", "p2"]);
+    assert.deepEqual(connected[0], ["vm", undefined]);
+    // Project の接続が張れたら、先に送るためだけの接続は閉じる
+    await warm.exited;
+    assert.equal(connections.has(remoteConnectionKey("vm", undefined)), false, "先に送るための接続が残っている");
+    assert.ok(a.bantoOrigin && b.bantoOrigin);
+
+    // 同じ Project をもう一度用意しても、新しく繋がない
+    await rt.prepare(place("p1"));
+    assert.equal(made.length, 3);
+
+    // p1 を手放す：p1 の接続と待ち受けだけが閉じ、p2 は残る
+    await rt.release("p1");
+    assert.equal(c1.alive, false, "手放した Project の接続が閉じていない");
+    assert.equal(connections.has(remoteConnectionKey("vm", "p1")), false);
+    assert.equal(c2.alive, true, "ほかの Project の接続まで閉じた");
+    assert.equal(connections.get(remoteConnectionKey("vm", "p2")), c2);
+    const l1 = listeners.find((l) => l.projectId === "p1")!.server;
+    const l2 = listeners.find((l) => l.projectId === "p2")!.server;
+    assert.equal(l1.listening, false, "手放した Project の待ち受けが閉じていない");
+    assert.equal(l2.listening, true, "ほかの Project の待ち受けまで閉じた");
+    const port2 = (l2.address() as AddressInfo).port;
+
+    // p1 をまた使う：p1 だけ新しく繋ぎ、p2 の接続・待ち受けはそのまま
+    await rt.prepare(place("p1"));
+    assert.equal(made.length, 4);
+    assert.equal(connections.get(remoteConnectionKey("vm", "p2")), c2);
+    assert.equal((l2.address() as AddressInfo).port, port2);
+
+    // 実行場所を外したら、どの Project の接続も待ち受けも閉じる
+    await rt.closeRuntime("vm");
+    assert.equal(c2.alive, false);
+    assert.equal(connections.size, 0);
+    assert.ok(listeners.every((l) => !l.server.listening), "外した実行場所の待ち受けが残っている");
+  } finally {
+    for (const m of made) m.master.kill("SIGKILL");
+    await rt.closeAll();
+    for (const l of listeners) l.server.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+// **繋いでいる途中で手放されたら**（修正・2026-10-18、レビュー）。手放す（`release`）は、表に入る前の接続を掴めず待ち受けだけを
+// 閉じる。そのまま繋ぎ終えて表に入ると、閉じた待ち受けへのトンネルを張った接続が残り、そこで Module が起きる。繋ぎ終えても
+// 残さずに失敗し、使い直したら（手放す前の繋ぎに相乗りせず）新しい待ち受けで新しく繋ぐ
+test("繋いでいる途中（待ち受けを作ったあと、表に入る前）に手放したら、繋ぎ終えても残さずに失敗する。使い直したら新しく繋ぐ", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "banto-remote-ssh-data-"));
+  const gates: Array<{ open: () => void; result: { conn: Record<string, unknown>; master: ChildProcess } }> = [];
+  const runtimes = {
+    withConnection: async () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => (open = resolve));
+      const result = fakeConnection("vm.example");
+      gates.push({ open, result });
+      await opened;
+      return result.conn;
+    },
+  };
+  const listeners: Server[] = [];
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: dataDir,
+    runtimes: runtimes as never,
+    remoteNameOf: (id) => (id === "p1" ? "vm" : undefined),
+    createRelayListener: () => {
+      const server = createServer();
+      listeners.push(server);
+      return server;
+    },
+    notify: async () => undefined,
+    log: () => undefined,
+  });
+  const connections = (rt as unknown as { connections: Map<string, Record<string, unknown>> }).connections;
+  const place = { id: "p1", root: "/home/u/work" } as never;
+  const waitGates = async (n: number) => {
+    const started = performance.now();
+    while (gates.length < n) {
+      assert.ok(performance.now() - started < 3_000, `繋ぎが ${n} 本目を始めない（手放す前の繋ぎに相乗りしている）`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+  try {
+    const first = rt.prepare(place);
+    first.catch(() => undefined);
+    // 待ち受けを作り、繋ぎ始めた（まだ表に入っていない）ところで手放す
+    await waitGates(1);
+    assert.equal(listeners.length, 1);
+    assert.equal(listeners[0]!.listening, true);
+    await rt.release("p1");
+    assert.equal(listeners[0]!.listening, false, "手放した Project の待ち受けが閉じていない");
+
+    // 手放したあとに使い直す——手放す前の繋ぎに相乗りせず、新しく繋ぐ
+    const second = rt.prepare(place);
+    await waitGates(2);
+
+    gates[0]!.open();
+    await assert.rejects(first, /繋いでいる途中で手放されたので、繋ぐのをやめました/);
+    assert.equal(gates[0]!.result.conn.alive, false, "手放した Project の接続が閉じていない");
+    assert.notEqual(connections.get(remoteConnectionKey("vm", "p1")), gates[0]!.result.conn, "手放した接続が表に残っている");
+
+    gates[1]!.open();
+    await second;
+    assert.equal(connections.get(remoteConnectionKey("vm", "p1")), gates[1]!.result.conn, "使い直した接続が表に無い");
+    assert.equal(listeners.length, 2, "使い直したのに新しい待ち受けを作っていない");
+    assert.equal(listeners[1]!.listening, true, "使い直した接続の待ち受けが閉じている");
+  } finally {
+    for (const g of gates) g.result.master.kill("SIGKILL");
+    await rt.closeAll();
+    for (const l of listeners) l.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
