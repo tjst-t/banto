@@ -15,6 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { replaceCredentialsFile, type OauthFields } from "./refresh.js";
 
 /** 最初の1つ（`~/.claude`）の id。外せない（並びから抜くだけ） */
 export const HOST_ACCOUNT_ID = "host";
@@ -163,6 +164,37 @@ export class ClaudeAccountStore {
     this.ledger.defaultOrder.push(id);
     this.write();
     return this.view(account);
+  }
+
+  /**
+   * **同じメールアドレスの足したアカウント**（ログインし直しの見分け、§2 の 4. の 3.）。`~/.claude` のものは台帳に
+   * メールアドレスを持たず、置き場も人の CLI のものなので、ここでは引かない
+   */
+  findByEmail(email: string): ClaudeAccount | undefined {
+    const key = email.trim().toLowerCase();
+    const a = this.ledger.accounts.find((x) => x.kind === "banto" && x.email?.trim().toLowerCase() === key);
+    return a ? this.view(a) : undefined;
+  }
+
+  /**
+   * **ログインし直した**：置き場を新しいトークンで置き換え（取り直し役と同じ書き込み用の鍵の中で）、契約の種類を
+   * 読み直したものにする。表示名と並びはそのまま
+   */
+  async replaceLogin(
+    id: string,
+    input: { email: string; subscriptionType?: string; rateLimitTier?: string; oauth: OauthFields },
+  ): Promise<ClaudeAccount> {
+    const a = this.ledger.accounts.find((x) => x.id === id);
+    if (!a) throw new Error(`Claude のアカウント ${id} は台帳にありません`);
+    if (a.kind !== "banto") throw new Error("このマシンの Claude Code のログインは、banto からは置き換えません");
+    await replaceCredentialsFile(this.credentialsPathOf(id), input.oauth);
+    a.email = input.email;
+    if (input.subscriptionType) a.subscriptionType = input.subscriptionType;
+    else delete a.subscriptionType;
+    if (input.rateLimitTier) a.rateLimitTier = input.rateLimitTier;
+    else delete a.rateLimitTier;
+    this.write();
+    return this.view(a);
   }
 
   /** **外す**：置き場を消し、台帳と並びから抜く。`~/.claude` のものは外せない（置き場は人の CLI のもの） */

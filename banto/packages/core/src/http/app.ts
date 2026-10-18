@@ -138,6 +138,8 @@ import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
+import { ClaudeAccountLoginError, type ClaudeAccountLogin, type ClaudeLoginFailure } from "../claude-login/account-login.js";
+import type { ClaudeAccountStore } from "../claude-login/accounts.js";
 import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
@@ -248,6 +250,11 @@ export interface AppDeps {
    * `/claude-login/v1/messages` に来る。無ければその口は無い（試験の最小構成）
    */
   claudeLogin?: ClaudeLoginRelay;
+  /**
+   * **Claude のアカウント**（§2「Claude のアカウントを複数持つ」の 4.）。一覧・ブラウザでログインして足す・ログインし直す・
+   * 外す。**人のセッションだけ**（AI の tool は作らない）。無ければその口は 404
+   */
+  claudeAccounts?: { store: ClaudeAccountStore; login: ClaudeAccountLogin };
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
   authToken: string;
@@ -786,6 +793,15 @@ export const CONTAINER_NESTING_KEY = "container.nesting";
 const CORE_CLAUDE_LOGIN_LISTENER = { acceptsProject: () => true, bindSource: true };
 
 /** この Project に Claude のログインを使わせるか。**既定はオン**——書かれているのが false のときだけ切る */
+/** 画面が分けて出すログインの失敗と、その HTTP の状態 */
+const CLAUDE_LOGIN_FAILURE_STATUS: Record<ClaudeLoginFailure, number> = {
+  unknown: 404,
+  expired: 410,
+  malformed: 400,
+  "state-mismatch": 400,
+  "exchange-failed": 502,
+};
+
 export function claudeLoginEnabled(runtimeConfig: RuntimeConfigStore | undefined, projectId: string): boolean {
   return runtimeConfig?.resolve(CLAUDE_LOGIN_ENABLED_KEY, projectId) !== false;
 }
@@ -3847,6 +3863,43 @@ export function createApp(deps: AppDeps) {
         } catch (err) {
           if (err instanceof AutomationInputError) return json(res, 400, { error: err.message });
           if (err instanceof AutomationNotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+      }
+
+      // **Claude のアカウント**（決定・2026-10-18、`docs/specs/v4-security.md` §2「Claude のアカウントを複数持つ」の 4.）。
+      // ログインした人だけ（機械の合言葉・Module・コンテナからは呼べない。step-up は求めない——banto に推論の権利を
+      // 足すだけで、人の権限は広がらない）。トークンは返さない
+      if (url.pathname === "/api/claude-accounts" || url.pathname.startsWith("/api/claude-accounts/")) {
+        if (!deps.claudeAccounts) return json(res, 404, { error: "not found" });
+        const { store, login } = deps.claudeAccounts;
+        try {
+          if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
+          deps.auth.requireHuman(principal, { stepUp: false });
+          const sub = url.pathname.slice("/api/claude-accounts".length);
+          if (sub === "" && req.method === "GET") return json(res, 200, { accounts: store.list(), defaultOrder: store.defaultOrder() });
+          if (sub === "/login" && req.method === "POST") return json(res, 200, login.start());
+          const finishMatch = sub.match(/^\/login\/([^/]+)$/);
+          if (finishMatch && req.method === "POST") {
+            const body = (await readJsonBody(req)) as { pasted?: unknown } | undefined;
+            if (typeof body?.pasted !== "string") return json(res, 400, { error: "pasted に向こうの画面に出た文字列を渡してください" });
+            return json(res, 200, await login.finish(decodeURIComponent(finishMatch[1]!), body.pasted));
+          }
+          const accountMatch = sub.match(/^\/([^/]+)$/);
+          if (accountMatch && req.method === "DELETE") {
+            const id = decodeURIComponent(accountMatch[1]!);
+            const account = store.get(id);
+            if (!account) return json(res, 404, { error: "not found" });
+            if (account.kind === "host") {
+              return json(res, 400, { error: "このマシンの Claude Code のログインは外せません（並びから抜くことはできます）" });
+            }
+            login.remove(id);
+            return json(res, 200, { ok: true });
+          }
+          return json(res, 404, { error: "not found" });
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof ClaudeAccountLoginError) return json(res, CLAUDE_LOGIN_FAILURE_STATUS[err.code], { error: err.message, code: err.code });
           throw err;
         }
       }

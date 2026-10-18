@@ -232,6 +232,12 @@ export class ClaudeLoginRelay {
     return this.deps.accounts.defaultOrder()[0];
   }
 
+  /** **アカウントを外した**：その取り直し役と開いている知らせを忘れる（同じ id が戻ることは無い） */
+  forgetAccount(accountId: string): void {
+    this.refreshers.delete(accountId);
+    this.openTrouble.delete(accountId);
+  }
+
   private refresherFor(accountId: string): CredentialRefresher {
     let r = this.refreshers.get(accountId);
     if (!r) {
