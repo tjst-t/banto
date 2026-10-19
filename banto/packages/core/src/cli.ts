@@ -112,7 +112,7 @@ import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automa
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
 import { DISCONNECT_WHY, ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, announceProjectsChanged, backgroundItemsOf, type RuntimeUnreachableView } from "./http/app-events.js";
-import { SelfUpdate } from "./self-update/self-update.js";
+import { listenAfterRecordingVersion, SelfUpdate } from "./self-update/self-update.js";
 import { catalogFromEnv, hostHasAvx2 } from "./agent-binaries/agent-binaries.js";
 import { AgentBinaryStore } from "./agent-binaries/store.js";
 import {
@@ -2996,6 +2996,19 @@ async function main(): Promise<void> {
   threadTurns.onChange((change) => {
     if (change.type === "ended") returnToSleepIfDone(change.threadId);
   });
+  // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
+  // 版ごとのフォルダから動いているかを見る。
+  // E2E だけが差し替える（本物の systemd は使えない）：偽の systemctl と、試験の置き場の `current/banto`。
+  // **環境変数では受けない**——config.json の明示の項目 `testOnlySelfUpdate` だけ（理由は bootstrap.ts）
+  const selfUpdate = new SelfUpdate({
+    releaseDir: bootstrap.releaseDir,
+    dataDir: bootstrap.dataDir,
+    codeDir: bootstrap.testOnlySelfUpdate?.codeDir ?? monorepoRoot,
+    ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
+    ...(bootstrap.testOnlySelfUpdate?.prebuiltBase && bootstrap.testOnlySelfUpdate.githubApi
+      ? { prebuilt: { base: bootstrap.testOnlySelfUpdate.prebuiltBase, api: bootstrap.testOnlySelfUpdate.githubApi } }
+      : {}),
+  });
   const app = createApp({
     warmModelCatalog: true,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
@@ -3049,19 +3062,7 @@ async function main(): Promise<void> {
       sandboxOrigin: bootstrap.sandboxPublicUrl,
       events: appEvents,
     }),
-    // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
-    // 版ごとのフォルダから動いているかを見る。
-    // E2E だけが差し替える（本物の systemd は使えない）：偽の systemctl と、試験の置き場の `current/banto`。
-    // **環境変数では受けない**——config.json の明示の項目 `testOnlySelfUpdate` だけ（理由は bootstrap.ts）
-    selfUpdate: new SelfUpdate({
-      releaseDir: bootstrap.releaseDir,
-      dataDir: bootstrap.dataDir,
-      codeDir: bootstrap.testOnlySelfUpdate?.codeDir ?? monorepoRoot,
-      ...(bootstrap.testOnlySelfUpdate ? { systemctl: bootstrap.testOnlySelfUpdate.systemctl } : {}),
-      ...(bootstrap.testOnlySelfUpdate?.prebuiltBase && bootstrap.testOnlySelfUpdate.githubApi
-        ? { prebuilt: { base: bootstrap.testOnlySelfUpdate.prebuiltBase, api: bootstrap.testOnlySelfUpdate.githubApi } }
-        : {}),
-    }),
+    selfUpdate,
     // 畳んだあと、待たれている Module は起こし直す（閉じた Project・外した Module は `keepAwaitedModulesAwake` が起こさない）
     releaseProjectModules: async (projectId: string, opts?: { stopContainer?: boolean }) => {
       const released = await releaseProjectModules(projectId, opts);
@@ -3269,7 +3270,8 @@ async function main(): Promise<void> {
     );
   });
 
-  app.listen(bootstrap.port, "0.0.0.0", () => {
+  // **待ち受ける前に、自分の版を動いた版の記録に足す**（アーキ仕様 §2.5「前の版に戻す」）——答えた時点で記録がある
+  await listenAfterRecordingVersion(selfUpdate, () => app.listen(bootstrap.port, "0.0.0.0", () => {
     // 起動する前に届いていて、起こす前だったもの（と、上で「途中で終わりました」を届けたもの）を起こす
     // ——**待ち受けてから**（Runner は中継の口に繋ぐので、先に起こすと繋がらない）
     deliveries.resumeAll();
@@ -3333,7 +3335,7 @@ async function main(): Promise<void> {
     });
     // **合言葉はログに出さない**（改訂・2026-10-03、Fable のレビュー——journald に写しが残っていた）
     console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/（画面：${loginOrigins(bootstrap).uiOrigin}）`);
-  });
+  }));
 
   // **banto 全体で1本の Module は、起動したときに繋ぐ**（決定・2026-09-07、ユーザー）。
   // 以前は「最初に必要になった要求」まで待っていたので、繋がらないことに気づくのが

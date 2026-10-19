@@ -10,6 +10,8 @@
 // - **「最後に確かめた最新」は `repo.git` の `refs/remotes/origin/release` そのもの**（規則3——写しを持たない）。
 //   確かめた時刻は fetch が書く `FETCH_HEAD` の時刻
 // - 進み具合（`state.json`）は `update.mjs` が書いたものを読むだけ
+// - **動いた版の記録（`history.json`）は host が書く**（決定・2026-10-19、アーキ仕様 §2.5「前の版に戻す」）。起動の途中、
+//   待ち受けの前に自分の版を足す——「`GET /api/admin/update` に答えた ⇒ 記録は書き終えている」。抜くのは `update.mjs` だけ
 
 import { probePrebuilt, type PrebuiltProbe } from "./prebuilt-probe.js";
 import { execFile } from "node:child_process";
@@ -33,6 +35,14 @@ const UNIT_RUNNING = ["active", "activating", "deactivating", "reloading"];
 /** `update.mjs` が途中の段（終わっていない） */
 const IN_PROGRESS: ReadonlySet<UpdatePhase> = new Set(["fetch", "build", "wait", "restart", "verify"]);
 const FETCH_TIMEOUT_MS = 120_000;
+/** 動いた版の記録に持つ数。画面に出すのは `ROLLBACK_TARGETS` 件——今の版・口を持たない版を除いても出せるように多めに持つ */
+export const HISTORY_LIMIT = 20;
+export const ROLLBACK_TARGETS = 10;
+/**
+ * **`GET /api/admin/update` を持つ版か**の判定に使うファイル（commit の id を埋め込まない）。持たない版に戻すと、段5が
+ * その口で版を確かめるので必ず「起きない」として戻される
+ */
+export const SELF_UPDATE_SOURCE = "banto/packages/core/src/self-update/self-update.ts";
 /** 画面の「ログを開く」に返す末尾の長さ。失敗の理由は最後のほうに出る */
 export const LOG_TAIL_BYTES = 64 * 1024;
 
@@ -108,6 +118,28 @@ export interface CommitInfo {
   author: string;
 }
 
+/** `<dataDir>/update/history.json` の1件（形は `scripts/update.mjs` と揃える） */
+export interface HistoryEntry {
+  /** 40文字の id */
+  commit: string;
+  /** 初めて起きた時刻。記録を始める前の版（種）は null */
+  firstStartedAt: string | null;
+  lastStartedAt: string | null;
+}
+
+/** 戻す先の一覧の1件 */
+export interface RollbackTarget {
+  commit: string;
+  /** 題・日時は `repo.git` から。object が無ければ null（選べなくはしない——取ってこられるかは戻すときに分かる） */
+  subject: string | null;
+  committedAt: string | null;
+  lastStartedAt: string | null;
+  /** `versions/<頭12>` があり、その HEAD が commit と同じ */
+  local: boolean;
+  /** 今の版の祖先か（release が書き換えられたあとは偽になりうる） */
+  ancestor: boolean;
+}
+
 export interface UpdateStatus {
   /** 画面から更新できる形で動いているか。できなければ `reasons` に理由（直し方は `runbook`） */
   ready: boolean;
@@ -130,6 +162,11 @@ export interface UpdateStatus {
         prebuilt: PrebuiltProbe;
       })
     | null;
+  /**
+   * **戻す先の一覧**：この機械で動いた版（`history.json`）から今の版と口を持たない版を除いた新しい
+   * `ROLLBACK_TARGETS` 件。今の版が分からなければ空
+   */
+  rollbackTargets: RollbackTarget[];
   /** 最後の更新の進み具合（`state.json`）。無ければ null */
   state: UpdateState | null;
   /** 更新が走っている（または起こしたばかりでまだ受け取られていない） */
@@ -248,13 +285,15 @@ export class SelfUpdate {
     }
 
     let current: CommitInfo | null = null;
+    const heads = repoExists && versionDir ? await this.worktreeHeads() : new Map<string, string>();
     if (repoExists && versionDir) {
-      const head = await this.worktreeHead(versionDir);
+      const head = heads.get(versionDir);
       if (head) current = await this.commitInfo(head);
       else reasons.push(`今の版のフォルダ（${versionDir}）が ${this.repoDir} の worktree ではありません`);
     }
 
     const latest = repoExists ? await this.latest(current?.commit ?? null) : null;
+    const rollbackTargets = current ? await this.rollbackTargets(current.commit, heads) : [];
     const state = await this.readState();
     const interrupted =
       !running && state && IN_PROGRESS.has(state.phase)
@@ -285,6 +324,7 @@ export class SelfUpdate {
       releaseDir,
       current,
       latest,
+      rollbackTargets,
       state,
       running,
       interrupted,
@@ -420,7 +460,111 @@ export class SelfUpdate {
     }
   }
 
+  /**
+   * **自分の版を動いた版の記録に足す**（起動の途中、待ち受けの前に呼ぶ——`listenAfterRecordingVersion`）。もうあれば
+   * `lastStartedAt` を替える。`versions/` の外から動いている（`current.commit` が null）なら書かない。
+   * 記録が無ければ（この機能の版が初めて起きた）今の版の後ろに `previous` が指す版を日時 null で入れる。
+   * 読めない・壊れていれば空とみなして作り直す（理由はログ）。返すのは書いた版（書かなければ null）
+   */
+  async recordStarted(): Promise<string | null> {
+    if (!existsSync(this.repoDir)) return null;
+    const versionDir = await this.runningVersionDir();
+    if (!versionDir) return null;
+    const heads = await this.worktreeHeads();
+    const commit = heads.get(versionDir);
+    if (!commit) return null;
+
+    const read = await this.readHistory();
+    let versions: HistoryEntry[];
+    if (read.kind === "ok") {
+      versions = read.versions;
+    } else if (read.kind === "broken") {
+      console.warn(`[self-update] 動いた版の記録（${this.historyPath}）を読めないので作り直します：${read.reason}`);
+      versions = [];
+    } else {
+      // 初めての種：それより前の版は分からない（数えない）
+      versions = [];
+      const previousDir = await realpath(join(this.opts.releaseDir, "previous")).catch(() => undefined);
+      const previous = previousDir ? heads.get(previousDir) : undefined;
+      if (previous && previous !== commit) versions.push({ commit: previous, firstStartedAt: null, lastStartedAt: null });
+    }
+
+    const at = new Date(this.now()).toISOString();
+    const existing = versions.find((v) => v.commit === commit);
+    const entry: HistoryEntry = { commit, firstStartedAt: existing ? existing.firstStartedAt : at, lastStartedAt: at };
+    const next = [entry, ...sortHistory(versions.filter((v) => v.commit !== commit))].slice(0, HISTORY_LIMIT);
+    await mkdir(this.updateDir, { recursive: true, mode: 0o700 });
+    await writeAtomic(this.historyPath, JSON.stringify({ versions: next }, null, 2));
+    return commit;
+  }
+
   // ───────────── 中身 ─────────────
+
+  private get historyPath(): string {
+    return join(this.updateDir, "history.json");
+  }
+
+  /** 動いた版の記録。無ければ `missing`、読めない・形が違えば `broken`（理由つき） */
+  private async readHistory(): Promise<
+    { kind: "ok"; versions: HistoryEntry[] } | { kind: "missing" } | { kind: "broken"; reason: string }
+  > {
+    let text: string;
+    try {
+      text = await readFile(this.historyPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+      return { kind: "broken", reason: err instanceof Error ? err.message : String(err) };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      return { kind: "broken", reason: `JSON として読めません（${err instanceof Error ? err.message : String(err)}）` };
+    }
+    const versions = (parsed as { versions?: unknown } | null)?.versions;
+    if (!Array.isArray(versions)) return { kind: "broken", reason: "versions の並びがありません" };
+    const isTime = (v: unknown) => v === null || typeof v === "string";
+    for (const v of versions as Array<Partial<HistoryEntry> | null>) {
+      if (!v || typeof v.commit !== "string" || !/^[0-9a-f]{40}$/.test(v.commit) || !isTime(v.firstStartedAt) || !isTime(v.lastStartedAt)) {
+        return { kind: "broken", reason: `形の違う項目があります：${JSON.stringify(v)}` };
+      }
+    }
+    return {
+      kind: "ok",
+      versions: (versions as HistoryEntry[]).map((v) => ({ commit: v.commit, firstStartedAt: v.firstStartedAt, lastStartedAt: v.lastStartedAt })),
+    };
+  }
+
+  /** 記録から今の版と口を持たない版を除いた新しい `ROLLBACK_TARGETS` 件。記録が読めなければ空（起動のときに作り直す） */
+  private async rollbackTargets(current: string, heads: Map<string, string>): Promise<RollbackTarget[]> {
+    const read = await this.readHistory();
+    if (read.kind !== "ok") return [];
+    const versionsDir = await realpath(join(this.opts.releaseDir, "versions")).catch(() => undefined);
+    const targets: RollbackTarget[] = [];
+    for (const v of sortHistory(read.versions)) {
+      if (targets.length >= ROLLBACK_TARGETS) break;
+      if (v.commit === current) continue;
+      const dir = versionsDir ? join(versionsDir, v.commit.slice(0, 12)) : undefined;
+      const localDir = dir ? await realpath(dir).catch(() => undefined) : undefined;
+      const local = localDir !== undefined && heads.get(localDir) === v.commit;
+      // 口を持つかは、その版の木のファイルで見る。repo.git に object が無ければ、機械にある worktree のファイルで
+      const hasApi =
+        (await this.gitRepo(["cat-file", "-e", `${v.commit}:${SELF_UPDATE_SOURCE}`])).code === 0 ||
+        (local && localDir !== undefined && existsSync(join(localDir, SELF_UPDATE_SOURCE)));
+      if (!hasApi) continue;
+      const info = await this.gitRepo(["log", "-1", "--format=%s%x1f%cI", v.commit, "--"]);
+      const [subject, committedAt] = info.code === 0 ? info.stdout.trim().split("\x1f") : [];
+      targets.push({
+        commit: v.commit,
+        subject: subject ?? null,
+        committedAt: committedAt || null,
+        lastStartedAt: v.lastStartedAt,
+        local,
+        ancestor: (await this.gitRepo(["merge-base", "--is-ancestor", v.commit, current])).code === 0,
+      });
+    }
+    return targets;
+  }
 
   /** 動いているコードが `versions/<名前>/…` の下なら、その `versions/<名前>` */
   private async runningVersionDir(): Promise<string | undefined> {
@@ -432,15 +576,17 @@ export class SelfUpdate {
     return join(versions, rel.split(sep)[0]!);
   }
 
-  private async worktreeHead(dir: string): Promise<string | undefined> {
+  /** `repo.git` の worktree の本当のパス → HEAD（host は worktree の中で git を打たない） */
+  private async worktreeHeads(): Promise<Map<string, string>> {
     const out = await this.gitOk(["worktree", "list", "--porcelain"]);
+    const heads = new Map<string, string>();
     for (const block of out.split("\n\n")) {
       const path = block.match(/^worktree (.+)$/m)?.[1];
       const head = block.match(/^HEAD ([0-9a-f]{40})$/m)?.[1];
       if (!path || !head) continue;
-      if ((await realpath(path).catch(() => path)) === dir) return head;
+      heads.set(await realpath(path).catch(() => path), head);
     }
-    return undefined;
+    return heads;
   }
 
   private async commitInfo(rev: string): Promise<CommitInfo> {
@@ -539,6 +685,30 @@ export class SelfUpdate {
     }
     return JSON.parse(text) as UpdateState;
   }
+}
+
+/**
+ * **起動の途中で、動いた版の記録を書いてから待ち受ける**——「host が `GET /api/admin/update` に答えた ⇒ 記録は書き終えている」
+ * （`update.mjs` が起きなかった版を記録から抜く順序のため）。書けなければ理由をログに出して待ち受ける——記録が無くても
+ * host は動ける（起動を止めると、更新の確かめが「起きない」として版を戻してしまう）
+ */
+export async function listenAfterRecordingVersion(selfUpdate: SelfUpdate, listen: () => void): Promise<void> {
+  try {
+    await selfUpdate.recordStarted();
+  } catch (err) {
+    console.error("[self-update] 動いた版の記録（history.json）を書けませんでした：", err);
+  }
+  listen();
+}
+
+/** `lastStartedAt` の新しい順（日時の無い種は後ろ、並びはそのまま） */
+function sortHistory(versions: HistoryEntry[]): HistoryEntry[] {
+  return [...versions].sort((a, b) => {
+    if (a.lastStartedAt === b.lastStartedAt) return 0;
+    if (a.lastStartedAt === null) return 1;
+    if (b.lastStartedAt === null) return -1;
+    return a.lastStartedAt < b.lastStartedAt ? 1 : -1;
+  });
 }
 
 /** 一時ファイルに書いてから rename（読む側が書きかけを見ない） */
