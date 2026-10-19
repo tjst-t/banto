@@ -535,7 +535,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   特定の Module だけが使うもの（tmux——Terminal、v4-modules.md §4.6）は断らず注意を出し**、その Module が使うときに理由と
   入れ方を添えて断る（決定・2026-10-10。Terminal を使わない Project まで Module を1つも起こせなくしないため。「中で Docker を
   使う」の docker と同じ扱い）。コンテナでは Terminal が自分で `sudo apt-get install tmux` で入れるが、別のサーバでは
-  sudo しないので入れない
+  Module は sudo しないので入れない（`machine` では登録・確かめ直しのときに banto が入れる——下の「足りないものは banto が入れる」）
 - **ユーザーの systemd が使える：`/run/user/<uid>/bus` がある**。無ければ断る（Service・Shell の待たない形・Module を包む
   単位（下）が使う）。**linger が無いことは断らず**、受信箱に注意を出す——「SSH の接続を閉じると Service と待たない形の
   コマンドが止まります。向こうで `sudo loginctl enable-linger <ユーザー>` を」。本番と試験で同じ規則で判定する
@@ -545,72 +545,83 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   1本の接続に開けるセッションの数（`MaxSessions`、既定 10）が Module の数に足りる
 - 「中で Docker を使う」を入れた Project は `docker` が使える（containerlab もここで確かめる）
 
-#### 足りないものは banto が入れる（決定・2026-10-19、ユーザー。未実装）
+#### 足りないものは banto が入れる（決定・2026-10-19、ユーザー。Fable のレビュー（2026-10-19）を受けて改めた。実装・2026-10-19、`runtime/host-autoprep.ts`・`runtime/containers-host.ts`）
 
-**きっかけ**：banto-ct-test（cloud-init の Ubuntu。`sudo -n` が通る・Incus 6.0.6・グループに `incus-admin` と `incus`）を
-`containers` で登録しようとすると「足りないものがあるので登録できません。向こうで上のコマンドを打ってから、確かめ直して
-ください」で止まった。sudo できるのに、`incus-admin` を「人が直すしかないもの」として断っていた。`machine` は登録でも
-一度も sudo せず、道具・linger・sshd の設定を全部人に打たせていた。ユーザー：「banto として、`containers` でも `machine` でも、
-登録したときに足りないものがあれば自動で入れる仕組みを」。
+経緯は `docs/notes/2026-10-19-runtime-autoprep.md`（banto-ct-test の登録が incus-admin で止まった件と、レビューで直したこと）。
 
-1. **いつ**：登録（`register`）と、人が押した「確かめ直す」（`recheck`・鍵を覚え直したあとの確かめ直しも）のときだけ。
-   登録の前の確かめ（`check`）は何も変えない。繋ぐたび・Module を起こすときは今どおり sudo しない。
-2. **何で**：SSH のユーザーの `sudo -n`（`/usr/bin/sudo` を絶対パスで、後ろのコマンドも絶対パスか決めた名前で）。通らなければ
-   今どおり、打つコマンドを添えて断る（パスワードの要る sudo は未決——下の 10.）。
-3. **人の承知**：登録の前の確かめの一覧で、banto が入れるものを注意（warn）にし、「登録するときに banto が入れます」と打つ
-   コマンドを添えて出す。人が「準備して登録する」を押すのが承知（`containers` の今の形を `machine` にも広げる）。登録した
-   あとの「確かめ直す」は、繋ぐたびの確かめで「確かめ直すと banto が入れます」と出ていたものを入れる。
+1. **いつ**：登録（`register`）と、人が押した「確かめ直す」（`recheck`。鍵を覚え直したあとの確かめ直し、鍵の置き場を移したあとの
+   繋ぎ直しも）のときだけ。押した時点で向こうの様子を引き直し、足りないものを入れる。登録の前の確かめ（`check`）は何も変えない。
+   繋ぐたび・Module を起こすときは今どおり sudo しない。**同じ実行場所の準備は1本ずつ**（Project の作成・再開・移すと同じ鍵で
+   並ぶ——apt の lock を取り合わない）
+2. **何で**：SSH のユーザーの `sudo -n`。sudo は `/usr/bin/sudo` で呼び、後ろのコマンドは名前で書いて sudo の `secure_path` で
+   引かせる（向こうの PATH を当てにしない。sudoers で決まったコマンドだけを許す形にも揃う）。**root で打つのは項目ごとのコマンドで、
+   `sh -c` の台本は使わない**。ファイルを書くのは `tee <ファイル>` に中身を標準入力で渡す。`sudo -n` が通らなければ今どおり、打つ
+   コマンドを添えて断る。**パスワードの要る sudo には今回は対応しない**（下の 10.）
+3. **人の承知**：登録の前の確かめの一覧で、banto が入れるものを注意（warn）にし、「登録するときに banto が入れます」と打つコマンドを
+   添えて出す（`RuntimeCheck.autoFix`）。人が「準備して登録する」を押すのが承知。登録したあとの「確かめ直す」には承知の段が無い
+   ——繋ぐたびの確かめで「確かめ直すと banto が入れます」と出す
 4. **入れるもの**（どれも「入っていれば何もしない」形。何度流しても同じ）：
-   - **道具（共通）**：`machine` は git・openssh-client・curl・tar（無ければ断る分）と tmux・rsync（注意の分）、`containers` は
-     tar。入れるものがあるときだけ `apt-get update` を1回、`DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300
-     install -y -q --no-install-recommends …`（cloud-init が apt を握っている間は待つ）。apt で入れるのは `/etc/os-release` の
-     ID か ID_LIKE が debian・ubuntu で `apt-get` があるときだけ。ほかは今どおりコマンドを見せる
+   - **道具（共通）**：`machine` は git・openssh-client・curl・tar（無ければ断る分）と tmux・rsync（注意の分）、`containers` は tar。
+     入れるものがあるときだけ、cloud-init が居れば終わるまで待ち（`timeout 600 cloud-init status --wait`。失敗の状態でも先へ）、
+     `apt-get update` を1回、`env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=300 install -y -q
+     --no-install-recommends …`。apt で入れるのは `/etc/os-release` の ID か ID_LIKE が debian・ubuntu で `apt-get` があるときだけ。
+     ほかは今どおりコマンドを見せる
    - **置き場の根（共通）**：作れない・書けないなら `install -d -o <ユーザー> -g <グループ> -m 0700 <根>`
-   - **sshd（共通）**：転送が断られた・`MaxSessions` が 10 未満なら、`/etc/ssh/sshd_config.d/00-banto.conf` に足りない分だけ
-     書き、`sshd -t` で確かめてから `systemctl reload ssh`（無ければ `sshd`）。`sshd -t` が通らなければ書いたファイルを元に
-     戻して断る（締め出さない）。Ubuntu の `sshd_config` は先頭で `sshd_config.d` を読み、同じ鍵は最初に出た値が効くので
-     ここに書いた値が勝つ（名前を 00- にして `50-cloud-init.conf` 等より先に読ませる）。主の設定の `Match` の中で断っているものは変えられない——直したあと転送を確かめ直し、なお断られ
-     たら「人が直すしかない」と出す
-   - **linger とユーザーの systemd（`machine`）**：`loginctl enable-linger <ユーザー>`（今は注意だけ）。`/run/user/<uid>/bus` が
-     無ければ、そのあと `systemctl start user@<uid>.service`
-   - **Incus（`containers`）**：無い・古い（`lts-6.0` の系統なら 6.0.6 未満、ほかは 6.19 未満——install.sh の `incus_version_ok`）
-     なら、install.sh と同じ道で Zabbly から入れる。Ubuntu 24.04 は `lts-6.0`、26.04 は `stable`（Memory の 2026-10-04 の実測）、
-     ほかの版は入れずに断る。鍵は「公開鍵が1つで、指紋が決めた値（install.sh の `ZABBLY_FPR`）」のときだけ置く。`incus`・
-     `btrfs-progs` を入れ、default のプロファイルに root のディスクが無ければ `incus admin init --minimal`。Ubuntu の incus
-     （6.0.5 等）が入っていれば Zabbly の版に上げる。入れたあと版を確かめ、なお足りなければ断る
+   - **sshd（共通）**：転送が断られた・`MaxSessions` が 10 未満なら、`/etc/ssh/sshd_config.d/00-banto.conf` に3行
+     （`AllowTcpForwarding yes`・`AllowStreamLocalForwarding yes`・`MaxSessions 20`）を丸ごと書き（このファイルは banto のもの）、
+     `sshd -t` で確かめ、落ちたら `rm -f` で消して止める（締め出さない）、通れば `systemctl reload ssh.service`（無ければ
+     `sshd.service`）。Ubuntu の `sshd_config` は先頭で `sshd_config.d/*.conf` を名前の順に読み、同じ鍵は最初に出た値が効く——名前を
+     00- にして `50-cloud-init.conf` や人の設定より先に読ませる。主の設定の `Match` の中で断っているものは変えられないので、直した
+     あと転送を確かめ直し、なお断られたら「人が直す」と出す。画面の直し方の文も同じファイル名にする
+   - **linger とユーザーの systemd（`machine`）**：`loginctl enable-linger <ユーザー>`。`/run/user/<uid>/bus` が無ければ、道具と一緒に
+     `dbus-user-session` を入れ（Debian の小さいイメージは無い）、`systemctl start user@<uid>.service`
+   - **Incus（`containers`）**：無い・古い（`lts-6.0` の系統なら 6.0.6 未満、ほかは 6.19 未満）なら、install.sh と同じ配布元
+     （Zabbly）から入れる。Ubuntu 24.04 は `lts-6.0`、26.04 は `stable`、ほかの版・CPU（amd64・arm64 以外）は入れずに断る。
+     **鍵は banto の host が取って確かめる**（公開鍵が1つで、指紋が install.sh の `ZABBLY_FPR`。host の gpg で）——VM の curl・gpg に
+     頼らない。確かめた中身を `tee /etc/apt/keyrings/zabbly.asc`、sources を `tee /etc/apt/sources.list.d/zabbly-incus-<系統>.sources`、
+     `apt-get update`、`apt-get install incus btrfs-progs`。Ubuntu の incus（6.0.5 等）は Zabbly の版に上がる。入っていて新しいが
+     default のプロファイルに root のディスクが無ければ `incus admin init --minimal`（root で見る）。入れたあと版を確かめ、なお足りな
+     ければ断る
    - **`incus-admin` から外す（`containers`、決定・2026-10-19、ユーザー、案A）**：`incus-admin` に入っていると、Incus は区画
-     `user-<uid>` ではなく制限の無い管理の口に繋ぐ。`gpasswd -d <ユーザー> incus-admin` で外し、`incus` グループだけにする（今の
-     決まり「banto 専用のユーザーを incus グループだけに」に揃える）。VM は banto 専用の決まりなので、人がこのユーザーで Incus を
-     管理していない前提にし、確かめの一覧で「外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）」
-     と出す。banto の root の要る準備（置き場を作る等）は sudo で行うので、外しても困らない。`incus` グループに入っていなければ
-     今どおり `usermod -aG incus`
-   - **グループを替えたあとの繋ぎ直し**：banto は向こうのコマンドを1つずつ別の SSH の接続で流す（多重化しない）ので、次の
-     コマンドから新しいグループで動く。ユーザーの systemd（`user@<uid>`）は起きたときのグループのまま残り、そこから起こした
-     ものは `incus-admin` を持ち続け・`incus` を持たない（2026-10-17 に banto-dev-vm で実測、#363）。グループを替えたら
-     `systemctl restart user@<uid>.service` で起こし直す——**その実行場所を使う Project が1つも無いとき（登録では常に）だけ**。
-     Project があるなら（その Project の多重化した SSH の親も古いグループのまま）起こし直さず、注意「ユーザーの systemd が
-     古いグループのままです。この実行場所の Project を全部閉じてから確かめ直してください」を出す。グループが替わったかは
-     `/proc/<user@ の pid>/status` の Groups と今の `id -G` を比べて分かる（登録のたびに比べ、食い違えば起こし直す）
-   - 以降は今の準備（区画の proxy・idmap と subuid／subgid・置き場 `banto`・linger）
+     `user-<uid>` ではなく制限の無い管理の口に繋ぐ。**外すのは `incus-admin` だけ**（`gpasswd -d <ユーザー> incus-admin`）。
+     ほかのグループ（`sudo`・`adm`・`lxd` 等）は触らない——`sudo` を外すと次の項目から `sudo -n` が通らない。`incus` グループに
+     入っていなければ `usermod -aG incus`。外したあと Incus に繋がらなければ `systemctl enable --now incus-user.socket`（区画
+     `user-<uid>` は incus-user が最初の接続で作る）。VM は banto 専用の決まりなので、人がこのユーザーで Incus を管理していない前提に
+     し、確かめの一覧で「外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）」と出す。`default` の
+     区画に人が作ったインスタンスは、このユーザーから見えなくなるだけで消えない（root では見える）。banto の root の要る準備は sudo で
+     行うので、外しても困らない
+   - **グループを替えたあとの繋ぎ直し**：banto は準備のコマンドを1つずつ別の SSH の接続で流す（多重化しない）ので、次のコマンド
+     から新しいグループで動く。ユーザーの systemd（`user@<uid>`）は起きたときのグループのまま残り、そこから起こしたものは
+     `incus-admin` を持ち続け・`incus` を持たない（2026-10-17 に banto-dev-vm で実測、#363）。`/proc/<user@ の pid>/status` の Groups と
+     今の `id -G` を比べ（主のグループは除く）、食い違えば `systemctl restart user@<uid>.service` で起こし直す——**その実行場所を使う
+     Project が1つも無いとき（登録では常に）だけ**（起こし直すと、そのユーザーの Service・待たない形のコマンドが止まる。SSH の
+     セッションは `session-*.scope` なので切れない）。Project があるなら（その Project の多重化した SSH の親も古いグループのまま）
+     起こし直さず、注意「ユーザーの systemd が古いグループのままです。この実行場所の Project を全部閉じてから確かめ直してください」
+   - 以降は前からの準備（区画の proxy・idmap と subuid／subgid・置き場 `banto`・linger）
 5. **入れないもの**（今どおり打つコマンドを見せて断る・注意する）：CPU の種類と libc、ログインしたときに何か出す（人の
-   `~/.bashrc` 等——banto は人の設定ファイルを書き換えない）、Docker（「中で Docker を使う」Project だけが要り、`docker` グループは
-   実質 root——要る Project で人が入れる）、置き場を作るディスクの空きが足りない、apt の無い OS・Zabbly の無い Ubuntu の版、
-   sudo -n が通らない
-6. **順番**：道具 → sshd → 置き場の根 →（`machine`）linger とユーザーの systemd ／（`containers`）Incus → グループ → user@ の
-   起こし直し → 区画の proxy → idmap → 置き場 `banto` → linger。1項目ごとに様子を引き直す（前の項目が次の項目の様子を変える。
-   今の `prepareContainersHost` と同じ）
-7. **時間と見せ方**：apt と Incus を入れると数分かかる。1つのコマンドの上限は 10 分（apt・Incus）、ほかは今どおり。画面は
-   「準備して登録しています…（数分かかることがあります）」。途中で失敗したら、どの項目のどのコマンドが何と言って落ちたかを
-   出す（今の `ContainersPrepareError` と同じ）。入れたものはそのまま残す（入っていれば何もしないので、確かめ直せば続きから）
+   `~/.bashrc` 等——banto は人の設定ファイルを書き換えない。この2つが断られていれば、ほかの項目も入れない）、Docker（「中で Docker を
+   使う」Project だけが要り、`docker` グループは実質 root——要る Project で人が入れる）、置き場を作るディスクの空きが足りない、apt の
+   無い OS・Zabbly の無い Ubuntu の版、sudo -n が通らない
+6. **順番**：`machine` は道具 → 置き場の根 → sshd → linger とユーザーの systemd を続けて打ち、終わってから1回だけ引き直す（互いに
+   独立なので）。`containers` は共通の項目（道具・置き場の根・sshd）を打って引き直したあと、Incus → グループ（incus-admin を外す・
+   incus に入れる・incus-user の口）→ user@ の起こし直し → 区画の proxy → idmap → 置き場 `banto` → linger を、1項目ごとに引き直し
+   ながら（前の項目が次の項目の様子を変える）。同じ項目は打つものが変わる間3回まで
+7. **時間と見せ方**：apt と Incus を入れると数分かかる。1つのコマンドの上限は apt で 15 分（lock を最長5分待ってから入れる）、
+   cloud-init の待ちは 11 分、ほかは今どおり。登録は1本の HTTP の POST のまま待つ（Caddy・Node・ブラウザのどれも応答を時間で
+   切らない）。画面は「準備して登録しています…（数分かかることがあります）」。途中で失敗したら、どの項目のどのコマンドが何と
+   言って落ちたかと、**それまでに banto が向こうで行ったこと**を断りの文に添える。入れたものはそのまま残す（入っていれば何も
+   しないので、確かめ直せば続きから）
 8. **記録**：banto が向こうで打ったコマンドは、実行場所の名前・コマンド・終了コードを banto のログに1行ずつ残し、登録・確かめ
-   直しの結果に「banto が向こうで行ったこと」として返して画面に出す
+   直しの結果の一覧の最後に「banto が向こうで行ったこと」として出す（次に繋いだときの確かめで消える）
 9. **`machine` で sudo することについて**：`machine` では SSH のユーザー＝その Project の AI。ユーザーが `sudo -n` できるなら
-   AI もすでに root になれるので、banto が登録と確かめ直しで sudo を使っても AI に新しく渡すものは無い。`sudo -n` が通らない
-   （AI が root になれない）実行場所では、banto は今どおり何もしない。Module を起こすとき・繋ぐたびに sudo しない決まりは残す
-   （Module が自分で sudo を試みる前に止める、も今どおり）
-10. **未決**：sudo にパスワードが要るとき、画面で1回だけパスワードを入れて banto が `sudo -S` で準備する形（banto は覚えない）。
-    入れるなら、`machine` で Project がある実行場所では AI が向こうの PATH・`~/.bashrc` を握っていてパスワードを盗めるので、
-    Project の無いとき（登録）に限る、などを決める
+   AI もすでに root になれるので、banto が登録と確かめ直しで sudo を使っても AI に新しく渡すものは無い（向こうのログインシェルや
+   `~/.bashrc` を書き換えて banto の準備を乗っ取れても、もともと root になれる）。`containers` の AI はコンテナの中で、VM のユーザーの
+   ホームは見せていない（下の条件3）ので、準備を乗っ取る道が無い。`sudo -n` が通らない（AI が root になれない）実行場所では、
+   banto は今どおり何もしない。Module を起こすとき・繋ぐたびに sudo しない決まりは残す
+10. **未決**：(a) パスワードの要る sudo——画面で1回だけパスワードを入れて banto が `sudo -S` で準備する形（覚えない）。入れるなら、
+    `machine` で Project がある実行場所では AI が向こうの PATH・`~/.bashrc` を握っていてパスワードを盗めるので、Project の無いとき
+    （登録）に限る、などを決める。(b) 登録・確かめ直しを裏で進め、実行場所の行に進み具合を出す形（コードの送り込みと同じ）——
+    画面を閉じても結果が残る
 
 #### 向こうとの道——SSH の接続1本
 
@@ -729,8 +740,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   env はソケットで渡るので、コマンド行にもファイルにも載らない。PATH・USER・LOGNAME は起動役のもの、`XDG_RUNTIME_DIR`・
   `DBUS_SESSION_BUS_ADDRESS` は `/run/user/<uid>` から組み立てる。host が Module を落とすときは、標準入出力を閉じたあと
   多重化した接続で `systemctl --user stop <単位>.service`
-- **Module に渡す印**：`BANTO_IN_CONTAINER=1`（今までどおり）に加えて **`BANTO_NO_SUDO=1`**——banto は向こうで sudo しないので、
-  Module も sudo で道具を入れようとしない。Terminal は tmux が無ければ `この実行場所には tmux がありません。Terminal は tmux を
+- **Module に渡す印**：`BANTO_IN_CONTAINER=1`（今までどおり）に加えて **`BANTO_NO_SUDO=1`**——banto は Module を起こすときに向こうで sudo しないので、
+  Module も sudo で道具を入れようとしない（登録・確かめ直しのときの banto の準備は別——「足りないものは banto が入れる」）。Terminal は tmux が無ければ `この実行場所には tmux がありません。Terminal は tmux を
   使います（…自動では入れません）。向こうで \`sudo apt install tmux\` を打ってから開き直してください` で断る（開いた画面に出る）。
   Service はユーザーの systemd のバスがあれば linger を入れようとしない（Shell の待たない形と同じ順）
 - **Shell のホーム**：host の置き場（`remote-runtimes/<名前>/shell-home/<接続名>`）で整え（資格情報を外す規則は同じ。git の設定の
@@ -858,7 +869,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 **root の要る準備は core が `sudo -n` で済ませる**（決定・2026-10-17、ユーザー）：
 
 - `machine` で「banto は別のサーバで sudo しない」としたのは、VM の SSH ユーザー＝その Project の AI で、banto が sudo
-  できる＝AI が root になれるため。`containers` では **AI はコンテナの中で動き、VM の SSH ユーザーとしては動かない**。
+  できる＝AI が root になれるため（改訂・2026-10-19：`machine` でも登録・確かめ直しのときだけは sudo -n が通れば banto が入れる。
+  通るなら AI はもともと root になれる——「足りないものは banto が入れる」の 9.）。`containers` では **AI はコンテナの中で動き、VM の SSH ユーザーとしては動かない**。
   sudo を使うのは core だけ
 - core が済ませる一度だけの準備：区画の `restricted.devices.proxy=allow`（入れ子の仮想化を許すなら下も）・VM の uid と
   `/etc/subuid`・`/etc/subgid`（idmap、F3）・incus-user の区画が無ければ作らせる・土台のイメージ（下）・linger。どれも

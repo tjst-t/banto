@@ -46,7 +46,7 @@ import {
   type SshResult,
 } from "./ssh.js";
 import { ContainersPrepareError, probeContainersPrerequisites } from "./containers-host.js";
-import { AutoFixError } from "./host-autoprep.js";
+import { AutoFixError, ranSuffix } from "./host-autoprep.js";
 
 /** 画面に返す失敗（状態番号つき）。理由はそのまま人に見せる */
 export class RemoteRuntimeError extends Error {
@@ -238,7 +238,8 @@ export class RemoteRuntimes {
     // 書き出す」写しなので、登録の接続でも同じ場所に書く。登録しなかったら消す（記録に無い名前の写しを残さない）
     const dir = join(this.deps.dataDir, "remote-runtimes", input.name);
     try {
-      const checks = await this.probe(input, hostKey, input.name, false, "prepare");
+      // 同じ実行場所の準備を2本並べない（apt の lock を取り合う）——作成・再開・確かめ直しと同じ鍵で1本ずつ
+      const checks = await this.exclusive(input.name, () => this.probe(input, hostKey, input.name, false, "prepare"));
       if (checks.some((c) => c.status === "fail")) {
         throw new RemoteRuntimeError(409, "足りない前提があるので登録できません", { checks });
       }
@@ -252,11 +253,13 @@ export class RemoteRuntimes {
   /** 確かめ直す（人が押した。`containers` は崩れた準備を sudo -n で整え直す）。鍵が違えば繋がずに記録する */
   async recheck(name: string): Promise<RemoteRuntimeView> {
     const r = this.mustGetUsable(name);
-    await this.connect(r, async (files) => {
-      const { checks, result } = await this.probeChecks(r, files, r.hostKey.type, "prepare");
-      if (checks.length === 0) return this.refused(r, result, "前提を確かめられませんでした");
-      await this.deps.store.recordChecks(r.name, checks);
-    });
+    await this.exclusive(name, () =>
+      this.connect(r, async (files) => {
+        const { checks, result } = await this.probeChecks(r, files, r.hostKey.type, "prepare");
+        if (checks.length === 0) return this.refused(r, result, "前提を確かめられませんでした");
+        await this.deps.store.recordChecks(r.name, checks);
+      }),
+    );
     return this.view(this.deps.store.get(name)!);
   }
 
@@ -387,7 +390,8 @@ export class RemoteRuntimes {
         mayRestartUserManager: stage === "prepare" && this.deps.projectsUsing(runtimeIdOf(r.name)).length === 0,
       });
     } catch (err) {
-      if (err instanceof ContainersPrepareError || err instanceof AutoFixError) throw new RemoteRuntimeError(502, err.message);
+      // 途中で落ちても、それまでに行ったことを添える（入れたものは残る——確かめ直せば続きから）
+      if (err instanceof ContainersPrepareError || err instanceof AutoFixError) throw new RemoteRuntimeError(502, `${err.message}${ranSuffix(err.ran)}`);
       throw err;
     }
   }

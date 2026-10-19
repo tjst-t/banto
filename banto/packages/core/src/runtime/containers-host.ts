@@ -12,20 +12,26 @@
 // 向こうでのコマンドは1つずつ `VmAccess.run` で流す（1つごとに別の SSH の接続——替えたグループが次のコマンドから効く。試験では
 // 偽の Incus・偽の sudo に差し替える）。Docker・tmux は VM には要らない（コンテナの中の話）。
 
-import { BANTO_POOL, rootMayMap, versionHasNestingFix, type IncusResult, type RunIncus } from "@banto/container";
+import { BANTO_POOL, rootMayMap, versionHasNestingFix } from "@banto/container";
 import { evaluateProbe, hostPlatform, probeBase, sshRun, type RuntimeCheck, type SshFiles, type SshResult, type SshTarget } from "./ssh.js";
+import { execFile } from "node:child_process";
 import {
+  aptInstall,
+  aptPrelude,
   AutoFixError,
   commonFixes,
-  LONG_ROOT_COMMAND_MS,
+  displayOf,
   markAutoFixes,
   preparedCheck,
   ROOT_COMMAND_MS,
   runFixes,
+  runRootCommand,
   SUDO,
-  sudoLine,
   WILL_FIX_ON_REGISTER,
+  writeRootFile,
   type RanCommand,
+  type RootCommand,
+  type RootRun,
 } from "./host-autoprep.js";
 
 /** 向こうの SSH ユーザーと、そのユーザーとしてコマンドを1つ流す口 */
@@ -34,9 +40,9 @@ export interface VmAccess {
   uid: number;
   gid: number;
   /** そのユーザーとしてコマンドを流す（`["incus", …]`・`["/usr/bin/sudo", "-n", …]`・`["cat", …]` など）。見つからなければ 127 */
-  run: RunIncus;
-  /** 向こうの OS（Incus を入れる道を選ぶ。分からなければ入れない） */
-  os?: { apt: boolean; id: string; version: string; codename: string; arch: string };
+  run: RootRun;
+  /** 向こうの OS（Incus を入れる道を選ぶ。分からなければ入れない）。`cloudinit` は cloud-init が居る（apt の前に待つ） */
+  os?: { apt: boolean; id: string; version: string; codename: string; arch: string; cloudinit?: boolean };
   /** banto が向こうで打ったものを、banto のログに1行ずつ */
   log?: (line: string) => void;
 }
@@ -55,6 +61,8 @@ export interface ContainersHostState {
   userManagerStale: boolean;
   /** 入っている incus の版（dpkg。区画に繋がらなくても分かる） */
   installedVersion?: string;
+  /** Incus を初期化してある（default のプロファイルに root のディスクがある。root で見る——sudo が通らなければ分からないので true） */
+  initialized: boolean;
   /** 自分の区画の設定（読めなければ undefined——区画がまだ無い・Incus に繋がらない） */
   projectConfig?: Record<string, string>;
   subuid: boolean;
@@ -135,12 +143,15 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
   }
   const names = groups.stdout.trim().split(/\s+/);
   const installed = dpkg.code === 0 ? dpkg.stdout.trim().replace(/^\d+:/, "") : "";
+  const initialized =
+    !installed || sudo.code !== 0 ? true : (await sudoRun(vm, ["incus", "profile", "device", "get", "default", "root", "pool"])).code === 0;
   return {
     incus,
     inIncusGroup: names.includes("incus"),
     inIncusAdmin: names.includes("incus-admin"),
     userManagerStale,
     ...(installed ? { installedVersion: installed } : {}),
+    initialized,
     ...(projectConfig ? { projectConfig } : {}),
     subuid: rootMayMap(subuid.stdout, vm.uid),
     subgid: rootMayMap(subgid.stdout, vm.gid),
@@ -176,29 +187,57 @@ export function incusChannelOf(os: VmAccess["os"]): string | undefined {
 }
 
 /**
- * Incus を Zabbly から入れる台本（install.sh の step_incus と同じ道。`$1` 系統・`$2` Ubuntu の符丁・`$3` dpkg の CPU・`$4` 鍵の指紋）。
- * 鍵は「公開鍵が1つで、指紋が決めた値」のときだけ置く。入れたあと、まだ初期化していなければ `incus admin init --minimal`
+ * **Zabbly の鍵を host で取って確かめる**（install.sh の zabbly_key_ok と同じ：公開鍵が1つで、指紋が決めた値）。VM の curl・gpg に
+ * 頼らない（Fable のレビュー、2026-10-19）。確かめた中身を VM の `tee` に渡す
  */
-const INCUS_INSTALL_SCRIPT = [
-  "set -eu",
-  'ch=$1 cn=$2 ar=$3 fpr=$4',
-  "export DEBIAN_FRONTEND=noninteractive",
-  'apt="apt-get -o DPkg::Lock::Timeout=300"',
-  "if ! command -v gpg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then $apt update -q; $apt install -y -q --no-install-recommends gpg curl ca-certificates; fi",
-  'k=$(mktemp)',
-  'curl -fsSL https://pkgs.zabbly.com/key.asc -o "$k"',
-  'c=$(gpg --show-keys --with-colons "$k" 2>/dev/null || true)',
-  "n=$(printf '%s\\n' \"$c\" | grep -c '^pub:' || true)",
-  "got=$(printf '%s\\n' \"$c\" | awk -F: '$1 == \"pub\" { p = 1; next } p && $1 == \"fpr\" { print $10; exit }')",
-  'if [ "$n" != 1 ] || [ "$got" != "$fpr" ]; then rm -f "$k"; echo "Zabbly の鍵が思っていたものと違います（公開鍵が1つで、指紋が $fpr であること）。すり替えられているおそれがあります" >&2; exit 3; fi',
-  "install -d -m 0755 /etc/apt/keyrings",
-  'install -m 0644 "$k" /etc/apt/keyrings/zabbly.asc',
-  'rm -f "$k"',
-  "printf 'Enabled: yes\\nTypes: deb\\nURIs: https://pkgs.zabbly.com/incus/%s\\nSuites: %s\\nComponents: main\\nArchitectures: %s\\nSigned-By: /etc/apt/keyrings/zabbly.asc\\n' \"$ch\" \"$cn\" \"$ar\" > \"/etc/apt/sources.list.d/zabbly-incus-$ch.sources\"",
-  "$apt update -q",
-  "$apt install -y -q --no-install-recommends incus btrfs-progs",
-  "if ! incus profile device get default root pool </dev/null >/dev/null 2>&1; then incus admin init --minimal </dev/null; fi",
-].join("\n");
+export async function fetchVerifiedZabblyKey(): Promise<string> {
+  const res = await fetch("https://pkgs.zabbly.com/key.asc", { signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Zabbly の鍵を取ってこられませんでした（HTTP ${res.status}）`);
+  const key = await res.text();
+  const colons = await new Promise<string>((resolve, reject) => {
+    const child = execFile("gpg", ["--show-keys", "--with-colons"], { timeout: 30_000 }, (err, stdout) =>
+      err ? reject(new Error(`banto の host で gpg を使えませんでした：${err.message}`)) : resolve(stdout),
+    );
+    child.stdin?.end(key);
+  });
+  if (!zabblyKeyOk(colons)) {
+    throw new Error(`Zabbly の鍵が思っていたものと違います（公開鍵が1つで、指紋が ${ZABBLY_FPR} であること）。すり替えられているおそれがあります`);
+  }
+  return key;
+}
+
+/** `gpg --show-keys --with-colons` の出力が「公開鍵が1つで、指紋が ZABBLY_FPR」か */
+export function zabblyKeyOk(colons: string): boolean {
+  const lines = colons.split("\n");
+  const pubs = lines.filter((l) => l.startsWith("pub:"));
+  if (pubs.length !== 1) return false;
+  const at = lines.findIndex((l) => l.startsWith("pub:"));
+  const fpr = lines.slice(at + 1).find((l) => l.startsWith("fpr:"));
+  return fpr?.split(":")[9] === ZABBLY_FPR;
+}
+
+/** Incus を Zabbly から入れるコマンド（install.sh の step_incus と同じ道。台本は使わず、項目ごとのコマンドで） */
+function incusInstallCommands(vm: VmAccess, channel: string, key: () => Promise<string>): RootCommand[] {
+  const os = vm.os!;
+  const sources = [
+    "Enabled: yes",
+    "Types: deb",
+    `URIs: https://pkgs.zabbly.com/incus/${channel}`,
+    `Suites: ${os.codename}`,
+    "Components: main",
+    `Architectures: ${os.arch}`,
+    "Signed-By: /etc/apt/keyrings/zabbly.asc",
+    "",
+  ].join("\n");
+  return [
+    { args: ["install", "-d", "-m", "0755", "/etc/apt/keyrings"] },
+    writeRootFile("/etc/apt/keyrings/zabbly.asc", key, `sudo tee /etc/apt/keyrings/zabbly.asc（Zabbly の鍵。banto の host で指紋 ${ZABBLY_FPR} を確かめたもの）`),
+    { args: ["chmod", "0644", "/etc/apt/keyrings/zabbly.asc"] },
+    writeRootFile(`/etc/apt/sources.list.d/zabbly-incus-${channel}.sources`, async () => sources, `sudo tee /etc/apt/sources.list.d/zabbly-incus-${channel}.sources（Zabbly の ${channel}）`),
+    ...aptPrelude(new Map(os.cloudinit ? [["cloudinit", "1"]] : [])),
+    aptInstall(["incus", "btrfs-progs"]),
+  ];
+}
 
 /** 準備の1項目が「今は打てない」とき */
 interface Blocked {
@@ -213,12 +252,7 @@ interface AfterEarlier {
   after: string;
 }
 
-/** 打つ1つ（root で）と、人に見せる1行 */
-interface StepCommand {
-  args: string[];
-  display?: string;
-  timeoutMs?: number;
-}
+type StepCommand = RootCommand;
 
 /** 準備の1項目。`done` で済んでいるか、`commands` で root として打つもの（人に見せる直し方もこれから作る） */
 interface PrepareStep {
@@ -230,6 +264,8 @@ interface PrepareStep {
 }
 
 export interface PrepareOptions {
+  /** Zabbly の鍵を取って確かめる（試験では差し替える） */
+  zabblyKey?: () => Promise<string>;
   /**
    * ユーザーの systemd（user@<uid>）を起こし直してよいか——その実行場所を使う Project が1つも無いとき（登録では常に）だけ。
    * 起こし直すと、そのユーザーの Service・待たない形のコマンドが止まる
@@ -251,8 +287,10 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
     {
       id: "incus",
       label: "Incus 6.0.6 以降",
-      done: (s) => s.incus.status !== "missing" && incusFresh(s),
+      done: (s) => s.incus.status !== "missing" && incusFresh(s) && s.initialized,
       commands: async (s) => {
+        // 入っていて新しいが、まだ初期化していない（default のプロファイルに root のディスクが無い）
+        if (s.incus.status !== "missing" && incusFresh(s)) return [{ args: ["incus", "admin", "init", "--minimal"] }];
         const now = s.incus.status === "ok" ? s.incus.version : s.installedVersion;
         if (!channel) {
           return {
@@ -261,13 +299,7 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
             fix: "Zabbly（https://github.com/zabbly/incus）から Incus 6.0.6 以降を入れてください（sudo apt-get install --no-install-recommends incus）",
           };
         }
-        return [
-          {
-            args: ["sh", "-c", INCUS_INSTALL_SCRIPT, "banto-incus", channel, vm.os!.codename, vm.os!.arch, ZABBLY_FPR],
-            display: `Zabbly の ${channel} から Incus と btrfs-progs を入れる（鍵の指紋 ${ZABBLY_FPR} を確かめる。まだなら incus admin init --minimal）`,
-            timeoutMs: LONG_ROOT_COMMAND_MS,
-          },
-        ];
+        return incusInstallCommands(vm, channel, opts.zabblyKey ?? fetchVerifiedZabblyKey);
       },
     },
     {
@@ -369,8 +401,6 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
     },
   ];
 }
-
-const displayOf = (c: StepCommand) => c.display ?? sudoLine(c.args);
 
 /**
  * **様子から前提の一覧を作る**。`check`（登録の前）：済んでいないものは sudo が通るなら注意（登録のときに整える）、通らなければ
@@ -488,15 +518,12 @@ export async function prepareContainersHost(
       if (key === last || plan.length === 0) break;
       last = key;
       for (const c of plan) {
-        const r: IncusResult = await sudoRun(vm, c.args, c.timeoutMs);
         ran.push(c.args);
-        log.push({ display: displayOf(c), code: r.code });
-        vm.log?.(`${displayOf(c)} → ${r.code}`);
-        if (r.code !== 0) {
-          throw new ContainersPrepareError(
-            `準備の「${step.label}」で ${displayOf(c)} が失敗しました（終了コード ${r.code}）：${(r.stderr || r.stdout).trim().slice(-400)}`,
-            log,
-          );
+        try {
+          await runRootCommand(vm.run, c, log, { what: `準備の「${step.label}」で `, ...(vm.log ? { log: vm.log } : {}) });
+        } catch (err) {
+          if (err instanceof AutoFixError) throw new ContainersPrepareError(err.message, err.ran);
+          throw err;
         }
       }
       state = await inspectContainersHost(vm);
@@ -506,7 +533,7 @@ export async function prepareContainersHost(
 }
 
 /** 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る */
-export function sshVmRun(t: SshTarget, files: SshFiles, hostKeyType: string): RunIncus {
+export function sshVmRun(t: SshTarget, files: SshFiles, hostKeyType: string): RootRun {
   return sshRun(t, files, hostKeyType);
 }
 
@@ -523,11 +550,14 @@ export async function probeContainersPrerequisites(
   files: SshFiles,
   hostKeyType: string,
   dataRoot: string,
-  opts: { mode: "check" | "prepare" | "verify"; run?: RunIncus; log?: (line: string) => void; base?: typeof probeBase } & Partial<PrepareOptions>,
+  opts: { mode: "check" | "prepare" | "verify"; run?: RootRun; log?: (line: string) => void; base?: typeof probeBase } & Partial<PrepareOptions>,
 ): Promise<{ checks: RuntimeCheck[]; result: SshResult; ran: string[][] }> {
   const base = opts.base ?? probeBase;
   const run = opts.run ?? sshVmRun(t, files, hostKeyType);
-  const prepareOpts: PrepareOptions = { mayRestartUserManager: opts.mayRestartUserManager ?? opts.mode !== "verify" };
+  const prepareOpts: PrepareOptions = {
+    mayRestartUserManager: opts.mayRestartUserManager ?? opts.mode !== "verify",
+    ...(opts.zabblyKey ? { zabblyKey: opts.zabblyKey } : {}),
+  };
   let { probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: opts.mode !== "verify" });
   if (!probe || !forwarding) return { checks: [], result, ran: [] };
 
@@ -567,7 +597,7 @@ export async function probeContainersPrerequisites(
     uid: Number(v.get("uid")),
     gid: Number(v.get("gid")),
     run,
-    os: { apt: v.get("apt") === "1", id: v.get("os.id") ?? "", version: v.get("os.version") ?? "", codename: v.get("os.codename") ?? "", arch: v.get("dpkg.arch") ?? "" },
+    os: { apt: v.get("apt") === "1", id: v.get("os.id") ?? "", version: v.get("os.version") ?? "", codename: v.get("os.codename") ?? "", arch: v.get("dpkg.arch") ?? "", cloudinit: v.get("cloudinit") === "1" },
     ...(opts.log ? { log: opts.log } : {}),
   };
   // ログインで何か出る相手ではコマンドの答えが崩れる——先にそこを直してもらう。整えても直らなかった共通の項目も同じ

@@ -13,8 +13,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { RunIncus } from "@banto/container";
-import { commonFixes, markAutoFixes, preparedCheck, runFixes, type RanCommand } from "./host-autoprep.js";
+import { commonFixes, markAutoFixes, preparedCheck, runFixes, type RanCommand, type RootRun } from "./host-autoprep.js";
 
 /** 繋ぐ先（登録した1件の、SSH に要る分） */
 export interface SshTarget {
@@ -255,6 +254,7 @@ function probeScript(dataRoot: string, opts: { sudo?: boolean } = {}): string {
     // OS と apt（banto が足りないものを入れられるか。v4-security.md §1「足りないものは banto が入れる」）
     `if [ -r /etc/os-release ]; then (. /etc/os-release; printf 'os.id=%s\\nos.like=%s\\nos.version=%s\\nos.codename=%s\\n' "\${ID:-}" "\${ID_LIKE:-}" "\${VERSION_ID:-}" "\${VERSION_CODENAME:-}"); fi`,
     `if command -v apt-get >/dev/null 2>&1; then printf 'apt=1\\n'; else printf 'apt=0\\n'; fi`,
+    `if command -v cloud-init >/dev/null 2>&1; then printf 'cloudinit=1\\n'; fi`,
     `if command -v dpkg >/dev/null 2>&1; then printf 'dpkg.arch=%s\\n' "$(dpkg --print-architecture)"; fi`,
     // sudo -n が通るか（登録の前と整えるときだけ。繋ぐたびには試さない——向こうの記録を汚さない）
     ...(opts.sudo ? [`if /usr/bin/sudo -n true >/dev/null 2>&1; then printf 'sudo=1\\n'; else printf 'sudo=0\\n'; fi`] : []),
@@ -428,10 +428,10 @@ export function evaluateProbe(
     ...(denied.length
       ? {
           detail: `sshd が転送を断りました（${denied.join("・")}）。banto との行き来は SSH の転送を通ります。`,
-          fix: `# /etc/ssh/sshd_config.d/banto.conf に\n${denied.map((d) => `${d} yes`).join("\n")}\n# のあと sudo systemctl reload ssh`,
+          fix: `# /etc/ssh/sshd_config.d/00-banto.conf に\n${denied.map((d) => `${d} yes`).join("\n")}\n# のあと sudo systemctl reload ssh`,
         }
       : fewSessions
-        ? { detail: "1本の接続に開けるセッションが少ないので、Module が多いと起こせないことがあります。", fix: "# /etc/ssh/sshd_config.d/banto.conf に\nMaxSessions 20" }
+        ? { detail: "1本の接続に開けるセッションが少ないので、Module が多いと起こせないことがあります。", fix: "# /etc/ssh/sshd_config.d/00-banto.conf に\nMaxSessions 20\n# のあと sudo systemctl reload ssh" }
         : {}),
   });
 
@@ -493,7 +493,7 @@ export async function probePrerequisites(
   files: SshFiles,
   hostKeyType: string,
   dataRoot: string,
-  opts: { stage?: "check" | "prepare" | "verify"; run?: RunIncus; log?: (line: string) => void; base?: typeof probeBase } = {},
+  opts: { stage?: "check" | "prepare" | "verify"; run?: RootRun; log?: (line: string) => void; base?: typeof probeBase } = {},
 ): Promise<{ checks: RuntimeCheck[]; result: SshResult; ran: RanCommand[] }> {
   const stage = opts.stage ?? "verify";
   const base = opts.base ?? probeBase;
@@ -519,9 +519,22 @@ export async function probePrerequisites(
   return { checks: ran.length > 0 ? [...checks, preparedCheck(ran)] : checks, result, ran };
 }
 
-/** 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る（1つごとに別の接続——多重化しないので、替えたグループが次から効く） */
-export function sshRun(t: SshTarget, files: SshFiles, hostKeyType: string): RunIncus {
-  return async (args, opts) => runRemoteScript(t, files, hostKeyType, `exec ${args.map(shq).join(" ")}\n`, { timeoutMs: opts?.timeoutMs ?? 30_000 });
+/**
+ * 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る（1つごとに別の接続——多重化しないので、替えたグループが次から効く）。
+ * `input` はヒアドキュメントで標準入力に渡す（区切りは毎回でたらめな印）。出力は捨てない
+ */
+export function sshRun(t: SshTarget, files: SshFiles, hostKeyType: string): RootRun {
+  return async (args, opts) => {
+    const cmd = `exec ${args.map(shq).join(" ")}`;
+    let script = `${cmd}\n`;
+    if (opts?.input !== undefined) {
+      const mark = `BANTO_EOF_${createHash("sha256").update(`${Math.random()}${Date.now()}`).digest("hex").slice(0, 16)}`;
+      if (opts.input.includes(mark)) throw new Error("標準入力に区切りの印が入っています");
+      const body = opts.input.endsWith("\n") ? opts.input : `${opts.input}\n`;
+      script = `${cmd} >/dev/null <<'${mark}'\n${body}${mark}\n`;
+    }
+    return runRemoteScript(t, files, hostKeyType, script, { timeoutMs: opts?.timeoutMs ?? 30_000 });
+  };
 }
 
 // ── 向こうのフォルダ ─────────────────────────────────────────────────────────
