@@ -9807,6 +9807,30 @@
       "updatedAt": "2026-10-18T14:30:54.225Z",
       "closedAt": "2026-10-18T14:30:54.225Z",
       "extra": {}
+    },
+    {
+      "id": "core-rate-limit-continuation",
+      "number": 407,
+      "kind": "bug",
+      "title": "core の単体テスト rate-limit-continuation「上限で止まったら…同じ会話を続ける」が、全部を流したときだけ時々落ちる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "test",
+        "flaky"
+      ],
+      "body": "2026-10-19、#367 を release に載せた版で core の単体テストを全部流したら1件落ちた（1060 通過・1 失敗）：dist/delivery/rate-limit-continuation.test.js:135「上限で止まったら、終わりに印と時刻（resetsAt＋余白）を書き、時刻が来たら同じ会話を続ける——レビュー待ちは出さない」が「続きのターンが終わるにならない」で約3.5秒で落ちた。直前のログに「ターンの終わりを記録できませんでした: ENOENT … /tmp/banto-rate-limit-*/events.jsonl」。そのファイルだけを3回流すと3回とも通る。\n\n見立て（未確認）：試験の片づけ（withDir の一時フォルダを消す）が、時刻で起きた続きのターンの書き込みより先に走る・全部を流すと負荷で待ちの上限（until）を越える。#402（上限のあと自動で続ける）で入った試験。",
+      "doneWhen": "core の単体テストを全部流して10回続けて落ちない。原因（片づけの順か待ちの長さか）をコミットの文に書く。試験を消す・skip・期待を弱めるのは禁止",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-19T01:31:35.644Z",
+      "updatedAt": "2026-10-19T01:31:35.644Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
