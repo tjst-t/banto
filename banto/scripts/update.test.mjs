@@ -4,7 +4,8 @@
 // `current` を「動いている版」として書く。`show` には unit ごとのファイルの中身を返す）、incus も偽のスクリプト
 // （コンテナの一覧はファイルの中身）、host と画面は小さな http サーバ。host は「動いている版」の commit を
 // `/api/admin/update` で返し、その版に `banto/BROKEN` があれば答えない（起きない版）。`crash` の印があると、
-// 起きない版の host の unit は「落ちて起こし直し中」になる。
+// 起きない版の host の unit は「落ちて起こし直し中」になる。`record-history` の印があると、restart のたびに host と同じく
+// 動いた版の記録（history.json）に起きた版を書く（起きない版でも——本物の host は待ち受けの前に書く）。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -66,6 +67,7 @@ async function withRelease(fn) {
   const rel = join(dir, "release");
   const dataDir = join(dir, "data");
   const fake = join(dir, "fake");
+  const updateDir = join(dataDir, "update");
   mkdirSync(join(github, "banto"), { recursive: true });
   mkdirSync(fake);
   git(dir, "init", "-q", "-b", "release", github);
@@ -114,6 +116,9 @@ if [ "$1" = restart ]; then
   if [ -e "$F/deny-restart" ]; then echo "Failed to restart: Interactive authentication required." >&2; exit 1; fi
   running=$(readlink -f "${rel}/current")
   echo "$running" > "$F/running"
+  n=$(grep -c '^restart' "$F/systemctl.log")
+  if [ -f "${updateDir}/history.json" ]; then cp "${updateDir}/history.json" "$F/history-at-restart-$n"; fi
+  if [ -e "$F/record-history" ]; then "${process.execPath}" "$F/record.mjs" "${updateDir}/history.json" "$(git -C "$running" rev-parse HEAD)"; fi
   if [ -e "$F/crash" ] && [ -e "$running/banto/BROKEN" ]; then
     if [ "$(cat "$F/crash")" = restarted ]; then
       echo $(( $(cat "$F/nrestarts" 2>/dev/null || echo 0) + 1 )) > "$F/nrestarts"
@@ -128,6 +133,27 @@ exit 0
 `,
   );
   chmodSync(systemctl, 0o755);
+  // host が起動の途中で書くのと同じ：起きた版を先頭に（もうあれば lastStartedAt を替える）。記録が無ければ previous を種に
+  writeFileSync(
+    join(fake, "record.mjs"),
+    `import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname } from "node:path";
+const [path, commit] = process.argv.slice(2);
+let versions = [];
+if (existsSync(path)) versions = JSON.parse(readFileSync(path, "utf8")).versions;
+else if (existsSync(${JSON.stringify(join(rel, "previous"))})) {
+  const prev = execFileSync("git", ["-C", ${JSON.stringify(join(rel, "previous"))}, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (prev !== commit) versions = [{ commit: prev, firstStartedAt: null, lastStartedAt: null }];
+}
+const at = new Date().toISOString();
+const old = versions.find((v) => v.commit === commit);
+versions = [{ commit, firstStartedAt: old ? old.firstStartedAt : at, lastStartedAt: at }, ...versions.filter((v) => v.commit !== commit)];
+mkdirSync(dirname(path), { recursive: true });
+writeFileSync(path + ".tmp", JSON.stringify({ versions }));
+renameSync(path + ".tmp", path);
+`,
+  );
 
   // 偽の incus：コンテナの一覧は fake/instances.json（無ければ空）。`incus-down` の印があれば届かない
   const incus = join(fake, "incus");
@@ -148,12 +174,13 @@ esac
 
   // 偽の host と画面
   /** `activityDown` の間、activity の口は答えない（繋いだ途端に切る） */
-  const host = { activity: IDLE, activityCalls: 0, activityDown: false };
+  const host = { activity: IDLE, activityCalls: 0, activityDown: false, activityStatus: undefined, uiStatus: 200 };
   const hostServer = createServer((req, res) => {
     if (req.headers.authorization !== `Bearer ${TOKEN}`) return res.writeHead(401).end();
     if (req.url === "/api/admin/activity") {
       host.activityCalls++;
       if (host.activityDown) return req.socket.destroy();
+      if (host.activityStatus) return res.writeHead(host.activityStatus).end();
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ...host.activity, now: new Date().toISOString() }));
     }
@@ -166,7 +193,7 @@ esac
     }
     res.writeHead(404).end();
   });
-  const uiServer = createServer((_req, res) => res.writeHead(200).end("ok"));
+  const uiServer = createServer((_req, res) => res.writeHead(host.uiStatus).end("ok"));
   await new Promise((r) => hostServer.listen(0, "127.0.0.1", r));
   await new Promise((r) => uiServer.listen(0, "127.0.0.1", r));
 
@@ -175,7 +202,6 @@ esac
     configPath,
     JSON.stringify({ dataDir, releaseDir: rel, port: hostServer.address().port, authToken: TOKEN }),
   );
-  const updateDir = join(dataDir, "update");
   const uiUrl = `http://127.0.0.1:${uiServer.address().port}/`;
   const children = [];
 
@@ -197,13 +223,28 @@ esac
     versions: () => readdirSync(join(rel, "versions")).sort(),
     worktrees: () => git(repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")).length - 1,
     state: () => JSON.parse(readFileSync(join(updateDir, "state.json"), "utf8")),
-    request(commitSha, mode) {
+    request(commitSha, mode, extra = {}) {
       mkdirSync(updateDir, { recursive: true });
       writeFileSync(
         join(updateDir, "request.json"),
-        JSON.stringify({ id: `req-${commitSha.slice(0, 7)}`, commit: commitSha, mode, requestedBy: { sessionId: "s1", label: "わたし" } }),
+        JSON.stringify({ id: `req-${commitSha.slice(0, 7)}`, commit: commitSha, mode, requestedBy: { sessionId: "s1", label: "わたし" }, ...extra }),
       );
     },
+    /** 動いた版の記録の commit（新しい順） */
+    history: () => JSON.parse(readFileSync(join(updateDir, "history.json"), "utf8")).versions.map((x) => x.commit),
+    /** 動いた版の記録を置く（並べた順が新しい順） */
+    writeHistory(commits) {
+      mkdirSync(updateDir, { recursive: true });
+      const at = (i) => new Date(Date.UTC(2026, 9, 19, 12, 0, 0) - i * 60_000).toISOString();
+      writeFileSync(
+        join(updateDir, "history.json"),
+        JSON.stringify({ versions: commits.map((c, i) => ({ commit: c, firstStartedAt: at(i), lastStartedAt: at(i) })) }),
+      );
+    },
+    /** 組み立てた回数（BUILD_WITH_MARKS で組み立てたとき） */
+    builds: () => (existsSync(join(fake, "builds")) ? readFileSync(join(fake, "builds"), "utf8").trim().split("\n").length : 0),
+    /** 組み立てた印（banto/node_modules・packages/core/dist・apps/frontend/.next）を作り、回数を数える組み立て */
+    buildWithMarks: { BANTO_UPDATE_BUILD: `mkdir -p node_modules packages/core/dist apps/frontend/.next && echo built > built.txt && echo x >> '${join(fake, "builds")}'` },
     /** 偽の systemctl の `show <unit>` が返すもの */
     unitShow(unit, text) {
       writeFileSync(join(fake, `${unit}.show`), text);
@@ -1335,4 +1376,268 @@ test("組み立て済み：印の確かめ（node の major）と origin の読�
   ]) {
     assert.equal(m.githubRepoOf(url), want, String(url));
   }
+});
+
+// ───────────── 前の版に戻す（kind rollback・--rollback）─────────────
+
+/** a（最初の版）→ b → c と、組み立てた印つきで上げる（restart のたびに host と同じく記録を書く） */
+async function upToC(ctx) {
+  ctx.fakeMark("record-history");
+  const b = ctx.commit("二つ目");
+  assert.equal((await ctx.start(["--now"], ctx.buildWithMarks).done).code, 0);
+  const c = ctx.commit("三つ目");
+  assert.equal((await ctx.start(["--now"], ctx.buildWithMarks).done).code, 0);
+  assert.deepEqual(ctx.history(), [c, b, ctx.first]);
+  assert.equal(ctx.builds(), 2);
+  return { b, c };
+}
+
+test("戻す：記録にある機械の版はそのまま使う——組み立てない・取ってこない（GitHub に届かなくても）・空きを見ない・早送りでなくてよい", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b, c } = await upToC(ctx);
+    const offline = { ...ctx.buildWithMarks, BANTO_UPDATE_REMOTE: join(ctx.dir, "無い"), BANTO_UPDATE_NEED_BYTES: String(2 ** 62) };
+
+    const dry = await ctx.start(["--dry-run", "--rollback", b], offline).done;
+    assert.equal(dry.code, 0, dry.out);
+    assert.match(dry.out, new RegExp(`戻す先：${b}`));
+    assert.match(dry.out, /抜けるコミット：\n\S+ 三つ目/);
+    assert.match(dry.out, /そのまま使う：/);
+
+    ctx.request(b, "now", { kind: "rollback" });
+    const { code, out } = await ctx.start(["--from-request"], offline).done;
+    assert.equal(code, 0, out);
+    const s = ctx.state();
+    assert.equal(s.phase, "done", JSON.stringify(s));
+    assert.equal(s.kind, "rollback");
+    assert.equal(s.from, c);
+    assert.equal(s.to, b);
+    assert.equal(s.result, `版 ${b.slice(0, 12)} に戻しました`);
+    assert.equal(ctx.current(), v(b));
+    assert.equal(ctx.previous(), v(c));
+    assert.equal(ctx.builds(), 2, "そのまま使える版を組み立て直した");
+    const logText = readFileSync(s.logFile, "utf8");
+    assert.doesNotMatch(logText, /release を取ってきます/, "機械にある版なのに取ってきた");
+    assert.doesNotMatch(logText, /空き：/, "そのまま使うのに空きを見た");
+    assert.match(logText, /そのまま使います/);
+    assert.deepEqual(ctx.history().slice(0, 2), [b, c]);
+  });
+});
+
+test("戻す：記録に無い版・記録が無い／読めない・kind が未知・--rollback と一緒に使えない引数は断る（何もしない）", T, async () => {
+  await withRelease(async (ctx) => {
+    const b = ctx.commit("二つ目");
+    git(ctx.dir, "--git-dir", ctx.repo, "fetch", "-q", "origin", "+refs/heads/release:refs/remotes/origin/release");
+    const refused = async (args, pattern, failedPhase) => {
+      const { code } = await ctx.start(args).done;
+      assert.equal(code, 1);
+      const s = ctx.state();
+      assert.equal(s.phase, "failed", JSON.stringify(s));
+      assert.equal(s.failedPhase, failedPhase);
+      assert.match(s.error, pattern);
+    };
+    ctx.request(b, "now", { kind: "rollback" });
+    await refused(["--from-request"], /動いた版の記録.*が無いので、戻せる版が分かりません/, "fetch");
+    writeFileSync(join(ctx.updateDir, "history.json"), "{こわれた");
+    ctx.request(b, "now", { kind: "rollback" });
+    await refused(["--from-request"], /動いた版の記録.*を読めないので、戻せる版が分かりません/, "fetch");
+    ctx.writeHistory([ctx.first]);
+    ctx.request(b, "now", { kind: "rollback" });
+    await refused(["--from-request"], /この機械で動いた版の記録にありません/, "fetch");
+    await refused(["--rollback", b.slice(0, 12)], /この機械で動いた版の記録にありません/, "fetch");
+
+    ctx.request(b, "now", { kind: "rolback" });
+    await refused(["--from-request"], /kind（"rolback"）を知りません/, undefined);
+    assert.equal(existsSync(join(ctx.updateDir, "request.json")), false, "読めない頼みは受け取って消す");
+    await refused(["--rollback", ctx.first, "--commit", b], /--rollback は --from-request・--commit・--first と一緒に使えません/, undefined);
+    ctx.request(b, "now", { kind: "rollback" });
+    await refused(["--from-request", "--rollback", ctx.first], /--rollback は --from-request・--commit・--first と一緒に使えません/, undefined);
+    await refused(["--rollback"], /--rollback には戻す版の commit/, undefined);
+
+    assert.equal(ctx.current(), v(ctx.first));
+    assert.deepEqual(ctx.versions(), [ctx.first.slice(0, 12)]);
+    assert.deepEqual(ctx.systemctlCalls(), []);
+  });
+});
+
+test("戻す：機械に無い版は取ってきてその場で組み立てる——早送りでも release から辿れなくてもよい。repo.git に無ければ断る", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b, c } = await upToC(ctx);
+    // b はまだ previous として機械にある——消して「機械に無い」に。release も b を含まない形に書き換える
+    rmSync(join(ctx.rel, "previous"));
+    git(ctx.dir, "--git-dir", ctx.repo, "worktree", "remove", "--force", join(ctx.rel, v(b)));
+    git(ctx.github, "reset", "-q", "--hard", ctx.first);
+    const d = ctx.commit("書き換えた release");
+    ctx.request(b, "now", { kind: "rollback" });
+    const { code, out } = await ctx.start(["--from-request"], ctx.buildWithMarks).done;
+    assert.equal(code, 0, out);
+    const s = ctx.state();
+    assert.equal(s.phase, "done", JSON.stringify(s));
+    assert.equal(ctx.current(), v(b));
+    assert.equal(ctx.previous(), v(c));
+    assert.equal(ctx.builds(), 3, "機械に無い版を組み立てていない");
+    assert.match(readFileSync(s.logFile, "utf8"), /そのままは使えません（この機械にありません）[\s\S]*release を取ってきます/);
+    assert.equal(git(ctx.dir, "--git-dir", ctx.repo, "rev-parse", "refs/remotes/origin/release"), d);
+
+    // 記録にあっても repo.git にも機械にも無い（GitHub の release から消えた）版は断る
+    const gone = "0123456789abcdef0123456789abcdef01234567";
+    ctx.writeHistory([b, gone]);
+    ctx.request(gone, "now", { kind: "rollback" });
+    assert.equal((await ctx.start(["--from-request"]).done).code, 1);
+    assert.match(ctx.state().error, /GitHub の release から消えたので取ってこられません/);
+    assert.equal(ctx.current(), v(b));
+  });
+});
+
+test("戻す：機械に無い版は組み立て済みがあればそれを重ねる。機械にある版は組み立て済みを取りに行かない", T, async () => {
+  await withRelease(async (ctx) => {
+    await withGithub(async (gh) => {
+      const { b, c } = await upToC(ctx);
+      rmSync(join(ctx.rel, "previous"));
+      git(ctx.dir, "--git-dir", ctx.repo, "worktree", "remove", "--force", join(ctx.rel, v(b)));
+      gh.publish(b, makePrebuilt(ctx.dir, b));
+      const noBuild = { ...gh.env, BANTO_UPDATE_BUILD: "echo 組み立ててはいけない >&2; exit 9" };
+
+      const dry = await ctx.start(["--dry-run", "--rollback", b], noBuild).done;
+      assert.equal(dry.code, 0, dry.out);
+      assert.match(dry.out, /組み立て済み：あります/);
+      assert.match(dry.out, /組み立てる：.*そのままは使えない：この機械にありません/);
+
+      ctx.request(b, "now", { kind: "rollback" });
+      const { code, out } = await ctx.start(["--from-request"], noBuild).done;
+      assert.equal(code, 0, out);
+      const s = ctx.state();
+      assert.equal(s.phase, "done", JSON.stringify(s));
+      assert.equal(s.kind, "rollback");
+      assert.equal(s.prebuilt?.status, "used");
+      assert.equal(ctx.current(), v(b));
+      assert.equal(ctx.previous(), v(c));
+      assert.equal(ctx.builds(), 2, "組み立て済みがあるのに、その場で組み立てた");
+      assert.deepEqual(noWorkDirs(ctx), []);
+
+      // c は機械にある一度動いた版——組み立て済みを取りに行かず（state に prebuilt が無い）、そのまま使う
+      const dry2 = await ctx.start(["--dry-run", "--rollback", c], noBuild).done;
+      assert.equal(dry2.code, 0, dry2.out);
+      assert.match(dry2.out, /そのまま使う：/);
+      assert.doesNotMatch(dry2.out, /組み立て済み：/);
+      ctx.request(c, "now", { kind: "rollback" });
+      assert.equal((await ctx.start(["--from-request"], noBuild).done).code, 0);
+      const s2 = ctx.state();
+      assert.equal(s2.phase, "done", JSON.stringify(s2));
+      assert.equal(s2.prebuilt, undefined, "そのまま使う版なのに組み立て済みを取りに行った");
+      assert.equal(ctx.current(), v(c));
+      assert.doesNotMatch(readFileSync(s2.logFile, "utf8"), /組み立て済みの版を探します/);
+    });
+  });
+});
+
+test("戻す：そのまま使う版は、待つ間の cancel・待つ段の失敗でも消さない", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b, c } = await upToC(ctx);
+    ctx.host.activity = BUSY;
+    ctx.request(b, "wait", { kind: "rollback" });
+    const run = ctx.start(["--from-request"]);
+    await ctx.waitForPhase("wait");
+    ctx.mark("cancel");
+    assert.equal((await run.done).code, 0);
+    assert.equal(ctx.state().phase, "cancelled");
+    assert.equal(ctx.current(), v(c));
+    assert.ok(existsSync(join(ctx.rel, v(b), "banto", "apps", "frontend", ".next")), "cancel で一度動いた版を消した");
+
+    ctx.host.activityStatus = 400;
+    ctx.request(b, "wait", { kind: "rollback" });
+    assert.equal((await ctx.start(["--from-request"]).done).code, 1);
+    assert.equal(ctx.state().failedPhase, "wait");
+    assert.ok(existsSync(join(ctx.rel, v(b), "banto", "apps", "frontend", ".next")), "失敗で一度動いた版を消した");
+    assert.equal(ctx.builds(), 2);
+  });
+});
+
+test("組み立てた印が欠けた記録済みの版は、作りかけとして消して作り直す", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b } = await upToC(ctx);
+    ctx.commit("四つ目");
+    assert.equal((await ctx.start(["--now"], ctx.buildWithMarks).done).code, 0); // b は previous でなくなる（記録の新しい2つとして残る）
+    rmSync(join(ctx.rel, v(b), "banto", "packages", "core", "dist"), { recursive: true });
+    ctx.request(b, "now", { kind: "rollback" });
+    const { code, out } = await ctx.start(["--from-request"], ctx.buildWithMarks).done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.current(), v(b));
+    assert.equal(ctx.builds(), 4, "印が欠けているのに作り直さなかった");
+    assert.match(readFileSync(ctx.state().logFile, "utf8"), /組み立てた印（banto\/packages\/core\/dist）が欠けています/);
+    assert.ok(existsSync(join(ctx.rel, v(b), "banto", "packages", "core", "dist")));
+  });
+});
+
+test("更新（早送り）でも、コンテナが使っている一度動いた版は作り直さずに使う（作りかけ・起きなかった版は今どおり断る）", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b, c } = await upToC(ctx);
+    ctx.request(b, "now", { kind: "rollback" });
+    assert.equal((await ctx.start(["--from-request"]).done).code, 0);
+    assert.equal(ctx.current(), v(b));
+    // 戻したあとも c のフォルダ（previous）をコンテナが使っている——#367 のあとに止まった形
+    ctx.instances([join(ctx.rel, v(c), "banto")]);
+    const { code, out } = await ctx.start(["--now"]).done;
+    assert.equal(code, 0, out);
+    assert.equal(ctx.state().kind, "update");
+    assert.equal(ctx.state().result, `${c.slice(0, 12)} に更新しました`);
+    assert.equal(ctx.current(), v(c));
+    assert.equal(ctx.builds(), 2, "一度動いた版を組み立て直した");
+  });
+});
+
+test("片づけ：今の版（current の実体）と記録の新しい2つと previous を残す", T, async () => {
+  await withRelease(async (ctx) => {
+    const { b, c } = await upToC(ctx);
+    const d = ctx.commit("四つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    const e = ctx.commit("五つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    const name = (x) => x.slice(0, 12);
+    assert.deepEqual(ctx.history(), [e, d, c, b, ctx.first]);
+    assert.deepEqual(ctx.versions(), [c, d, e].map(name).sort(), "3つ残っていない");
+
+    // host が新しい版を記録に書くより先に片づけが走った——今の版は current から数える（記録の先頭の e は2つのうちに入る）
+    rmSync(join(ctx.fake, "record-history"));
+    const f = ctx.commit("六つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    assert.deepEqual(ctx.versions(), [d, e, f].map(name).sort());
+
+    // previous（f）が記録に無くても残す
+    ctx.writeHistory([e, d]);
+    const g = ctx.commit("七つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    assert.equal(ctx.previous(), v(f));
+    assert.deepEqual(ctx.versions(), [d, e, f, g].map(name).sort());
+
+    // 記録が読めなければ何も消さない
+    writeFileSync(join(ctx.updateDir, "history.json"), "{こわれた");
+    const h = ctx.commit("八つ目");
+    assert.equal((await ctx.start(["--now"]).done).code, 0);
+    assert.deepEqual(ctx.versions(), [d, e, f, g, h].map(name).sort());
+    assert.match(readFileSync(ctx.state().logFile, "utf8"), /動いた版の記録.*を読めないので、古い版は消しません/);
+  });
+});
+
+test("起きなかった版は記録から抜く——戻す前の版に起こし直して確かめたあとで。戻しても起きなかった（failed/verify）回でも", T, async () => {
+  await withRelease(async (ctx) => {
+    ctx.fakeMark("record-history");
+    const b = ctx.commit("起きない版", { broken: true });
+    assert.equal((await ctx.start(["--now"]).done).code, 1);
+    assert.equal(ctx.state().phase, "rolled-back");
+    assert.deepEqual(ctx.history(), [ctx.first], "起きなかった版が記録に残っている");
+    // 戻す前の版へ restart した時点では、まだ抜いていない（host が書いた b が載ったまま）
+    const atSecondRestart = JSON.parse(readFileSync(join(ctx.fake, "history-at-restart-2"), "utf8")).versions.map((x) => x.commit);
+    assert.deepEqual(atSecondRestart, [b, ctx.first]);
+    assert.match(readFileSync(ctx.state().logFile, "utf8"), new RegExp(`起きなかった版 ${b} を動いた版の記録から抜きました`));
+
+    // 画面の口が答えない——新しい版も、戻した版も確かめられない
+    const c = ctx.commit("三つ目");
+    ctx.host.uiStatus = 500;
+    assert.equal((await ctx.start(["--now"]).done).code, 1);
+    const s = ctx.state();
+    assert.equal(s.phase, "failed", JSON.stringify(s));
+    assert.equal(s.failedPhase, "verify");
+    assert.ok(!ctx.history().includes(c), "戻しても起きなかった回で、起きなかった版が記録に残っている");
+    assert.equal(ctx.history()[0], ctx.first);
+  });
 });

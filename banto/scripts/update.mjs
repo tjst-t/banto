@@ -13,8 +13,16 @@
 //   node update.mjs --commit <sha>      # release から辿れる、その commit にする
 //   node update.mjs --first --commit <sha>
 //                                       # 初めて入れる（current が無い）。待たない・戻す先が無い・起こすのは install.sh
+//   node update.mjs --rollback <sha>    # この機械で動いた版（history.json にある版）に戻す。早送りでなくても・release から
+//                                       # 辿れなくてもよい（--from-request・--commit・--first とは一緒に使えない）
 //   node update.mjs --dry-run           # 取ってきて、何をするかを出すだけ（組み立てない・何も書かない）
 //   --wait-timeout <分>                 # 待つ段の上限（既定は無し）。越えたら「やめる」と同じに片づけて cancelled
+//
+// **戻す**（決定・2026-10-19、アーキ仕様 §2.5「前の版に戻す」）：頼みの `kind` が無ければ更新、`"rollback"` なら戻す。
+// それ以外の値は断る（綴り違い・将来の値を更新として扱わない）。戻すときは行き先が `history.json` にあることを確かめ、
+// 早送りか・release から辿れるかは見ない。**一度動いた版のフォルダはそのまま使う**（更新でも）——`versions/<頭12>` の
+// HEAD が行き先と同じ・記録にある・組み立てた印（BUILT_MARKS）が揃っている版。作りかけ（building）に入れず、空きも見ず、
+// 戻すときは fetch もしない（GitHub に届かなくても戻れるように）。
 //
 // **`--from-request` の無いときは request.json を使わない**——unit が頼み無しで起きた（人が systemctl start した等）
 // ときに、人が一覧を見ていない release の最新を入れないため。逆に unit は頼みが無ければ何もしない。
@@ -24,7 +32,7 @@
 //   （repo.git の worktree、detached）・current → versions/…（動かす版）・previous → versions/…（戻す先）
 //
 // 書くもの（<dataDir>/update/）：
-//   state.json   { id, phase: "fetch"|"build"|"wait"|"restart"|"verify"|"done"|"failed"|"rolled-back"|"cancelled",
+//   state.json   { id, kind: "update"|"rollback", phase: "fetch"|"build"|"wait"|"restart"|"verify"|"done"|"failed"|"rolled-back"|"cancelled",
 //                  mode, from, to, startedAt, updatedAt,
 //                  waiting?（待っている間の残り：{ blocking（activity の待つもの）, continuing（起き直したあと続くものの数）}）,
 //                  note?（いま止まっている理由。例「host が答えません」）, result?, error?, failedPhase?, logFile,
@@ -32,6 +40,7 @@
 //                  prebuilt?（組み立て済みを使ったか：{ status: "checking"|"waiting"|"downloading"|"used"|"skipped", run?, reason?,
 //                             bytes?: { done, total } }。scripts/prebuilt.mjs） }
 //   <id>.log     この回のログ（子プロセスの出力もそのまま）
+//   history.json 動いた版の記録（書くのは host）。ここが書くのは1つだけ——段5で起きなかった版を抜く（戻す前の版の確かめのあと）
 // 見るもの（host が置く印。数秒おき）：cancel（取ってくる・組み立てる・待つのをやめる。作りかけは消す）・
 //   force-now（待たずに起こし直す）
 //
@@ -41,6 +50,8 @@
 //     「新しいホストへのインストール」）
 //   - release の refspec：ここの FETCH_REFSPEC・`setup-update.sh` の FETCH_REFSPEC・`self-update.ts` の FETCH_REFSPEC・
 //     install.sh（作成中）。release 以外を取るように変えるなら、全部を
+//   - `history.json` の形（`{ versions: [{ commit, firstStartedAt, lastStartedAt }] }`）と並べ方（lastStartedAt の新しい順、
+//     null は後ろ）：ここの readHistory・sortHistory と `self-update.ts` の HistoryEntry・readHistory・sortHistory
 //   - 画面の口：`setup-update.sh` が banto-frontend.service から読んで、`banto-update.service` に
 //     BANTO_UPDATE_UI_URL として書く。ここはそれを読むだけ
 //   - `GET /api/admin/update` の `current.commit`：確かめ（verify）と「今の版」の突き合わせに使う。**前の版の
@@ -102,6 +113,11 @@ const UPDATE_UNIT = "banto-update.service";
 const VERIFY_TIMEOUT_S = 600;
 /** git fetch の上限（秒）。これも計測していない（普段は数秒）。GitHub が返らないまま止まり続けないための線 */
 const FETCH_TIMEOUT_S = 600;
+/**
+ * **組み立てた印**——3つが在れば、その版のフォルダは組み立て済み（アーキ仕様 §2.5「前の版に戻す」）。欠けていれば
+ * （片づけの rm が途中で殺された等）作りかけとして今どおり消して作り直す
+ */
+const BUILT_MARKS = ["banto/node_modules", "banto/packages/core/dist", "banto/apps/frontend/.next"];
 
 // ───────────── 入力 ─────────────
 
@@ -120,6 +136,7 @@ const configPath =
 const first = flag("--first");
 const dryRun = flag("--dry-run");
 const fromRequest = flag("--from-request");
+const rollbackFlag = flag("--rollback");
 
 // 設定が読めなくても、ここでは止まらない——そのことを state.json に書くため（画面から頼んだのに黙って何も起きない、を作らない）。
 // 書く場所（dataDir）が設定に依るので、読めなければ既定の場所に書く（分かる範囲で）
@@ -142,6 +159,7 @@ const versionsDir = join(releaseDir, "versions");
 const currentLink = join(releaseDir, "current");
 const previousLink = join(releaseDir, "previous");
 const updateDir = join(dataDir, "update");
+const historyPath = join(updateDir, "history.json");
 
 const systemctl = option("--systemctl", "BANTO_UPDATE_SYSTEMCTL", "systemctl");
 const incus = option("--incus", "BANTO_UPDATE_INCUS", "incus");
@@ -434,6 +452,89 @@ function versionsInUse() {
   return { used };
 }
 
+/**
+ * **動いた版の記録**（`history.json`、書くのは host）。`{ versions }`（読んだままの項目）、無ければ `{ missing: true }`、
+ * 読めない・形が違えば `{ error }`。形の確かめは `self-update.ts` の readHistory と同じ
+ */
+function readHistory() {
+  let text;
+  try {
+    text = readFileSync(historyPath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") return { missing: true };
+    return { error: errorText(err) };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { error: `JSON として読めません（${errorText(err)}）` };
+  }
+  const versions = parsed?.versions;
+  if (!Array.isArray(versions)) return { error: "versions の並びがありません" };
+  const isTime = (t) => t === null || typeof t === "string";
+  for (const v of versions) {
+    if (!v || typeof v.commit !== "string" || !/^[0-9a-f]{40}$/.test(v.commit) || !isTime(v.firstStartedAt) || !isTime(v.lastStartedAt)) {
+      return { error: `形の違う項目があります：${JSON.stringify(v)}` };
+    }
+  }
+  return { versions };
+}
+
+/** `lastStartedAt` の新しい順（null は後ろ）。`self-update.ts` の sortHistory と同じ */
+function sortHistory(versions) {
+  return [...versions].sort((a, b) => {
+    if (a.lastStartedAt === b.lastStartedAt) return 0;
+    if (a.lastStartedAt === null) return 1;
+    if (b.lastStartedAt === null) return -1;
+    return a.lastStartedAt < b.lastStartedAt ? 1 : -1;
+  });
+}
+
+/**
+ * **起きなかった版を記録から抜く**（`history.json` で update.mjs が書く唯一の所）。host は起動の途中、待ち受けの前に
+ * 記録を書くので、そのあと画面の口が答えない・unit が落ちた版も載っている——抜かないと戻す先の一覧に出て、残す3つの数にも入る。
+ * 呼ぶのは戻す前の版への起こし直しと確かめのあと（新しい版の host が遅れて書き戻さないように）。読めない・書けなければログだけ
+ */
+function dropFromHistory(commit) {
+  const history = readHistory();
+  if (history.missing) return log(`動いた版の記録（${historyPath}）が無いので、起きなかった版を抜くものはありません`);
+  if (history.error) return log(`動いた版の記録（${historyPath}）を読めないので、起きなかった版 ${commit} を抜けません：${history.error}`);
+  if (!history.versions.some((v) => v.commit === commit)) return log(`起きなかった版 ${commit} は動いた版の記録に載っていません`);
+  try {
+    writeAtomic(historyPath, JSON.stringify({ versions: history.versions.filter((v) => v.commit !== commit) }, null, 2));
+    log(`起きなかった版 ${commit} を動いた版の記録から抜きました`);
+  } catch (err) {
+    log(`動いた版の記録（${historyPath}）に書けず、起きなかった版 ${commit} を抜けませんでした：${errorText(err)}`);
+  }
+}
+
+/** `repo.git` の worktree ごとの HEAD（本当のパス → commit） */
+function worktreeHeads() {
+  const heads = new Map();
+  let path;
+  for (const line of gitRepoOk(["worktree", "list", "--porcelain"]).split("\n")) {
+    if (line.startsWith("worktree ")) path = realpathOrNull(line.slice("worktree ".length));
+    else if (line.startsWith("HEAD ") && path) heads.set(path, line.slice("HEAD ".length));
+  }
+  return heads;
+}
+
+/**
+ * **一度動いた版のフォルダか**——作り直さずにそのまま使ってよいか。`versions/<頭12>` があり、その HEAD が `commit` で、
+ * 動いた版の記録にあり、組み立てた印が揃っていること。使えれば `{ ok: true }`、使えなければ `{ reason }`
+ */
+function reusableVersion(dir, commit, history) {
+  if (!existsSync(dir)) return { reason: "この機械にありません" };
+  const head = worktreeHeads().get(realpathOrNull(dir));
+  if (head !== commit) return { reason: `${dir} の HEAD が ${head ?? "分かりません（repo.git の worktree に無い）"}` };
+  if (history.error) return { reason: `動いた版の記録を読めません（${history.error}）` };
+  if (!history.versions?.some((v) => v.commit === commit)) return { reason: "動いた版の記録にありません" };
+  const missing = BUILT_MARKS.filter((m) => !existsSync(join(dir, m)));
+  if (missing.length > 0) return { reason: `組み立てた印（${missing.join("・")}）が欠けています` };
+  return { ok: true };
+}
+
 /** 作りかけ・古い版を消す。今の版と前の版は消さない */
 function removeVersion(dir) {
   const real = realpathOrNull(dir) ?? dir;
@@ -715,9 +816,12 @@ if (!dryRun) await acquireLock();
 let request;
 let setupError = configError;
 const requestPath = join(updateDir, "request.json");
-const cliTarget = flag("--commit") || flag("--now") || first;
+const cliTarget = flag("--commit") || flag("--now") || first || rollbackFlag;
+const rollbackArg = option("--rollback", undefined, undefined);
+if (rollbackFlag && (fromRequest || flag("--commit") || first)) setupError ??= "--rollback は --from-request・--commit・--first と一緒に使えません";
+else if (rollbackFlag && !/^[0-9a-f]{7,40}$/.test(rollbackArg ?? "")) setupError ??= "--rollback には戻す版の commit（7〜40文字の id）を付けてください";
 if (fromRequest) {
-  if (cliTarget) setupError ??= "--from-request は --commit・--now・--first と一緒に使えません";
+  if (cliTarget) setupError ??= "--from-request は --commit・--now・--first・--rollback と一緒に使えません";
   else if (!existsSync(requestPath)) {
     setupError ??=
       `頼み（${requestPath}）がありません。画面から頼まれずに ${UPDATE_UNIT} が起きたので、何もしません` +
@@ -727,6 +831,8 @@ if (fromRequest) {
       request = JSON.parse(readFileSync(requestPath, "utf8"));
       if (typeof request?.commit !== "string" || !/^[0-9a-f]{40}$/.test(request.commit)) throw new Error("commit（40文字の id）がありません");
       if (request.mode !== "wait" && request.mode !== "now") throw new Error('mode が "wait" でも "now" でもありません');
+      // 知らない値を更新として扱わない（綴り違い・将来の値）
+      if (request.kind !== undefined && request.kind !== "rollback") throw new Error(`kind（${JSON.stringify(request.kind)}）を知りません（無し＝更新か "rollback"＝戻す）`);
     } catch (err) {
       setupError ??= `頼み（${requestPath}）を読めません：${errorText(err)}`;
     }
@@ -739,12 +845,14 @@ if (fromRequest) {
 const startedAt = new Date().toISOString();
 const id = String(request?.id ?? `${fromRequest ? "unit" : "cli"}-${startedAt.replace(/[:.]/g, "-")}`).replace(/[^A-Za-z0-9._-]/g, "_");
 const mode = first || flag("--now") ? "now" : (request?.mode ?? "wait");
-const commitArg = request?.commit ?? option("--commit", undefined, undefined);
+const kind = rollbackFlag || request?.kind === "rollback" ? "rollback" : "update";
+const commitArg = request?.commit ?? (rollbackFlag ? rollbackArg : option("--commit", undefined, undefined));
 // 誰が頼んだかは、人に見せる名前だけ写す（セッションの id は state.json に残さない）
 const requestedByLabel = typeof request?.requestedBy?.label === "string" ? request.requestedBy.label : undefined;
 logFile = join(updateDir, `${id}.log`);
 state = {
   id,
+  kind,
   phase: "fetch",
   mode,
   from: null,
@@ -763,7 +871,7 @@ async function run() {
   if (setupError) fail(setupError);
 
   // ── 1. 取ってくる ──
-  log(`更新を始めます（${id}・${mode === "now" ? "すぐ" : "空くまで待つ"}${first ? "・初めて入れる" : ""}）`);
+  log(`${kind === "rollback" ? "戻します" : "更新を始めます"}（${id}・${mode === "now" ? "すぐ" : "空くまで待つ"}${first ? "・初めて入れる" : ""}）`);
   if (!existsSync(repo)) fail(`${repo} がありません（置き場を整えるのは setup-update.sh か install.sh）`);
   let from = null;
   if (existsSync(currentLink)) {
@@ -797,41 +905,92 @@ async function run() {
     if (typeof ui === "string") uiUrl = ui;
     else if (!dryRun) fail(ui.error);
   }
-  log(`今の版：${from ?? "（無し）"}。${remote} から release を取ってきます`);
-  await runStep("git", ["--git-dir", repo, "fetch", "--no-tags", remote, FETCH_REFSPEC], releaseDir, { timeoutMs: fetchTimeoutMs });
-  const release = gitRepoOk(["rev-parse", "--verify", `${RELEASE_REF}^{commit}`]);
-  let to = release;
-  if (commitArg) {
-    const r = gitRepo(["rev-parse", "--verify", "-q", `${commitArg}^{commit}`]);
-    if (r.status !== 0) fail(`${commitArg} が見つかりません`);
-    to = r.stdout.trim();
-  }
-  if (gitRepo(["merge-base", "--is-ancestor", to, release]).status !== 0) fail(`${to} は release（${release}）から辿れません`);
-  if (from && from === to) {
-    finish({ to, phase: "done", result: "もうこの版で動いています" });
-    log("もうこの版で動いています");
-    return 0;
-  }
-  if (from && gitRepo(["merge-base", "--is-ancestor", from, to]).status !== 0) {
-    fail(`今の版（${from}）が ${to} の祖先ではありません（早送りで済みません）。更新しません`);
-  }
-  setState({ to });
-  const newDir = join(versionsDir, to.slice(0, 12));
-
-  if (dryRun) {
-    const commits = from ? gitRepoOk(["log", "--format=%h %s", `${from}..${to}`, "--"]) : "（初めて入れる）";
-    console.log(`\n今の版：${from ?? "（無し）"}\n新しい版：${to}\n入るコミット：\n${commits}\n`);
-    let preview = "使いません（--no-prebuilt）";
-    if (!noPrebuilt) {
-      try {
-        const mod = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "prebuilt.mjs")).href);
-        preview = await mod.previewPrebuilt({ commit: to, originUrl: prebuiltBase ? undefined : originUrl(), prebuiltBase });
-      } catch (err) {
-        preview = `分かりません（prebuilt.mjs を読めません：${errorText(err)}）`;
+  const history = readHistory();
+  const fetchRelease = async () => {
+    log(`今の版：${from ?? "（無し）"}。${remote} から release を取ってきます`);
+    await runStep("git", ["--git-dir", repo, "fetch", "--no-tags", remote, FETCH_REFSPEC], releaseDir, { timeoutMs: fetchTimeoutMs });
+  };
+  let to;
+  let newDir;
+  /** 一度動いた版のフォルダをそのまま使えるか（`{ ok }` か `{ reason }`） */
+  let reuse;
+  if (kind === "rollback") {
+    // 戻す：早送りか・release から辿れるかは見ない（release が書き換えられたあとでも、一度動いた版には戻れるように）。
+    // 代わりに行き先が動いた版の記録にあることを確かめる（host が確かめたものを、ここでももう一度）
+    if (history.missing) fail(`動いた版の記録（${historyPath}）が無いので、戻せる版が分かりません。戻しません`);
+    if (history.error) fail(`動いた版の記録（${historyPath}）を読めないので、戻せる版が分かりません：${history.error}。戻しません`);
+    const found = history.versions.filter((v) => v.commit.startsWith(commitArg));
+    if (found.length === 0) fail(`${commitArg} はこの機械で動いた版の記録にありません（戻せるのは一度動いた版だけです）`);
+    if (found.length > 1) fail(`${commitArg} に当たる版が記録に ${found.length} つあります。もっと長い id で指してください`);
+    to = found[0].commit;
+    if (from && from === to) {
+      finish({ to, phase: "done", result: "もうこの版で動いています" });
+      log("もうこの版で動いています");
+      return 0;
+    }
+    newDir = join(versionsDir, to.slice(0, 12));
+    reuse = reusableVersion(newDir, to, history);
+    if (reuse.ok) log(`${to} は一度動いた版のフォルダがこの機械にあるので、取ってこずにそのまま使います`);
+    else {
+      log(`${to} のフォルダはそのままは使えません（${reuse.reason}）`);
+      await fetchRelease();
+      if (gitRepo(["cat-file", "-e", `${to}^{commit}`]).status !== 0) {
+        fail(`${to} は GitHub の release から消えたので取ってこられません（この機械にも残っていません）`);
       }
     }
-    console.log(`組み立て済み：${preview}`);
-    console.log(`組み立てる：${newDir}（${buildOverride ?? "npm ci --include=dev && npm run build"}）`);
+  } else {
+    await fetchRelease();
+    const release = gitRepoOk(["rev-parse", "--verify", `${RELEASE_REF}^{commit}`]);
+    to = release;
+    if (commitArg) {
+      const r = gitRepo(["rev-parse", "--verify", "-q", `${commitArg}^{commit}`]);
+      if (r.status !== 0) fail(`${commitArg} が見つかりません`);
+      to = r.stdout.trim();
+    }
+    if (gitRepo(["merge-base", "--is-ancestor", to, release]).status !== 0) fail(`${to} は release（${release}）から辿れません`);
+    if (from && from === to) {
+      finish({ to, phase: "done", result: "もうこの版で動いています" });
+      log("もうこの版で動いています");
+      return 0;
+    }
+    if (from && gitRepo(["merge-base", "--is-ancestor", from, to]).status !== 0) {
+      fail(`今の版（${from}）が ${to} の祖先ではありません（早送りで済みません）。更新しません`);
+    }
+    newDir = join(versionsDir, to.slice(0, 12));
+    // 更新でも、一度動いた版のフォルダ（戻したあとの残り等）は作り直さない——コンテナが使っていても止まらない。
+    // 記録が読めなければ「記録に無い」として今どおり作り直す
+    reuse = reusableVersion(newDir, to, history);
+  }
+  setState({ to });
+  const buildCommand = buildOverride ?? "npm ci --include=dev && npm run build";
+
+  if (dryRun) {
+    const commitsOf = (range) => {
+      const r = gitRepo(["log", "--format=%h %s", range, "--"]);
+      return r.status === 0 ? r.stdout.trim() || "（無し）" : `（読めません：${(r.stderr || "").trim()}）`;
+    };
+    if (kind === "rollback") {
+      console.log(`\n今の版：${from}\n戻す先：${to}\n抜けるコミット：\n${commitsOf(`${to}..${from}`)}\n入るコミット：\n${commitsOf(`${from}..${to}`)}\n`);
+    } else {
+      const commits = from ? commitsOf(`${from}..${to}`) : "（初めて入れる）";
+      console.log(`\n今の版：${from ?? "（無し）"}\n新しい版：${to}\n入るコミット：\n${commits}\n`);
+    }
+    if (reuse.ok) {
+      // そのまま使うときは組み立て済みを取りに行かない（段2と同じ順）ので、有無も見ない
+      console.log(`そのまま使う：${newDir}（一度動いた版のフォルダ。組み立てない・組み立て済みも取ってこない・空きも見ない）`);
+    } else {
+      let preview = "使いません（--no-prebuilt）";
+      if (!noPrebuilt) {
+        try {
+          const mod = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "prebuilt.mjs")).href);
+          preview = await mod.previewPrebuilt({ commit: to, originUrl: prebuiltBase ? undefined : originUrl(), prebuiltBase });
+        } catch (err) {
+          preview = `分かりません（prebuilt.mjs を読めません：${errorText(err)}）`;
+        }
+      }
+      console.log(`組み立て済み：${preview}`);
+      console.log(`組み立てる：${newDir}（${buildCommand}。そのままは使えない：${reuse.reason}）`);
+    }
     if (!first) {
       console.log(mode === "wait" ? "待つ：動いているものが無くなるまで" : "待たない");
       console.log(`起こし直す：${systemctl} restart ${units.join(" ")}（current → ${newDir}・previous → ${fromDir}）`);
@@ -846,33 +1005,38 @@ async function run() {
   mkdirSync(versionsDir, { recursive: true });
   // 手で消された版の登録が残っていると、同じ場所への worktree add が断られる
   gitRepoOk(["worktree", "prune"]);
-  if (existsSync(newDir)) {
-    const inUse = versionsInUse();
-    const users = inUse.used?.get(basename(newDir));
-    if (inUse.error) {
-      fail(
-        `${newDir} が残っています（前の回の作りかけか、戻した版）。Incus に聞けないので、消して作り直してよいか分かりません` +
-          `（${inUse.error}）。Incus に届くようにしてから頼み直すか、どのコンテナもこの版を mount していないと確かめてから ` +
-          `git --git-dir ${repo} worktree remove --force ${newDir} で消してください`,
-      );
-    }
-    if (users) fail(`${newDir} が残っていて、コンテナ（${users.join("・")}）がまだ使っています。Project を開き直してから頼み直してください`);
-    log(`${newDir} が残っています（前の回の作りかけか、戻した版）。消してから作り直します`);
-    removeVersion(newDir);
-  }
-  checkDiskSpace(fromDir);
-  building = newDir;
-  gitRepoOk(["worktree", "add", "--detach", newDir, to]);
-  const bantoDir = join(newDir, "banto");
-  if (await tryPrebuilt(to, newDir)) {
-    log("組み立て済みの版を使います（その場では組み立てません）");
+  if (reuse.ok) {
+    // 作りかけ（building）に入れない——やめた・落ちたときに消すと、一度動いた版が消える。新しく書くものが無いので空きも見ない
+    log(`一度動いた版のフォルダ ${newDir} をそのまま使います（組み立てません）`);
   } else {
-    if (buildOverride) await runStep("sh", ["-c", buildOverride], bantoDir);
-    else {
-      await runStep("npm", ["ci", "--include=dev"], bantoDir);
-      await runStep("npm", ["run", "build"], bantoDir);
+    if (existsSync(newDir)) {
+      const inUse = versionsInUse();
+      const users = inUse.used?.get(basename(newDir));
+      if (inUse.error) {
+        fail(
+          `${newDir} が残っています（前の回の作りかけか、戻した版）。Incus に聞けないので、消して作り直してよいか分かりません` +
+            `（${inUse.error}）。Incus に届くようにしてから頼み直すか、どのコンテナもこの版を mount していないと確かめてから ` +
+            `git --git-dir ${repo} worktree remove --force ${newDir} で消してください`,
+        );
+      }
+      if (users) fail(`${newDir} が残っていて、コンテナ（${users.join("・")}）がまだ使っています。Project を開き直してから頼み直してください`);
+      log(`${newDir} が残っています（前の回の作りかけか、戻した版）が、そのままは使えません（${reuse.reason}）。消してから作り直します`);
+      removeVersion(newDir);
     }
-    log("組み立てました");
+    checkDiskSpace(fromDir);
+    building = newDir;
+    gitRepoOk(["worktree", "add", "--detach", newDir, to]);
+    const bantoDir = join(newDir, "banto");
+    if (await tryPrebuilt(to, newDir)) {
+      log("組み立て済みの版を使います（その場では組み立てません）");
+    } else {
+      if (buildOverride) await runStep("sh", ["-c", buildOverride], bantoDir);
+      else {
+        await runStep("npm", ["ci", "--include=dev"], bantoDir);
+        await runStep("npm", ["run", "build"], bantoDir);
+      }
+      log("組み立てました");
+    }
   }
 
   // ── 3. 待つ ──
@@ -971,8 +1135,9 @@ async function run() {
     log("新しい版が起きました。古い版を片づけます");
     setState({ note: "古い版を片づけています" });
     cleanUpOldVersions();
-    finish({ phase: "done", result: `${to.slice(0, 12)} に更新しました`, note: undefined });
-    log("更新しました");
+    const result = kind === "rollback" ? `版 ${to.slice(0, 12)} に戻しました` : `${to.slice(0, 12)} に更新しました`;
+    finish({ phase: "done", result, note: undefined });
+    log(result);
     return 0;
   }
   log(`新しい版が起きません：${checked.detail}。前の版に戻します`);
@@ -981,6 +1146,9 @@ async function run() {
   const back = againError ? { ok: false, detail: againError } : await verify(from, uiUrl);
   // 起きなかった版はすぐには消さない（何が起きたかを見られるように）。次の回が作りかけとして片づける
   log(`起きなかった版は ${newDir} に残します（次の回が片づけます）`);
+  // 戻す前の版への起こし直しと確かめが終わってから抜く——新しい版の host はもう止まっていて、遅れて書き戻さない。
+  // 戻しても起きなかった（failed）回でも抜く（その版も動いた版ではない）
+  dropFromHistory(to);
   if (back.ok) {
     finish({ phase: "rolled-back", failedPhase: "verify", error: checked.detail, result: "前の版に戻しました" });
     log("前の版に戻しました");
@@ -995,10 +1163,27 @@ async function run() {
   return 1;
 }
 
-/** previous より古い版を消す。コンテナがまだ mount している版は残す（次の回にまた見る）。Incus に聞けなければ何も消さない */
+/**
+ * **古い版を消す——機械に残す版は3つ**（アーキ仕様 §2.5「前の版に戻す」）：今の版（`current` の実体。host が新しい版を
+ * 記録に書くより先に走ることがあるので、記録からは取らない）と、動いた版の記録の新しい順に今の版を除いた2つ。`previous` は
+ * 記録に無くても残す。記録は載っているまま数える。記録が読めなければ何も消さない。コンテナがまだ mount している版は残す
+ * （次の回にまた見る）。Incus に聞けなければ何も消さない
+ */
 function cleanUpOldVersions() {
-  const keep = new Set([realpathOrNull(currentLink), realpathOrNull(previousLink)]);
-  // `.` で始まるもの（組み立て済みの作業フォルダ `.prebuilt-*`）は版ではない——次の回の段2が片づける
+  const history = readHistory();
+  if (history.error) {
+    log(`動いた版の記録（${historyPath}）を読めないので、古い版は消しません。次の回にまた見ます：${history.error}`);
+    return;
+  }
+  const current = realpathOrNull(currentLink);
+  const keep = new Set([current, realpathOrNull(previousLink)]);
+  const recent = sortHistory(history.versions ?? [])
+    .map((v) => join(versionsDir, v.commit.slice(0, 12)))
+    .filter((dir) => (realpathOrNull(dir) ?? dir) !== current)
+    .slice(0, 2);
+  for (const dir of recent) keep.add(realpathOrNull(dir) ?? dir);
+  // `.` で始まるもの（組み立て済みの作業フォルダ `.prebuilt-*`）は版ではない——次に組み立て済みを取りに行く回
+  // （prebuilt.mjs の初め）が片づける。一度動いた版をそのまま使う回は取りに行かないので、そこでは残る
   const old = readdirSync(versionsDir).filter((name) => !name.startsWith(".") && !keep.has(realpathOrNull(join(versionsDir, name))));
   if (old.length === 0) return;
   const inUse = versionsInUse();
