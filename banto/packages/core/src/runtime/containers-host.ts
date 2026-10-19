@@ -259,8 +259,11 @@ interface PrepareStep {
   id: string;
   label: string;
   done(state: ContainersHostState): boolean;
-  /** 済んでいないときに打つもの（sudo の後ろ）。打てないなら理由を返す */
-  commands(state: ContainersHostState): Promise<StepCommand[] | Blocked | AfterEarlier>;
+  /**
+   * 済んでいないときに打つもの（sudo の後ろ）。打てないなら理由を返す。`forPerson` なら、Incus がまだ無くても入れたあとに打つ
+   * ものを返す（sudo -n が通らない相手に、人が打つコマンドを見せるため）
+   */
+  commands(state: ContainersHostState, forPerson?: boolean): Promise<StepCommand[] | Blocked | AfterEarlier>;
 }
 
 export interface PrepareOptions {
@@ -279,8 +282,8 @@ const incusFresh = (s: ContainersHostState) =>
 function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
   const project = projectNameOf(vm.uid);
   const channel = incusChannelOf(vm.os);
-  const needsIncus = (s: ContainersHostState): AfterEarlier | Blocked | undefined => {
-    if (s.incus.status !== "missing" && incusFresh(s)) return undefined;
+  const needsIncus = (s: ContainersHostState, forPerson?: boolean): AfterEarlier | Blocked | undefined => {
+    if (forPerson || (s.incus.status !== "missing" && incusFresh(s))) return undefined;
     return channel ? { after: "Incus を入れたあとに整えます。" } : { manual: "Incus が入っていません（上の Incus を入れてから）。", fix: "（上の Incus を入れてから）" };
   };
   return [
@@ -306,8 +309,8 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       id: "incus-project",
       label: `自分の区画（${project}）でコンテナを作れる`,
       done: (s) => s.incus.status === "ok" && s.incus.project === project,
-      commands: async (s) => {
-        const pending = needsIncus(s);
+      commands: async (s, forPerson) => {
+        const pending = needsIncus(s, forPerson);
         if (pending) return pending;
         const out: StepCommand[] = [];
         // incus-admin に入っていると、制限の無い管理の口に繋ぐ——外して incus グループだけにする（決定・2026-10-19、案A）
@@ -341,7 +344,7 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       id: "incus-proxy",
       label: `区画で proxy device を使える（restricted.devices.proxy=allow）`,
       done: (s) => !!s.projectConfig && (!restricted(s) || s.projectConfig["restricted.devices.proxy"] === "allow"),
-      commands: async (s) => needsIncus(s) ?? [{ args: ["incus", "project", "set", project, "restricted.devices.proxy=allow"] }],
+      commands: async (s, forPerson) => needsIncus(s, forPerson) ?? [{ args: ["incus", "project", "set", project, "restricted.devices.proxy=allow"] }],
     },
     {
       id: "incus-idmap",
@@ -352,8 +355,8 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
         !!s.projectConfig &&
         (!restricted(s) ||
           (idRangesInclude(s.projectConfig["restricted.idmap.uid"], vm.uid) && idRangesInclude(s.projectConfig["restricted.idmap.gid"], vm.gid))),
-      commands: async (s) => {
-        const pending = needsIncus(s);
+      commands: async (s, forPerson) => {
+        const pending = needsIncus(s, forPerson);
         if (pending) return pending;
         const out: StepCommand[] = [];
         if (!s.subuid) out.push({ args: ["usermod", "--add-subuids", `${vm.uid}-${vm.uid}`, "root"] });
@@ -376,8 +379,8 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       id: "incus-pool",
       label: `コンテナの置き場（btrfs の ${BANTO_POOL}）`,
       done: (s) => s.pool,
-      commands: async (s) => {
-        const pending = needsIncus(s);
+      commands: async (s, forPerson) => {
+        const pending = needsIncus(s, forPerson);
         if (pending) return pending;
         // この機械の install.sh と同じ選び方：/var/lib/incus が btrfs ならその中、でなければ大きさを決めたファイル
         const fs = (await vm.run(["findmnt", "-no", "FSTYPE", "--target", "/var/lib/incus"])).stdout.trim();
@@ -423,13 +426,20 @@ export async function evaluateContainersHost(
     }
     const plan = await step.commands(state);
     if ("after" in plan) {
-      // 前の項目（Incus を入れる）が済めば整える
+      // 前の項目（Incus を入れる）が済めば整える。整えられないなら、Incus を入れたあとに人が打つものを見せる
       needsRoot = true;
-      checks.push(
-        mode === "check" && state.sudo
-          ? { id: step.id, label, status: "warn", detail: plan.after, autoFix: true }
-          : { id: step.id, label, status: "fail", detail: "Incus が入っていません。", fix: "（上の Incus を入れてから）" },
-      );
+      if (mode === "check" && state.sudo) {
+        checks.push({ id: step.id, label, status: "warn", detail: plan.after, autoFix: true });
+        continue;
+      }
+      const later = await step.commands(state, true);
+      checks.push({
+        id: step.id,
+        label,
+        status: "fail",
+        detail: `Incus が入っていません。${mode === "check" ? "sudo -n が通らないので、banto は整えられません。Incus を入れたあとに向こうで打ってください。" : "設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で整えます。"}`,
+        fix: Array.isArray(later) ? later.map(displayOf).join("\n") : "（上の Incus を入れてから）",
+      });
       continue;
     }
     if (!Array.isArray(plan)) {
