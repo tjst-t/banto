@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -20,7 +20,7 @@ import { AuthStore } from "../auth/store.js";
 import { AuthService, SESSION_COOKIE } from "../auth/service.js";
 import { writeLoginLink } from "../auth/login-links.js";
 import { SoftAuthenticator } from "../auth/soft-authenticator.js";
-import { runCommand, SelfUpdate, UPDATE_UNIT, type CommandRunner } from "./self-update.js";
+import { listenAfterRecordingVersion, runCommand, SelfUpdate, SELF_UPDATE_SOURCE, UPDATE_UNIT, type CommandRunner } from "./self-update.js";
 
 const UI = "http://localhost:4175";
 const TOKEN = "machine-token";
@@ -47,9 +47,21 @@ interface Ctx {
   dataDir: string;
   releaseDir: string;
   systemd: FakeSystemd;
-  /** GitHub 役。`commit()` で release を進める */
-  commit(subject: string): string;
+  /**
+   * GitHub 役。`commit()` で release を進める。`api` なら `GET /api/admin/update` を持つ版にする（木に
+   * `SELF_UPDATE_SOURCE` を置く。一度置けば、あとの版にも残る）。最初の版は持たない
+   */
+  commit(subject: string, opts?: { api?: boolean }): string;
   first: string;
+  repo: string;
+  run: CommandRunner;
+  /** `repo.git` に GitHub 役の release を取ってくる */
+  fetch(): void;
+  /** `versions/<commit の頭12文字>` に worktree を足す（`head` を渡せば、そのフォルダの HEAD を別の版にする） */
+  addVersion(commit: string, head?: string): string;
+  /** 別の版のフォルダから動いている host（記録を書く・一覧を読む） */
+  selfUpdateIn(versionDir: string, now: number): SelfUpdate;
+  historyPath: string;
   ui(path: string, init?: { method?: string; body?: unknown; cookie?: string }): Promise<Response>;
   machine(path: string, init?: { method?: string; body?: unknown }): Promise<Response>;
   /** リンクで入る（入った直後の 10 分は本人確認済み） */
@@ -77,8 +89,12 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
   git(github, "commit", "-q", "-m", "最初の版");
   const first = git(github, "rev-parse", "HEAD");
   let n = 0;
-  const commit = (subject: string): string => {
+  const commit = (subject: string, o: { api?: boolean } = {}): string => {
     execFileSync("sh", ["-c", `echo ${++n} >> banto/README`], { cwd: github });
+    if (o.api) {
+      execFileSync("sh", ["-c", `mkdir -p "$(dirname "$1")" && echo api > "$1"`, "sh", SELF_UPDATE_SOURCE], { cwd: github });
+      git(github, "add", ".");
+    }
     git(github, "commit", "-q", "-am", subject);
     return git(github, "rev-parse", "HEAD");
   };
@@ -124,6 +140,7 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
   const inbox = new InboxStore(dataDir, log);
   await inbox.load();
   const store = new AuthStore(dataDir, log, () => clock.now);
+  const selfUpdate = new SelfUpdate({ releaseDir, dataDir, codeDir, run });
   await store.load();
   const server = createApp({
     projectThread,
@@ -134,12 +151,13 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
     agentRelayEndpoint: new AgentRelayEndpoint(TOKEN),
     authToken: TOKEN,
     auth: new AuthService({ store, dataDir, authToken: TOKEN, uiOrigin: UI, apiBaseUrl: "http://localhost:4737", now: () => clock.now }),
-    selfUpdate: new SelfUpdate({ releaseDir, dataDir, codeDir, run }),
+    selfUpdate,
     resolveModulesForThread: async () => [],
     dataDir,
     configDir: dir,
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // 本物の host と同じく、動いた版の記録を書いてから待ち受ける
+  await new Promise<void>((resolve) => void listenAfterRecordingVersion(selfUpdate, () => server.listen(0, "127.0.0.1", resolve)));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const ui: Ctx["ui"] = (path, init = {}) =>
@@ -160,6 +178,16 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
     systemd,
     commit,
     first,
+    repo,
+    run,
+    fetch: () => git(repo, "fetch", "-q", "origin", "+refs/heads/release:refs/remotes/origin/release"),
+    addVersion(c, head) {
+      const d = join(releaseDir, "versions", c.slice(0, 12));
+      git(repo, "worktree", "add", "-q", "--detach", d, head ?? c);
+      return d;
+    },
+    selfUpdateIn: (d, now) => new SelfUpdate({ releaseDir, dataDir, codeDir: join(d, "banto"), run, now: () => now }),
+    historyPath: join(dataDir, "update", "history.json"),
     clock,
     ui,
     machine: (path, init = {}) =>
@@ -207,6 +235,7 @@ async function withUpdate(fn: (ctx: Ctx) => Promise<void>, opts: { codeInVersion
 
 interface StatusBody {
   ready: boolean;
+  rollbackTargets: Array<{ commit: string; subject: string | null; committedAt: string | null; lastStartedAt: string | null; local: boolean; ancestor: boolean }>;
   reasons: string[];
   current: { commit: string; subject: string } | null;
   latest: { commit: string; fastForward: boolean; checkedAt: string | null; commits: Array<{ commit: string; subject: string }> } | null;
@@ -540,5 +569,182 @@ test("頼みと同時に読まれても、確かめの stop が起こした更�
     const started = ctx.systemd.events.indexOf("start");
     assert.ok(started >= 0);
     assert.equal(ctx.systemd.events.lastIndexOf("stop>") < started, true, `start のあとに stop を打った：${ctx.systemd.events.join(",")}`);
+  });
+});
+
+// ───────────── 動いた版の記録・戻す先の一覧（アーキ仕様 §2.5「前の版に戻す」） ─────────────
+
+interface History {
+  versions: Array<{ commit: string; firstStartedAt: string | null; lastStartedAt: string | null }>;
+}
+const readHistory = async (ctx: Ctx) => JSON.parse(await readFile(ctx.historyPath, "utf8")) as History;
+const iso = (ms: number) => new Date(ms).toISOString();
+
+test("待ち受けの前に自分の版を記録に書く——GET に答えた時点で記録がある。置き場が無ければ 0700 で作る", async () => {
+  await withUpdate(async (ctx) => {
+    const res = await ctx.machine("/api/admin/update");
+    assert.equal(res.status, 200);
+    // 答えを受け取った時点で（待たずに）読む
+    const history = await readHistory(ctx);
+    assert.equal(history.versions.length, 1);
+    const [entry] = history.versions;
+    assert.equal(entry?.commit, ctx.first);
+    assert.ok(entry?.lastStartedAt && !Number.isNaN(Date.parse(entry.lastStartedAt)));
+    assert.equal(entry.firstStartedAt, entry.lastStartedAt);
+    assert.equal((await stat(join(ctx.dataDir, "update"))).mode & 0o777, 0o700);
+    const body = (await res.json()) as StatusBody;
+    assert.equal(body.current?.commit, ctx.first);
+    // 今の版は戻す先に出さない
+    assert.deepEqual(body.rollbackTargets, []);
+  });
+});
+
+test("待ち受けるのは記録を書き終えてから（書くのが遅くても先に待ち受けない）", async () => {
+  const order: string[] = [];
+  const fake = {
+    recordStarted: async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      order.push("recorded");
+      return null;
+    },
+  } as unknown as SelfUpdate;
+  await listenAfterRecordingVersion(fake, () => order.push("listen"));
+  assert.deepEqual(order, ["recorded", "listen"]);
+});
+
+test("初めての種：記録が無ければ、今の版と previous が指す版（日時 null）を入れる", async () => {
+  await withUpdate(async (ctx) => {
+    const b = ctx.commit("二つ目", { api: true });
+    const c = ctx.commit("三つ目", { api: true });
+    ctx.fetch();
+    const bDir = ctx.addVersion(b);
+    const cDir = ctx.addVersion(c);
+    await symlink(bDir, join(ctx.releaseDir, "previous"));
+    // 起動のときに書いた最初の版の記録を消す——この機能を持たない版から更新してきた形
+    await rm(ctx.historyPath);
+    const now = ctx.clock.now + 60_000;
+    const su = ctx.selfUpdateIn(cDir, now);
+    assert.equal(await su.recordStarted(), c);
+    assert.deepEqual((await readHistory(ctx)).versions, [
+      { commit: c, firstStartedAt: iso(now), lastStartedAt: iso(now) },
+      { commit: b, firstStartedAt: null, lastStartedAt: null },
+    ]);
+    const status = await su.status();
+    assert.deepEqual(
+      status.rollbackTargets.map((t) => ({ ...t, committedAt: typeof t.committedAt })),
+      [{ commit: b, subject: "二つ目", committedAt: "string", lastStartedAt: null, local: true, ancestor: true }],
+    );
+  });
+});
+
+test("もうある版は lastStartedAt だけを替えて先頭へ。firstStartedAt は残す", async () => {
+  await withUpdate(async (ctx) => {
+    const t0 = ctx.clock.now;
+    const firstDir = join(ctx.releaseDir, "versions", ctx.first.slice(0, 12));
+    // 起動のときの記録（本物の時計）を消して、決まった時刻から始める
+    await rm(ctx.historyPath);
+    await ctx.selfUpdateIn(firstDir, t0).recordStarted();
+    const c = ctx.commit("二つ目", { api: true });
+    ctx.fetch();
+    const cDir = ctx.addVersion(c);
+    const t1 = t0 + 60_000;
+    await ctx.selfUpdateIn(cDir, t1).recordStarted();
+    assert.deepEqual((await readHistory(ctx)).versions, [
+      { commit: c, firstStartedAt: iso(t1), lastStartedAt: iso(t1) },
+      { commit: ctx.first, firstStartedAt: iso(t0), lastStartedAt: iso(t0) },
+    ]);
+    // 手で current を最初の版に戻して起こし直した
+    const t2 = t1 + 60_000;
+    const su = ctx.selfUpdateIn(firstDir, t2);
+    await su.recordStarted();
+    assert.deepEqual((await readHistory(ctx)).versions, [
+      { commit: ctx.first, firstStartedAt: iso(t0), lastStartedAt: iso(t2) },
+      { commit: c, firstStartedAt: iso(t1), lastStartedAt: iso(t1) },
+    ]);
+    // 行き先（二つ目）は今の版（最初の版）の祖先ではない
+    const [target] = (await su.status()).rollbackTargets;
+    assert.equal(target?.commit, c);
+    assert.equal(target?.ancestor, false);
+    assert.equal(target?.lastStartedAt, iso(t1));
+  });
+});
+
+test("記録が壊れていれば空とみなして作り直す（種は入れない）。読む側は一覧を空にして答える", async () => {
+  await withUpdate(async (ctx) => {
+    const b = ctx.commit("二つ目", { api: true });
+    ctx.fetch();
+    const bDir = ctx.addVersion(b);
+    await symlink(bDir, join(ctx.releaseDir, "previous"));
+    const firstDir = join(ctx.releaseDir, "versions", ctx.first.slice(0, 12));
+    for (const broken of ["{ 書きかけ", JSON.stringify({ versions: "x" }), JSON.stringify({ versions: [{ commit: "abc" }] })]) {
+      await writeFile(ctx.historyPath, broken);
+      const su = ctx.selfUpdateIn(firstDir, ctx.clock.now);
+      const status = await su.status();
+      assert.equal(status.ready, true, status.reasons.join("／"));
+      assert.deepEqual(status.rollbackTargets, [], broken);
+      await su.recordStarted();
+      assert.deepEqual((await readHistory(ctx)).versions, [
+        { commit: ctx.first, firstStartedAt: iso(ctx.clock.now), lastStartedAt: iso(ctx.clock.now) },
+      ], broken);
+    }
+  });
+});
+
+test("versions/ の外（開発用のリポジトリ）から動いているときは書かない", async () => {
+  await withUpdate(
+    async (ctx) => {
+      assert.equal(((await (await ctx.machine("/api/admin/update")).json()) as StatusBody).current, null);
+      assert.equal(existsSync(ctx.historyPath), false);
+      assert.equal(existsSync(join(ctx.dataDir, "update")), false);
+    },
+    { codeInVersions: false },
+  );
+});
+
+test("戻す先の一覧：今の版・口を持たない版・分からない版を除いた新しい10件。local は worktree の HEAD で見る", async () => {
+  await withUpdate(async (ctx) => {
+    // 最初の版は口を持たない。そのあとに口を持つ版を 13 個
+    const commits = Array.from({ length: 13 }, (_, i) => ctx.commit(`版${i + 1}`, { api: i > 0 ? undefined : true }));
+    ctx.fetch();
+    const current = commits[12]!;
+    const currentDir = ctx.addVersion(current);
+    // 版2 は機械にある。版3 はフォルダはあるが HEAD が別の版（作りかけ・置き換えの途中）
+    ctx.addVersion(commits[1]!);
+    ctx.addVersion(commits[2]!, commits[0]);
+    const unknown = "f".repeat(40);
+    const at = (i: number) => iso(Date.parse("2026-10-01T00:00:00Z") + i * 60_000);
+    // 並びは書いた順でなく lastStartedAt の新しい順に出す。日時の無い種は後ろ
+    const versions = [
+      { commit: unknown, firstStartedAt: at(50), lastStartedAt: at(50) },
+      { commit: ctx.first, firstStartedAt: at(40), lastStartedAt: at(40) },
+      { commit: current, firstStartedAt: at(60), lastStartedAt: at(60) },
+      { commit: commits[0]!, firstStartedAt: null, lastStartedAt: null },
+      ...commits.slice(1, 12).map((c, i) => ({ commit: c, firstStartedAt: at(i), lastStartedAt: at(i) })),
+    ];
+    await writeFile(ctx.historyPath, JSON.stringify({ versions }));
+    const targets = (await ctx.selfUpdateIn(currentDir, ctx.clock.now).status()).rollbackTargets;
+    // 版12 から新しい順に 10 件（版3 まで）。版2（at(0)）と版1（日時なし）は 11・12 件目なので出ない
+    assert.deepEqual(
+      targets.map((t) => t.commit),
+      commits.slice(2, 12).reverse(),
+    );
+    assert.deepEqual(targets.map((t) => t.subject), commits.slice(2, 12).map((_, i) => `版${i + 3}`).reverse());
+    assert.ok(targets.every((t) => t.ancestor), "どれも今の版の祖先");
+    assert.ok(targets.every((t) => t.committedAt && !Number.isNaN(Date.parse(t.committedAt))));
+    assert.equal(targets.find((t) => t.commit === commits[2])?.local, false, "HEAD が違うフォルダは機械にある版ではない");
+    assert.ok(targets.filter((t) => t.commit !== commits[2]).every((t) => !t.local));
+
+    // 古い版が出る余地を作る：上位を消すと、版2（local）と版1（種）が出る
+    await writeFile(ctx.historyPath, JSON.stringify({ versions: versions.filter((v) => !commits.slice(4, 12).includes(v.commit)) }));
+    const fewer = (await ctx.selfUpdateIn(currentDir, ctx.clock.now).status()).rollbackTargets;
+    assert.deepEqual(
+      fewer.map((t) => [t.commit, t.local, t.lastStartedAt]),
+      [
+        [commits[3], false, at(2)],
+        [commits[2], false, at(1)],
+        [commits[1], true, at(0)],
+        [commits[0], false, null],
+      ],
+    );
   });
 });
