@@ -94,12 +94,15 @@ export function sameGroups(statusText: string, idG: string): boolean {
 
 /** 向こうの様子を引く（sudo は「通るか」と、ユーザーから見えない置き場を root で見るのにだけ使う。変えない） */
 export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHostState> {
-  const [info, groups, groupIds, subuid, subgid, sudo, linger, managerPid, dpkg] = await Promise.all([
+  // 同時に張る SSH の接続は5本まで（sshd の MaxStartups の既定 10 から確率で断り始める——ほかの接続と重なっても誤判定しない）
+  const [info, groups, groupIds, subuid, subgid] = await Promise.all([
     vm.run(["incus", "query", "/1.0"]),
     vm.run(["id", "-nG"]),
     vm.run(["id", "-G"]),
     vm.run(["cat", "/etc/subuid"]),
     vm.run(["cat", "/etc/subgid"]),
+  ]);
+  const [sudo, linger, managerPid, dpkg] = await Promise.all([
     vm.run([SUDO, "-n", "true"]),
     vm.run(["test", "-e", `/var/lib/systemd/linger/${vm.user}`]),
     vm.run(["systemctl", "show", "-p", "MainPID", "--value", `user@${vm.uid}.service`]),
@@ -143,8 +146,12 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
   }
   const names = groups.stdout.trim().split(/\s+/);
   const installed = dpkg.code === 0 ? dpkg.stdout.trim().replace(/^\d+:/, "") : "";
-  const initialized =
-    !installed || sudo.code !== 0 ? true : (await sudoRun(vm, ["incus", "profile", "device", "get", "default", "root", "pool"])).code === 0;
+  // 初期化してあるか（root で読むだけ）。入れた直後は daemon が起きている途中で答えないことがある——起きるまで待ち、待っても
+  // 答えなければ「分からない」として初期化しない（初期化済みの daemon に init を打って落ちない。Fable の2回目のレビュー）
+  let initialized = true;
+  if (installed && sudo.code === 0 && (await sudoRun(vm, ["incus", "admin", "waitready", "--timeout", "120"], 150_000)).code === 0) {
+    initialized = (await sudoRun(vm, ["incus", "profile", "device", "get", "default", "root", "pool"])).code === 0;
+  }
   return {
     incus,
     inIncusGroup: names.includes("incus"),
@@ -433,11 +440,12 @@ export async function evaluateContainersHost(
         continue;
       }
       const later = await step.commands(state, true);
+      const incusWhy = state.incus.status === "missing" && !state.installedVersion ? "Incus が入っていません。" : "Incus が古いです。";
       checks.push({
         id: step.id,
         label,
         status: "fail",
-        detail: `Incus が入っていません。${mode === "check" ? "sudo -n が通らないので、banto は整えられません。Incus を入れたあとに向こうで打ってください。" : "設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で整えます。"}`,
+        detail: `${incusWhy}${mode === "check" ? "sudo -n が通らないので、banto は整えられません。Incus を入れたあとに向こうで打ってください。" : "設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で整えます。"}`,
         fix: Array.isArray(later) ? later.map(displayOf).join("\n") : "（上の Incus を入れてから）",
       });
       continue;

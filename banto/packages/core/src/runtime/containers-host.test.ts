@@ -6,6 +6,7 @@ import {
   idRangesInclude,
   inspectContainersHost,
   prepareContainersHost,
+  probeContainersPrerequisites,
   sameGroups,
   zabblyKeyOk,
   type VmAccess,
@@ -35,6 +36,10 @@ interface FakeVm {
   initialized: boolean;
   /** root で書いたファイル（tee） */
   files: Map<string, string>;
+  /** incus-user の口が起きていない（incus グループでも繋がらない。`systemctl enable --now incus-user.socket` で起きる） */
+  socketDown?: boolean;
+  /** apt で入れた道具 */
+  tools: Set<string>;
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -54,6 +59,7 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     restarts: 0,
     initialized: true,
     files: new Map(),
+    tools: new Set(),
     ...over,
   };
 }
@@ -69,6 +75,7 @@ function accessOf(vm: FakeVm): VmAccess {
   const incus = (args: string[], asRoot: boolean): IncusResult => {
     if (!vm.installed) return fail("sh: exec: incus: not found", 127);
     if (!asRoot && !vm.inGroup && !vm.admin) return fail("Error: You don't have the needed permissions to talk to the incus daemon");
+    if (!asRoot && !vm.admin && vm.socketDown) return fail("Error: Failed to connect to the user socket");
     const [cmd, ...rest] = args;
     if (cmd === "query" && rest[0] === "/1.0") {
       // incus-user は最初に繋いだときに区画を作る（制限つき・idmap はそのユーザーだけ）
@@ -134,13 +141,20 @@ function accessOf(vm: FakeVm): VmAccess {
       vm.managerGroups = groupNames(vm);
       return ok();
     }
-    if (cmd === "systemctl" && rest.join(" ") === "enable --now incus-user.socket") return ok();
+    if (cmd === "systemctl" && rest.join(" ") === "enable --now incus-user.socket") {
+      vm.socketDown = false;
+      return ok();
+    }
     if (cmd === "tee") {
       vm.files.set(rest[0]!, input ?? "");
       return ok();
     }
     if (cmd === "install" || cmd === "chmod") return ok();
     if (cmd === "env" && rest.includes("update")) return ok();
+    if (cmd === "env" && rest.includes("install") && !rest.includes("incus")) {
+      for (const t of rest.slice(rest.indexOf("--no-install-recommends") + 1)) vm.tools.add(t);
+      return ok();
+    }
     if (cmd === "env" && rest.includes("install") && rest.includes("incus")) {
       const sources = [...vm.files.keys()].find((f) => f.startsWith("/etc/apt/sources.list.d/zabbly-incus-"));
       if (!sources || vm.files.get("/etc/apt/keyrings/zabbly.asc") !== "偽の Zabbly の鍵") return fail("E: Unable to locate package incus");
@@ -197,6 +211,7 @@ test("まっさらな VM（sudo -n が通る）：確かめは何も変えず、
   // 見るための sudo（置き場が root から見えるか）だけで、何も変えていない
   assert.deepEqual(vm.sudoCalls, [
     ["incus", "storage", "show", "banto"],
+    ["incus", "admin", "waitready", "--timeout", "120"],
     ["incus", "profile", "device", "get", "default", "root", "pool"],
   ]);
   assert.equal(vm.inGroup, false);
@@ -381,6 +396,62 @@ test("zabblyKeyOk：公開鍵が1つで、指紋が決めた値のときだけ",
   assert.equal(zabblyKeyOk(one.replace("4EFC5906", "4EFC5907")), false);
   assert.equal(zabblyKeyOk(one + one), false);
   assert.equal(zabblyKeyOk(""), false);
+});
+
+test("incus-admin を外したら incus-user の口が起きていない：同じ項目の2周目で口を起こしてから続ける", async () => {
+  const vm = fakeVm({ admin: true, inGroup: true, socketDown: true });
+  const access = accessOf(vm);
+  const { state, ran } = await prepareContainersHost(access);
+  assert.deepEqual(ran.slice(0, 2), [
+    ["gpasswd", "-d", "banto", "incus-admin"],
+    ["systemctl", "enable", "--now", "incus-user.socket"],
+  ]);
+  const after = await evaluateContainersHost(state, access, "verify");
+  assert.deepEqual(new Set(after.map((c) => c.status)), new Set(["ok"]));
+});
+
+test("probeContainersPrerequisites（登録）：共通の項目（道具）を入れて引き直してから Incus の準備へ進み、行ったことは1行にまとめる", async () => {
+  const vm = fakeVm({ admin: true, inGroup: true, os: { apt: true, id: "ubuntu", version: "24.04", codename: "noble", arch: "amd64" } });
+  const values = (): Map<string, string> =>
+    new Map(
+      Object.entries({
+        "os.id": "ubuntu",
+        "os.like": "debian",
+        "os.version": "24.04",
+        "os.codename": "noble",
+        apt: "1",
+        "dpkg.arch": "amd64",
+        sudo: "1",
+        arch: process.arch === "x64" ? "x86_64" : "aarch64",
+        libc: "glibc 2.39",
+        "tool.tar": vm.tools.has("tar") ? "1" : "0",
+        uid: "1000",
+        gid: "1001",
+        user: "banto",
+        root: "/home/banto/.local/share/banto-remote",
+        writable: "1",
+        maxsessions: "10",
+      }),
+    );
+  let probes = 0;
+  const base = async () => {
+    probes++;
+    return { probe: { before: "", values: values() }, forwarding: { tcp: true, streamLocal: true }, result: { code: 0, stdout: "", stderr: "" } };
+  };
+  const r = await probeContainersPrerequisites(
+    { host: "vm", port: 22, user: "banto" },
+    { knownHostsFile: "", agentSocket: "", publicKeyFile: "" },
+    "ssh-ed25519",
+    "~/x",
+    { mode: "prepare", run: accessOf(vm).run, base: base as never, mayRestartUserManager: true },
+  );
+  assert.equal(probes, 2);
+  assert.ok(vm.tools.has("tar"));
+  assert.equal(vm.admin, false);
+  const prepared = r.checks.filter((c) => c.id === "prepared");
+  assert.equal(prepared.length, 1);
+  assert.match(prepared[0]!.detail!, /sudo apt-get install --no-install-recommends tar[\s\S]*sudo gpasswd -d banto incus-admin/);
+  assert.ok(r.checks.filter((c) => c.id !== "prepared").every((c) => c.status === "ok"), JSON.stringify(r.checks.filter((c) => c.status !== "ok")));
 });
 
 test("sameGroups：主のグループの有無に左右されず、補助のグループの組で比べる", () => {

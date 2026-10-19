@@ -230,12 +230,15 @@ export async function runRootCommand(
     opts.log?.(`${displayOf(x)} → ${r.code}`);
     return r;
   };
-  let r = await once(c);
+  const first = await once(c);
+  let r = first;
   if (r.code !== 0 && c.orElse) r = await once(c.orElse);
   if (r.code === 0 || c.ignoreFailure) return;
   if (c.undoOnFail) await once(c.undoOnFail);
+  const why = (x: IncusResult) => (x.stderr || x.stdout).trim().slice(-300);
   throw new AutoFixError(
-    `${opts.what}${displayOf(c)} が失敗しました（終了コード ${r.code}）：${(r.stderr || r.stdout).trim().slice(-400)}` +
+    `${opts.what}${displayOf(c)} が失敗しました（終了コード ${first.code}）：${why(first)}` +
+      (c.orElse ? `。代わりの ${displayOf(c.orElse)} も失敗しました（終了コード ${r.code}）：${why(r)}` : "") +
       (c.undoOnFail ? `（${displayOf(c.undoOnFail)} で元に戻しました）` : ""),
     ran,
   );

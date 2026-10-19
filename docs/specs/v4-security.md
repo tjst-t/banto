@@ -551,8 +551,9 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 1. **いつ**：登録（`register`）と、人が押した「確かめ直す」（`recheck`。鍵を覚え直したあとの確かめ直し、鍵の置き場を移したあとの
    繋ぎ直しも）のときだけ。押した時点で向こうの様子を引き直し、足りないものを入れる。登録の前の確かめ（`check`）は何も変えない。
-   繋ぐたび・Module を起こすときは今どおり sudo しない。**同じ実行場所の準備は1本ずつ**（Project の作成・再開・移すと同じ鍵で
-   並ぶ——apt の lock を取り合わない）
+   繋ぐたび・Module を起こすときは今どおり何も変えない（`containers` の繋ぐたびの確かめは、準備が崩れていないかを root で
+   **読むだけ**は行う——`sudo -n true`・置き場と初期化の有無。変える sudo はしない）。**同じ実行場所の準備は1本ずつ**（Project の
+   作成・再開・移すと同じ鍵で並ぶ——apt の lock を取り合わない。長い準備の間、その実行場所の再開・移すは待つ）
 2. **何で**：SSH のユーザーの `sudo -n`。sudo は `/usr/bin/sudo` で呼び、後ろのコマンドは名前で書いて sudo の `secure_path` で
    引かせる（向こうの PATH を当てにしない。sudoers で決まったコマンドだけを許す形にも揃う）。**root で打つのは項目ごとのコマンドで、
    `sh -c` の台本は使わない**。ファイルを書くのは `tee <ファイル>` に中身を標準入力で渡す。`sudo -n` が通らなければ今どおり、打つ
@@ -580,7 +581,9 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
      **鍵は banto の host が取って確かめる**（公開鍵が1つで、指紋が install.sh の `ZABBLY_FPR`。host の gpg で）——VM の curl・gpg に
      頼らない。確かめた中身を `tee /etc/apt/keyrings/zabbly.asc`、sources を `tee /etc/apt/sources.list.d/zabbly-incus-<系統>.sources`、
      `apt-get update`、`apt-get install incus btrfs-progs`。Ubuntu の incus（6.0.5 等）は Zabbly の版に上がる。入っていて新しいが
-     default のプロファイルに root のディスクが無ければ `incus admin init --minimal`（root で見る）。入れたあと版を確かめ、なお足りな
+     default のプロファイルに root のディスクが無ければ `incus admin init --minimal`（root で見る。**見る前に `incus admin waitready`
+     で daemon が起きるのを待ち、待っても答えなければ「分からない」として初期化しない**——入れた直後の起きかけの daemon を
+     「初期化していない」と取り違えない）。入れたあと版を確かめ、なお足りな
      ければ断る
    - **`incus-admin` から外す（`containers`、決定・2026-10-19、ユーザー、案A）**：`incus-admin` に入っていると、Incus は区画
      `user-<uid>` ではなく制限の無い管理の口に繋ぐ。**外すのは `incus-admin` だけ**（`gpasswd -d <ユーザー> incus-admin`）。
@@ -590,7 +593,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
      し、確かめの一覧で「外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）」と出す。`default` の
      区画に人が作ったインスタンスは、このユーザーから見えなくなるだけで消えない（root では見える）。banto の root の要る準備は sudo で
      行うので、外しても困らない
-   - **グループを替えたあとの繋ぎ直し**：banto は準備のコマンドを1つずつ別の SSH の接続で流す（多重化しない）ので、次のコマンド
+   - **グループを替えたあとの繋ぎ直し**：（向こうの様子を読む SSH の接続は同時に5本まで——sshd の `MaxStartups` に当たらない）banto は準備のコマンドを1つずつ別の SSH の接続で流す（多重化しない）ので、次のコマンド
      から新しいグループで動く。ユーザーの systemd（`user@<uid>`）は起きたときのグループのまま残り、そこから起こしたものは
      `incus-admin` を持ち続け・`incus` を持たない（2026-10-17 に banto-dev-vm で実測、#363）。`/proc/<user@ の pid>/status` の Groups と
      今の `id -G` を比べ（主のグループは除く）、食い違えば `systemctl restart user@<uid>.service` で起こし直す——**その実行場所を使う
