@@ -9913,7 +9913,7 @@
       "number": 411,
       "kind": "task",
       "title": "update.mjs：戻す（kind rollback・--rollback）・一度動いた版をそのまま使う・3つ残す・起きなかった版を記録から抜く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "update-rollback",
       "dependsOn": [
         "rollback-history"
@@ -9927,7 +9927,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-19T22:57:13.582Z",
-      "updatedAt": "2026-10-19T22:57:13.582Z",
+      "updatedAt": "2026-10-19T23:44:58.295Z",
       "closedAt": null,
       "extra": {}
     },
