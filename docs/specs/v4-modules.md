@@ -543,6 +543,15 @@ list の操作に見える。**ボタンだけでなく、いまの置き場を�
   `setGroupBinding` のとき、窓口は**他の Vault に同じ Project の紐付けが無いか
   確かめてから**通す。あれば断る（「この Project は既に `vault-local` に
   紐付いています。移すなら先に外してください」）
+- **秘密を作る口も、同じ不変条件を通る**（決定・2026-10-19、ユーザー。Backlog #408）。窓口の `createAlias`・`putSecret`・
+  `generateSecret` は、`forProject` がありグループを直に指していなければ、全 Vault の紐付けを聞いて
+  **その Project が紐付いている Vault に作る**（Vault の指定が無ければ既定の Vault ではなくそちら）。紐付いている
+  Vault と違う Vault を指したら作らずに断る。どこに紐付いているか確かめられない（読めない Vault がある・既に2つに
+  紐付いている）ときも断る。どこにも紐付いていなければ今までどおり既定の Vault に作り、そこで紐付く。
+  以前は既定の Vault へ送っていたので、vault-infisical に紐付いた Project の秘密が vault-local に作られ、
+  vault-local の `groupForNewAlias` が Project id のグループを紐付けに書き留めて、1つの Project が2つの Vault に
+  紐付いた（画面の保存先は最初に見つかった vault-local を出した）。backend はほかの Vault を知らないので、
+  守るのは窓口
 - **窓口は写しを持たない**（規則3）。「この Project はどの Vault か」は、
   必要なときに全 Vault へ聞いて導く
 

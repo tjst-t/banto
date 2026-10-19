@@ -723,6 +723,99 @@ test("同じ Project を2つの Vault に紐付けさせない", async () => {
   );
 });
 
+// **Project の秘密は、紐付いている Vault に作る**（2026-10-19、ユーザー報告・Backlog #408）。以前は既定の Vault に
+// 作られ、そこで Project id のグループが自動で紐付いて、1つの Project が2つの Vault に紐付いていた
+function boundVaults(ctx: Ctx, projectId: string): Promise<string[]> {
+  return Promise.all(
+    [...ctx.vaults].map(async ([name, client]) => {
+      const r = await client.callTool({ name: "listGroupBindings", arguments: {}, _meta: ADMIN });
+      const b = parse(r) as { projects: Array<{ projectId: string }> };
+      return b.projects.some((x) => x.projectId === projectId) ? name : null;
+    }),
+  ).then((xs) => xs.filter((x): x is string => x !== null));
+}
+
+test("Project の秘密は、Vault を言わなければその Project が紐付いている Vault に作る（既定の Vault に紐付けを増やさない）", async () => {
+  await withUi(
+    async (ctx) => {
+      const { ui } = ctx;
+      // 既定の Vault は vault-local、Project は vault-keychain に紐付ける
+      await ui.callTool({
+        name: "setGroupBinding",
+        arguments: { implementation: "vault-keychain", projectId: "p1", group: "banto" },
+      });
+      await ui.callTool({ name: "createAlias", arguments: { name: "A", kind: "secret", value: "v", forProject: "p1" } });
+      await ui.callTool({ name: "generateSecret", arguments: { name: "B", forProject: "p1" } });
+      await ui.callTool({ name: "putSecret", arguments: { name: "C", value: "v", forProject: "p1" } });
+      const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+      for (const n of ["A", "B", "C"]) {
+        const a = aliases.find((x: { name: string }) => x.name === n);
+        assert.equal(a.implementation, "vault-keychain", `${n} が紐付いている Vault に無い`);
+        assert.equal(a.group, "banto", `${n} が紐付いているグループに無い`);
+      }
+      assert.deepEqual(await boundVaults(ctx, "p1"), ["vault-keychain"]);
+      // 画面の保存先も紐付いている Vault のまま
+      const placements = parse(await ui.callTool({ name: "getPlacements", arguments: { projectId: "p1" } }));
+      assert.equal(placements.project.implementation, "vault-keychain");
+
+      // どこにも紐付いていない Project は今までどおり既定の Vault に作られ、そこに紐付く
+      await ui.callTool({ name: "createAlias", arguments: { name: "D", kind: "secret", value: "v", forProject: "p2" } });
+      assert.deepEqual(await boundVaults(ctx, "p2"), ["vault-local"]);
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});
+
+test("Project の秘密を紐付いていない Vault に作ろうとしたら断る——どの Vault にも紐付けが増えない", async () => {
+  await withUi(
+    async (ctx) => {
+      const { ui } = ctx;
+      await ui.callTool({
+        name: "setGroupBinding",
+        arguments: { implementation: "vault-keychain", projectId: "p1", group: "banto" },
+      });
+      for (const tool of ["createAlias", "generateSecret", "putSecret"]) {
+        await assert.rejects(
+          () =>
+            ui.callTool({
+              name: tool,
+              arguments: { name: `X-${tool}`, kind: "secret", value: "v", forProject: "p1", implementation: "vault-local" },
+            }),
+          /保存先は vault-keychain です/,
+          `${tool} が断られなかった`,
+        );
+      }
+      assert.deepEqual(await boundVaults(ctx, "p1"), ["vault-keychain"]);
+      const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));
+      assert.equal(aliases.filter((a: { name: string }) => a.name.startsWith("X-")).length, 0);
+
+      // グループを直に指したときは今までどおり（人が置き場を選んだ）——紐付けは増えない
+      await ui.callTool({
+        name: "createAlias",
+        arguments: { name: "Y", kind: "secret", value: "v", forProject: "p1", implementation: "vault-local", group: "other" },
+      });
+      assert.deepEqual(await boundVaults(ctx, "p1"), ["vault-keychain"]);
+    },
+    { vaultNames: ["vault-local", "vault-keychain"] },
+  );
+});
+
+test("Project がどこに紐付いているか確かめられないときは、既定の Vault に落とさず断る", async () => {
+  await withUi(
+    async (ctx) => {
+      await assert.rejects(
+        () =>
+          ctx.ui.callTool({ name: "createAlias", arguments: { name: "A", kind: "secret", value: "v", forProject: "p1" } }),
+        /確かめられない.*vault-infisical——繋がりません/,
+      );
+      assert.deepEqual(await boundVaults(ctx, "p1"), []);
+      // Project のものでなければ今までどおり作れる
+      await ctx.ui.callTool({ name: "createAlias", arguments: { name: "S", kind: "secret", value: "v" } });
+    },
+    { vaultNames: ["vault-local"], broken: new Map([["vault-infisical", "繋がりません"]]) },
+  );
+});
+
 // **同じ失敗を2度した**（2026-09-14）。置換の範囲を広く取りすぎて、
 // **絞り込みのイベント購読を丸ごと消した**——2回とも E2E でしか気づけなかった。
 // 画面の JS は型検査が効かないので、**在ることを機械で押さえる**。

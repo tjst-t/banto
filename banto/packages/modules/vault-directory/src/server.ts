@@ -770,6 +770,59 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     }
 
     /**
+     * **新しく作る秘密の行き先**（createAlias・putSecret・generateSecret。2026-10-19、ユーザー報告・Backlog #408）。
+     *
+     * Project のもの（`forProject` があり、グループを直に指していない）は、**その Project が紐付いている Vault に作る**。
+     * 以前は Vault を言わなければ既定の Vault へ送っていたので、Project を vault-infisical に紐付けていても
+     * vault-local に作られ、vault-local が「紐付けが無い」として Project id のグループを紐付けに書き留めた
+     * ——1つの Project が2つの Vault に紐付き（`setGroupBinding` が守っている決まりの抜け道）、画面の保存先も
+     * vault-local に見えた。
+     *
+     * **ほかの Vault に紐付けを増やさない**：紐付いている Vault と違う Vault を指したら作らずに断る。どこに
+     * 紐付いているか確かめられない（読めない Vault がある・既に2つに紐付いている）ときも推し量らずに断る。
+     * どこにも紐付いていなければ今までどおり（既定の Vault、そこで初めて紐付く）。
+     */
+    async function targetForNew(): Promise<string> {
+      const projectId = optionalString(args.forProject, "forProject");
+      if (!projectId || optionalString(args.group, "group")) return target();
+      const explicit = optionalString(args.implementation, "implementation");
+      if (explicit && !(await vaultImplementations()).includes(explicit)) return target(); // 理由つきで断る
+      const perVault = await acrossVaults(async (impl) =>
+        (
+          (JSON.parse(await deps.relay.callTool(impl, "listGroupBindings", {})) as {
+            projects?: Array<{ projectId: string; group: string }>;
+          }).projects ?? []
+        ).some((b) => b.projectId === projectId),
+      );
+      const bound = perVault.filter((r) => r.ok && r.value).map((r) => r.implementation);
+      if (bound.length > 1) {
+        throw new Error(
+          `この Project は複数の Vault（${bound.join("・")}）に紐付いていて、どこに作るか決められません。` +
+            "「Vault を管理」の「変更…」で保存先を1つにしてから作ってください",
+        );
+      }
+      if (bound.length === 1) {
+        const place = bound[0]!;
+        if (explicit && explicit !== place) {
+          throw new Error(
+            `この Project の保存先は ${place} です。${explicit} には作りません（1つの Project の秘密は1つの Vault にまとめるため）。` +
+              `${place} に作るか、「Vault を管理」の「変更…」で保存先を変えてから作ってください`,
+          );
+        }
+        return place;
+      }
+      const unreadable = perVault.filter((r): r is { implementation: string; ok: false; error: string } => !r.ok);
+      if (unreadable.length > 0) {
+        throw new Error(
+          "この Project がどの Vault に紐付いているか確かめられないので、作りませんでした（読めない Vault：" +
+            unreadable.map((r) => `${r.implementation}——${r.error}`).join(" / ") +
+            "）。その Vault が読めるようになってからやり直してください",
+        );
+      }
+      return target();
+    }
+
+    /**
      * **alias の名前は instance 全体で一意**（決定・2026-09-12）。
      *
      * 名前で引いて使う（`lookupAlias` → その Vault へ直行）以上、同じ名前が
@@ -885,7 +938,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         return text(await crossAliases());
 
       case "createAlias": {
-        const implementation = await target();
+        const implementation = await targetForNew();
 
         // **値はここを通過するだけ**——変数として受け取るので、この Module は
         // `handlesSecrets: true`／`isolation: "subprocess"` を名乗っている
@@ -903,7 +956,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       }
 
       case "putSecret": {
-        const implementation = await target();
+        const implementation = await targetForNew();
         const body = await deps.relay.callTool(implementation, "putSecret", {
           name: requiredString(args.name, "name"),
           value: requiredString(args.value, "value"),
@@ -914,7 +967,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       }
 
       case "generateSecret": {
-        const implementation = await target();
+        const implementation = await targetForNew();
 
         // **ここには値が一度も来ない**——作るのも持つのも Vault の中だけ
         const body = await deps.relay.callTool(implementation, "generateSecret", {
