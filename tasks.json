@@ -9831,6 +9831,34 @@
       "updatedAt": "2026-10-19T01:31:35.644Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "project-vault-vault",
+      "number": 408,
+      "kind": "bug",
+      "title": "Project 用の秘密が既定の Vault に作られ、ほかの Vault にも紐付けが自動でできる",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "vault"
+      ],
+      "body": "## 起きたこと（2026-10-19、ユーザー報告）\nbanto Project の保存先は vault-infisical / banto なのに、画面では vault-local / 2ced47c4-…（Project id）と出た。Infisical の banto も「この Project」として読める。\n\n## 原因\n1. 窓口（vault-directory）の `target()` は、Vault の指定が無いと既定の Vault（vault-local）へ送る。Project がどの Vault に紐付いているかは見ていない。\n2. vault-kit の `groupForNewAlias` は、その Vault に Project の紐付けが無いと、Project id のグループを作って台帳に書き留める。そのため紐付けが2つの Vault に並ぶ（1つの Project は1つの Vault、という決まりに反する）。\n3. `getPlacements` は最初に見つかった紐付けだけを出す（vault-local が先）。\n\n## 直し（ユーザー指示）\n- Project 用の秘密（forProject、グループの指定なし）は、その Project が紐付いている Vault に作る。\n- ほかの Vault に紐付けがあるときは自動で紐付けない（作らずに理由を返して断る）。紐付けを読めない Vault があるときも推し量らずに断る。",
+      "doneWhen": "vault-directory の単体テストで、(a) Vault の指定なし・forProject なら紐付いている Vault に作られる、(b) 別の Vault を指定すると断られ、どの Vault にも紐付けが増えない、が通る（直しを外すと落ちる）。main と release に push 済み。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "64a93bc4-ac8f-49a6-9c9e-c385ba54fb4a"
+        }
+      ],
+      "createdAt": "2026-10-19T22:46:30.071Z",
+      "updatedAt": "2026-10-19T22:46:30.071Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
