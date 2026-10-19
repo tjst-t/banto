@@ -132,6 +132,7 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
         sshd: "ok",
         incus: "fail",
         "incus-project": "fail",
+        "user-manager": "ok",
         "incus-proxy": "fail",
         "incus-idmap": "fail",
         "incus-pool": "fail",
@@ -149,7 +150,8 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
       await expect(form.getByTestId("runtime-add-blocked")).toBeVisible();
       await expect(form.getByTestId("runtime-add-prepare")).toHaveCount(0);
       await expect(form.getByTestId("runtime-register")).toBeDisabled();
-      await expect(form.getByTestId("runtime-register")).toHaveText("準備して登録する");
+      // sudo -n が通らないので banto が整えるものは無い——ただの「登録する」（押せない）
+      await expect(form.getByTestId("runtime-register")).toHaveText("登録する");
 
       // ---- 4. 画面を通さず登録を頼んでも断る。相手は何も変わっていない ------------------------------------------------------
       const refused = await api<{ error: string; checks?: Array<{ id: string; status: string }> }>("/api/runtimes", {

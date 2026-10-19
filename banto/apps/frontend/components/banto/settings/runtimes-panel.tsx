@@ -181,7 +181,7 @@ function ContainersCautions() {
       <p className="mb-1.5 font-medium text-foreground">Project ごとのコンテナ（containers）で動かすとき</p>
       <ul className="flex list-disc flex-col gap-1 pl-4">
         <li>
-          {"登録のときに banto が sudo -n で root の要る準備（区画の proxy device の許可・uid の対応・置き場 banto・linger）を済ませます。" +
+          {"登録のときに banto が sudo -n で root の要る準備（Incus が無ければ入れる・incus-admin から外す・区画の proxy device の許可・uid の対応・置き場 banto・linger）を済ませます。" +
             "SSH のユーザーはパスワード無しで sudo できる必要があります。Project の AI はコンテナの中で動き、このユーザーにはなりません。"}
         </li>
         <li>サーバは banto 専用にしてください（ほかのユーザー・サービスを置かない）。Incus 6.0.6 以降が要ります。</li>
@@ -204,6 +204,9 @@ function MachineCautions() {
         <li>向こうで動かしたサービスは、LAN から直に届きます。Publish の前のログインを通りません。</li>
         <li>向こうにほかの人のアカウントがあると、その人にも banto への中継の口が見えます（合言葉で守ります）。</li>
         <li>1つのサーバで動かせる Project は1つです。</li>
+        <li>
+          {"SSH のユーザーがパスワード無しで sudo できるなら、登録のときに足りないもの（git・curl・tmux・rsync などの道具・置き場・sshd の転送の許可・linger）を banto が入れます。"}
+        </li>
       </ul>
     </div>
   );
@@ -416,7 +419,7 @@ function CheckList({ checks }: { checks: readonly RealRuntimeCheck[] }) {
           )}
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className={c.status === "ok" ? "text-ink-2" : "text-foreground"}>{c.label}</span>
-            {c.detail ? <span className="text-ink-3">{c.detail}</span> : null}
+            {c.detail ? <span className="whitespace-pre-line text-ink-3">{c.detail}</span> : null}
             {c.fix ? (
               <code className="w-fit rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono break-all whitespace-pre-wrap text-ink-2">
                 {c.fix}
@@ -443,6 +446,8 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   const [dataRoot, setDataRoot] = useState(DEFAULT_DATA_ROOT);
   const [mode, setMode] = useState<RealRuntimeMode>("machine");
   const [step, setStep] = useState<Step>({ kind: "form" });
+  // 登録するときに banto が sudo -n で整えるものがある（v4-security.md §1「足りないものは banto が入れる」）
+  const willPrepare = step.kind === "checks" && step.checks.some((c) => c.autoFix && c.status !== "ok");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [identities, setIdentities] = useState<string[] | null>(null);
@@ -681,9 +686,10 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
             <p className="text-xs text-stop" data-testid="runtime-add-blocked">
               足りないものがあるので登録できません。向こうで上のコマンドを打ってから、確かめ直してください。
             </p>
-          ) : step.input.mode === "containers" && step.checks.some((c) => c.status === "warn") ? (
+          ) : willPrepare ? (
             <p className="text-xs text-ink-2" data-testid="runtime-add-prepare">
-              注意の項目は、登録するときに banto が sudo -n で整えます（上のコマンドと同じもの。入っているものには何もしません）。
+              注意の項目は、登録するときに banto が sudo -n で整えます（上のコマンドと同じもの。入っているものには何もしません。apt や
+              Incus を入れるときは数分かかることがあります）。
             </p>
           ) : null}
           {error ? (
@@ -705,10 +711,10 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
               }
             >
               {busy
-                ? step.input.mode === "containers"
-                  ? "準備して登録しています…"
+                ? willPrepare
+                  ? "準備して登録しています…（数分かかることがあります）"
                   : "登録しています…"
-                : step.input.mode === "containers"
+                : willPrepare
                   ? "準備して登録する"
                   : "登録する"}
             </Button>

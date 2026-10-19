@@ -13,6 +13,8 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { RunIncus } from "@banto/container";
+import { commonFixes, markAutoFixes, preparedCheck, runFixes, type RanCommand } from "./host-autoprep.js";
 
 /** 繋ぐ先（登録した1件の、SSH に要る分） */
 export interface SshTarget {
@@ -42,6 +44,8 @@ export interface RuntimeCheck {
   fix?: string;
   /** 覚えておく値（画面には出さない。`cpu-avx2` は `"1"`／`"0"`） */
   value?: string;
+  /** banto が登録・確かめ直しのときに sudo -n で整える項目（画面は「準備して登録する」にする。v4-security.md §1「足りないものは banto が入れる」） */
+  autoFix?: boolean;
 }
 
 /** 繋いだときに使う、host の側のファイル */
@@ -245,9 +249,15 @@ const PROBE_MARKER = "__BANTO_PROBE_BEGIN__";
 /** banto が動くのに要る道具（無ければ断る）。tmux は Terminal、docker は「中で Docker を使う」だけ（注意にとどめる） */
 const REQUIRED_TOOLS = ["git", "ssh", "curl", "tar"] as const;
 
-function probeScript(dataRoot: string): string {
+function probeScript(dataRoot: string, opts: { sudo?: boolean } = {}): string {
   return [
     `printf '%s\\n' ${PROBE_MARKER}`,
+    // OS と apt（banto が足りないものを入れられるか。v4-security.md §1「足りないものは banto が入れる」）
+    `if [ -r /etc/os-release ]; then (. /etc/os-release; printf 'os.id=%s\\nos.like=%s\\nos.version=%s\\nos.codename=%s\\n' "\${ID:-}" "\${ID_LIKE:-}" "\${VERSION_ID:-}" "\${VERSION_CODENAME:-}"); fi`,
+    `if command -v apt-get >/dev/null 2>&1; then printf 'apt=1\\n'; else printf 'apt=0\\n'; fi`,
+    `if command -v dpkg >/dev/null 2>&1; then printf 'dpkg.arch=%s\\n' "$(dpkg --print-architecture)"; fi`,
+    // sudo -n が通るか（登録の前と整えるときだけ。繋ぐたびには試さない——向こうの記録を汚さない）
+    ...(opts.sudo ? [`if /usr/bin/sudo -n true >/dev/null 2>&1; then printf 'sudo=1\\n'; else printf 'sudo=0\\n'; fi`] : []),
     `printf 'arch=%s\\n' "$(uname -m)"`,
     // AVX2 の有無（覚えるだけで断らない——OpenCode の本体をどちら向けにするかに使う、アーキ仕様 §4.1）
     `if grep -qw avx2 /proc/cpuinfo 2>/dev/null; then printf 'avx2=1\\n'; else printf 'avx2=0\\n'; fi`,
@@ -451,8 +461,14 @@ export interface BaseProbe {
  * **向こうの様子を引き、転送が許されるかを確かめる**。1回目の接続で様子を引き、2回目の接続で転送が許されるかを実際に頼んで
  * 確かめる（`ExitOnForwardFailure`）
  */
-export async function probeBase(t: SshTarget, files: SshFiles, hostKeyType: string, dataRoot: string): Promise<BaseProbe> {
-  const first = await runRemoteScript(t, files, hostKeyType, probeScript(dataRoot));
+export async function probeBase(
+  t: SshTarget,
+  files: SshFiles,
+  hostKeyType: string,
+  dataRoot: string,
+  opts: { sudo?: boolean } = {},
+): Promise<BaseProbe> {
+  const first = await runRemoteScript(t, files, hostKeyType, probeScript(dataRoot, opts));
   const probe = first.code === 0 ? parseProbe(first.stdout) : undefined;
   if (!probe) return { result: first };
 
@@ -477,10 +493,35 @@ export async function probePrerequisites(
   files: SshFiles,
   hostKeyType: string,
   dataRoot: string,
-): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
-  const { probe, forwarding, result } = await probeBase(t, files, hostKeyType, dataRoot);
-  if (!probe || !forwarding) return { checks: [], result };
-  return { checks: evaluateProbe(probe, forwarding, hostPlatform()), result };
+  opts: { stage?: "check" | "prepare" | "verify"; run?: RunIncus; log?: (line: string) => void; base?: typeof probeBase } = {},
+): Promise<{ checks: RuntimeCheck[]; result: SshResult; ran: RanCommand[] }> {
+  const stage = opts.stage ?? "verify";
+  const base = opts.base ?? probeBase;
+  let { probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: stage !== "verify" });
+  if (!probe || !forwarding) return { checks: [], result, ran: [] };
+  const sudo = probe.values.get("sudo") === "1";
+  let fixes = commonFixes({ values: probe.values, forwarding, mode: "machine", requiredTools: REQUIRED_TOOLS });
+  let ran: RanCommand[] = [];
+  // 登録・人の「確かめ直す」：足りないものを sudo -n で入れてから確かめ直す（CPU の種類・ログインの静けさは入れられない——
+  // そこが断られていれば何もしない。ログインで何か出る相手ではコマンドの答えが崩れる）
+  if (stage === "prepare" && sudo && fixes.length > 0) {
+    const first = evaluateProbe(probe, forwarding, hostPlatform());
+    if (!first.some((c) => (c.id === "platform" || c.id === "silent-login") && c.status === "fail")) {
+      const labels = new Map(first.map((c) => [c.id, c.label]));
+      ran = await runFixes(opts.run ?? sshRun(t, files, hostKeyType), fixes, { labelOf: (id) => labels.get(id) ?? id, log: opts.log });
+      ({ probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: true }));
+      if (!probe || !forwarding) return { checks: [], result, ran };
+      fixes = commonFixes({ values: probe.values, forwarding, mode: "machine", requiredTools: REQUIRED_TOOLS });
+    }
+  }
+  // 整えたあとに残ったものは、入れても直らなかった——「登録するときに入れます」とは言わない
+  const checks = markAutoFixes(evaluateProbe(probe, forwarding, hostPlatform()), ran.length > 0 ? [] : fixes, stage, sudo);
+  return { checks: ran.length > 0 ? [...checks, preparedCheck(ran)] : checks, result, ran };
+}
+
+/** 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る（1つごとに別の接続——多重化しないので、替えたグループが次から効く） */
+export function sshRun(t: SshTarget, files: SshFiles, hostKeyType: string): RunIncus {
+  return async (args, opts) => runRemoteScript(t, files, hostKeyType, `exec ${args.map(shq).join(" ")}\n`, { timeoutMs: opts?.timeoutMs ?? 30_000 });
 }
 
 // ── 向こうのフォルダ ─────────────────────────────────────────────────────────

@@ -566,10 +566,10 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
      install -y -q --no-install-recommends …`（cloud-init が apt を握っている間は待つ）。apt で入れるのは `/etc/os-release` の
      ID か ID_LIKE が debian・ubuntu で `apt-get` があるときだけ。ほかは今どおりコマンドを見せる
    - **置き場の根（共通）**：作れない・書けないなら `install -d -o <ユーザー> -g <グループ> -m 0700 <根>`
-   - **sshd（共通）**：転送が断られた・`MaxSessions` が 10 未満なら、`/etc/ssh/sshd_config.d/90-banto.conf` に足りない分だけ
+   - **sshd（共通）**：転送が断られた・`MaxSessions` が 10 未満なら、`/etc/ssh/sshd_config.d/00-banto.conf` に足りない分だけ
      書き、`sshd -t` で確かめてから `systemctl reload ssh`（無ければ `sshd`）。`sshd -t` が通らなければ書いたファイルを元に
      戻して断る（締め出さない）。Ubuntu の `sshd_config` は先頭で `sshd_config.d` を読み、同じ鍵は最初に出た値が効くので
-     ここに書いた値が勝つ。主の設定の `Match` の中で断っているものは変えられない——直したあと転送を確かめ直し、なお断られ
+     ここに書いた値が勝つ（名前を 00- にして `50-cloud-init.conf` 等より先に読ませる）。主の設定の `Match` の中で断っているものは変えられない——直したあと転送を確かめ直し、なお断られ
      たら「人が直すしかない」と出す
    - **linger とユーザーの systemd（`machine`）**：`loginctl enable-linger <ユーザー>`（今は注意だけ）。`/run/user/<uid>/bus` が
      無ければ、そのあと `systemctl start user@<uid>.service`

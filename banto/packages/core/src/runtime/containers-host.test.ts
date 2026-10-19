@@ -6,6 +6,7 @@ import {
   idRangesInclude,
   inspectContainersHost,
   prepareContainersHost,
+  sameGroups,
   type VmAccess,
 } from "./containers-host.js";
 
@@ -25,6 +26,10 @@ interface FakeVm {
   availGiB: number;
   sudoCalls: string[][];
   restarts: number;
+  /** ユーザーの systemd が起きたときの補助グループ（undefined なら動いていない） */
+  managerGroups?: string[];
+  /** Incus を入れられる OS（Ubuntu 24.04） */
+  os?: VmAccess["os"];
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -45,6 +50,10 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     ...over,
   };
 }
+
+/** 補助のグループの名前（主のグループ banto は除く） */
+const groupNames = (vm: FakeVm) => [...(vm.inGroup ? ["incus"] : []), ...(vm.admin ? ["incus-admin"] : [])];
+const gidOf = (name: string) => (name === "incus" ? "990" : name === "incus-admin" ? "991" : "9");
 
 const ok = (stdout = ""): IncusResult => ({ code: 0, stdout, stderr: "" });
 const fail = (stderr: string, code = 1): IncusResult => ({ code, stdout: "", stderr });
@@ -105,17 +114,36 @@ function accessOf(vm: FakeVm): VmAccess {
       vm.linger = true;
       return ok();
     }
+    if (cmd === "gpasswd" && rest[0] === "-d" && rest[2] === "incus-admin") {
+      vm.admin = false;
+      return ok();
+    }
+    if (cmd === "systemctl" && rest.join(" ") === "restart user@1000.service") {
+      vm.managerGroups = groupNames(vm);
+      return ok();
+    }
+    if (cmd === "systemctl" && rest.join(" ") === "enable --now incus-user.socket") return ok();
+    if (cmd === "sh" && rest[0] === "-c" && rest[2] === "banto-incus") {
+      vm.installed = true;
+      vm.version = rest[3] === "stable" ? "6.19.0" : "6.0.6";
+      return ok();
+    }
     return fail(`偽の VM は sudo ${args.join(" ")} を知らない`);
   };
   return {
     user: "banto",
     uid: 1000,
     gid: 1001,
+    ...(vm.os ? { os: vm.os } : {}),
     run: async (args) => {
       const [cmd, ...rest] = args;
       if (cmd === "incus") return incus(rest, false);
-      if (cmd === "sudo" && rest[0] === "-n") return root(rest.slice(1));
-      if (cmd === "id") return ok(`banto${vm.inGroup ? " incus" : ""}${vm.admin ? " incus-admin" : ""}\n`);
+      if (cmd === "/usr/bin/sudo" && rest[0] === "-n") return root(rest.slice(1));
+      if (cmd === "id" && rest[0] === "-nG") return ok(`banto ${groupNames(vm).join(" ")}\n`);
+      if (cmd === "id" && rest[0] === "-G") return ok(`1001 ${groupNames(vm).map(gidOf).join(" ")}\n`);
+      if (cmd === "systemctl" && rest[0] === "show") return ok(vm.managerGroups ? "4242\n" : "0\n");
+      if (cmd === "cat" && rest[0] === "/proc/4242/status") return ok(`Name:\tsystemd\nGroups:\t1001 ${vm.managerGroups!.map(gidOf).join(" ")}\n`);
+      if (cmd === "dpkg-query") return vm.installed ? ok(vm.version) : fail("no packages found matching incus", 1);
       if (cmd === "cat" && rest[0] === "/etc/subuid") return ok(vm.subuid);
       if (cmd === "cat" && rest[0] === "/etc/subgid") return ok(vm.subgid);
       if (cmd === "test") return vm.linger ? ok() : fail("", 1);
@@ -133,7 +161,9 @@ test("まっさらな VM（sudo -n が通る）：確かめは何も変えず、
   const access = accessOf(vm);
   const checks = await evaluateContainersHost(await inspectContainersHost(access), access, "check");
   assert.deepEqual(statuses(checks), {
+    incus: "ok",
     "incus-project": "warn",
+    "user-manager": "ok",
     "incus-proxy": "warn",
     "incus-idmap": "warn",
     "incus-pool": "warn",
@@ -183,7 +213,9 @@ test("sudo -n が通らない：何も打たず、足りないものと打つコ
   assert.equal(vm.inGroup, false);
   const checks = await evaluateContainersHost(state, access, "check");
   assert.deepEqual(statuses(checks), {
+    incus: "ok",
     "incus-project": "fail",
+    "user-manager": "ok",
     "incus-proxy": "fail",
     "incus-idmap": "fail",
     "incus-pool": "fail",
@@ -212,6 +244,7 @@ test("人が先に整えてあれば sudo -n が無くても使える（sudo は
   assert.deepEqual(statuses(checks), {
     incus: "ok",
     "incus-project": "ok",
+    "user-manager": "ok",
     "incus-proxy": "ok",
     "incus-idmap": "ok",
     "incus-pool": "ok",
@@ -228,25 +261,94 @@ test("人が先に整えてあれば sudo -n が無くても使える（sudo は
   assert.equal(broken.find((c) => c.id === "sudo")!.status, "fail");
 });
 
-test("Incus が無い・古い：断り、準備は何もしない", async () => {
-  for (const vm of [fakeVm({ installed: false }), fakeVm({ version: "6.0.5", inGroup: true })]) {
+test("Incus が無い・古い：banto が入れられない OS（Ubuntu 24.04・26.04 でない）なら断り、準備は何もしない", async () => {
+  for (const vm of [
+    fakeVm({ installed: false }),
+    fakeVm({ version: "6.0.5", inGroup: true }),
+    fakeVm({ installed: false, os: { apt: true, id: "debian", version: "12", codename: "bookworm", arch: "amd64" } }),
+  ]) {
     const access = accessOf(vm);
     const { state, ran } = await prepareContainersHost(access);
     assert.deepEqual(ran, []);
     const checks = await evaluateContainersHost(state, access, "check");
     assert.equal(checks.find((c) => c.id === "incus")!.status, "fail");
+    assert.match(checks.find((c) => c.id === "incus")!.detail!, /Ubuntu 24\.04・26\.04/);
   }
 });
 
-test("incus-admin で制限の無い区画に繋がるユーザーは、人が直すしかないので名指しして断る", async () => {
-  const vm = fakeVm({ admin: true });
+test("Incus が無い（Ubuntu 24.04）：確かめは「登録のときに入れる」注意、準備で Zabbly の lts-6.0 から入れてから続きを整える", async () => {
+  const os = { apt: true, id: "ubuntu", version: "24.04", codename: "noble", arch: "amd64" };
+  const vm = fakeVm({ installed: false, os });
   const access = accessOf(vm);
+  const before = await evaluateContainersHost(await inspectContainersHost(access), access, "check");
+  // 後ろの項目は「Incus を入れたあとに整えます」の注意（断らない——「準備して登録する」が押せる）
+  assert.deepEqual(new Set(before.filter((c) => c.id !== "sudo" && c.id !== "user-manager").map((c) => c.status)), new Set(["warn"]));
+  assert.match(before.find((c) => c.id === "incus")!.detail!, /Incus が入っていません。登録するときに banto/);
+  assert.match(before.find((c) => c.id === "incus")!.fix!, /Zabbly の lts-6\.0 から Incus と btrfs-progs を入れる（鍵の指紋 4EFC590696CB15B87C73A3AD82CC8797C838DCFD/);
+  assert.match(before.find((c) => c.id === "incus-pool")!.detail!, /Incus を入れたあとに整えます/);
+  assert.ok(before.every((c) => c.status === "ok" || c.autoFix));
+
   const { state, ran } = await prepareContainersHost(access);
-  assert.deepEqual(ran, []);
-  const project = (await evaluateContainersHost(state, access, "check")).find((c) => c.id === "incus-project")!;
-  assert.equal(project.status, "fail");
-  assert.match(project.detail!, /「default」/);
+  const install = ran[0]!;
+  assert.deepEqual(
+    [install[0], install[1], install[3], install[4], install[5], install[6], install[7]],
+    ["sh", "-c", "banto-incus", "lts-6.0", "noble", "amd64", "4EFC590696CB15B87C73A3AD82CC8797C838DCFD"],
+  );
+  // 台本：鍵の指紋を確かめ、合わなければ置かずに止める
+  assert.match(install[2]!, /gpg --show-keys --with-colons/);
+  assert.match(install[2]!, /exit 3/);
+  assert.deepEqual(ran.slice(1, 2), [["usermod", "-aG", "incus", "banto"]]);
+  const after = await evaluateContainersHost(state, access, "verify");
+  assert.deepEqual(new Set(after.map((c) => c.status)), new Set(["ok"]));
+
+  // 26.04 は stable（lts-6.0 には resolute が無い）
+  const vm26 = fakeVm({ installed: false, os: { ...os, version: "26.04", codename: "resolute" } });
+  const r26 = await prepareContainersHost(accessOf(vm26));
+  assert.equal(r26.ran[0]![4], "stable");
+  assert.equal(vm26.version, "6.19.0");
+});
+
+test("incus-admin に入っているユーザー：確かめは「外します」の注意、準備で incus-admin から外し、ユーザーの systemd を起こし直す", async () => {
+  // banto-ct-test と同じ形（incus-admin と incus の両方、ユーザーの systemd は incus-admin つきで動いている）
+  const vm = fakeVm({ admin: true, inGroup: true, managerGroups: ["incus", "incus-admin"] });
+  const access = accessOf(vm);
+  const check = await evaluateContainersHost(await inspectContainersHost(access), access, "check");
+  const project = check.find((c) => c.id === "incus-project")!;
+  assert.equal(project.status, "warn");
+  assert.match(project.detail!, /incus-admin グループに入っていて、制限の無い管理の口に繋がります。incus-admin から外します/);
   assert.equal(project.fix, "sudo gpasswd -d banto incus-admin");
+  assert.equal(check.find((c) => c.id === "user-manager")!.status, "ok");
+
+  const { state, ran } = await prepareContainersHost(access);
+  assert.deepEqual(ran.slice(0, 2), [
+    ["gpasswd", "-d", "banto", "incus-admin"],
+    ["systemctl", "restart", "user@1000.service"],
+  ]);
+  assert.deepEqual(vm.managerGroups, ["incus"]);
+  const after = await evaluateContainersHost(state, access, "verify");
+  assert.deepEqual(new Set(after.map((c) => c.status)), new Set(["ok"]));
+});
+
+test("Project があってユーザーの systemd を起こし直せないとき：外すのは行い、起こし直しは注意にとどめて続ける", async () => {
+  const vm = fakeVm({ admin: true, inGroup: true, managerGroups: ["incus", "incus-admin"] });
+  const access = accessOf(vm);
+  const { state, ran } = await prepareContainersHost(access, { mayRestartUserManager: false });
+  assert.deepEqual(ran[0], ["gpasswd", "-d", "banto", "incus-admin"]);
+  assert.ok(!ran.some((r) => r.join(" ") === "systemctl restart user@1000.service"));
+  // 後ろの項目は整えた
+  assert.ok(ran.some((r) => r[0] === "loginctl"));
+  const after = await evaluateContainersHost(state, access, "verify", { mayRestartUserManager: false });
+  const manager = after.find((c) => c.id === "user-manager")!;
+  assert.equal(manager.status, "warn");
+  assert.match(manager.detail!, /Project を全部閉じてから/);
+});
+
+test("sameGroups：主のグループの有無に左右されず、補助のグループの組で比べる", () => {
+  assert.equal(sameGroups("Groups:\t4 24 990\n", "1000 4 24 990"), true);
+  assert.equal(sameGroups("Groups:\t1000 4 24 990\n", "1000 4 24 990"), true);
+  assert.equal(sameGroups("Groups:\t4 24 990 991\n", "1000 4 24 990"), false);
+  assert.equal(sameGroups("Groups:\t4 24\n", "1000 4 24 990"), false);
+  assert.equal(sameGroups("Name:\tx\n", "1000 4"), true);
 });
 
 test("置き場：/var/lib/incus が btrfs でなければ大きさを決めたファイル（空きの半分、50GiB まで）。空きが少なければ断る", async () => {

@@ -867,6 +867,8 @@ export interface RealRuntimeCheck {
   status: "ok" | "warn" | "fail";
   detail?: string;
   fix?: string;
+  /** banto が登録・確かめ直しのときに sudo -n で整える項目（v4-security.md §1「足りないものは banto が入れる」） */
+  autoFix?: boolean;
 }
 
 export interface RealRuntimeInput {
