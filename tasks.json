@@ -9859,6 +9859,33 @@
       "updatedAt": "2026-10-19T22:53:37.447Z",
       "closedAt": "2026-10-19T22:53:37.447Z",
       "extra": {}
+    },
+    {
+      "id": "update-rollback",
+      "number": 409,
+      "kind": "story",
+      "title": "前の版に戻す——設定の「更新」から、この機械で動いた版に戻せる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "update"
+      ],
+      "body": "きっかけ：#367 の版（release c38b465f）で別のサーバの Module が全部起きず、host で current の symlink を手で前の版に替えて戻した。そのあと直した版へ更新しようとしたら、残っていた版のフォルダをコンテナが使っていて「組み立てる」で止まった。\n\nユーザーの決定（2026-10-19）：一覧は「この機械で動いた版」の新しい10件。機械に残す版は3つ（今の版を含む）。それより古いものは GitHub の組み立て済みを取ってくるか、その場で組み立てて戻す。\n\n仕様：v4-architecture.md §2.5「前の版に戻す」・v4-frontend.md §6.34「前の版に戻す」・v4-security.md §2「前の版に戻す」（GitHub の main 839a4677 まで、Fable のレビュー3回で「main に入れてよい」）。",
+      "doneWhen": "設定の「更新」から、この機械で動いた版を選んで戻せ、戻したあと最新へ更新できる。self-update.spec.ts の「更新→戻す→最新へ更新」と update.test.mjs・core の単体テストが通る。稼働中の host で、人が1回戻して確かめる。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md",
+        "docs/specs/v4-frontend.md",
+        "docs/specs/v4-security.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-19T22:56:51.925Z",
+      "updatedAt": "2026-10-19T22:56:51.925Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
