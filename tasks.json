@@ -9892,7 +9892,7 @@
       "number": 410,
       "kind": "task",
       "title": "動いた版の記録（history.json）を host が書く・GET /api/admin/update に rollbackTargets",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "update-rollback",
       "dependsOn": [],
       "milestone": null,
@@ -9904,7 +9904,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-19T22:57:13.582Z",
-      "updatedAt": "2026-10-19T22:57:13.582Z",
+      "updatedAt": "2026-10-19T23:29:48.014Z",
       "closedAt": null,
       "extra": {}
     },
