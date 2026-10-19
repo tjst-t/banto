@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../event-store/log.js";
@@ -187,6 +187,37 @@ test("動かし方を持つ前の登録の記録は machine として畳む", as
     const store = new RemoteRuntimeStore(dir, log);
     await store.load();
     assert.equal(store.get("lab")!.mode, "machine");
+  });
+});
+
+test("動かし方を持つ前に書いた写し（スナップショット）から読んでも machine（2026-10-19、稼働中で踏んだ不具合）", async () => {
+  await withStores(async ({ dir, log }) => {
+    // 動かし方を持つ前の記録と、その頃の形の写し（版 1 のファイル名・mode の無い記録）を置く
+    const { mode: _mode, ...old } = INPUT;
+    await log.append("runtime.remote_registered", { runtime: old, hostKey: KEY, checks: OK });
+    const first = new RemoteRuntimeStore(dir, log);
+    await first.load();
+    await first.save();
+    const v2 = join(dir, "remote-runtimes.v2.snapshot.json");
+    const strip = async (path: string) => {
+      const snap = JSON.parse(await readFile(path, "utf8")) as { state: { runtimes: unknown } };
+      const text = JSON.stringify(snap).replace(/"mode":"machine",?/g, "");
+      assert.ok(!text.includes('"mode"'));
+      await writeFile(path, text);
+    };
+    // 版 1 の写し（前の版が書いたもの）は読まず、ログから作り直す
+    await writeFile(join(dir, "remote-runtimes.snapshot.json"), await readFile(v2, "utf8"));
+    await strip(join(dir, "remote-runtimes.snapshot.json"));
+    await rm(v2);
+    const fromLog = new RemoteRuntimeStore(dir, log);
+    await fromLog.load();
+    assert.equal(fromLog.get("lab")!.mode, "machine");
+    // 今の版の写しに mode が欠けていても、読むときに machine を入れる
+    await fromLog.save();
+    await strip(v2);
+    const fromSnapshot = new RemoteRuntimeStore(dir, log);
+    await fromSnapshot.load();
+    assert.equal(fromSnapshot.get("lab")!.mode, "machine");
   });
 });
 

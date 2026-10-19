@@ -165,7 +165,7 @@ export class RemoteRuntimes {
    * Project は1つ——v4-security.md §1。`containers` は Project ごとにコンテナを立てるので数えない）→ host 鍵が違う → 前提が足りない
    */
   unavailableReason(r: RemoteRuntime): string | undefined {
-    const used = r.mode === "machine" ? this.deps.projectsUsing(runtimeIdOf(r.name))[0] : undefined;
+    const used = r.mode !== "containers" ? this.deps.projectsUsing(runtimeIdOf(r.name))[0] : undefined;
     if (used) return `Project「${used.name}」が使っています（1つの実行場所に Project は1つ）`;
     if (r.hostKeyMismatch) return "host 鍵が前と違うので繋ぎません";
     if (r.checks.some((c) => c.status === "fail")) return "前提が足りません";
@@ -374,7 +374,8 @@ export class RemoteRuntimes {
     hostKeyType: string,
     stage: "check" | "prepare" | "verify",
   ): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
-    if (r.mode === "machine") return probePrerequisites(r, files, hostKeyType, r.dataRoot);
+    // containers と名乗ったものだけを containers として確かめる（動かし方が分からないものを sudo の要る側へ落とさない）
+    if (r.mode !== "containers") return probePrerequisites(r, files, hostKeyType, r.dataRoot);
     try {
       return await probeContainersPrerequisites(r, files, hostKeyType, r.dataRoot, { mode: stage });
     } catch (err) {

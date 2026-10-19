@@ -64,6 +64,15 @@ export type RemoteRuntimeEvent =
 
 export const remoteRuntimeFold: Fold<RemoteRuntimeState> = {
   initial: () => ({ runtimes: new Map() }),
+  // **写しから読んだ記録にも動かし方を入れる**（2026-10-19、稼働中で踏んだ不具合）。動かし方を持つ前に書いた写し
+  // （remote-runtimes.snapshot.json）の記録には `mode` が無く、畳み直しを通らないので `fold` の既定（machine）が効かず、
+  // machine の実行場所に containers の前提の確かめが当たって Module が全部起きなくなった。版も上げて写しを作り直すが、
+  // 読んだ形を信じない（規則3）
+  unpack: (state) => ({
+    runtimes: new Map(
+      [...(state as RemoteRuntimeState).runtimes].map(([name, r]) => [name, { ...r, mode: r.mode ?? "machine" }]),
+    ),
+  }),
   apply(state, raw: StoredEvent): RemoteRuntimeState {
     const event = raw as unknown as RemoteRuntimeEvent;
     if (!event.type.startsWith("runtime.remote_")) return state;
@@ -111,7 +120,8 @@ export class RemoteRuntimeStore {
   private readonly projection: SnapshotProjection<RemoteRuntimeState>;
 
   constructor(dataDir: string, private readonly log: EventLog) {
-    this.projection = new SnapshotProjection(dataDir, "remote-runtimes", log, remoteRuntimeFold);
+    // 版 2（2026-10-19）：記録に `mode` が入った。版 1 の写しは読まずにログから作り直す
+    this.projection = new SnapshotProjection(dataDir, "remote-runtimes", log, remoteRuntimeFold, 2);
   }
 
   async load(): Promise<void> {
