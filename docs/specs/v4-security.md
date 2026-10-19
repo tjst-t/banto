@@ -523,8 +523,9 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 #### 前提の確かめ
 
-**root が要る準備は人が行う**。banto は向こうで sudo しない。**繋いだとき・Module を起こす前に次を確かめ、足りないものを
-名指しし、直し方を添えて断る**（§2「前提が欠けていれば、Module を起こさずに断る」と同じ）。Module が自分で sudo を
+**root が要る準備は、登録と人が押した「確かめ直す」のときだけ banto が `sudo -n` で行う**（改訂・2026-10-19、下の「足りない
+ものは banto が入れる」。以前は「人が行う。banto は向こうで sudo しない」）。**繋いだとき・Module を起こす前は sudo せず、次を
+確かめ、足りないものを名指しし、直し方を添えて断る**（§2「前提が欠けていれば、Module を起こさずに断る」と同じ）。Module が自分で sudo を
 試みる前に止める（Service・Shell の待たない形は linger が無いと `sudo -n` を試みる）：
 
 - `uname -m`・libc が host と同じ
@@ -543,6 +544,73 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 - sshd がこの使い方を許す：TCP と UNIX ソケットの転送（`AllowTcpForwarding`・`AllowStreamLocalForwarding`）・
   1本の接続に開けるセッションの数（`MaxSessions`、既定 10）が Module の数に足りる
 - 「中で Docker を使う」を入れた Project は `docker` が使える（containerlab もここで確かめる）
+
+#### 足りないものは banto が入れる（決定・2026-10-19、ユーザー。未実装）
+
+**きっかけ**：banto-ct-test（cloud-init の Ubuntu。`sudo -n` が通る・Incus 6.0.6・グループに `incus-admin` と `incus`）を
+`containers` で登録しようとすると「足りないものがあるので登録できません。向こうで上のコマンドを打ってから、確かめ直して
+ください」で止まった。sudo できるのに、`incus-admin` を「人が直すしかないもの」として断っていた。`machine` は登録でも
+一度も sudo せず、道具・linger・sshd の設定を全部人に打たせていた。ユーザー：「banto として、`containers` でも `machine` でも、
+登録したときに足りないものがあれば自動で入れる仕組みを」。
+
+1. **いつ**：登録（`register`）と、人が押した「確かめ直す」（`recheck`・鍵を覚え直したあとの確かめ直しも）のときだけ。
+   登録の前の確かめ（`check`）は何も変えない。繋ぐたび・Module を起こすときは今どおり sudo しない。
+2. **何で**：SSH のユーザーの `sudo -n`（`/usr/bin/sudo` を絶対パスで、後ろのコマンドも絶対パスか決めた名前で）。通らなければ
+   今どおり、打つコマンドを添えて断る（パスワードの要る sudo は未決——下の 10.）。
+3. **人の承知**：登録の前の確かめの一覧で、banto が入れるものを注意（warn）にし、「登録するときに banto が入れます」と打つ
+   コマンドを添えて出す。人が「準備して登録する」を押すのが承知（`containers` の今の形を `machine` にも広げる）。登録した
+   あとの「確かめ直す」は、繋ぐたびの確かめで「確かめ直すと banto が入れます」と出ていたものを入れる。
+4. **入れるもの**（どれも「入っていれば何もしない」形。何度流しても同じ）：
+   - **道具（共通）**：`machine` は git・openssh-client・curl・tar（無ければ断る分）と tmux・rsync（注意の分）、`containers` は
+     tar。入れるものがあるときだけ `apt-get update` を1回、`DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300
+     install -y -q --no-install-recommends …`（cloud-init が apt を握っている間は待つ）。apt で入れるのは `/etc/os-release` の
+     ID か ID_LIKE が debian・ubuntu で `apt-get` があるときだけ。ほかは今どおりコマンドを見せる
+   - **置き場の根（共通）**：作れない・書けないなら `install -d -o <ユーザー> -g <グループ> -m 0700 <根>`
+   - **sshd（共通）**：転送が断られた・`MaxSessions` が 10 未満なら、`/etc/ssh/sshd_config.d/90-banto.conf` に足りない分だけ
+     書き、`sshd -t` で確かめてから `systemctl reload ssh`（無ければ `sshd`）。`sshd -t` が通らなければ書いたファイルを元に
+     戻して断る（締め出さない）。Ubuntu の `sshd_config` は先頭で `sshd_config.d` を読み、同じ鍵は最初に出た値が効くので
+     ここに書いた値が勝つ。主の設定の `Match` の中で断っているものは変えられない——直したあと転送を確かめ直し、なお断られ
+     たら「人が直すしかない」と出す
+   - **linger とユーザーの systemd（`machine`）**：`loginctl enable-linger <ユーザー>`（今は注意だけ）。`/run/user/<uid>/bus` が
+     無ければ、そのあと `systemctl start user@<uid>.service`
+   - **Incus（`containers`）**：無い・古い（`lts-6.0` の系統なら 6.0.6 未満、ほかは 6.19 未満——install.sh の `incus_version_ok`）
+     なら、install.sh と同じ道で Zabbly から入れる。Ubuntu 24.04 は `lts-6.0`、26.04 は `stable`（Memory の 2026-10-04 の実測）、
+     ほかの版は入れずに断る。鍵は「公開鍵が1つで、指紋が決めた値（install.sh の `ZABBLY_FPR`）」のときだけ置く。`incus`・
+     `btrfs-progs` を入れ、default のプロファイルに root のディスクが無ければ `incus admin init --minimal`。Ubuntu の incus
+     （6.0.5 等）が入っていれば Zabbly の版に上げる。入れたあと版を確かめ、なお足りなければ断る
+   - **`incus-admin` から外す（`containers`、決定・2026-10-19、ユーザー、案A）**：`incus-admin` に入っていると、Incus は区画
+     `user-<uid>` ではなく制限の無い管理の口に繋ぐ。`gpasswd -d <ユーザー> incus-admin` で外し、`incus` グループだけにする（今の
+     決まり「banto 専用のユーザーを incus グループだけに」に揃える）。VM は banto 専用の決まりなので、人がこのユーザーで Incus を
+     管理していない前提にし、確かめの一覧で「外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）」
+     と出す。banto の root の要る準備（置き場を作る等）は sudo で行うので、外しても困らない。`incus` グループに入っていなければ
+     今どおり `usermod -aG incus`
+   - **グループを替えたあとの繋ぎ直し**：banto は向こうのコマンドを1つずつ別の SSH の接続で流す（多重化しない）ので、次の
+     コマンドから新しいグループで動く。ユーザーの systemd（`user@<uid>`）は起きたときのグループのまま残り、そこから起こした
+     ものは `incus-admin` を持ち続け・`incus` を持たない（2026-10-17 に banto-dev-vm で実測、#363）。グループを替えたら
+     `systemctl restart user@<uid>.service` で起こし直す——**その実行場所を使う Project が1つも無いとき（登録では常に）だけ**。
+     Project があるなら（その Project の多重化した SSH の親も古いグループのまま）起こし直さず、注意「ユーザーの systemd が
+     古いグループのままです。この実行場所の Project を全部閉じてから確かめ直してください」を出す。グループが替わったかは
+     `/proc/<user@ の pid>/status` の Groups と今の `id -G` を比べて分かる（登録のたびに比べ、食い違えば起こし直す）
+   - 以降は今の準備（区画の proxy・idmap と subuid／subgid・置き場 `banto`・linger）
+5. **入れないもの**（今どおり打つコマンドを見せて断る・注意する）：CPU の種類と libc、ログインしたときに何か出す（人の
+   `~/.bashrc` 等——banto は人の設定ファイルを書き換えない）、Docker（「中で Docker を使う」Project だけが要り、`docker` グループは
+   実質 root——要る Project で人が入れる）、置き場を作るディスクの空きが足りない、apt の無い OS・Zabbly の無い Ubuntu の版、
+   sudo -n が通らない
+6. **順番**：道具 → sshd → 置き場の根 →（`machine`）linger とユーザーの systemd ／（`containers`）Incus → グループ → user@ の
+   起こし直し → 区画の proxy → idmap → 置き場 `banto` → linger。1項目ごとに様子を引き直す（前の項目が次の項目の様子を変える。
+   今の `prepareContainersHost` と同じ）
+7. **時間と見せ方**：apt と Incus を入れると数分かかる。1つのコマンドの上限は 10 分（apt・Incus）、ほかは今どおり。画面は
+   「準備して登録しています…（数分かかることがあります）」。途中で失敗したら、どの項目のどのコマンドが何と言って落ちたかを
+   出す（今の `ContainersPrepareError` と同じ）。入れたものはそのまま残す（入っていれば何もしないので、確かめ直せば続きから）
+8. **記録**：banto が向こうで打ったコマンドは、実行場所の名前・コマンド・終了コードを banto のログに1行ずつ残し、登録・確かめ
+   直しの結果に「banto が向こうで行ったこと」として返して画面に出す
+9. **`machine` で sudo することについて**：`machine` では SSH のユーザー＝その Project の AI。ユーザーが `sudo -n` できるなら
+   AI もすでに root になれるので、banto が登録と確かめ直しで sudo を使っても AI に新しく渡すものは無い。`sudo -n` が通らない
+   （AI が root になれない）実行場所では、banto は今どおり何もしない。Module を起こすとき・繋ぐたびに sudo しない決まりは残す
+   （Module が自分で sudo を試みる前に止める、も今どおり）
+10. **未決**：sudo にパスワードが要るとき、画面で1回だけパスワードを入れて banto が `sudo -S` で準備する形（banto は覚えない）。
+    入れるなら、`machine` で Project がある実行場所では AI が向こうの PATH・`~/.bashrc` を握っていてパスワードを盗めるので、
+    Project の無いとき（登録）に限る、などを決める
 
 #### 向こうとの道——SSH の接続1本
 
@@ -828,7 +896,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     置き場を作る・`loginctl enable-linger`）、確かめ直して残っていれば断る。済んでいる項目には何も打たない。**subuid・subgid を
     書き換えたときは Incus を起こし直す**（この機械の install.sh と同じ。要るかは まっさらな VM で測る——下の B2）。繋ぐたびには
     sudo せず、崩れていれば「確かめ直す」で整えると言って断る。人が先に整えてあれば `sudo -n` が無くても使える（注意だけ）。
-    `incus-admin` で制限の無い区画に繋がるユーザーは、人が直すしかないので断る。`containers` は新しい Project・再開で「1つに1つ」
+    `incus-admin` で制限の無い区画に繋がるユーザーは、~~人が直すしかないので断る~~ banto が `incus-admin` から外す（改訂・
+    2026-10-19、上の「足りないものは banto が入れる」）。`containers` は新しい Project・再開で「1つに1つ」
     を数えない。**コンテナで Module を起こすところはまだ無い**（Backlog containers-project-module）——`containers` の Project の
     Module を繋ごうとすると名指しして断る（VM のユーザーで直に起こす `machine` の形へ落ちない）。コードを先に送るだけの接続は通す
 - **SSH の接続は Project ごとに1本**（Fable の F1・F2・S4）：`MaxSessions`（既定 10）は 1 Project の Module 数でほぼ埋まる。
