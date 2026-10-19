@@ -1,25 +1,44 @@
 // **実行場所「別のサーバ」の動かし方 `containers` の前提の確かめと、core が `sudo -n` で行う準備**（決定・2026-10-17、
-// `docs/specs/v4-security.md` §1「別のサーバの中のコンテナ——1台に Project を複数置く」、Backlog #367）。
+// `docs/specs/v4-security.md` §1「別のサーバの中のコンテナ——1台に Project を複数置く」、Backlog #367。改訂・2026-10-19、
+// 同 §1「足りないものは banto が入れる」）。
 //
 // `containers` では Project ごとに Incus のコンテナを立てる（SSH ユーザーの制限された区画 `user-<uid>` で）。そのための root の
-// 要る準備——区画の `restricted.devices.proxy=allow`・VM の uid/gid を区画とコンテナで揃える許可（`/etc/subuid`・`/etc/subgid`
-// と区画の `restricted.idmap.uid/gid`）・置き場（pool）`banto`・linger——は、**core が登録のときだけ `sudo -n` で済ませる**。
-// どれも「入っていれば何もしない」形（何度流しても同じ）。`sudo -n` が通らなければ、足りないものと打つコマンドを名指しして断る。
-// 繋ぐたびには、何もしないこと（準備が崩れていないこと）を確かめるだけで、sudo はしない。
+// 要る準備——Incus そのもの（無い・古いなら Zabbly から入れる）・`incus-admin` から外して `incus` グループだけにする・ユーザーの
+// systemd を新しいグループで起こし直す・区画の `restricted.devices.proxy=allow`・VM の uid/gid を区画とコンテナで揃える許可
+// （`/etc/subuid`・`/etc/subgid` と区画の `restricted.idmap.uid/gid`）・置き場（pool）`banto`・linger——は、**core が登録と人の
+// 「確かめ直す」のときだけ `sudo -n` で済ませる**。どれも「入っていれば何もしない」形（何度流しても同じ）。`sudo -n` が通らな
+// ければ、足りないものと打つコマンドを名指しして断る。繋ぐたびには、準備が崩れていないことを確かめるだけで、sudo はしない。
 //
-// 向こうでのコマンドは1つずつ `VmAccess.run` で流す（試験では偽の Incus・偽の sudo に差し替える）。Docker・tmux は VM には
-// 要らない（コンテナの中の話）。
+// 向こうでのコマンドは1つずつ `VmAccess.run` で流す（1つごとに別の SSH の接続——替えたグループが次のコマンドから効く。試験では
+// 偽の Incus・偽の sudo に差し替える）。Docker・tmux は VM には要らない（コンテナの中の話）。
 
 import { BANTO_POOL, rootMayMap, versionHasNestingFix, type IncusResult, type RunIncus } from "@banto/container";
-import { evaluateProbe, hostPlatform, probeBase, runRemoteScript, shq, type RuntimeCheck, type SshFiles, type SshResult, type SshTarget } from "./ssh.js";
+import { evaluateProbe, hostPlatform, probeBase, sshRun, type RuntimeCheck, type SshFiles, type SshResult, type SshTarget } from "./ssh.js";
+import {
+  AutoFixError,
+  commonFixes,
+  LONG_ROOT_COMMAND_MS,
+  markAutoFixes,
+  preparedCheck,
+  ROOT_COMMAND_MS,
+  runFixes,
+  SUDO,
+  sudoLine,
+  WILL_FIX_ON_REGISTER,
+  type RanCommand,
+} from "./host-autoprep.js";
 
 /** 向こうの SSH ユーザーと、そのユーザーとしてコマンドを1つ流す口 */
 export interface VmAccess {
   user: string;
   uid: number;
   gid: number;
-  /** そのユーザーとしてコマンドを流す（`["incus", …]`・`["sudo", "-n", …]`・`["cat", …]` など）。見つからなければ 127 */
+  /** そのユーザーとしてコマンドを流す（`["incus", …]`・`["/usr/bin/sudo", "-n", …]`・`["cat", …]` など）。見つからなければ 127 */
   run: RunIncus;
+  /** 向こうの OS（Incus を入れる道を選ぶ。分からなければ入れない） */
+  os?: { apt: boolean; id: string; version: string; codename: string; arch: string };
+  /** banto が向こうで打ったものを、banto のログに1行ずつ */
+  log?: (line: string) => void;
 }
 
 /** 向こうの、準備に関わる様子 */
@@ -30,6 +49,12 @@ export interface ContainersHostState {
     | { status: "ok"; version: string; project: string };
   /** `incus` グループに入っている（incus-user の口に繋げる） */
   inIncusGroup: boolean;
+  /** `incus-admin` グループに入っている（制限の無い管理の口に繋いでしまう） */
+  inIncusAdmin: boolean;
+  /** 動いているユーザーの systemd（user@<uid>）のグループが、今のグループと食い違う（グループを替えたあと起こし直していない） */
+  userManagerStale: boolean;
+  /** 入っている incus の版（dpkg。区画に繋がらなくても分かる） */
+  installedVersion?: string;
   /** 自分の区画の設定（読めなければ undefined——区画がまだ無い・Incus に繋がらない） */
   projectConfig?: Record<string, string>;
   subuid: boolean;
@@ -43,17 +68,34 @@ export function projectNameOf(uid: number): string {
   return `user-${uid}`;
 }
 
-const sudoRun = (vm: VmAccess, args: string[]) => vm.run(["sudo", "-n", ...args], { timeoutMs: 180_000 });
+const sudoRun = (vm: VmAccess, args: string[], timeoutMs = ROOT_COMMAND_MS) => vm.run([SUDO, "-n", ...args], { timeoutMs });
+
+/**
+ * `/proc/<pid>/status` の Groups の行と `id -G`（頂が主のグループ）が同じ組か。主のグループは Groups に入らないことがあるので、
+ * 両方から除いて補助のグループだけ比べる。読めなければ同じとみなす（起こし直さない）
+ */
+export function sameGroups(statusText: string, idG: string): boolean {
+  const line = statusText.split("\n").find((l) => l.startsWith("Groups:"));
+  const ids = idG.trim().split(/\s+/).filter(Boolean);
+  if (!line || ids.length === 0) return true;
+  const primary = ids[0]!;
+  const a = new Set(line.slice("Groups:".length).trim().split(/\s+/).filter((g) => g && g !== primary));
+  const b = new Set(ids.filter((g) => g !== primary));
+  return a.size === b.size && [...a].every((g) => b.has(g));
+}
 
 /** 向こうの様子を引く（sudo は「通るか」と、ユーザーから見えない置き場を root で見るのにだけ使う。変えない） */
 export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHostState> {
-  const [info, groups, subuid, subgid, sudo, linger] = await Promise.all([
+  const [info, groups, groupIds, subuid, subgid, sudo, linger, managerPid, dpkg] = await Promise.all([
     vm.run(["incus", "query", "/1.0"]),
     vm.run(["id", "-nG"]),
+    vm.run(["id", "-G"]),
     vm.run(["cat", "/etc/subuid"]),
     vm.run(["cat", "/etc/subgid"]),
-    vm.run(["sudo", "-n", "true"]),
+    vm.run([SUDO, "-n", "true"]),
     vm.run(["test", "-e", `/var/lib/systemd/linger/${vm.user}`]),
+    vm.run(["systemctl", "show", "-p", "MainPID", "--value", `user@${vm.uid}.service`]),
+    vm.run(["dpkg-query", "-W", "-f=${Version}", "incus"]),
   ]);
   let incus: ContainersHostState["incus"];
   if (info.code === 127) incus = { status: "missing" };
@@ -84,9 +126,21 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
   }
   // 区画の外の置き場はユーザーから見えないことがある——root で見る（作り直さないため）
   if (!pool && sudo.code === 0 && incus.status !== "missing") pool = (await sudoRun(vm, ["incus", "storage", "show", BANTO_POOL])).code === 0;
+  // ユーザーの systemd が起きたときのグループのまま残っていないか（#363：起こし直すまで新しいグループを持たない）
+  let userManagerStale = false;
+  const pid = managerPid.stdout.trim();
+  if (managerPid.code === 0 && /^[1-9]\d*$/.test(pid) && groupIds.code === 0) {
+    const status = await vm.run(["cat", `/proc/${pid}/status`]);
+    if (status.code === 0) userManagerStale = !sameGroups(status.stdout, groupIds.stdout);
+  }
+  const names = groups.stdout.trim().split(/\s+/);
+  const installed = dpkg.code === 0 ? dpkg.stdout.trim().replace(/^\d+:/, "") : "";
   return {
     incus,
-    inIncusGroup: groups.stdout.trim().split(/\s+/).includes("incus"),
+    inIncusGroup: names.includes("incus"),
+    inIncusAdmin: names.includes("incus-admin"),
+    userManagerStale,
+    ...(installed ? { installedVersion: installed } : {}),
     ...(projectConfig ? { projectConfig } : {}),
     subuid: rootMayMap(subuid.stdout, vm.uid),
     subgid: rootMayMap(subgid.stdout, vm.gid),
@@ -112,39 +166,150 @@ function restricted(state: ContainersHostState): boolean {
   return state.projectConfig?.["restricted"] === "true";
 }
 
+/** Zabbly（Incus の配布元）の鍵の指紋（install.sh の ZABBLY_FPR と同じ。https://github.com/zabbly/incus の README の値） */
+export const ZABBLY_FPR = "4EFC590696CB15B87C73A3AD82CC8797C838DCFD";
+
+/** Ubuntu の版 → Zabbly の系統（install.sh の step_check_host と同じ。26.04 の lts-6.0 には resolute が無い） */
+export function incusChannelOf(os: VmAccess["os"]): string | undefined {
+  if (!os?.apt || os.id !== "ubuntu" || !/^[a-z]+$/.test(os.codename) || !["amd64", "arm64"].includes(os.arch)) return undefined;
+  return os.version === "24.04" ? "lts-6.0" : os.version === "26.04" ? "stable" : undefined;
+}
+
+/**
+ * Incus を Zabbly から入れる台本（install.sh の step_incus と同じ道。`$1` 系統・`$2` Ubuntu の符丁・`$3` dpkg の CPU・`$4` 鍵の指紋）。
+ * 鍵は「公開鍵が1つで、指紋が決めた値」のときだけ置く。入れたあと、まだ初期化していなければ `incus admin init --minimal`
+ */
+const INCUS_INSTALL_SCRIPT = [
+  "set -eu",
+  'ch=$1 cn=$2 ar=$3 fpr=$4',
+  "export DEBIAN_FRONTEND=noninteractive",
+  'apt="apt-get -o DPkg::Lock::Timeout=300"',
+  "if ! command -v gpg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then $apt update -q; $apt install -y -q --no-install-recommends gpg curl ca-certificates; fi",
+  'k=$(mktemp)',
+  'curl -fsSL https://pkgs.zabbly.com/key.asc -o "$k"',
+  'c=$(gpg --show-keys --with-colons "$k" 2>/dev/null || true)',
+  "n=$(printf '%s\\n' \"$c\" | grep -c '^pub:' || true)",
+  "got=$(printf '%s\\n' \"$c\" | awk -F: '$1 == \"pub\" { p = 1; next } p && $1 == \"fpr\" { print $10; exit }')",
+  'if [ "$n" != 1 ] || [ "$got" != "$fpr" ]; then rm -f "$k"; echo "Zabbly の鍵が思っていたものと違います（公開鍵が1つで、指紋が $fpr であること）。すり替えられているおそれがあります" >&2; exit 3; fi',
+  "install -d -m 0755 /etc/apt/keyrings",
+  'install -m 0644 "$k" /etc/apt/keyrings/zabbly.asc',
+  'rm -f "$k"',
+  "printf 'Enabled: yes\\nTypes: deb\\nURIs: https://pkgs.zabbly.com/incus/%s\\nSuites: %s\\nComponents: main\\nArchitectures: %s\\nSigned-By: /etc/apt/keyrings/zabbly.asc\\n' \"$ch\" \"$cn\" \"$ar\" > \"/etc/apt/sources.list.d/zabbly-incus-$ch.sources\"",
+  "$apt update -q",
+  "$apt install -y -q --no-install-recommends incus btrfs-progs",
+  "if ! incus profile device get default root pool </dev/null >/dev/null 2>&1; then incus admin init --minimal </dev/null; fi",
+].join("\n");
+
+/** 準備の1項目が「今は打てない」とき */
+interface Blocked {
+  /** 人が直すしかない（断る）。`warn` なら注意にとどめる */
+  manual: string;
+  fix: string;
+  warn?: boolean;
+}
+
+/** 前の項目（Incus を入れる）が済めば整える——登録の前の確かめでは注意 */
+interface AfterEarlier {
+  after: string;
+}
+
+/** 打つ1つ（root で）と、人に見せる1行 */
+interface StepCommand {
+  args: string[];
+  display?: string;
+  timeoutMs?: number;
+}
+
 /** 準備の1項目。`done` で済んでいるか、`commands` で root として打つもの（人に見せる直し方もこれから作る） */
 interface PrepareStep {
   id: string;
   label: string;
   done(state: ContainersHostState): boolean;
-  /** 済んでいないときに打つもの（sudo の後ろ）。打てない（人が直すしかない）なら理由を返す */
-  commands(state: ContainersHostState, vm: VmAccess): Promise<string[][] | { manual: string; fix: string }>;
+  /** 済んでいないときに打つもの（sudo の後ろ）。打てないなら理由を返す */
+  commands(state: ContainersHostState): Promise<StepCommand[] | Blocked | AfterEarlier>;
 }
 
-function steps(vm: VmAccess): PrepareStep[] {
+export interface PrepareOptions {
+  /**
+   * ユーザーの systemd（user@<uid>）を起こし直してよいか——その実行場所を使う Project が1つも無いとき（登録では常に）だけ。
+   * 起こし直すと、そのユーザーの Service・待たない形のコマンドが止まる
+   */
+  mayRestartUserManager: boolean;
+}
+
+const incusFresh = (s: ContainersHostState) =>
+  s.incus.status === "ok" ? versionHasNestingFix(s.incus.version) : !!s.installedVersion && versionHasNestingFix(s.installedVersion);
+
+function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
   const project = projectNameOf(vm.uid);
+  const channel = incusChannelOf(vm.os);
+  const needsIncus = (s: ContainersHostState): AfterEarlier | Blocked | undefined => {
+    if (s.incus.status !== "missing" && incusFresh(s)) return undefined;
+    return channel ? { after: "Incus を入れたあとに整えます。" } : { manual: "Incus が入っていません（上の Incus を入れてから）。", fix: "（上の Incus を入れてから）" };
+  };
   return [
+    {
+      id: "incus",
+      label: "Incus 6.0.6 以降",
+      done: (s) => s.incus.status !== "missing" && incusFresh(s),
+      commands: async (s) => {
+        const now = s.incus.status === "ok" ? s.incus.version : s.installedVersion;
+        if (!channel) {
+          return {
+            manual: `${now ? `Incus ${now} は古く、コンテナの中の Docker が AppArmor に止められます。` : "Incus が入っていません。"}` +
+              "banto が入れられるのは Ubuntu 24.04・26.04（amd64・arm64）だけです。",
+            fix: "Zabbly（https://github.com/zabbly/incus）から Incus 6.0.6 以降を入れてください（sudo apt-get install --no-install-recommends incus）",
+          };
+        }
+        return [
+          {
+            args: ["sh", "-c", INCUS_INSTALL_SCRIPT, "banto-incus", channel, vm.os!.codename, vm.os!.arch, ZABBLY_FPR],
+            display: `Zabbly の ${channel} から Incus と btrfs-progs を入れる（鍵の指紋 ${ZABBLY_FPR} を確かめる。まだなら incus admin init --minimal）`,
+            timeoutMs: LONG_ROOT_COMMAND_MS,
+          },
+        ];
+      },
+    },
     {
       id: "incus-project",
       label: `自分の区画（${project}）でコンテナを作れる`,
       done: (s) => s.incus.status === "ok" && s.incus.project === project,
       commands: async (s) => {
-        if (s.incus.status === "missing") return { manual: "Incus が入っていません。", fix: "（上の Incus を入れてから）" };
+        const pending = needsIncus(s);
+        if (pending) return pending;
+        const out: StepCommand[] = [];
+        // incus-admin に入っていると、制限の無い管理の口に繋ぐ——外して incus グループだけにする（決定・2026-10-19、案A）
+        if (s.inIncusAdmin) out.push({ args: ["gpasswd", "-d", vm.user, "incus-admin"] });
+        if (!s.inIncusGroup) out.push({ args: ["usermod", "-aG", "incus", vm.user] });
+        if (out.length) return out;
         if (s.incus.status === "ok") {
           return {
-            manual: `Incus に区画 ${project} ではなく「${s.incus.project}」で繋がります（incus-admin グループに入っていると、制限の無い管理の口に繋ぎます）。banto 専用のユーザーを incus グループだけに入れてください。`,
+            manual: `Incus に区画 ${project} ではなく「${s.incus.project}」で繋がります。banto 専用のユーザーを incus グループだけに入れてください。`,
             fix: `sudo gpasswd -d ${vm.user} incus-admin`,
           };
         }
-        // incus グループに入れば、incus-user が最初に繋いだときに区画を作る。入っているのに繋がらないなら口を起こす
-        return s.inIncusGroup ? [["systemctl", "enable", "--now", "incus-user.socket"]] : [["usermod", "-aG", "incus", vm.user]];
+        // incus グループに入っているのに繋がらない——incus-user の口を起こす（最初に繋いだときに区画を作る）
+        return [{ args: ["systemctl", "enable", "--now", "incus-user.socket"] }];
       },
+    },
+    {
+      id: "user-manager",
+      label: "ユーザーの systemd が今のグループで動いている",
+      done: (s) => !s.userManagerStale,
+      commands: async () =>
+        opts.mayRestartUserManager
+          ? [{ args: ["systemctl", "restart", `user@${vm.uid}.service`] }]
+          : {
+              manual: "ユーザーの systemd が古いグループのままです（Incus の口に繋げないことがあります）。この実行場所の Project を全部閉じてから、確かめ直してください。",
+              fix: `sudo systemctl restart user@${vm.uid}.service`,
+              warn: true,
+            },
     },
     {
       id: "incus-proxy",
       label: `区画で proxy device を使える（restricted.devices.proxy=allow）`,
       done: (s) => !!s.projectConfig && (!restricted(s) || s.projectConfig["restricted.devices.proxy"] === "allow"),
-      commands: async () => [["incus", "project", "set", project, "restricted.devices.proxy=allow"]],
+      commands: async (s) => needsIncus(s) ?? [{ args: ["incus", "project", "set", project, "restricted.devices.proxy=allow"] }],
     },
     {
       id: "incus-idmap",
@@ -156,18 +321,22 @@ function steps(vm: VmAccess): PrepareStep[] {
         (!restricted(s) ||
           (idRangesInclude(s.projectConfig["restricted.idmap.uid"], vm.uid) && idRangesInclude(s.projectConfig["restricted.idmap.gid"], vm.gid))),
       commands: async (s) => {
-        const out: string[][] = [];
-        if (!s.subuid) out.push(["usermod", "--add-subuids", `${vm.uid}-${vm.uid}`, "root"]);
-        if (!s.subgid) out.push(["usermod", "--add-subgids", `${vm.gid}-${vm.gid}`, "root"]);
+        const pending = needsIncus(s);
+        if (pending) return pending;
+        const out: StepCommand[] = [];
+        if (!s.subuid) out.push({ args: ["usermod", "--add-subuids", `${vm.uid}-${vm.uid}`, "root"] });
+        if (!s.subgid) out.push({ args: ["usermod", "--add-subgids", `${vm.gid}-${vm.gid}`, "root"] });
         // subuid・subgid は Incus が起きるときに読む（この機械の install.sh と同じ。要るかは まっさらな VM で測る——仕様）
-        if (!s.subuid || !s.subgid) out.push(["systemctl", "restart", "incus.service"], ["incus", "admin", "waitready", "--timeout", "120"]);
+        if (!s.subuid || !s.subgid) {
+          out.push({ args: ["systemctl", "restart", "incus.service"] }, { args: ["incus", "admin", "waitready", "--timeout", "120"] });
+        }
         const cfg = s.projectConfig ?? {};
         const merged = (key: string, id: number) => {
           const cur = cfg[key];
           return idRangesInclude(cur, id) ? undefined : `${key}=${cur ? `${cur},` : ""}${id}`;
         };
         const sets = [merged("restricted.idmap.uid", vm.uid), merged("restricted.idmap.gid", vm.gid)].filter((x): x is string => !!x);
-        if (restricted(s) && sets.length > 0) out.push(["incus", "project", "set", project, ...sets]);
+        if (restricted(s) && sets.length > 0) out.push({ args: ["incus", "project", "set", project, ...sets] });
         return out;
       },
     },
@@ -176,10 +345,11 @@ function steps(vm: VmAccess): PrepareStep[] {
       label: `コンテナの置き場（btrfs の ${BANTO_POOL}）`,
       done: (s) => s.pool,
       commands: async (s) => {
-        if (s.incus.status === "missing") return { manual: "Incus が入っていません。", fix: "（上の Incus を入れてから）" };
+        const pending = needsIncus(s);
+        if (pending) return pending;
         // この機械の install.sh と同じ選び方：/var/lib/incus が btrfs ならその中、でなければ大きさを決めたファイル
         const fs = (await vm.run(["findmnt", "-no", "FSTYPE", "--target", "/var/lib/incus"])).stdout.trim();
-        if (fs === "btrfs") return [["incus", "storage", "create", BANTO_POOL, "btrfs", `source=/var/lib/incus/storage-pools/${BANTO_POOL}`]];
+        if (fs === "btrfs") return [{ args: ["incus", "storage", "create", BANTO_POOL, "btrfs", `source=/var/lib/incus/storage-pools/${BANTO_POOL}`] }];
         const avail = Number((await vm.run(["df", "-BG", "--output=avail", "/var/lib/incus"])).stdout.replace(/[^0-9\n]/g, "").trim().split("\n").pop());
         const size = Math.min(50, Math.floor(avail / 2));
         if (!Number.isFinite(size) || size < 10) {
@@ -188,22 +358,19 @@ function steps(vm: VmAccess): PrepareStep[] {
             fix: `sudo incus storage create ${BANTO_POOL} btrfs size=<大きさ>GiB`,
           };
         }
-        return [["incus", "storage", "create", BANTO_POOL, "btrfs", `size=${size}GiB`]];
+        return [{ args: ["incus", "storage", "create", BANTO_POOL, "btrfs", `size=${size}GiB`] }];
       },
     },
     {
       id: "linger",
       label: "SSH を閉じても動き続ける設定（linger。VM を起こし直したときにコンテナの中の Service と道を戻す）",
       done: (s) => s.linger,
-      commands: async () => [["loginctl", "enable-linger", vm.user]],
+      commands: async () => [{ args: ["loginctl", "enable-linger", vm.user] }],
     },
   ];
 }
 
-/** sudo の後ろの引数を、人が打つ1行にする */
-function sudoLine(args: string[]): string {
-  return `sudo ${args.map((a) => (/^[A-Za-z0-9@%+=:,./_-]+$/.test(a) ? a : shq(a))).join(" ")}`;
-}
+const displayOf = (c: StepCommand) => c.display ?? sudoLine(c.args);
 
 /**
  * **様子から前提の一覧を作る**。`check`（登録の前）：済んでいないものは sudo が通るなら注意（登録のときに整える）、通らなければ
@@ -213,59 +380,59 @@ export async function evaluateContainersHost(
   state: ContainersHostState,
   vm: VmAccess,
   mode: "check" | "verify",
+  opts: PrepareOptions = { mayRestartUserManager: true },
 ): Promise<RuntimeCheck[]> {
   const checks: RuntimeCheck[] = [];
-  if (state.incus.status === "missing") {
-    checks.push({
-      id: "incus",
-      label: "Incus 6.0.6 以降",
-      status: "fail",
-      detail: "Incus が入っていません。",
-      fix: "Zabbly の lts-6.0 から Incus を入れてください（sudo apt-get install --no-install-recommends incus）",
-    });
-  } else if (state.incus.status === "ok") {
-    const fresh = versionHasNestingFix(state.incus.version);
-    checks.push({
-      id: "incus",
-      label: `Incus 6.0.6 以降（${state.incus.version || "版が分からない"}）`,
-      status: fresh ? "ok" : "fail",
-      ...(fresh
-        ? {}
-        : {
-            detail: "Incus が古く、コンテナの中の Docker が AppArmor に止められます。",
-            fix: "sudo apt-get install --no-install-recommends incus  # Zabbly の lts-6.0 から上げる",
-          }),
-    });
-  }
-  // 繋がらない（グループに入っていない等）ときは版が分からない——区画の項目で名指しする
-
   let needsRoot = false;
-  for (const step of steps(vm)) {
+  for (const step of steps(vm, opts)) {
+    const now = state.incus.status === "ok" ? state.incus.version : state.installedVersion;
+    const label = step.id === "incus" && now ? `${step.label}（${now}）` : step.label;
     if (step.done(state)) {
-      checks.push({ id: step.id, label: step.label, status: "ok" });
+      checks.push({ id: step.id, label, status: "ok" });
       continue;
     }
-    const plan = await step.commands(state, vm);
+    const plan = await step.commands(state);
+    if ("after" in plan) {
+      // 前の項目（Incus を入れる）が済めば整える
+      needsRoot = true;
+      checks.push(
+        mode === "check" && state.sudo
+          ? { id: step.id, label, status: "warn", detail: plan.after, autoFix: true }
+          : { id: step.id, label, status: "fail", detail: "Incus が入っていません。", fix: "（上の Incus を入れてから）" },
+      );
+      continue;
+    }
     if (!Array.isArray(plan)) {
-      checks.push({ id: step.id, label: step.label, status: "fail", detail: plan.manual, fix: plan.fix });
+      checks.push({ id: step.id, label, status: plan.warn ? "warn" : "fail", detail: plan.manual, fix: plan.fix });
       continue;
     }
     needsRoot = true;
-    const fix = plan.map(sudoLine).join("\n");
+    const fix = plan.map(displayOf).join("\n");
     const why =
-      state.incus.status === "unreachable" && step.id === "incus-project" ? `Incus に繋がりません（${state.incus.message}）。` : "まだ整っていません。";
+      step.id === "incus"
+        ? state.incus.status === "missing" && !state.installedVersion
+          ? "Incus が入っていません。"
+          : "Incus が古く、コンテナの中の Docker が AppArmor に止められます。"
+        : step.id === "incus-project" && state.inIncusAdmin
+          ? `${vm.user} が incus-admin グループに入っていて、制限の無い管理の口に繋がります。incus-admin から外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）。`
+          : step.id === "user-manager"
+            ? "ユーザーの systemd が古いグループのままです。"
+            : state.incus.status === "unreachable" && step.id === "incus-project"
+              ? `Incus に繋がりません（${state.incus.message}）。`
+              : "まだ整っていません。";
     if (mode === "verify") {
       checks.push({
         id: step.id,
-        label: step.label,
+        label,
         status: "fail",
         detail: `${why}設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で整えます。`,
         fix,
+        autoFix: true,
       });
     } else if (state.sudo) {
-      checks.push({ id: step.id, label: step.label, status: "warn", detail: `${why}登録するときに banto が sudo -n で整えます。`, fix });
+      checks.push({ id: step.id, label, status: "warn", detail: `${why}${WILL_FIX_ON_REGISTER}`, fix, autoFix: true });
     } else {
-      checks.push({ id: step.id, label: step.label, status: "fail", detail: `${why}sudo -n が通らないので、banto は整えられません。向こうで打ってください。`, fix });
+      checks.push({ id: step.id, label, status: "fail", detail: `${why}sudo -n が通らないので、banto は整えられません。向こうで打ってください。`, fix });
     }
   }
 
@@ -286,44 +453,61 @@ export async function evaluateContainersHost(
 }
 
 /** 準備が途中で失敗した（打ったコマンドと Incus・sudo の言葉を添える） */
-export class ContainersPrepareError extends Error {}
+export class ContainersPrepareError extends Error {
+  constructor(
+    message: string,
+    readonly ran: RanCommand[] = [],
+  ) {
+    super(message);
+  }
+}
 
 /**
  * **準備を済ませる**（登録のとき・人が「確かめ直す」を押したとき）。済んでいない項目のコマンドを順に `sudo -n` で打ち、
- * 1項目ごとに様子を引き直す（グループに入れたら区画ができる、のように前の項目が次の項目の様子を変える）。済んでいる項目には
- * 何もしない——何度流しても同じ。sudo が通らない・人が直すしかない項目があれば、何もしないで返す（呼び手が一覧で断る）
+ * 1項目ごとに様子を引き直す（グループに入れたら区画ができる、のように前の項目が次の項目の様子を変える）。同じ項目は、打つものが
+ * 変わる間（incus-admin から外したら、次は incus-user の口を起こす、等）3回まで。済んでいる項目には何もしない——何度流しても
+ * 同じ。sudo が通らない・人が直すしかない項目に当たったら、そこで止めて返す（呼び手が一覧で断る）
  */
-export async function prepareContainersHost(vm: VmAccess): Promise<{ state: ContainersHostState; ran: string[][] }> {
+export async function prepareContainersHost(
+  vm: VmAccess,
+  opts: PrepareOptions = { mayRestartUserManager: true },
+): Promise<{ state: ContainersHostState; ran: string[][]; log: RanCommand[] }> {
   let state = await inspectContainersHost(vm);
   const ran: string[][] = [];
-  if (!state.sudo || state.incus.status === "missing") return { state, ran };
-  if (state.incus.status === "ok" && !versionHasNestingFix(state.incus.version)) return { state, ran };
-  for (const step of steps(vm)) {
-    if (step.done(state)) continue;
-    const plan = await step.commands(state, vm);
-    if (!Array.isArray(plan)) return { state, ran };
-    for (const args of plan) {
-      const r: IncusResult = await sudoRun(vm, args);
-      ran.push(args);
-      if (r.code !== 0) {
-        throw new ContainersPrepareError(
-          `準備の「${step.label}」で ${sudoLine(args)} が失敗しました（終了コード ${r.code}）：${(r.stderr || r.stdout).trim().slice(0, 400)}`,
-        );
+  const log: RanCommand[] = [];
+  if (!state.sudo) return { state, ran, log };
+  for (const step of steps(vm, opts)) {
+    let last = "";
+    for (let attempt = 0; attempt < 3 && !step.done(state); attempt++) {
+      const plan = await step.commands(state);
+      if (!Array.isArray(plan)) {
+        if ("manual" in plan && plan.warn) break; // 注意にとどめる項目は飛ばして続ける
+        return { state, ran, log };
       }
+      const key = JSON.stringify(plan.map((c) => c.args));
+      if (key === last || plan.length === 0) break;
+      last = key;
+      for (const c of plan) {
+        const r: IncusResult = await sudoRun(vm, c.args, c.timeoutMs);
+        ran.push(c.args);
+        log.push({ display: displayOf(c), code: r.code });
+        vm.log?.(`${displayOf(c)} → ${r.code}`);
+        if (r.code !== 0) {
+          throw new ContainersPrepareError(
+            `準備の「${step.label}」で ${displayOf(c)} が失敗しました（終了コード ${r.code}）：${(r.stderr || r.stdout).trim().slice(-400)}`,
+            log,
+          );
+        }
+      }
+      state = await inspectContainersHost(vm);
     }
-    state = await inspectContainersHost(vm);
   }
-  return { state, ran };
+  return { state, ran, log };
 }
 
 /** 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る */
 export function sshVmRun(t: SshTarget, files: SshFiles, hostKeyType: string): RunIncus {
-  return async (args, opts) => {
-    const r: SshResult = await runRemoteScript(t, files, hostKeyType, `exec ${args.map(shq).join(" ")}\n`, {
-      timeoutMs: opts?.timeoutMs ?? 30_000,
-    });
-    return r;
-  };
+  return sshRun(t, files, hostKeyType);
 }
 
 /** `containers` の VM に要る道具（コードを送るのに tar。git・ssh・tmux・Docker はコンテナの中） */
@@ -331,38 +515,70 @@ const CONTAINERS_TOOLS = ["tar"] as const;
 
 /**
  * **`containers` の前提を確かめる**（`prepare` なら、足りないものを `sudo -n` で整えてから確かめ直す）。繋げなかったら `checks` は空。
- * 共通の項目（CPU の種類・ログインの静けさ・置き場・sshd の転送）は `machine` と同じ規則で見る
+ * 共通の項目（CPU の種類・ログインの静けさ・道具・置き場・sshd の転送）は `machine` と同じ規則で見て、道具・置き場・sshd は
+ * `machine` と同じく banto が入れる
  */
 export async function probeContainersPrerequisites(
   t: SshTarget,
   files: SshFiles,
   hostKeyType: string,
   dataRoot: string,
-  opts: { mode: "check" | "prepare" | "verify"; run?: RunIncus },
+  opts: { mode: "check" | "prepare" | "verify"; run?: RunIncus; log?: (line: string) => void; base?: typeof probeBase } & Partial<PrepareOptions>,
 ): Promise<{ checks: RuntimeCheck[]; result: SshResult; ran: string[][] }> {
-  const { probe, forwarding, result } = await probeBase(t, files, hostKeyType, dataRoot);
+  const base = opts.base ?? probeBase;
+  const run = opts.run ?? sshVmRun(t, files, hostKeyType);
+  const prepareOpts: PrepareOptions = { mayRestartUserManager: opts.mayRestartUserManager ?? opts.mode !== "verify" };
+  let { probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: opts.mode !== "verify" });
   if (!probe || !forwarding) return { checks: [], result, ran: [] };
-  const common = evaluateProbe(probe, forwarding, hostPlatform()).filter((c) => ["platform", "silent-login", "data-root", "sshd"].includes(c.id));
-  const missingTools = CONTAINERS_TOOLS.filter((tool) => probe.values.get(`tool.${tool}`) !== "1");
-  common.splice(2, 0, {
-    id: "tools",
-    label: `道具（${CONTAINERS_TOOLS.join("・")}）`,
-    status: missingTools.length ? "fail" : "ok",
-    ...(missingTools.length ? { detail: `${missingTools.join("・")} がありません。`, fix: `sudo apt install ${missingTools.join(" ")}` } : {}),
-  });
-  const vm: VmAccess = {
-    user: probe.values.get("user") ?? t.user,
-    uid: Number(probe.values.get("uid")),
-    gid: Number(probe.values.get("gid")),
-    run: opts.run ?? sshVmRun(t, files, hostKeyType),
+
+  const commonChecks = () => {
+    const all = evaluateProbe(probe!, forwarding!, hostPlatform()).filter((c) => ["platform", "silent-login", "data-root", "sshd"].includes(c.id));
+    const missingTools = CONTAINERS_TOOLS.filter((tool) => probe!.values.get(`tool.${tool}`) !== "1");
+    all.splice(2, 0, {
+      id: "tools",
+      label: `道具（${CONTAINERS_TOOLS.join("・")}）`,
+      status: missingTools.length ? "fail" : "ok",
+      ...(missingTools.length ? { detail: `${missingTools.join("・")} がありません。`, fix: `sudo apt install ${missingTools.join(" ")}` } : {}),
+    });
+    return all;
   };
-  // ログインで何か出る相手では、コマンドの答えが崩れる——先にそこを直してもらう
-  if (common.some((c) => c.status === "fail")) return { checks: common, result, ran: [] };
+  const fixesOf = () => commonFixes({ values: probe!.values, forwarding: forwarding!, mode: "containers", requiredTools: CONTAINERS_TOOLS });
+  const sudo = probe.values.get("sudo") === "1";
+  let fixes = fixesOf();
+  const done: RanCommand[] = [];
+
+  const unfixable = (checks: RuntimeCheck[]) => checks.some((c) => (c.id === "platform" || c.id === "silent-login") && c.status === "fail");
+  if (opts.mode === "prepare" && sudo && fixes.length > 0 && !unfixable(commonChecks())) {
+    const labels = new Map(commonChecks().map((c) => [c.id, c.label]));
+    try {
+      done.push(...(await runFixes(run, fixes, { labelOf: (id) => labels.get(id) ?? id, log: opts.log })));
+    } catch (err) {
+      if (err instanceof AutoFixError) throw new ContainersPrepareError(err.message, err.ran);
+      throw err;
+    }
+    ({ probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: true }));
+    if (!probe || !forwarding) return { checks: [], result, ran: [] };
+    fixes = [];
+  }
+  const common = markAutoFixes(commonChecks(), fixes, opts.mode, sudo);
+  const v = probe.values;
+  const vm: VmAccess = {
+    user: v.get("user") ?? t.user,
+    uid: Number(v.get("uid")),
+    gid: Number(v.get("gid")),
+    run,
+    os: { apt: v.get("apt") === "1", id: v.get("os.id") ?? "", version: v.get("os.version") ?? "", codename: v.get("os.codename") ?? "", arch: v.get("dpkg.arch") ?? "" },
+    ...(opts.log ? { log: opts.log } : {}),
+  };
+  // ログインで何か出る相手ではコマンドの答えが崩れる——先にそこを直してもらう。整えても直らなかった共通の項目も同じ
+  if (common.some((c) => c.status === "fail")) return { checks: [...common, ...(done.length ? [preparedCheck(done)] : [])], result, ran: [] };
   if (opts.mode === "prepare") {
-    const { state, ran } = await prepareContainersHost(vm);
+    const { state, ran, log } = await prepareContainersHost(vm, prepareOpts);
+    done.push(...log);
     // 整えたなら、まだ済んでいないものは断る。何も打てなかった（sudo が通らない・人が直すしかない）なら登録の前と同じ言い方で
-    return { checks: [...common, ...(await evaluateContainersHost(state, vm, ran.length > 0 ? "verify" : "check"))], result, ran };
+    const rest = await evaluateContainersHost(state, vm, ran.length > 0 ? "verify" : "check", prepareOpts);
+    return { checks: [...common, ...rest, ...(done.length ? [preparedCheck(done)] : [])], result, ran };
   }
   const state = await inspectContainersHost(vm);
-  return { checks: [...common, ...(await evaluateContainersHost(state, vm, opts.mode))], result, ran: [] };
+  return { checks: [...common, ...(await evaluateContainersHost(state, vm, opts.mode, prepareOpts))], result, ran: [] };
 }

@@ -46,6 +46,7 @@ import {
   type SshResult,
 } from "./ssh.js";
 import { ContainersPrepareError, probeContainersPrerequisites } from "./containers-host.js";
+import { AutoFixError } from "./host-autoprep.js";
 
 /** 画面に返す失敗（状態番号つき）。理由はそのまま人に見せる */
 export class RemoteRuntimeError extends Error {
@@ -374,12 +375,19 @@ export class RemoteRuntimes {
     hostKeyType: string,
     stage: "check" | "prepare" | "verify",
   ): Promise<{ checks: RuntimeCheck[]; result: SshResult }> {
-    // containers と名乗ったものだけを containers として確かめる（動かし方が分からないものを sudo の要る側へ落とさない）
-    if (r.mode !== "containers") return probePrerequisites(r, files, hostKeyType, r.dataRoot);
+    // 登録・確かめ直しで banto が向こうで打ったものは banto のログに1行ずつ（v4-security.md §1「足りないものは banto が入れる」の 8.）
+    const log = (line: string) => console.log(`[runtime ${r.name}] sudo: ${line}`);
     try {
-      return await probeContainersPrerequisites(r, files, hostKeyType, r.dataRoot, { mode: stage });
+      // containers と名乗ったものだけを containers として確かめる（動かし方が分からないものを sudo の要る側へ落とさない）
+      if (r.mode !== "containers") return await probePrerequisites(r, files, hostKeyType, r.dataRoot, { stage, log });
+      return await probeContainersPrerequisites(r, files, hostKeyType, r.dataRoot, {
+        mode: stage,
+        log,
+        // ユーザーの systemd を起こし直すのは、その実行場所を使う Project が1つも無いときだけ（閉じた Project は動いていない）
+        mayRestartUserManager: stage === "prepare" && this.deps.projectsUsing(runtimeIdOf(r.name)).length === 0,
+      });
     } catch (err) {
-      if (err instanceof ContainersPrepareError) throw new RemoteRuntimeError(502, err.message);
+      if (err instanceof ContainersPrepareError || err instanceof AutoFixError) throw new RemoteRuntimeError(502, err.message);
       throw err;
     }
   }

@@ -127,6 +127,9 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       });
       expect(registered.status, JSON.stringify(registered.body)).toBe(201);
       expect(registered.body.checks.find((c) => c.id === "tmux")?.status).toBe("warn");
+      // 登録の確かめは「sudo -n が通るか」だけを試す（v4-security.md §1「足りないものは banto が入れる」——通らない相手には何もしない）。
+      // ここから先（Module を起こす・使う）は sudo を試みない：記録の数を覚えて、最後に増えていないことを見る
+      const sudoLogAfterRegister = Number((await host.rootExec(`journalctl --no-pager -o cat | grep -c 'sudo.*${host.user}' || true`)).stdout.trim());
 
       const created = await api<{ id: string; root: string; runtime: string }>("/api/projects", {
         method: "POST",
@@ -284,9 +287,9 @@ test("別のサーバで Module が動き、中継はトンネルだけを通り
       await expect(termFrame(page).locator("#error")).toContainText("この実行場所には tmux がありません", { timeout: 60_000 });
       await expect(termFrame(page).locator("#error")).toContainText("sudo apt install tmux");
       await page.keyboard.press("Escape");
-      // 向こうで sudo していない（sudo の記録が無い）
+      // 登録のあと、向こうで sudo を試みていない（sudo の記録が増えていない）
       const sudoLog = await host.rootExec(`journalctl --no-pager -o cat | grep -c 'sudo.*${host.user}' || true`);
-      expect(Number(sudoLog.stdout.trim()), "向こうで sudo を試みた").toBe(0);
+      expect(Number(sudoLog.stdout.trim()), "向こうで sudo を試みた").toBe(sudoLogAfterRegister);
 
       // ---- 4. トンネルの先では /api/* に届かない ----------------------------------------------------------
       const tunnel = await run(
