@@ -17,6 +17,7 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { realContextUsageToDisplay, SKILL_CATEGORY_ID } from "@/lib/backend/context-usage";
 import { getRealThreadSkills, type RealThreadSkills } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
+import { ClaudeAccountChip, ClaudeAccountSection, useCurrentClaudeAccount } from "@/components/banto/thread/claude-account-usage";
 import type { ThreadId } from "@/lib/mock/types";
 
 /**
@@ -78,14 +79,19 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // **この会話で効いている Skill**——開いたときに host から取る（手元に写しを持たない、規則3）
   const [threadSkills, setThreadSkills] = useState<RealThreadSkills | null>(null);
-  const isReal = getThread(threadId)?.real === true;
+  const thread = getThread(threadId);
+  const isReal = thread?.real === true;
+  // **いま使っている Claude のアカウントと使用量**（§6.46）。ターンが終わって使った量の記録が増えたら取り直す
+  const claudeAccount = useCurrentClaudeAccount(isReal ? thread?.projectId : undefined, thread?.realUsage?.length ?? 0);
   const usage = {
     ...rawUsage,
     categories: rawUsage.categories.map((c) => withSkillItems(c, threadSkills)),
   };
 
+  const [openCount, setOpenCount] = useState(0);
   function handleOpenChange(open: boolean) {
     if (!open || !isReal) return;
+    setOpenCount((n) => n + 1);
     getRealThreadSkills(threadId)
       .then(setThreadSkills)
       .catch((err: unknown) => reportFailure("この会話で効いている Skill を取得できませんでした", err));
@@ -125,13 +131,15 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
                 />
               </span>
               <span className="tabular-nums">{Math.round(usedRatio * 100)}%</span>
+              {claudeAccount ? <ClaudeAccountChip current={claudeAccount} /> : null}
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>文脈の内訳を見る</TooltipContent>
+        <TooltipContent>{claudeAccount ? "文脈の内訳と Claude のアカウントを見る" : "文脈の内訳を見る"}</TooltipContent>
       </Tooltip>
 
       <PopoverContent align="end" className="w-96 p-0">
+        {claudeAccount ? <ClaudeAccountSection key={openCount} current={claudeAccount} /> : null}
         <div className="border-b border-border px-3 py-2.5">
           <p className="text-sm font-medium text-foreground">文脈の内訳</p>
           <p className="text-xs text-ink-3">
