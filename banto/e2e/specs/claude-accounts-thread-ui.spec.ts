@@ -171,6 +171,18 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
         await reopen();
         await expect(lines).toHaveCount(2, { timeout: 15_000 });
         expect(await placement(), "開き直したら切り替えの1行の場所が動いた").toEqual({ line1: true, line2: true });
+        // 右上の文脈のメーターに、いま使っているアカウント（全部越えで戻った host）と5時間・週の率（§6.46）。越えた率は warn
+        const chip = page.getByTestId("claude-account-chip").first();
+        await expect(chip.getByTestId("claude-account-chip-name")).toHaveText("~/.claude", { timeout: 15_000 });
+        const fiveHour = chip.getByTestId("claude-account-chip-usage").locator("span").first();
+        await expect(fiveHour).toHaveText("97%");
+        await expect(fiveHour).toHaveClass(/text-warn/);
+        // 開くと名前と2本のメーター
+        await chip.click();
+        const section = page.getByTestId("claude-account-section");
+        await expect(section).toContainText("このマシンの Claude Code のログイン");
+        await expect(section).toContainText("97%");
+        await page.keyboard.press("Escape");
         await expect(lines.first()).toHaveText(`Claude のアカウントを「${B_LABEL}」に切り替えました（${HOST_LABEL}の5時間 97%）`);
         // AI の文脈には入れない（画面だけの印）——会話の記録の発言は人とAIの分だけ
         expect((await threadOf()).messages.map((m) => m.role)).toEqual(Array.from({ length: 5 }, () => ["user", "assistant"]).flat());
