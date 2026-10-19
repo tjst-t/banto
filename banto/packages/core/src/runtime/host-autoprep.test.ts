@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import type { IncusResult } from "@banto/container";
-import { aptUsable, commonFixes, markAutoFixes, runFixes, SSHD_CONF, sshdFix, AutoFixError, SUDO, type RootRun } from "./host-autoprep.js";
+import { aptUsable, cloudInitWait, commonFixes, markAutoFixes, runFixes, runRootCommand, SSHD_CONF, sshdFix, AutoFixError, SUDO, type RootRun } from "./host-autoprep.js";
 import { probePrerequisites, type BaseProbe, type RuntimeCheck } from "./ssh.js";
 
 const values = (over: Record<string, string> = {}) =>
@@ -97,6 +97,25 @@ test("sshd の直し：台本を使わず、tee で 00-banto.conf に3行 → ss
   await assert.rejects(runFixes(run, [{ id: "sshd", commands: sshdFix() }], { labelOf: () => "sshd" }), (err: unknown) => err instanceof AutoFixError && /元に戻しました/.test(err.message));
   assert.deepEqual(calls.map((c) => c.args), [["tee", SSHD_CONF], ["sshd", "-t"], ["rm", "-f", SSHD_CONF]]);
   assert.match(calls[0]!.input!, /MaxSessions 20/);
+});
+
+test("runRootCommand：orElse は代わりを打ち、両方落ちたら両方を並べる。ignoreFailure は落ちても先へ", async () => {
+  const codes: Record<string, number> = { "systemctl reload ssh.service": 5, "systemctl reload sshd.service": 0 };
+  const calls: string[] = [];
+  const run: RootRun = async (args) => {
+    const key = args.slice(2).join(" ");
+    calls.push(key);
+    return { code: codes[key] ?? 0, stdout: "", stderr: codes[key] ? `${key} が無い` : "" };
+  };
+  const ran: Array<{ display: string; code: number }> = [];
+  const [, , reload] = sshdFix();
+  await runRootCommand(run, reload!, ran, { what: "" });
+  assert.deepEqual(calls, ["systemctl reload ssh.service", "systemctl reload sshd.service"]);
+  codes["systemctl reload sshd.service"] = 5;
+  await assert.rejects(runRootCommand(run, reload!, [], { what: "" }), /reload ssh\.service が失敗しました（終了コード 5）：systemctl reload ssh\.service が無い。代わりの sudo systemctl reload sshd\.service も失敗しました（終了コード 5）/);
+  codes["timeout 600 cloud-init status --wait"] = 124;
+  await runRootCommand(run, cloudInitWait(), ran, { what: "" });
+  assert.equal(ran.at(-1)!.code, 124);
 });
 
 test("markAutoFixes：登録の前は sudo -n が通れば断りを注意にして「登録するときに入れます」。通らなければ今どおり", () => {

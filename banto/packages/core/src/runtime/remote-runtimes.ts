@@ -387,7 +387,7 @@ export class RemoteRuntimes {
         mode: stage,
         log,
         // ユーザーの systemd を起こし直すのは、その実行場所を使う Project が1つも無いときだけ（閉じた Project は動いていない）
-        mayRestartUserManager: stage === "prepare" && this.deps.projectsUsing(runtimeIdOf(r.name)).length === 0,
+        mayRestartUserManager: this.deps.projectsUsing(runtimeIdOf(r.name)).length === 0,
       });
     } catch (err) {
       // 途中で落ちても、それまでに行ったことを添える（入れたものは残る——確かめ直せば続きから）
