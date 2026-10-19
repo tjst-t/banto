@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import type { IncusResult } from "@banto/container";
-import { aptUsable, commonFixes, markAutoFixes, runFixes, SSHD_CONF, sshdFix, AutoFixError, SUDO } from "./host-autoprep.js";
+import { aptUsable, commonFixes, markAutoFixes, runFixes, SSHD_CONF, sshdFix, AutoFixError, SUDO, type RootRun } from "./host-autoprep.js";
 import { probePrerequisites, type BaseProbe, type RuntimeCheck } from "./ssh.js";
 
 const values = (over: Record<string, string> = {}) =>
@@ -62,7 +62,7 @@ test("commonFixes：apt の無い OS では道具を入れない。置き場・s
   });
   assert.deepEqual(fixes.map((f) => f.id), ["data-root", "sshd", "linger", "user-systemd"]);
   assert.deepEqual(fixes[0]!.commands[0]!.args, ["install", "-d", "-o", "banto", "-g", "1000", "-m", "0700", "/home/banto/.local/share/banto-remote"]);
-  assert.deepEqual(fixes[1]!.commands[0]!.args.slice(4), ["AllowTcpForwarding yes", "MaxSessions 20"]);
+  assert.deepEqual(fixes[1]!.commands.map((c) => c.args), [["tee", SSHD_CONF], ["sshd", "-t"], ["systemctl", "reload", "ssh.service"]]);
   assert.deepEqual(fixes[3]!.commands.map((c) => c.args), [
     ["loginctl", "enable-linger", "banto"],
     ["systemctl", "start", "user@1000.service"],
@@ -81,12 +81,22 @@ test("commonFixes：containers は道具が tar だけで、linger・ユーザ�
   assert.deepEqual(fixes[0]!.commands[1]!.args.slice(-1), ["tar"]);
 });
 
-test("sshd の台本：sh として読め、00-banto.conf に書いて sshd -t が通らなければ戻す", () => {
-  const c = sshdFix(["AllowTcpForwarding yes"]);
-  assert.equal(c.args[0], "sh");
-  execFileSync("sh", ["-n", "-c", c.args[2]!]);
-  assert.match(c.args[2]!, new RegExp(SSHD_CONF.replace(/\./g, "\\.")));
-  assert.match(c.args[2]!, /if ! sshd -t; then/);
+test("sshd の直し：台本を使わず、tee で 00-banto.conf に3行 → sshd -t（落ちたら消して止める）→ reload（ssh、無ければ sshd）", async () => {
+  const [write, check, reload] = sshdFix();
+  assert.equal(SSHD_CONF, "/etc/ssh/sshd_config.d/00-banto.conf");
+  assert.equal(await write!.input!(), "AllowTcpForwarding yes\nAllowStreamLocalForwarding yes\nMaxSessions 20\n");
+  assert.deepEqual(check!.undoOnFail!.args, ["rm", "-f", SSHD_CONF]);
+  assert.deepEqual(reload!.orElse!.args, ["systemctl", "reload", "sshd.service"]);
+
+  // sshd -t が落ちたら、書いたものを消して止める
+  const calls: Array<{ args: string[]; input?: string }> = [];
+  const run: RootRun = async (args, opts) => {
+    calls.push({ args: args.slice(2), ...(opts?.input !== undefined ? { input: opts.input } : {}) });
+    return args[2] === "sshd" ? { code: 255, stdout: "", stderr: "/etc/ssh/sshd_config line 3: Bad configuration option" } : { code: 0, stdout: "", stderr: "" };
+  };
+  await assert.rejects(runFixes(run, [{ id: "sshd", commands: sshdFix() }], { labelOf: () => "sshd" }), (err: unknown) => err instanceof AutoFixError && /元に戻しました/.test(err.message));
+  assert.deepEqual(calls.map((c) => c.args), [["tee", SSHD_CONF], ["sshd", "-t"], ["rm", "-f", SSHD_CONF]]);
+  assert.match(calls[0]!.input!, /MaxSessions 20/);
 });
 
 test("markAutoFixes：登録の前は sudo -n が通れば断りを注意にして「登録するときに入れます」。通らなければ今どおり", () => {
@@ -155,8 +165,8 @@ test("machine の登録（prepare）：足りないものを入れてから確�
   const host = fakeHost(values({ "tool.git": "0", "tool.tmux": "0", linger: "0", bus: "0" }));
   const r = await probePrerequisites(target, files, "ssh-ed25519", "~/x", { stage: "prepare", run: host.run, base: host.base });
   assert.deepEqual(host.ran, [
-    ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-o", "DPkg::Lock::Timeout=300", "update", "-q"],
-    ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-o", "DPkg::Lock::Timeout=300", "install", "-y", "-q", "--no-install-recommends", "git", "tmux"],
+    ["env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "apt-get", "-o", "DPkg::Lock::Timeout=300", "update", "-q"],
+    ["env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "apt-get", "-o", "DPkg::Lock::Timeout=300", "install", "-y", "-q", "--no-install-recommends", "git", "tmux", "dbus-user-session"],
     ["loginctl", "enable-linger", "banto"],
     ["systemctl", "start", "user@1000.service"],
   ]);
@@ -164,7 +174,7 @@ test("machine の登録（prepare）：足りないものを入れてから確�
   assert.ok(r.checks.filter((c) => c.id !== "docker").every((c) => c.status === "ok"), JSON.stringify(r.checks));
   const prepared = r.checks.at(-1)!;
   assert.equal(prepared.id, "prepared");
-  assert.match(prepared.detail!, /sudo apt-get install --no-install-recommends git tmux\nsudo loginctl enable-linger banto/);
+  assert.match(prepared.detail!, /sudo apt-get install --no-install-recommends git tmux dbus-user-session\nsudo loginctl enable-linger banto/);
 
   host.ran.length = 0;
   const again = await probePrerequisites(target, files, "ssh-ed25519", "~/x", { stage: "prepare", run: host.run, base: host.base });

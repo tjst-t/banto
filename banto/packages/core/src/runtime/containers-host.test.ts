@@ -7,6 +7,7 @@ import {
   inspectContainersHost,
   prepareContainersHost,
   sameGroups,
+  zabblyKeyOk,
   type VmAccess,
 } from "./containers-host.js";
 
@@ -30,6 +31,10 @@ interface FakeVm {
   managerGroups?: string[];
   /** Incus を入れられる OS（Ubuntu 24.04） */
   os?: VmAccess["os"];
+  /** Incus を初期化してある（default のプロファイルに root のディスク） */
+  initialized: boolean;
+  /** root で書いたファイル（tee） */
+  files: Map<string, string>;
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -47,6 +52,8 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     availGiB: 80,
     sudoCalls: [],
     restarts: 0,
+    initialized: true,
+    files: new Map(),
     ...over,
   };
 }
@@ -86,9 +93,14 @@ function accessOf(vm: FakeVm): VmAccess {
       return ok();
     }
     if (cmd === "admin" && rest[0] === "waitready") return ok();
+    if (cmd === "profile" && rest.join(" ") === "device get default root pool") return vm.initialized ? ok("default\n") : fail("Device doesn't exist");
+    if (cmd === "admin" && rest.join(" ") === "init --minimal") {
+      vm.initialized = true;
+      return ok();
+    }
     return fail(`偽の VM は incus ${args.join(" ")} を知らない`);
   };
-  const root = (args: string[]): IncusResult => {
+  const root = (args: string[], input?: string): IncusResult => {
     if (!vm.sudo) return fail("sudo: a password is required");
     if (args[0] !== "true") vm.sudoCalls.push(args);
     const [cmd, ...rest] = args;
@@ -123,9 +135,18 @@ function accessOf(vm: FakeVm): VmAccess {
       return ok();
     }
     if (cmd === "systemctl" && rest.join(" ") === "enable --now incus-user.socket") return ok();
-    if (cmd === "sh" && rest[0] === "-c" && rest[2] === "banto-incus") {
+    if (cmd === "tee") {
+      vm.files.set(rest[0]!, input ?? "");
+      return ok();
+    }
+    if (cmd === "install" || cmd === "chmod") return ok();
+    if (cmd === "env" && rest.includes("update")) return ok();
+    if (cmd === "env" && rest.includes("install") && rest.includes("incus")) {
+      const sources = [...vm.files.keys()].find((f) => f.startsWith("/etc/apt/sources.list.d/zabbly-incus-"));
+      if (!sources || vm.files.get("/etc/apt/keyrings/zabbly.asc") !== "偽の Zabbly の鍵") return fail("E: Unable to locate package incus");
       vm.installed = true;
-      vm.version = rest[3] === "stable" ? "6.19.0" : "6.0.6";
+      vm.initialized = false;
+      vm.version = sources.includes("stable") ? "6.19.0" : "6.0.6";
       return ok();
     }
     return fail(`偽の VM は sudo ${args.join(" ")} を知らない`);
@@ -135,10 +156,10 @@ function accessOf(vm: FakeVm): VmAccess {
     uid: 1000,
     gid: 1001,
     ...(vm.os ? { os: vm.os } : {}),
-    run: async (args) => {
+    run: async (args, opts) => {
       const [cmd, ...rest] = args;
       if (cmd === "incus") return incus(rest, false);
-      if (cmd === "/usr/bin/sudo" && rest[0] === "-n") return root(rest.slice(1));
+      if (cmd === "/usr/bin/sudo" && rest[0] === "-n") return root(rest.slice(1), opts?.input);
       if (cmd === "id" && rest[0] === "-nG") return ok(`banto ${groupNames(vm).join(" ")}\n`);
       if (cmd === "id" && rest[0] === "-G") return ok(`1001 ${groupNames(vm).map(gidOf).join(" ")}\n`);
       if (cmd === "systemctl" && rest[0] === "show") return ok(vm.managerGroups ? "4242\n" : "0\n");
@@ -174,7 +195,10 @@ test("まっさらな VM（sudo -n が通る）：確かめは何も変えず、
   assert.match(checks.find((c) => c.id === "incus-project")!.detail!, /Incus に繋がりません/);
   assert.match(checks.find((c) => c.id === "incus-project")!.fix!, /^sudo usermod -aG incus banto$/);
   // 見るための sudo（置き場が root から見えるか）だけで、何も変えていない
-  assert.deepEqual(vm.sudoCalls, [["incus", "storage", "show", "banto"]]);
+  assert.deepEqual(vm.sudoCalls, [
+    ["incus", "storage", "show", "banto"],
+    ["incus", "profile", "device", "get", "default", "root", "pool"],
+  ]);
   assert.equal(vm.inGroup, false);
 });
 
@@ -284,27 +308,35 @@ test("Incus が無い（Ubuntu 24.04）：確かめは「登録のときに入�
   // 後ろの項目は「Incus を入れたあとに整えます」の注意（断らない——「準備して登録する」が押せる）
   assert.deepEqual(new Set(before.filter((c) => c.id !== "sudo" && c.id !== "user-manager").map((c) => c.status)), new Set(["warn"]));
   assert.match(before.find((c) => c.id === "incus")!.detail!, /Incus が入っていません。登録するときに banto/);
-  assert.match(before.find((c) => c.id === "incus")!.fix!, /Zabbly の lts-6\.0 から Incus と btrfs-progs を入れる（鍵の指紋 4EFC590696CB15B87C73A3AD82CC8797C838DCFD/);
+  assert.match(before.find((c) => c.id === "incus")!.fix!, /sudo tee \/etc\/apt\/keyrings\/zabbly\.asc（Zabbly の鍵。banto の host で指紋 4EFC590696CB15B87C73A3AD82CC8797C838DCFD を確かめたもの）/);
+  assert.match(before.find((c) => c.id === "incus")!.fix!, /sudo apt-get install --no-install-recommends incus btrfs-progs$/);
   assert.match(before.find((c) => c.id === "incus-pool")!.detail!, /Incus を入れたあとに整えます/);
   assert.ok(before.every((c) => c.status === "ok" || c.autoFix));
 
-  const { state, ran } = await prepareContainersHost(access);
-  const install = ran[0]!;
-  assert.deepEqual(
-    [install[0], install[1], install[3], install[4], install[5], install[6], install[7]],
-    ["sh", "-c", "banto-incus", "lts-6.0", "noble", "amd64", "4EFC590696CB15B87C73A3AD82CC8797C838DCFD"],
+  const zabblyKey = async () => "偽の Zabbly の鍵";
+  const { state, ran } = await prepareContainersHost(access, { mayRestartUserManager: true, zabblyKey });
+  // 台本は使わず項目ごとのコマンドで。鍵は host が確かめたものを tee で置く。入れたあと初期化する
+  assert.deepEqual(ran.slice(0, 8).map((a) => (a[0] === "env" ? a.slice(-1) : a)), [
+    ["install", "-d", "-m", "0755", "/etc/apt/keyrings"],
+    ["tee", "/etc/apt/keyrings/zabbly.asc"],
+    ["chmod", "0644", "/etc/apt/keyrings/zabbly.asc"],
+    ["tee", "/etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources"],
+    ["-q"],
+    ["btrfs-progs"],
+    ["incus", "admin", "init", "--minimal"],
+    ["usermod", "-aG", "incus", "banto"],
+  ]);
+  assert.equal(
+    vm.files.get("/etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources"),
+    "Enabled: yes\nTypes: deb\nURIs: https://pkgs.zabbly.com/incus/lts-6.0\nSuites: noble\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/zabbly.asc\n",
   );
-  // 台本：鍵の指紋を確かめ、合わなければ置かずに止める
-  assert.match(install[2]!, /gpg --show-keys --with-colons/);
-  assert.match(install[2]!, /exit 3/);
-  assert.deepEqual(ran.slice(1, 2), [["usermod", "-aG", "incus", "banto"]]);
   const after = await evaluateContainersHost(state, access, "verify");
   assert.deepEqual(new Set(after.map((c) => c.status)), new Set(["ok"]));
 
   // 26.04 は stable（lts-6.0 には resolute が無い）
   const vm26 = fakeVm({ installed: false, os: { ...os, version: "26.04", codename: "resolute" } });
-  const r26 = await prepareContainersHost(accessOf(vm26));
-  assert.equal(r26.ran[0]![4], "stable");
+  const r26 = await prepareContainersHost(accessOf(vm26), { mayRestartUserManager: true, zabblyKey });
+  assert.deepEqual(r26.ran[3], ["tee", "/etc/apt/sources.list.d/zabbly-incus-stable.sources"]);
   assert.equal(vm26.version, "6.19.0");
 });
 
@@ -341,6 +373,14 @@ test("Project があってユーザーの systemd を起こし直せないとき
   const manager = after.find((c) => c.id === "user-manager")!;
   assert.equal(manager.status, "warn");
   assert.match(manager.detail!, /Project を全部閉じてから/);
+});
+
+test("zabblyKeyOk：公開鍵が1つで、指紋が決めた値のときだけ", () => {
+  const one = "pub:-:4096:1:82CC8797C838DCFD:1:::-:::scESC::::::23::0:\nfpr:::::::::4EFC590696CB15B87C73A3AD82CC8797C838DCFD:\nuid:-::::1::x::Zabbly Kernel Builds <info@zabbly.com>::::::::::0:\n";
+  assert.equal(zabblyKeyOk(one), true);
+  assert.equal(zabblyKeyOk(one.replace("4EFC5906", "4EFC5907")), false);
+  assert.equal(zabblyKeyOk(one + one), false);
+  assert.equal(zabblyKeyOk(""), false);
 });
 
 test("sameGroups：主のグループの有無に左右されず、補助のグループの組で比べる", () => {
