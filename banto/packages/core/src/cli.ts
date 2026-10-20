@@ -600,6 +600,7 @@ async function main(): Promise<void> {
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
     containerVirtualization: (runtimeName, projectId) => containersVirtualization.containerSpecOf(runtimeName, projectId),
     hugepagesReservedBytes: (runtimeName) => containersVirtualization.hugepagesReservedBytes(runtimeName),
+    projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
     createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },

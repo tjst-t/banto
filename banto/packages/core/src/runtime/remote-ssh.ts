@@ -106,6 +106,12 @@ const CONTROL_PATH_SUFFIX = 17;
  * （32768〜）を避ける。中から banto への口（29839）はコンテナの中の番号なので VM のポートとはぶつからない
  */
 export const PUBLISH_PORT_RANGE = { from: 20000, to: 29999 } as const;
+/**
+ * **外したばかりの公開の VM のポートは、しばらく選ばない**（追加・2026-10-20、レビュー H1）。外したあとも、公開の実装の Caddy の道は
+ * 次の突き合わせ（15 秒ごと）まで前の行き先のまま残りうる——すぐ別の Project に渡すと、前の公開の URL（前の認証の設定）で別の
+ * Project のサービスが出る。ほかに空きが無ければ選ぶ（メモリだけ——banto を起こし直すと忘れるが、公開の実装も起き直して突き合わせる）
+ */
+const RELEASED_PORT_COOLDOWN_MS = 10 * 60_000;
 /** host の側の鍵の窓口が消えたか（Vault が閉じたか）を見る間隔 */
 const AGENT_WATCH_INTERVAL_MS = 1_000;
 
@@ -159,6 +165,11 @@ export interface RemoteSshRuntimeOptions {
    * `/run/user` を使わない）
    */
   vmRunDir?: (uid: number) => string;
+  /**
+   * containers：その Project が閉じているか（閉じた Project の公開は確かに届かない——閉じるときに道を外すので、残った Caddy の道を
+   * 中継をやめる形にさせる。無ければ閉じていない）
+   */
+  projectClosed?: (projectId: string) => boolean;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -356,6 +367,8 @@ export class RemoteSshRuntime {
   private readonly resourceReads = new Set<string>();
   /** containers の公開の道を張る・外す（実行場所ごとに1本ずつ——同じ VM の Project どうしで同じポートを選ばない） */
   private readonly publishing = new Map<string, Promise<unknown>>();
+  /** containers の公開で外したばかりの VM のポート（実行場所ごと、ポート → 外した時刻） */
+  private readonly releasedPorts = new Map<string, Map<number, number>>();
   /** エージェントの本体を送っているもの（（実行場所・フォルダの名前）ごとに1本。同時の頼みは待たせる） */
   private readonly agentBinarySends = new SharedProgressTasks<string>();
 
@@ -463,7 +476,12 @@ export class RemoteSshRuntime {
   address(projectId: string, port?: number): Promise<PlaceAddress> {
     const name = this.opts.remoteNameOf(projectId);
     if (!name) throw new Error(`${projectId} は別のサーバの Project ではありません`);
-    if (port !== undefined && this.modeOf(name, remoteConnectionKey(name, projectId)) === "containers") return this.publishedAddress(name, projectId, port);
+    if (port !== undefined && this.modeOf(name, remoteConnectionKey(name, projectId)) === "containers") {
+      // 閉じた Project の道は閉じるときに外した（VM のポートはほかの Project に渡りうる）——確かに届かないと返し、公開の実装に
+      // 中継をやめさせる（この機械のコンテナが止まっているときと同じ）。繋がない
+      if (this.opts.projectClosed?.(projectId)) return Promise.resolve({ unavailable: `Project ${projectId} は閉じています（公開の道は外しました）` });
+      return this.publishedAddress(name, projectId, port);
+    }
     return remoteAddress(name, this.opts.runtimes.get(name)?.host, this.opts.lookupIPv4);
   }
 
@@ -492,7 +510,15 @@ export class RemoteSshRuntime {
       let vmPort = listen !== undefined ? Number(listen) : undefined;
       if (vmPort === undefined) {
         const taken = new Set([...(await incus.hostProxyPorts()), ...(await this.vmListeningPorts(conn))]);
-        for (let p = PUBLISH_PORT_RANGE.from; p <= PUBLISH_PORT_RANGE.to && vmPort === undefined; p++) if (!taken.has(p)) vmPort = p;
+        // 外したばかりの番号は、ほかに空きがあれば選ばない（前の公開の Caddy の道がまだ向いているかもしれない）
+        const now = Date.now();
+        const released = this.releasedPorts.get(name) ?? new Map<number, number>();
+        for (const [p, at] of released) if (now - at >= RELEASED_PORT_COOLDOWN_MS) released.delete(p);
+        for (const skipReleased of [true, false]) {
+          for (let p = PUBLISH_PORT_RANGE.from; p <= PUBLISH_PORT_RANGE.to && vmPort === undefined; p++) {
+            if (!taken.has(p) && !(skipReleased && released.has(p))) vmPort = p;
+          }
+        }
         if (vmPort === undefined) throw new Error(`別のサーバ「${name}」で公開に使える VM のポートが残っていません（${PUBLISH_PORT_RANGE.from}〜${PUBLISH_PORT_RANGE.to}）`);
       }
       // 張ってあっても形を合わせる（番号の対応が変わった等）。同じなら何もしない
@@ -513,7 +539,19 @@ export class RemoteSshRuntime {
     const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
     const incus = this.incusOf(conn);
     const match = port === undefined ? (d: string) => /^banto-pub-\d+$/.test(d) : (d: string) => d === `banto-pub-${port}`;
-    const gone = await this.onePublishAtATime(name, () => incus.removeDevices(containerNameFor(projectId), match));
+    const container = containerNameFor(projectId);
+    const gone = await this.onePublishAtATime(name, async () => {
+      // 外す前に待ち受けていた VM のポートを読んでおく（しばらく選ばない——`RELEASED_PORT_COOLDOWN_MS`）
+      const before = (await incus.state(container))?.devices ?? {};
+      const removed = await incus.removeDevices(container, match);
+      const released = this.releasedPorts.get(name) ?? new Map<number, number>();
+      for (const d of removed) {
+        const vmPort = /^tcp:.*:(\d+)$/.exec(before[d]?.["listen"] ?? "")?.[1];
+        if (vmPort !== undefined) released.set(Number(vmPort), Date.now());
+      }
+      this.releasedPorts.set(name, released);
+      return removed;
+    });
     if (gone.length > 0) this.log(`[host] 別のサーバ「${name}」の Project ${projectId} の公開の道を外しました（${gone.join("・")}）`);
   }
 
