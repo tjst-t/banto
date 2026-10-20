@@ -10902,7 +10902,7 @@
       "number": 454,
       "kind": "task",
       "title": "Documents（Office の変換）を Windows でどうするか決めて作る",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-3-modules",
       "dependsOn": [],
       "milestone": null,
@@ -10914,7 +10914,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:37.881Z",
-      "updatedAt": "2026-10-20T08:57:37.881Z",
+      "updatedAt": "2026-10-20T08:59:41.425Z",
       "closedAt": null,
       "extra": {}
     },
