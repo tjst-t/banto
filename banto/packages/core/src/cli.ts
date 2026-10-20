@@ -52,6 +52,8 @@ import { TurnEventBus } from "./http/turn-events.js";
 import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtualization } from "./runtime/containers-virt.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
+import type { WarmTicket } from "./claude-login/keep-alive.js";
+import { isIdleCompactionEnabled } from "./http/project-settings.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
 import { ClaudeAccountLogin } from "./claude-login/account-login.js";
 import { installedAgentSdkVersion, relayRefreshDecision } from "./claude-login/refresh.js";
@@ -385,6 +387,26 @@ async function main(): Promise<void> {
   /** 並びの全部が閾値を越えたカード（Project の並びごとに1枚——鍵に並びの中身） */
   const claudeAllOverCardKey = (orderKey: string) => `claude-accounts-all-over:${orderKey}`;
   const CLAUDE_ACCOUNTS_ALL_OVER_TITLE = "Claude のアカウントが全部、閾値を越えました";
+  /**
+   * **この会話は温めてよいか**（§3.1「温め直し（中継）」の対象）。閉じた会話・眠っている（眠らせている途中の）Project・読むだけの
+   * 会話・`thread.idleCompaction` がオフの Project は温めない。印には、変わったら覚えた本文が古くなるもの（resume-point・やり直しの
+   * 位置・モデル・effort・Module の集合）を詰める——送る前に同じかを見る
+   */
+  const keepAliveTicket = (threadId: string): WarmTicket | undefined => {
+    const thread = projectThread.getThread(threadId);
+    const project = thread ? projectThread.getProject(thread.projectId) : undefined;
+    if (!thread?.resumePoint || !project) return undefined;
+    if (thread.status === "closed" || thread.restriction !== undefined) return undefined;
+    if (project.status === "closed" || project.sleep || projectSleep?.inProgress(project.id)) return undefined;
+    if (!isIdleCompactionEnabled(runtimeConfig, project.id)) return undefined;
+    const modules = loadModuleDeclarations(runtimeConfig, project.id)
+      .map((d) => d.name)
+      .sort();
+    return {
+      sessionId: thread.resumePoint,
+      fingerprint: JSON.stringify([thread.resumePoint, thread.rewindTo ?? null, thread.model ?? null, thread.effort ?? null, modules]),
+    };
+  };
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     refreshEnabled: relayRefresh.enabled,
     accounts: claudeAccounts,
@@ -395,6 +417,11 @@ async function main(): Promise<void> {
     ...(process.env.BANTO_CLAUDE_USAGE_URL ? { usageUrl: process.env.BANTO_CLAUDE_USAGE_URL } : {}),
     secretsPath: join(bootstrap.dataDir, "claude-login-secrets.json"),
     enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
+    // **空いた会話の温め直しは、送る前にまだ温めてよいかを host に聞く**（§3.1「止める」）。ターンが走っている・閉じた・
+    // 眠った・スイッチを切った・モデル／effort／Module の集合／resume-point が変わったら、送らずにやめる
+    keepAliveWarmable: (threadId, fingerprint) => !threadTurns.isRunning(threadId) && keepAliveTicket(threadId)?.fingerprint === fingerprint,
+    // E2E だけが縮める（50分を待たずに温め直しが届くところを見る）
+    ...(process.env.BANTO_TEST_KEEP_ALIVE_MINUTE_MS !== undefined ? { keepAliveMinuteMs: Number(process.env.BANTO_TEST_KEEP_ALIVE_MINUTE_MS) } : {}),
     // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
     // 起こし直しでもアドレスは変わらない（MAC が固定・DHCP の貸し出しは1時間）が、中の root はアドレスを足せる）。
     // 覚えずに毎回、実行場所に聞く——止まっている・無いコンテナは「違う」
@@ -706,6 +733,12 @@ async function main(): Promise<void> {
   const rateLimitContinuations = rateLimits;
   // ターンが始まった・終わったら時計を掛け直す（終わりの記録はターンの鍵を返す前に書かれている）
   threadTurns.onChange((change) => rateLimitContinuations.arm(change.threadId));
+  // **空いた会話の温め直し**（§3.1「温め直し（中継）」）：ターンが始まったらその会話の温め直しを止めて候補を集め直し、終わったら
+  // 「この会話は温めてよい」を中継へ渡す（終わりの記録——resume-point——はターンの鍵を返す前に書かれている）
+  threadTurns.onChange((change) => {
+    if (change.type === "started") claudeLogin.keepAlive.turnStarted(change.threadId);
+    else claudeLogin.keepAlive.turnEnded(change.threadId, keepAliveTicket(change.threadId));
+  });
   // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
   const automationRunner = new AutomationRunner({
     projectThread,

@@ -146,6 +146,11 @@ export interface FakePlan {
    * 本物の CLI を起こさずに、切り替えの1行・全部越えのカードを画面で見るため。2xx でなければターンを失敗にする
    */
   relayRequests?: number;
+  /**
+   * **`relayRequests` を、キャッシュに当たった大きな会話の要求にする**（追加・2026-10-20、アーキ仕様 §3.1「温め直し」）。本物の
+   * CLI と同じく `stream: true` で送り、偽の API に `cache_read_input_tokens` をこの値で返させる（見出し `x-e2e-cache-read-tokens`）
+   */
+  relayCacheReadTokens?: number;
 }
 
 /** 会話ごとの、あと何回上限で断るか（`FakePlan.rateLimit`） */
@@ -618,8 +623,19 @@ export async function* runTurn(opts: {
     const res = await fetch(`${base}/v1/messages?beta=true`, {
       method: "POST",
       // 本物の CLI と同じく、要求ごとにセッションの印を付ける（均すの固定の鍵、v4-security.md §2「均す」の実測）
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-claude-code-session-id": sessionId, ...custom },
-      body: JSON.stringify({ model: "claude-fake", max_tokens: 16, messages: [{ role: "user", content: `fake-runner relay ${i}` }] }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-claude-code-session-id": sessionId,
+        ...(plan.relayCacheReadTokens !== undefined ? { "x-e2e-cache-read-tokens": String(plan.relayCacheReadTokens) } : {}),
+        ...custom,
+      },
+      body: JSON.stringify({
+        model: "claude-fake",
+        max_tokens: 16,
+        ...(plan.relayCacheReadTokens !== undefined ? { stream: true } : {}),
+        messages: [{ role: "user", content: `fake-runner relay ${i}` }],
+      }),
     });
     const body = await res.text();
     console.warn(`[fake-runner] 中継へ /v1/messages ${i + 1}/${plan.relayRequests} → ${res.status}`);
