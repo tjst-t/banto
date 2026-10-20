@@ -11483,6 +11483,29 @@
       "updatedAt": "2026-10-20T14:47:55.208Z",
       "closedAt": "2026-10-20T14:47:55.208Z",
       "extra": {}
+    },
+    {
+      "id": "factory-project-backlog-module",
+      "number": 477,
+      "kind": "bug",
+      "title": "Factory のマージの段が、ときどき「この Project に backlog の Module がありません」で止まる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "factory"
+      ],
+      "body": "2026-10-20、sakutei開発（containers の実行場所 baremetal）から報告。\n\n- 14:02 UTC、実行 ae5b49f6 の #40 と、15:00 UTC、実行 644fc44b の #42 で、テストとレビューに合格したあとのマージの段が「Factory の中の失敗：この Project に backlog の Module がありません（Factory は backlog を使います）」で止まった。\n- 止まった直後に backlog の Module（getItem）はふつうに応答し、answerFactory でマージの段を retry するとすぐ取り込まれた。同じ実行の #39・#41 は止まっていない。\n- #42 は直前の banto の起こし直しで実装が止まり、再開した項目。#40 は再開していない。\n\n出どころ：packages/modules/factory/src/server.ts の targetOf。relayListTargets の一覧に backlog の役割が無いと即座に投げる。見つかった名前は覚えるが、見つからなかったときは問い直さない。\n\n推測（確かめていない）：一覧は繋がっている Module だけを返していて、Backlog の Module が起き直している・繋ぎ直している瞬間（push のあと、別のサーバの接続の張り直しなど）に当たると無いことになる。\n\n直し方の案：見つからないときは短く待って問い直す。一覧が「宣言はあるが今は繋がっていない」を区別して返すなら、それで待つ。",
+      "doneWhen": "Backlog の Module が一時的に一覧から消えても、マージの段が止まらずに取り込まれることを単体試験で確かめる。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T15:04:07.442Z",
+      "updatedAt": "2026-10-20T15:04:07.442Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
