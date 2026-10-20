@@ -11228,7 +11228,7 @@
       "number": 466,
       "kind": "bug",
       "title": "別のサーバの Project で、Backlog の push が資格情報なしで失敗する（Repositories が引き受けない）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -11238,7 +11238,7 @@
       ],
       "body": "2026-10-20、sakutei開発（containers の実行場所 baremetal）で、#369 で中継に届くようになったあとも Backlog の push だけが失敗する。\n\npushError：「このリポジトリの git の設定では資格情報がありません——fatal: could not read Username for 'https://github.com': terminal prompts disabled（Repositories は引き受けませんでした（この Project は別のサーバで動いています（根はこの機械のフォルダではありません）））」\n\n既知の仕様と実態の食い違い（docs/notes/2026-10-08-remote-runtime.md「Backlog の push と sshIdentity」）：Backlog は sshIdentity を持たず、Repositories が handled: false を返したあとは向こうの根で素の git push を流すだけ。containers のコンテナの中には資格情報が無い。\n\n## 決定（2026-10-20、ユーザー）\n案A：Repositories が別のサーバ（machine・containers）の Project の push・fetch も引き受ける。資格情報はコンテナ（向こう）に入れない——向こうとの間は core の実行場所の接続で git の中身だけを運び、送るのは host の Repositories。作業は .worktrees/remote-branch-sync（fork/remote-branch-sync）。\n\n当座の逃げ道：Shell の runCommand に envSecrets（Repositories の alias）を付けて git push origin backlog を手で流す。",
       "doneWhen": "別のサーバ（machine と containers）の Project で、Backlog の書き込みのあと pushError が出ずに origin の backlog ブランチへ届く（単体試験と、remote-runtime の E2E か実機の sakutei開発 で確かめる）。",
-      "resolution": null,
+      "resolution": "main（db9c4be2）と release（9b03cad1、いまの release 412216d8 に含まれる）に入った。2026-10-20 15:04 UTC、sakutei開発（containers の実機 baremetal）で、Backlog の書き込みで pushError が出ない・GitHub の先端と一致・未送信 0・別の手元で進めたあと取り込んでから送れる・コンテナにトークンが無い、の5つが通った。固定された送り先とアカウント（想定 tjst-t/sakutei・@tjst-t）は、本体の置き場を見られないので確かめていない。machine の別のサーバの実機では確かめていない（E2E は通過）。残りは #468。",
       "refs": [],
       "threads": [
         {
@@ -11247,8 +11247,8 @@
         }
       ],
       "createdAt": "2026-10-20T12:11:19.543Z",
-      "updatedAt": "2026-10-20T12:14:38.143Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:05:25.772Z",
+      "closedAt": "2026-10-20T15:05:25.772Z",
       "extra": {}
     },
     {
