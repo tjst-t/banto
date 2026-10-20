@@ -565,6 +565,15 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     await rt.prepare({ id: "p2", root: rootB, nesting: false });
     const pubB2 = (await rt.address("p2", 5000)) as { port: number };
     assert.ok(![vmPortA, pubA2.port].includes(pubB2.port), `外したばかりの番号（${vmPortA}・${pubA2.port}）をすぐにほかの Project に渡した：${pubB2.port}`);
+    // 眠っている Project の公開をやめる（レビュー L1）：外すために繋いだ接続と中継の待ち受けは、外し終えたら閉じる
+    await rt.release("p2", { stop: true });
+    const connections = (rt as unknown as { connections: Map<string, { alive: boolean }> }).connections;
+    const listening = () => servers.filter((sv) => sv.listening).length;
+    const before = listening();
+    await rt.releasePublishedPort("p2", 5000);
+    assert.equal(state().instances["banto-p2"]!.devices["banto-pub-5000"], undefined, "眠っている Project の公開の道を外していない");
+    assert.ok(![...connections.keys()].some((k) => k.endsWith("\0p2")), "外すためだけに張った接続が残っている");
+    assert.equal(listening(), before, "外すためだけに作った中継の待ち受けが残っている");
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");

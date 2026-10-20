@@ -530,13 +530,24 @@ export class RemoteSshRuntime {
 
   /**
    * **公開をやめたとき・閉じるとき、containers の公開の道を外す**（v4-security.md §1「道」の公開。眠らせても外さないので、外すのは
-   * ここだけ）。`port` が無ければその Project の公開の道を全部。繋いでいなければ外すために繋ぐ。machine は道を張らないので何もしない
+   * ここだけ）。`port` が無ければその Project の公開の道を全部。繋いでいなければ外すために繋ぎ、外し終えたらその接続（と中継の待ち受け）を
+   * 閉じる（眠っている・閉じた Project に接続を残さない——レビュー L1）。machine は道を張らないので何もしない
    */
   async releasePublishedPort(projectId: string, port?: number): Promise<void> {
     const name = this.opts.remoteNameOf(projectId);
     if (!name || this.modeOf(name, remoteConnectionKey(name, projectId)) !== "containers") return;
     const live = this.connections.get(remoteConnectionKey(name, projectId));
-    const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
+    if (live?.alive) return this.removePublishedDevices(live, name, projectId, port);
+    const conn = await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
+    try {
+      await this.removePublishedDevices(conn, name, projectId, port);
+    } finally {
+      // 外すためだけに張った接続は閉じる。そのあいだに Module を起こす用意が同じ接続を使い始めていたら（コンテナを用意し始めた）残す
+      if (!conn.container && this.connections.get(remoteConnectionKey(name, projectId)) === conn) await this.release(projectId);
+    }
+  }
+
+  private async removePublishedDevices(conn: Connection, name: string, projectId: string, port: number | undefined): Promise<void> {
     const incus = this.incusOf(conn);
     const match = port === undefined ? (d: string) => /^banto-pub-\d+$/.test(d) : (d: string) => d === `banto-pub-${port}`;
     const container = containerNameFor(projectId);
