@@ -10082,7 +10082,7 @@
       "number": 418,
       "kind": "task",
       "title": "画面：使い方の2択（banto 全体と Project）・説明文・右上のメーターをその会話の固定先に・直近1時間に使った Project",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "claude-accounts-balance",
       "dependsOn": [
         "balance-core"
@@ -10096,7 +10096,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:11:21.638Z",
-      "updatedAt": "2026-10-20T05:11:21.638Z",
+      "updatedAt": "2026-10-20T06:23:36.790Z",
       "closedAt": null,
       "extra": {}
     },
