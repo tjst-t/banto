@@ -11576,6 +11576,32 @@
       "updatedAt": "2026-10-20T20:03:53.832Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "virt-connect-checks",
+      "number": 481,
+      "kind": "task",
+      "title": "仮想化（KVM）を許した実行場所の繋ぐたびの確かめに、区画の privilege・modules-load・hugepages の確保を足す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "runtime",
+        "container"
+      ],
+      "body": "仕様 v4-security.md §1「`containers` で仮想化（KVM）」の 1.（繋ぐたびの確かめで見る項目）。今は区画の unix-char だけを見ている（崩れていても断らず注意）。足すもの：区画の restricted.containers.privilege（特権の Project があるのに無い／無いのにある）、/etc/modules-load.d/banto.conf と読み込み、nr_hugepages と HugePages_Total（確保できた数のずれ）。sudo はせず「確かめ直す」で整えると言う。あわせて「許す」をオフにして区画とファイルが incus-user の既定と差分なしに戻ることを本物で一度確かめる（#456 では使い続けるため未確認）。",
+      "doneWhen": "偽の VM の単体試験で各ずれが注意として出る。ベアメタルで「許す」のオフで区画とファイルが元に戻る。",
+      "resolution": null,
+      "refs": [
+        "#456"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T20:04:01.087Z",
+      "updatedAt": "2026-10-20T20:04:01.087Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
