@@ -234,7 +234,8 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
-    resolveAddress: (projectId) => relay.projectAddress(projectId),
+    resolveAddress: (projectId, port) => relay.projectAddress(projectId, port),
+    releasePort: (projectId, port) => relay.releaseProjectPort(projectId, port),
     probe: (address, port) => tcpProbe(address, port),
     owner: dataDir,
     // この Module は host で動き、Caddy も host にいる。banto 本体の口は中継の住所と同じ（例 127.0.0.1:4737）

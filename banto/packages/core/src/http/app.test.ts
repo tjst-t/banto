@@ -293,6 +293,35 @@ test("project close/reopen round-trips over HTTP, 404 for unknown project", asyn
   });
 });
 
+test("閉じるときは、公開の道（別のサーバの containers の VM のポート）を、接続を手放す前に外す。外せなくても閉じる", async () => {
+  const order: string[] = [];
+  let failPorts = false;
+  await withApp(
+    async (base, token, dir) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const create = async (name: string) =>
+        (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name, root: dir }) })).json()) as { id: string };
+      const a = await create("a");
+      assert.equal((await fetch(`${base}/api/projects/${a.id}/close`, { method: "POST", headers })).status, 200);
+      assert.deepEqual(order, [`ports:${a.id}`, `release:${a.id}`]);
+      failPorts = true;
+      const b = await create("b");
+      assert.equal((await fetch(`${base}/api/projects/${b.id}/close`, { method: "POST", headers })).status, 200, "道を外せないだけで閉じるのを断った");
+      assert.deepEqual(order.slice(2), [`ports:${b.id}`, `release:${b.id}`]);
+    },
+    {
+      releasePublishedPorts: async (projectId: string) => {
+        order.push(`ports:${projectId}`);
+        if (failPorts) throw new Error("繋がりません");
+      },
+      releaseProjectModules: async (projectId: string) => {
+        order.push(`release:${projectId}`);
+        return [];
+      },
+    },
+  );
+});
+
 // Global Memory（§2.2、決定・2026-09-05）。Project Memoryと同じ規律
 // （追記のみ・無効化イベント・上限で400）を、banto全体の入口で確かめる。
 test("global memory append/invalidate round-trips over HTTP, 400 over the char limit", async () => {

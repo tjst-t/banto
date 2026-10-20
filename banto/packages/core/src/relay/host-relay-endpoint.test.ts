@@ -885,13 +885,19 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
   const registry = new RelayRegistry();
   const publishRaw = { satisfies: ["publish"], dependsOn: [], isolation: "subprocess" };
   const asked: string[] = [];
+  const released: string[] = [];
   const { url, close } = await startTestServer(registry, {
-    projectAddress: async (projectId) => {
+    projectAddress: async (projectId, port) => {
       asked.push(projectId);
       // 確かに届かない（止まっている）は値で、分からない（Incus が答えない）は投げる
       if (projectId === "gone") return { unavailable: "コンテナ banto-gone は動いていません（Stopped）" };
       if (projectId === "flaky") throw new Error("コンテナ banto-flaky の状態を読めませんでした：時間切れ");
+      // 別のサーバの containers：サービスのポートを渡すと、届く番号（VM のポート）を返す
+      if (projectId === "ct" && port !== undefined) return { address: "192.168.1.20", port: 20000 + port };
       return { address: "10.61.162.23" };
+    },
+    releaseProjectPort: async (projectId, port) => {
+      released.push(`${projectId}:${port}`);
     },
   });
   const tokens = {
@@ -922,6 +928,21 @@ test("Project のアドレスを引けるのは、banto 本体で動く同梱の
     await assert.rejects(() => resolve(tokens.inContainer, "pA"), /banto 本体で動く/);
     await assert.rejects(() => resolve(tokens.notPublish, "pA"), /publish 役割/);
     assert.deepEqual(asked, ["pA", "gone", "flaky"], "断るべき呼び出し元のために host が引きに行った");
+    // サービスのポートを渡す・道を外す（同じ相手だけ）
+    const call = async (token: string, name: string, args: Record<string, unknown>) => {
+      const c = await relayClient(url, token);
+      try {
+        return JSON.parse(textOf(await c.callTool({ name, arguments: args }))) as unknown;
+      } finally {
+        await c.close();
+      }
+    };
+    assert.deepEqual(await call(tokens.caddy, "relayProjectAddress", { projectId: "ct", port: 3000 }), { address: "192.168.1.20", port: 23000 });
+    await assert.rejects(() => call(tokens.caddy, "relayProjectAddress", { projectId: "ct", port: 0 }), /1〜65535/);
+    assert.deepEqual(await call(tokens.caddy, "relayProjectPortRelease", { projectId: "ct", port: 3000 }), { released: true });
+    await assert.rejects(() => call(tokens.thirdParty, "relayProjectPortRelease", { projectId: "ct", port: 3000 }), /banto 自身のコード/);
+    await assert.rejects(() => call(tokens.inContainer, "relayProjectPortRelease", { projectId: "ct", port: 3000 }), /banto 本体で動く/);
+    assert.deepEqual(released, ["ct:3000"]);
   } finally {
     close();
   }

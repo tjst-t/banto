@@ -100,6 +100,11 @@ export function remoteOwnerDirName(dataDir: string): string {
 /** Unix ソケットのパスの上限（`sun_path`）。ssh は ControlPath に一時の名前（17 字）を足して作る */
 const SOCKET_PATH_LIMIT = 107;
 const CONTROL_PATH_SUFFIX = 17;
+/**
+ * containers の公開で VM に選ぶポートの範囲（決定・2026-10-20、実装者）。よく使われる番号と Linux の一時のポートの範囲
+ * （32768〜）を避ける。中から banto への口（29839）はコンテナの中の番号なので VM のポートとはぶつからない
+ */
+export const PUBLISH_PORT_RANGE = { from: 20000, to: 29999 } as const;
 /** host の側の鍵の窓口が消えたか（Vault が閉じたか）を見る間隔 */
 const AGENT_WATCH_INTERVAL_MS = 1_000;
 
@@ -338,6 +343,8 @@ export class RemoteSshRuntime {
   private agentWatch?: ReturnType<typeof setInterval>;
   /** 資源を読んでいる途中の実行場所（重ねない） */
   private readonly resourceReads = new Set<string>();
+  /** containers の公開の道を張る・外す（実行場所ごとに1本ずつ——同じ VM の Project どうしで同じポートを選ばない） */
+  private readonly publishing = new Map<string, Promise<unknown>>();
   /** エージェントの本体を送っているもの（（実行場所・フォルダの名前）ごとに1本。同時の頼みは待たせる） */
   private readonly agentBinarySends = new SharedProgressTasks<string>();
 
@@ -438,13 +445,81 @@ export class RemoteSshRuntime {
   }
 
   /**
-   * 外から向こうのサービスに届くアドレス（Publish）：登録した宛先の LAN のアドレス。繋がない——向こうのサービスには
-   * SSH を通さず LAN から直に届くので、届くかは公開の実装がそのポートで確かめる
+   * 外から向こうのサービスに届くアドレス（Publish）：登録した宛先の LAN のアドレス。machine は繋がない——向こうのサービスには
+   * SSH を通さず LAN から直に届くので、届くかは公開の実装がそのポートで確かめる。**containers でサービスのポートを渡されたら**、
+   * VM のポートからコンテナの中へ繋ぐ道を張って、その VM のポートを返す（`publishedAddress`）
    */
-  address(projectId: string): Promise<PlaceAddress> {
+  address(projectId: string, port?: number): Promise<PlaceAddress> {
     const name = this.opts.remoteNameOf(projectId);
     if (!name) throw new Error(`${projectId} は別のサーバの Project ではありません`);
+    if (port !== undefined && this.modeOf(name, remoteConnectionKey(name, projectId)) === "containers") return this.publishedAddress(name, projectId, port);
     return remoteAddress(name, this.opts.runtimes.get(name)?.host, this.opts.lookupIPv4);
+  }
+
+  /**
+   * **containers の公開の道**（v4-security.md §1「道」の公開）：装置 `banto-pub-<サービスのポート>`（`bind=host
+   * listen=tcp:0.0.0.0:<VM のポート> connect=tcp:127.0.0.1:<サービスのポート>`）。VM のポートは、止まっているものも含め区画の全コンテナの
+   * 装置と VM で待ち受けているポートを避けて選ぶ。張ってあればそのポートを使い続ける（覚えない——装置が真実）。**眠らせても外さない**
+   * （止まったコンテナの装置は待ち受けない。外すと眠っている間にほかの Project に番号を取られる）——止まっていれば `{unavailable}` を
+   * 返し、装置は残す。**読むためだけには繋がない**：繋いでいなければ確かめられない（投げる——公開の実装は道に触らない。道は Incus の
+   * 設定なので、繋いでいなくても届き続ける）
+   */
+  private async publishedAddress(name: string, projectId: string, port: number): Promise<PlaceAddress> {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`サービスのポート ${port} がおかしいです`);
+    const conn = this.connections.get(remoteConnectionKey(name, projectId));
+    if (!conn?.alive) throw new Error(`別のサーバ「${name}」の Project ${projectId} には繋いでいないので、公開の道を確かめられません（Module が起きると繋ぎます）`);
+    const lan = await remoteAddress(name, conn.runtime.host, this.opts.lookupIPv4);
+    if (!("address" in lan)) return lan;
+    const incus = this.incusOf(conn);
+    const container = containerNameFor(projectId);
+    const device = `banto-pub-${port}`;
+    return this.onePublishAtATime(name, async (): Promise<PlaceAddress> => {
+      const st = await incus.state(container);
+      if (!st) return { unavailable: `コンテナ ${container} がありません（その Project の Module がまだ一度も起きていない）` };
+      if (st.status !== "Running") return { unavailable: `コンテナ ${container} は動いていません（${st.status}）——公開の道は残しています` };
+      const listen = /^tcp:.*:(\d+)$/.exec(st.devices[device]?.["listen"] ?? "")?.[1];
+      let vmPort = listen !== undefined ? Number(listen) : undefined;
+      if (vmPort === undefined) {
+        const taken = new Set([...(await incus.hostProxyPorts()), ...(await this.vmListeningPorts(conn))]);
+        for (let p = PUBLISH_PORT_RANGE.from; p <= PUBLISH_PORT_RANGE.to && vmPort === undefined; p++) if (!taken.has(p)) vmPort = p;
+        if (vmPort === undefined) throw new Error(`別のサーバ「${name}」で公開に使える VM のポートが残っていません（${PUBLISH_PORT_RANGE.from}〜${PUBLISH_PORT_RANGE.to}）`);
+      }
+      // 張ってあっても形を合わせる（番号の対応が変わった等）。同じなら何もしない
+      await incus.ensureProxy(container, device, { bind: "host", listen: `tcp:0.0.0.0:${vmPort}`, connect: `tcp:127.0.0.1:${port}` }, await this.containerIdsOf(conn));
+      if (listen === undefined) this.log(`[host] 別のサーバ「${name}」の Project ${projectId} のポート ${port} を、VM のポート ${vmPort} で公開する道を張りました`);
+      return { address: lan.address, port: vmPort, exposedOnLan: true };
+    });
+  }
+
+  /**
+   * **公開をやめたとき・閉じるとき、containers の公開の道を外す**（v4-security.md §1「道」の公開。眠らせても外さないので、外すのは
+   * ここだけ）。`port` が無ければその Project の公開の道を全部。繋いでいなければ外すために繋ぐ。machine は道を張らないので何もしない
+   */
+  async releasePublishedPort(projectId: string, port?: number): Promise<void> {
+    const name = this.opts.remoteNameOf(projectId);
+    if (!name || this.modeOf(name, remoteConnectionKey(name, projectId)) !== "containers") return;
+    const live = this.connections.get(remoteConnectionKey(name, projectId));
+    const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
+    const incus = this.incusOf(conn);
+    const match = port === undefined ? (d: string) => /^banto-pub-\d+$/.test(d) : (d: string) => d === `banto-pub-${port}`;
+    const gone = await this.onePublishAtATime(name, () => incus.removeDevices(containerNameFor(projectId), match));
+    if (gone.length > 0) this.log(`[host] 別のサーバ「${name}」の Project ${projectId} の公開の道を外しました（${gone.join("・")}）`);
+  }
+
+  /** 同じ実行場所の公開の道の張り外しを1本ずつ通す */
+  private onePublishAtATime<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.publishing.get(name) ?? Promise.resolve()).catch(() => undefined).then(fn);
+    this.publishing.set(name, run);
+    void run.finally(() => {
+      if (this.publishing.get(name) === run) this.publishing.delete(name);
+    }).catch(() => undefined);
+    return run;
+  }
+
+  /** VM で待ち受けている TCP のポート（`ss` が無ければ空——装置を足すときに Incus が断る） */
+  private async vmListeningPorts(conn: Connection): Promise<Set<number>> {
+    const r = await this.run(conn, "command -v ss >/dev/null 2>&1 || exit 0\nss -Hltn 2>/dev/null | awk '{print $4}'\n", { timeoutMs: 15_000 });
+    return new Set([...r.stdout.matchAll(/:(\d+)$/gm)].map((m) => Number(m[1])));
   }
 
   /** 接続が切れていれば、次に要るときに繋ぎ直す（繋がっていれば何もしない——Module が1つ落ちただけで全部を張り直さない） */
@@ -502,9 +577,7 @@ export class RemoteSshRuntime {
     const key = remoteConnectionKey(name, projectId);
     const live = this.connections.get(key);
     const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
-    const shell = this.vmShell(conn);
-    conn.incus ??= new ProjectContainers(vmIncus(shell), DEFAULT_TIMEOUTS, vmInterfaces(shell));
-    await conn.incus.stop(containerNameFor(projectId));
+    await this.incusOf(conn).stop(containerNameFor(projectId));
     // 次に使うときは、止まったコンテナを起こすところから確かめ直す
     delete conn.container;
     this.log(`[host] 別のサーバ「${name}」の Project ${projectId} のコンテナを止めました`);
@@ -1030,12 +1103,12 @@ export class RemoteSshRuntime {
    */
   private async streamIntoContainer(conn: Connection, name: string, hostPath: string, insidePath: string): Promise<string> {
     const container = await conn.container?.ready;
-    const ids = conn.containerIds;
-    if (!container || !ids) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（流れの口を繋げません）`);
+    if (!container) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（流れの口を繋げません）`);
+    const ids = await this.containerIdsOf(conn);
     const vmPath = `${conn.base}/s/${name}`;
     // 先に置き場を作って転送を張り（`-L` は繋ぐたびに先を引く）、それから VM の待ち受け（装置）を張る
     await this.addForward(conn, { purpose: "stream", dir: "L", hostPath, remotePath: vmPath });
-    await conn.incus!.ensureProxy(container, `banto-${name}`, { bind: "host", listen: `unix:${vmPath}`, connect: `unix:${insidePath}` }, ids);
+    await this.incusOf(conn).ensureProxy(container, `banto-${name}`, { bind: "host", listen: `unix:${vmPath}`, connect: `unix:${insidePath}` }, ids);
     return hostPath;
   }
 
@@ -1059,14 +1132,13 @@ export class RemoteSshRuntime {
    */
   private async forwardAgentIntoContainer(conn: Connection, container: string, hostPath: string): Promise<string> {
     if (!conn.alive) throw new Error(`別のサーバ「${conn.runtimeName}」に鍵の窓口を見せられません——SSH の接続が閉じています`);
-    const ids = conn.containerIds;
-    if (!ids) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（鍵の窓口を見せられません）`);
+    const ids = await this.containerIdsOf(conn);
     const mark = createHash("sha256").update(hostPath).digest("hex").slice(0, 12);
     const vmPath = `${this.vmProjectDir(conn, ids.uid)}/a-${mark}.sock`;
     const inside = agentInsidePath(mark);
     const device = { container, name: `${AGENT_DEVICE_PREFIX}${mark}` };
     await this.addForward(conn, { purpose: "agent", dir: "R", hostPath, remotePath: vmPath, device });
-    await conn.incus!.ensureProxy(container, device.name, { bind: "instance", listen: `unix:${inside}`, connect: `unix:${vmPath}` }, ids);
+    await this.incusOf(conn).ensureProxy(container, device.name, { bind: "instance", listen: `unix:${inside}`, connect: `unix:${vmPath}` }, ids);
     this.watchAgentSockets();
     return inside;
   }
@@ -1574,15 +1646,12 @@ export class RemoteSshRuntime {
     if (place.tools) throw new Error("道具用の箱は別のサーバには置きません");
     const shell = this.vmShell(conn);
     const run = vmIncus(shell);
-    conn.incus ??= new ProjectContainers(run, DEFAULT_TIMEOUTS, vmInterfaces(shell));
-    const { uid, gid } = await this.vmIds(conn);
-    // 中の番号はここにしか書かない——あとから足す道（鍵の窓口・流れの口）も、この対応から番号を取る
-    const ids = { uid, gid, inside: INSIDE_IDS };
-    conn.containerIds = ids;
+    const incus = this.incusOf(conn);
+    const ids = await this.containerIdsOf(conn);
     // 中から banto への道の先（その Project のトンネルのソケット）。張ってからコンテナを用意する（装置が繋ぐ先）
     const tunnel = await this.ensureTunnel(conn);
     const image = await this.ensureVmBaseImage(conn, run);
-    const { name } = await conn.incus.ensure({
+    const { name } = await incus.ensure({
       projectId: place.id,
       root: place.root,
       // 版はパスで選ぶ（版を替えても装置を付け直さない——眠っているコンテナが消えた版を指して起きられなくなるのを避ける）
@@ -1601,10 +1670,26 @@ export class RemoteSshRuntime {
     // 接続ごとに1回——同じ接続で用意し直す（`forget`）ときに、いま使っている窓口を外さない
     if (!conn.agentDevicesCleared) {
       conn.agentDevicesCleared = true;
-      const gone = await conn.incus.removeDevices(name, (d) => d.startsWith(AGENT_DEVICE_PREFIX));
+      const gone = await incus.removeDevices(name, (d) => d.startsWith(AGENT_DEVICE_PREFIX));
       if (gone.length > 0) this.log(`[host] 別のサーバ「${conn.runtimeName}」のコンテナ ${name} から、前の接続の鍵の窓口の道を外しました（${gone.join("・")}）`);
     }
     return name;
+  }
+
+  /** この接続の上で Incus を呼ぶ口（装置の書き換えを1本ずつ通すので、接続ごとに1つ） */
+  private incusOf(conn: Connection): ProjectContainers {
+    const shell = this.vmShell(conn);
+    return (conn.incus ??= new ProjectContainers(vmIncus(shell), DEFAULT_TIMEOUTS, vmInterfaces(shell)));
+  }
+
+  /**
+   * コンテナの番号の対応（外＝VM のユーザー・中）。**中の番号はここにしか書かない**——コンテナの宣言と、あとから足す道（鍵の窓口・
+   * 流れの口・公開）が同じものを使う
+   */
+  private async containerIdsOf(conn: Connection): Promise<{ uid: number; gid: number; inside: { uid: number; gid: number } }> {
+    if (conn.containerIds) return conn.containerIds;
+    const { uid, gid } = await this.vmIds(conn);
+    return (conn.containerIds = { uid, gid, inside: INSIDE_IDS });
   }
 
   /** VM のユーザーの番号（接続ごとに1回読む） */
@@ -1694,7 +1779,7 @@ export class RemoteSshRuntime {
     // 名前空間を持つ）
     const base = this.preparedFrom(conn, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
     const self = this;
-    const incus = conn.incus!;
+    const incus = this.incusOf(conn);
     const nodePath = `${conn.codeDir}/${REMOTE_NODE_REL}`;
     const launcherPath = `${conn.codeDir}/${REMOTE_LAUNCHER_REL}`;
     /** Module の置き場を見せ終えるまで（Shell のホームはその中で展開する） */

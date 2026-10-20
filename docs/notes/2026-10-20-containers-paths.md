@@ -87,6 +87,24 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   - 「中で数える」は眠らせる前の「止まるもの」（`runningInPlace`）でも使われていて、VM の SSH ユーザーで数えると containers では
     いつも「何も動いていない」になる（Service はコンテナの中のユーザーの systemd）ので、先に直した
 
+- **公開は中継の口にサービスのポートを足して受ける**（`relayProjectAddress` の `port`、返りの `port`、外す口 `relayProjectPortRelease`）。
+  仕様は「Publish のたびに VM のポートを選んで装置を足す」だけで、公開の実装との受け渡しは決めていなかった。公開の実装は
+  アドレスだけを受けてサービスのポートへ繋いでいたので、VM のポートを知る道が要る
+  - 却下：core が公開の記録を見て装置を張る——公開の記録の真実は公開の実装（publish-caddy）が持つ。core が写しを持つと食い違う（規則3）
+  - 却下：見積もり（`planPublish`）で張る——承認されずに終わると装置が残る。張るのは `publishRoute` と突き合わせの時（どちらも公開が
+    ある時）
+  - 突き合わせ（15 秒ごと）も `port` を渡すので、消えた装置（人が消した等）は次の突き合わせで張り直される。張ってあれば装置の
+    待ち受けから番号を読み直す（覚えない）
+  - **繋いでいなければ確かめない**（投げる）。突き合わせのたびに眠っている Project の VM に繋ぐことになるため。投げると公開の実装は
+    `address-unknown` で道に触らず、装置は Incus の設定なので届き続ける
+  - VM のポートの範囲は 20000〜29999（よく使われる番号と一時のポートの範囲を避ける）。VM で待ち受けているもの（`ss -Hltn`）も避ける。
+    同じ VM の別の banto（別のデータの置き場）と同時に選ぶとぶつかりうるが、そのときは Incus が装置を足すのを断る（理由が出る）
+- **外す時**：仕様は「取り消し・Service を消す・移す・閉じるとき」。取り消し（公開をやめる）と閉じるときは外す。閉じるときは、
+  接続を手放す前に（`http/app.ts` の閉じる口）その Project の `banto-pub-*` を全部外す——外せなくても閉じる（ログに残す）。**Service を
+  消すときは外さない**：Service を消しても公開の記録は残る（この機械でも同じで、行き先に届かなくなるだけ）ので、道だけ外すと
+  公開の記録が残ったまま、次の突き合わせで張り直される。公開と Service の繋がりを作るのは公開の側の話で #369 の範囲を越える
+  （仕様と違うので人に上げる）。移すは containers ではまだ断る
+
 ## 試験
 
 - `packages/container/src/project-container.test.ts`：`proxyDevice` の番号の向き（`instance`/`host`、TCP と UNIX の待ち受け、中の
@@ -103,6 +121,14 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   流して JSON が返ること（この試験で、台本の中の改行が崩れていたのを見つけた）
 - `packages/core/src/resources.test.ts`・`container-pressure.test.ts`：別のサーバのコンテナの数えは最後に読めた回から（読めなくなったら
   無い）、上げ方の文を Project で替えられる
+- `packages/core/src/runtime/remote-containers.test.ts`（公開）：サービスのポートを渡すと装置を張り VM のポートを返す（止まっている
+  コンテナの装置のポートの範囲を避ける・中の番号で繋ぐ）、2回目は同じ番号、ポートを渡さなければ張らない、ほかの Project とは別の
+  番号、眠らせても外さない・繋いでいなければ投げる・眠っている Project の番号を選ばない、止まっていれば値で届かないと返し道は残す、
+  やめたらその道だけ外す、閉じるときは公開の道を全部外す（ほかの装置は残す）
+- `packages/core/src/relay/host-relay-endpoint.test.ts`：`relayProjectAddress` の `port`（おかしい番号は断る）と返りの `port`、
+  `relayProjectPortRelease`（引ける相手は同じ）。`http/app.test.ts`：閉じるときに接続を手放す前に公開の道を外し、外せなくても閉じる
+- `packages/modules/publish-caddy/src/server.test.ts`：返った VM のポートへ繋ぐ（届かなければその番号とコンテナの中のポートを添えて
+  断る）、突き合わせでも同じ行き先、やめたら host に道を外させる
 - `packages/core/src/runtime/project-move.test.ts`：containers で動いているものを数える台本（偽の incus）——動いていれば中のユーザー
   （中のユーザーのバス）で数える、止まっている・無いなら中で流さず何も出さない、Incus が答えなければ失敗
 - `packages/core/src/runtime/remote-runtimes.test.ts`：実行場所の種類（containers の登録は `remote-containers`、登録が無い名前は

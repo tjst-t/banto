@@ -690,6 +690,29 @@ export class ProjectContainers {
   }
 
   /**
+   * **区画の全コンテナ（止まっているものも）の proxy device が、外（VM）で待ち受けている TCP のポート**（追加・2026-10-20、
+   * 別のサーバの containers の公開——v4-security.md §1「道」の公開）。止まったコンテナの装置は待ち受けていないが、起こせば
+   * 待ち受けるので避ける。`bind` の無い装置は Incus の既定（host）
+   */
+  async hostProxyPorts(): Promise<Set<number>> {
+    const project = encodeURIComponent(await this.currentProject());
+    const out = await this.incus(["query", `/1.0/instances?recursion=1&project=${project}`], "コンテナの装置の一覧を読むの");
+    const all = JSON.parse(out) as { devices?: Record<string, Device> }[];
+    const ports = new Set<number>();
+    for (const i of all) {
+      for (const d of Object.values(i.devices ?? {})) {
+        if (d["type"] !== "proxy" || (d["bind"] ?? "host") !== "host") continue;
+        const m = /^tcp:.*:(\d+)(?:-(\d+))?$/.exec(d["listen"] ?? "");
+        if (!m) continue;
+        const from = Number(m[1]);
+        const to = m[2] !== undefined ? Number(m[2]) : from;
+        for (let p = from; p <= to && p - from < 65536; p++) ports.add(p);
+      }
+    }
+    return ports;
+  }
+
+  /**
    * **装置を外す**（追加・2026-10-20）。`match` に当たる名前のものを全部（無ければ何もしない）。コンテナが無ければ何もしない。
    * 返すのは外した装置の名前
    */

@@ -134,6 +134,7 @@ if (cmd === "query") {
     out("");
   }
   if (/^\/1\.0\/images\/aliases\//.test(rest[0])) out("{}");
+  if (/^\/1\.0\/instances\?recursion=1/.test(rest[0])) out(JSON.stringify(Object.entries(st.instances).map(([name, i]) => ({ name, ...i }))));
   const m = /^\/1\.0\/instances\/([^/?]+)\?/.exec(rest[0]);
   if (m) {
     const i = st.instances[m[1]];
@@ -253,7 +254,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   const rt = new RemoteSshRuntime({
     dataDir,
     monorepoRoot: join(root, "repo"),
-    runtimes: { withConnection: async () => conn(), get: () => ({ mode: "containers" }) } as never,
+    runtimes: { withConnection: async () => conn(), get: () => ({ mode: "containers", host: "vm.example" }) } as never,
     remoteNameOf: (id) => (id.startsWith("p") ? "vm" : undefined),
     createRelayListener: (_name, projectId) => {
       connecting = projectId;
@@ -265,6 +266,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     log: () => undefined,
     shellHomeSource: join(root, "nohome"),
     vmRunDir: () => runDir,
+    lookupIPv4: async () => "192.168.1.20",
   });
   const state = () =>
     JSON.parse(readFileSync(join(root, "incus.json"), "utf8")) as {
@@ -480,12 +482,42 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.ok(controls().some((l) => l.includes(`-O forward -R ${tunnelA}:127.0.0.1:`)), "繋ぎ直したのにトンネルを張っていない");
     assert.equal(a2.bantoOrigin, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
 
+    // 公開（#369）：サービスのポートを渡すと、VM のポートからコンテナの中へ繋ぐ道を張り、その VM のポートを返す。VM のポートは
+    // 止まっているものも含め区画の全コンテナの装置を避けて選ぶ
+    const s0 = JSON.parse(readFileSync(join(root, "incus.json"), "utf8"));
+    s0.instances["other"] = { status: "Stopped", config: {}, devices: { web: { type: "proxy", listen: "tcp:0.0.0.0:20000-20001", connect: "tcp:127.0.0.1:80" } } };
+    writeFileSync(join(root, "incus.json"), JSON.stringify(s0));
+    const pubA = await rt.address("p1", 3000);
+    assert.ok("address" in pubA && pubA.port !== undefined, JSON.stringify(pubA));
+    const vmPortA = (pubA as { port: number }).port;
+    assert.equal((pubA as { address: string }).address, "192.168.1.20");
+    assert.equal((pubA as { exposedOnLan?: true }).exposedOnLan, true);
+    assert.ok(vmPortA >= 20002 && vmPortA <= 29999, `止まっているコンテナの装置のポートを避けていない：${vmPortA}`);
+    assert.deepEqual(state().instances["banto-p1"]!.devices["banto-pub-3000"], {
+      type: "proxy",
+      bind: "host",
+      listen: `tcp:0.0.0.0:${vmPortA}`,
+      connect: "tcp:127.0.0.1:3000",
+      // 繋ぐのは中——中の番号に落とす（宣言から）
+      "security.uid": String(INSIDE_IDS.uid),
+      "security.gid": String(INSIDE_IDS.gid),
+    });
+    // 同じポートをもう一度：同じ VM のポート（覚えずに装置から読む）
+    assert.deepEqual(await rt.address("p1", 3000), pubA);
+    // ポートを渡さなければ道は張らない（見積もり）
+    assert.deepEqual(await rt.address("p1"), { address: "192.168.1.20", exposedOnLan: true });
+    // ほかの Project の同じサービスのポート：ぶつからない（別の VM のポート）
+    const pubB = (await rt.address("p2", 3000)) as { port: number };
+    assert.notEqual(pubB.port, vmPortA);
+
     // 眠らせる・閉じる（#369）：containers は手放すときに Project のコンテナを止めるだけ（ほかの Project のコンテナには触らない）。
     // 手放すだけ（stop なし）なら動いたまま
     await rt.release("p1");
     assert.equal(state().instances["banto-p1"]!.status, "Running", "stop を頼んでいないのにコンテナを止めた");
     await rt.release("p2", { stop: true });
     assert.equal(state().instances["banto-p2"]!.status, "Stopped", "眠らせたのにコンテナが動いている");
+    // 眠らせても公開の道は外さない（外すと眠っている間に番号を取られる）
+    assert.equal(state().instances["banto-p2"]!.devices["banto-pub-3000"]?.["listen"], `tcp:0.0.0.0:${pubB.port}`, "眠らせたら公開の道を外した");
     assert.equal(state().instances["banto-p1"]!.status, "Running", "ほかの Project のコンテナまで止めた");
     // 接続が無くても（banto を起こし直したあと等）、止めるために繋いで止める
     await rt.prepare({ id: "p1", root: rootA, nesting: false });
@@ -496,6 +528,30 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     await rt.prepare({ id: "p2", root: rootB, nesting: false });
     assert.equal(state().instances["banto-p2"]!.status, "Running");
     assert.equal(state().instances["banto-p2"]!.devices["banto-relay"]?.["connect"], `unix:${tunnelB}`);
+    // 眠っている Project（接続も手放した）の公開は確かめられない（投げる——公開の実装は道に触らない。道は Incus の設定なので残る）。
+    // 眠っている間に p1 が新しく公開しても、眠っている p2 の番号は選ばない
+    await rt.release("p2", { stop: true });
+    await assert.rejects(rt.address("p2", 3000), /繋いでいないので/);
+    assert.ok(state().instances["banto-p2"]!.devices["banto-pub-3000"]);
+    await rt.prepare({ id: "p1", root: rootA, nesting: false });
+    const pubA2 = (await rt.address("p1", 4000)) as { port: number };
+    assert.ok(![vmPortA, pubB.port, 20000, 20001].includes(pubA2.port), `使っている・眠っている Project の番号を選んだ：${pubA2.port}`);
+    // 繋いでいてコンテナが止まっている（人が止めた等）：届かないと値で返し（公開の実装は 503 にする）、道は残す
+    const s1 = JSON.parse(readFileSync(join(root, "incus.json"), "utf8"));
+    s1.instances["banto-p1"].status = "Stopped";
+    writeFileSync(join(root, "incus.json"), JSON.stringify(s1));
+    assert.match((await rt.address("p1", 4000) as { unavailable: string }).unavailable, /動いていません/);
+    assert.equal(state().instances["banto-p1"]!.devices["banto-pub-4000"]?.["listen"], `tcp:0.0.0.0:${pubA2.port}`);
+    s1.instances["banto-p1"].status = "Running";
+    writeFileSync(join(root, "incus.json"), JSON.stringify(s1));
+    // 公開をやめる：その道だけを外す
+    await rt.releasePublishedPort("p1", 3000);
+    assert.equal(state().instances["banto-p1"]!.devices["banto-pub-3000"], undefined, "公開をやめたのに道が残っている");
+    assert.ok(state().instances["banto-p1"]!.devices["banto-pub-4000"], "ほかの公開の道まで外した");
+    // 閉じるとき：その Project の公開の道を全部外す（ほかの装置は残す）
+    await rt.releasePublishedPort("p1");
+    assert.ok(!Object.keys(state().instances["banto-p1"]!.devices).some((d) => d.startsWith("banto-pub-")), "閉じたのに公開の道が残っている");
+    assert.ok(state().instances["banto-p1"]!.devices["banto-relay"], "公開でない道まで外した");
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");
