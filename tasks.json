@@ -10791,7 +10791,7 @@
       "number": 450,
       "kind": "task",
       "title": "アプリの更新（electron-updater・GitHub の Releases）に、画面の「更新」を繋ぐ",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-2-daily",
       "dependsOn": [],
       "milestone": null,
@@ -10803,7 +10803,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:31.460Z",
-      "updatedAt": "2026-10-20T08:57:31.460Z",
+      "updatedAt": "2026-10-20T08:59:19.649Z",
       "closedAt": null,
       "extra": {}
     },
