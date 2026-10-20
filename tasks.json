@@ -11117,7 +11117,7 @@
       "number": 460,
       "kind": "task",
       "title": "Project ごとの hugepages（limits.hugepages.2MB を全コンテナに、サーバの nr_hugepages を合計に）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "containers-virtualization",
       "dependsOn": [
         "runtime-allow-virtualization"
@@ -11127,7 +11127,7 @@
       "labels": [],
       "body": "仕様の 2. の2つ目。許した実行場所の全コンテナに limits.hugepages.2MB（設定の無いものは 0、作る・移してくるときも）。人が押したとき core が sudo -n で vm.nr_hugepages を合計に揃え /etc/sysctl.d/90-banto-hugepages.conf も書く、メモリの半分を越えたら断る、確保できた数を出す、使っている間は減らせない、閉じるときに外すか選ぶ、メモリの上限の計算から合計を引く。hugetlbfs のマウントは置かない（memfd）。\n\n実装（2026-10-20、GitHub の main）：Project の設定 container.hugepages2M、PUT /api/projects/<id>/container/hugepages {count}、409 hugepages-too-many・hugepages-in-use、メモリの上限から合計を引いて動いている Project の上限を引き直す。単体試験は通過。残り：ベアメタルでの確かめ（完了条件）、閉じるときの「外す／持ったまま」と再開で確保し直すのは #462 と移す側。小さな直しの候補：「使っているか」をコンテナの中の /sys/fs/cgroup/hugetlb.2MB.current から読んでいる——中の root が差し替えられるので、VM 側の cgroup（lxc.payload.user-<uid>_<名前>）から読むほうがよい。",
       "doneWhen": "ベアメタルで N 個を入れた Project の中で memfd の hugepages で qemu が動き、上限を越えると断られ、ほかの Project は 0 で取れない。",
-      "resolution": null,
+      "resolution": "2026-10-21 ベアメタルで確かめた：qemu-bmc で 64 にすると、サーバの nr_hugepages=64・sysctl.d に書かれ、qemu-bmc の cgroup の上限 128MiB、sakutei は 0。qemu-bmc の中で memfd の hugepages 128M で KVM の VM が起き（Free 64→0）、256M は Cannot allocate memory で断られた。",
       "refs": [],
       "threads": [
         {
@@ -11136,8 +11136,8 @@
         }
       ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T10:38:07.587Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:03:25.459Z",
+      "closedAt": "2026-10-20T20:03:25.459Z",
       "extra": {}
     },
     {
