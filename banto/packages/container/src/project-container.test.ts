@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ContainerAddressUnavailable, ProjectContainers, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, parseResourceEvents, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, proxyDevice, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, parseResourceEvents, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -622,4 +622,103 @@ test("hugepages の上限：許した実行場所では設定の無いコンテ�
   f.inst()!.config["limits.hugepages.2MB"] = "0";
   await c.ensure(spec);
   assert.equal(f.inst()!.config["limits.hugepages.2MB"], "0");
+});
+
+// ── proxy device の道（#369、v4-security.md §1「道」）────────────────────────
+
+test("proxy device：どれにも security.uid/gid。番号は向きで決まる（繋ぐ側の番号に落とし、UNIX の待ち受けは使う側の持ち物）", () => {
+  const ids = { uid: 1001, gid: 1002, inside: { uid: 1000, gid: 1000 } };
+  // 中で待ち受けて VM へ繋ぐ：繋ぐのは VM（外の番号）
+  assert.deepEqual(proxyDevice({ bind: "instance", listen: "tcp:127.0.0.1:29839", connect: "unix:/run/user/1001/banto/p-x/t.sock" }, ids), {
+    type: "proxy",
+    bind: "instance",
+    listen: "tcp:127.0.0.1:29839",
+    connect: "unix:/run/user/1001/banto/p-x/t.sock",
+    "security.uid": "1001",
+    "security.gid": "1002",
+  });
+  // 中の UNIX の待ち受け（鍵の窓口）：持ち主は中の番号・0600
+  assert.deepEqual(proxyDevice({ bind: "instance", listen: "unix:/run/banto-a-1.sock", connect: "unix:/run/user/1001/banto/p-x/a-1.sock" }, ids), {
+    type: "proxy",
+    bind: "instance",
+    listen: "unix:/run/banto-a-1.sock",
+    connect: "unix:/run/user/1001/banto/p-x/a-1.sock",
+    "security.uid": "1001",
+    "security.gid": "1002",
+    uid: "1000",
+    gid: "1000",
+    mode: "0600",
+  });
+  // VM で待ち受けて中へ繋ぐ（向きが逆）：繋ぐのは中（中の番号）、VM の待ち受けは VM のユーザー（sshd）が使う
+  assert.deepEqual(proxyDevice({ bind: "host", listen: "unix:/vm/s/st-1", connect: "unix:/vm/modules/x/s/stream.sock" }, ids), {
+    type: "proxy",
+    bind: "host",
+    listen: "unix:/vm/s/st-1",
+    connect: "unix:/vm/modules/x/s/stream.sock",
+    "security.uid": "1000",
+    "security.gid": "1000",
+    uid: "1001",
+    gid: "1002",
+    mode: "0600",
+  });
+  // 中の番号は決め打ちしない：宣言の inside から取る（無ければ外と同じ）
+  assert.equal(proxyDevice({ bind: "host", listen: "tcp:0.0.0.0:20000", connect: "tcp:127.0.0.1:3000" }, { uid: 1001, gid: 1002, inside: { uid: 1001, gid: 1002 } })["security.uid"], "1001");
+  assert.equal(proxyDevice({ bind: "host", listen: "tcp:0.0.0.0:20000", connect: "tcp:127.0.0.1:3000" }, { uid: 1500, gid: 1500 })["security.uid"], "1500");
+});
+
+test("ずっと張っておく道は、用意するたびに宣言に合わせる——無ければ足し、同じなら触らず、違えば外して付け直す", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    uid: 1001,
+    gid: 1002,
+    inside: { uid: 1000, gid: 1000 },
+    proxies: { "banto-relay": { bind: "instance" as const, listen: "tcp:127.0.0.1:29839", connect: "unix:/run/user/1001/banto/p-p1/t.sock" } },
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  await c.ensure(spec);
+  assert.deepEqual(f.inst()!.devices["banto-relay"], {
+    type: "proxy",
+    bind: "instance",
+    listen: "tcp:127.0.0.1:29839",
+    connect: "unix:/run/user/1001/banto/p-p1/t.sock",
+    "security.uid": "1001",
+    "security.gid": "1002",
+  });
+  f.calls.length = 0;
+  await c.ensure(spec);
+  assert.ok(!f.calls.some((a) => patchedDevices(a) || (a[0] === "config" && a[1] === "device")), `同じ道を付け直した：${JSON.stringify(f.calls)}`);
+  // 先が変わった（試験だけの形）：外して付け直す
+  await c.ensure({ ...spec, proxies: { "banto-relay": { ...spec.proxies["banto-relay"], connect: "unix:/run/user/1001/banto/p-p1/u.sock" } } });
+  assert.ok(f.calls.some((a) => a.join(" ") === "config device remove banto-p1 banto-relay"), "古い道を外していない");
+  assert.equal(f.inst()!.devices["banto-relay"]?.["connect"], "unix:/run/user/1001/banto/p-p1/u.sock");
+  assert.equal(f.inst()!.status, "Running", "道を替えるのにコンテナを止めた");
+});
+
+test("あとから足す道（鍵の窓口）：同じなら触らず、外すときは名前で選んで外す", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  await c.ensure({ ...SPEC, uid: 1001, gid: 1002, inside: { uid: 1000, gid: 1000 } });
+  const ids = { uid: 1001, gid: 1002, inside: { uid: 1000, gid: 1000 } };
+  const route = { bind: "instance" as const, listen: "unix:/run/banto-a-1.sock", connect: "unix:/run/user/1001/banto/p-p1/a-1.sock" };
+  await c.ensureProxy("banto-p1", "banto-a-1", route, ids);
+  await c.ensureProxy("banto-p1", "banto-a-2", { ...route, listen: "unix:/run/banto-a-2.sock", connect: "unix:/run/user/1001/banto/p-p1/a-2.sock" }, ids);
+  assert.equal(f.inst()!.devices["banto-a-1"]?.["uid"], "1000");
+  f.calls.length = 0;
+  await c.ensureProxy("banto-p1", "banto-a-1", route, ids);
+  assert.ok(!f.calls.some((a) => patchedDevices(a) || (a[0] === "config" && a[1] === "device")), "同じ道を付け直した");
+  const gone = await c.removeDevices("banto-p1", (d) => d.startsWith("banto-a-"));
+  assert.deepEqual(gone.sort(), ["banto-a-1", "banto-a-2"]);
+  assert.ok(!Object.keys(f.inst()!.devices).some((d) => d.startsWith("banto-a-")));
+  assert.ok(f.inst()!.devices["project"], "ほかの装置まで外した");
+  // コンテナが無ければ何もしない
+  assert.deepEqual(await new ProjectContainers(statefulIncus().run).removeDevices("banto-none", () => true), []);
+  await assert.rejects(new ProjectContainers(statefulIncus().run).ensureProxy("banto-none", "x", route, ids), /ありません/);
 });

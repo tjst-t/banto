@@ -11,11 +11,13 @@ import { join } from "node:path";
 import { idmapFor } from "@banto/container";
 import {
   INSIDE_IDS,
+  INSIDE_RELAY_PORT,
   containersRootProblem,
   createOnlyDirScript,
   insideCommand,
   insideShellHomeCommand,
   parseIpAddr,
+  vmProjectRunDir,
 } from "./remote-containers.js";
 import { RemoteSshRuntime } from "./remote-ssh.js";
 
@@ -183,6 +185,7 @@ out("");
 
 /** 偽の ssh：`--` の後の宛先を飛ばし、向こうのコマンドをこの機械の sh で流す。流した台本を $FAKE_SSH_LOG に残す */
 const FAKE_SSH = String.raw`#!/bin/sh
+case " $* " in *" -O "*) printf '%s\n' "$*" >> '__OLOG__' ;; esac
 while [ "$1" != "--" ]; do shift; done
 shift; shift
 if [ "$1" = "sh -s" ]; then
@@ -204,7 +207,10 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   const incusLog = join(root, "incus.log");
   const sshLog = join(root, "ssh.log");
   writeFileSync(join(bin, "incus"), FAKE_INCUS.replace("__STATE__", join(root, "incus.json")).replace("__ILOG__", incusLog));
-  writeFileSync(join(bin, "ssh"), FAKE_SSH.replaceAll("__SLOG__", sshLog));
+  const controlLog = join(root, "control.log");
+  writeFileSync(join(bin, "ssh"), FAKE_SSH.replaceAll("__SLOG__", sshLog).replaceAll("__OLOG__", controlLog));
+  // VM だけの場所（本物は /run/user/<uid>）。ソケットのパスの上限に収まるよう、短い /tmp の下に作る
+  const runDir = mkdtempSync("/tmp/banto-run-");
   chmodSync(join(bin, "incus"), 0o755);
   chmodSync(join(bin, "ssh"), 0o755);
   // 中の node＝この機械の node（Shell のホームの古いものを消すのに使う）
@@ -212,24 +218,28 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   symlinkSync(process.execPath, join(codeDir, "bin", "node"));
   writeFileSync(incusLog, "");
   writeFileSync(sshLog, "");
+  writeFileSync(controlLog, "");
   const savedPath = process.env.PATH;
   process.env.PATH = `${bin}:${process.env.PATH}`;
 
   const masters: ChildProcess[] = [];
   const servers: Server[] = [];
+  /** 本物の `connect` は待ち受けを作ってから繋ぐ——偽の接続は、最後に待ち受けを作った Project のものにする */
+  let connecting: string | undefined;
   const conn = () => {
     const master = spawn("sleep", ["60"], { stdio: "ignore" });
     masters.push(master);
     const exited = new Promise<void>((resolve) => master.once("close", () => resolve()));
     const c: Record<string, unknown> = {
       runtimeName: "vm",
+      projectId: connecting,
       runtime: { name: "vm", host: "vm.example", port: 22, user: "u", mode: "containers" },
       controlPath: join(root, "cm"),
       knownHostsFile: "/dev/null",
       master,
       alive: true,
       exited,
-      remotePort: 4100,
+      remotePort: undefined,
       base,
       codeDir,
       checks: [],
@@ -244,7 +254,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     monorepoRoot: join(root, "repo"),
     runtimes: { withConnection: async () => conn() } as never,
     remoteNameOf: (id) => (id.startsWith("p") ? "vm" : undefined),
-    createRelayListener: () => {
+    createRelayListener: (_name, projectId) => {
+      connecting = projectId;
       const s = createServer();
       servers.push(s);
       return s;
@@ -252,6 +263,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     notify: async () => undefined,
     log: () => undefined,
     shellHomeSource: join(root, "nohome"),
+    vmRunDir: () => runDir,
   });
   const state = () =>
     JSON.parse(readFileSync(join(root, "incus.json"), "utf8")) as {
@@ -279,6 +291,34 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.deepEqual(cb.devices["project"], { type: "disk", source: rootB, path: rootB });
     assert.equal(a.nodePath, `${codeDir}/bin/node`);
     assert.equal(a.moduleEnv, undefined, "中では sudo できる——BANTO_NO_SUDO を渡している");
+
+    // 中から banto へ（#369）：住所はコンテナの中の 127.0.0.1 の決めたポート。proxy device がその Project のトンネルの
+    // ソケット（VM だけの場所）へ繋ぐ。VM の 127.0.0.1 のトンネルの番号は中からは届かないので使わない
+    assert.equal(a.bantoOrigin, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
+    assert.equal(b.bantoOrigin, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
+    const tunnelA = `${runDir}/banto/p-p1/t.sock`;
+    const tunnelB = `${runDir}/banto/p-p2/t.sock`;
+    assert.deepEqual(ca.devices["banto-relay"], {
+      type: "proxy",
+      bind: "instance",
+      listen: `tcp:127.0.0.1:${INSIDE_RELAY_PORT}`,
+      connect: `unix:${tunnelA}`,
+      // 繋ぐのは VM の側——VM のユーザーの番号に落とす（root で繋がない、条件4）
+      "security.uid": String(uid),
+      "security.gid": String(gid),
+    });
+    assert.equal(cb.devices["banto-relay"]?.["connect"], `unix:${tunnelB}`, "p2 の道が p1 のトンネルへ繋いでいる");
+    // トンネルは Project ごとの決まったパスの UNIX ソケット（-R <ソケット>:127.0.0.1:<その Project の待ち受け>）。置き場は VM の
+    // ユーザーだけのもの
+    const controls = () => readFileSync(controlLog, "utf8").trim().split("\n").filter(Boolean);
+    const tunnels = controls().filter((l) => / -O forward -R /.test(l));
+    const portOf = (sock: string) => Number(new RegExp(`-R ${sock}:127\\.0\\.0\\.1:(\\d+) `).exec(tunnels.join("\n"))?.[1]);
+    const portA = portOf(tunnelA);
+    const portB = portOf(tunnelB);
+    assert.ok(portA > 0 && portB > 0, `トンネルを張っていない：${tunnels.join("\n")}`);
+    assert.notEqual(portA, portB, "2つの Project のトンネルが同じ待ち受けに繋がっている");
+    assert.deepEqual(servers.map((s) => (s.address() as { port: number }).port).sort(), [portA, portB].sort());
+    for (const d of [`${runDir}/banto/p-p1`, `${runDir}/banto/p-p2`, `${runDir}/banto`]) assert.equal(statSync(d).mode & 0o777, 0o700, d);
 
     // Module の置き場：その Project のコンテナにだけ見せる
     const modA = join(dataDir, "modules", "shell-p1");
@@ -323,8 +363,38 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.ok(remote.endsWith(`'--' '${codeDir}/bin/node' '${codeDir}/banto-launcher.mjs' 'banto-mod-shell-p1'`), remote);
     assert.ok(!remote.includes("SECRET"), "env がコマンド行に載った");
     assert.throws(() => a.processCommand({ name: "x", command: "x", args: [], cwd: "/", env: {}, asRoot: true }), /root/);
-    // 鍵の窓口・流れの口はまだ繋がない（#369）
-    await assert.rejects(a.socketPathInside!(join(dataDir, "modules", "shell-p1", "s", "agent.sock")), /まだ見せられません/);
+    // 鍵の窓口（#369）：VM だけの場所の Project ごとのソケットへ転送し、proxy device で中の /run に出す
+    const agentHost = join(dataDir, "s", "m-shell", "agent.sock");
+    mkdirSync(join(dataDir, "s", "m-shell"), { recursive: true });
+    writeFileSync(agentHost, "");
+    const agentInside = await a.socketPathInside!(agentHost);
+    assert.match(agentInside, /^\/run\/banto-a-[0-9a-f]{12}\.sock$/);
+    const mark = /banto-a-([0-9a-f]{12})/.exec(agentInside)![1]!;
+    const agentVm = `${runDir}/banto/p-p1/a-${mark}.sock`;
+    assert.ok(controls().some((l) => l.includes(`-O forward -R ${agentVm}:${agentHost} `)), `鍵の窓口を VM だけの場所へ転送していない：${controls().join("\n")}`);
+    assert.deepEqual(state().instances["banto-p1"]!.devices[`banto-a-${mark}`], {
+      type: "proxy",
+      bind: "instance",
+      listen: `unix:${agentInside}`,
+      connect: `unix:${agentVm}`,
+      "security.uid": String(uid),
+      "security.gid": String(gid),
+      // 中の待ち受けは中のユーザーのもの（中の番号は宣言から——決め打ちしない）
+      uid: String(INSIDE_IDS.uid),
+      gid: String(INSIDE_IDS.gid),
+      mode: "0600",
+    });
+    assert.ok(!Object.keys(state().instances["banto-p2"]!.devices).some((d) => d.startsWith("banto-a-")), "p1 の鍵の窓口が p2 のコンテナに見える");
+    await assert.rejects(a.socketPathInside!("/etc/agent.sock"), /banto の置き場の外/);
+    // host の窓口が消えたら（Vault が閉じた）、転送と装置を外す
+    rmSync(agentHost);
+    const until = Date.now() + 5_000;
+    while (state().instances["banto-p1"]!.devices[`banto-a-${mark}`] && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    assert.equal(state().instances["banto-p1"]!.devices[`banto-a-${mark}`], undefined, "窓口が閉じたのに道を外していない");
+    assert.ok(controls().some((l) => l.includes(`-O cancel -R ${agentVm}:${agentHost} `)), "窓口が閉じたのに転送を外していない");
+    // 外すのは鍵の窓口だけ——トンネル（host の側は TCP の待ち受けでファイルが無い）を、窓口が消えたものとして外さない
+    assert.ok(!controls().some((l) => l.includes(`-O cancel -R ${tunnelA}:`)), "鍵の窓口の見張りがトンネルを外した");
+    // 流れの口はまだ繋がない
     await assert.rejects(rt.streamSocketPath("p1", "shell-p1", "s/stream.sock"), /まだ繋げません/);
 
     // 取ってきた配布物：読み取り専用で見せ、**版が変わってフォルダごと差し替えたら付け直す**（付けたままだと中は消された
@@ -373,11 +443,30 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     writeFileSync(incusLog, "");
     await rt.prepare({ id: "p1", root: rootA, nesting: false });
     assert.equal(readFileSync(incusLog, "utf8"), "", "用意したコンテナをもう一度確かめに行った");
+
+    // 接続を手放して繋ぎ直す：前の接続の鍵の窓口の道は外し（窓口の転送は接続と一緒に消えた）、トンネルは同じパスに張り直す
+    // ——中から banto への道は変えない
+    writeFileSync(agentHost, "");
+    await a.socketPathInside!(agentHost);
+    assert.ok(state().instances["banto-p1"]!.devices[`banto-a-${mark}`]);
+    await rt.release("p1");
+    writeFileSync(controlLog, "");
+    const a2 = await rt.prepare({ id: "p1", root: rootA, nesting: false });
+    assert.equal(state().instances["banto-p1"]!.devices[`banto-a-${mark}`], undefined, "前の接続の鍵の窓口の道が残っている");
+    assert.equal(state().instances["banto-p1"]!.devices["banto-relay"]?.["connect"], `unix:${tunnelA}`);
+    assert.ok(controls().some((l) => l.includes(`-O forward -R ${tunnelA}:127.0.0.1:`)), "繋ぎ直したのにトンネルを張っていない");
+    assert.equal(a2.bantoOrigin, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");
     for (const s of servers) s.close();
     process.env.PATH = savedPath;
     rmSync(root, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
   }
+});
+
+test("VM だけの場所：Project の id はパスに使える字だけ（でなければ断る）", () => {
+  assert.equal(vmProjectRunDir("/run/user/1001", "0b6e8c2a-1f3d-4e5a-9b7c-123456789abc"), "/run/user/1001/banto/p-0b6e8c2a-1f3d-4e5a-9b7c-123456789abc");
+  for (const bad of ["../x", "a/b", "", "-x", "a b"]) assert.throws(() => vmProjectRunDir("/run/user/1001", bad), /作れません/, bad);
 });

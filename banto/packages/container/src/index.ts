@@ -38,6 +38,8 @@ export {
   DEFAULT_CONTAINER_PROCESSES,
   type ContainerLimits,
   type ProjectContainerSpec,
+  type ProxyRoute,
+  proxyDevice,
   type ContainerTimeouts,
   KVM_DEVICES,
   HUGEPAGES_LIMIT_KEY,

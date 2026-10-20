@@ -989,9 +989,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     単位を止めるのも中のユーザーの systemd。中では sudo できるので `BANTO_NO_SUDO` は渡さない
   - 根の重なり：作る・再開するとき、VM で home と置き場の根を正規化して、根が home そのもの・home の外・置き場の根・同じ実行場所の
     ほかの Project の根（閉じたもの・移してくる途中のものも）と重なれば 409（`code: "root-overlap"`）
-  - **まだ繋がないもの**（#369 まで）：中から banto への道（Module の住所は VM の 127.0.0.1 のトンネルの番号のまま——中からは届かない）・
-    鍵の窓口（`socketPathInside` は断る）・流れの口（`streamSocketPath` は断る。VM のユーザーで中の置き場の symlink を辿ることになる
-    ため）・公開。**`containers` との間で移すのも断る**（移す手順は向こうで VM のユーザーとして展開・rsync・`git worktree repair` を
+  - 中から banto への道・鍵の窓口は #369 で入った（下の「道」の「実装済み」）。**まだ繋がないもの**：流れの口（`streamSocketPath` は
+    断る。VM のユーザーで中の置き場の symlink を辿ることになるため）・公開。**`containers` との間で移すのも断る**（移す手順は向こうで VM のユーザーとして展開・rsync・`git worktree repair` を
     するので、条件3を満たす形にするまで）
 - **VM は banto 専用**（Fable の A5）：`containers` の VM にはほかのユーザー・サービスを置かない（中の root は U の持ち物に setuid を
   付けられ、ほかの誰かが動かすと U＝sudo できるユーザーになる）。Project のフォルダの置き場を `nosuid` でマウントできるかは任意で測る。
@@ -1013,6 +1012,23 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     窓口ができたときに足し、閉じたら外す（今の `-R` の張り外しと同じ時）
   - 流れの口（**向きが逆**——Module が中で待ち受け、host が繋ぐ。Fable の B3）：`bind=host listen=unix:<VM だけの場所> connect=unix:<中のパス>`。
     `connect` は中で辿られるので、仕込まれても中の権限でしか繋がらない
+  - **実装済み（2026-10-20、Backlog #369）——中から banto へ・鍵の窓口**（`runtime/remote-ssh.ts`・`remote-containers.ts`、
+    `ProjectContainers` の `proxies`・`ensureProxy`・`proxyDevice`）：
+    - トンネル：`containers` の接続は張るときに `-R 0:…` を付けず、コンテナを用意するときに（接続ごとに1回）VM だけの場所
+      `/run/user/<U>/banto/p-<Project id>/`（途中のフォルダも 0700）を作って古い `t.sock` を消し、`-O forward -R <そこ>/t.sock:127.0.0.1:<待ち受け>`
+      で張る。Project の id は core が作る UUID で、パスに使える字だけでなければ断る
+    - 中から banto へ：装置 `banto-relay`（`bind=instance listen=tcp:127.0.0.1:29839 connect=unix:<t.sock>`）をコンテナの宣言に入れ、
+      用意するたびに合わせる（違えば外して付け直す）。中継と Claude のログインの中継の住所（`bantoOrigin`）は `http://127.0.0.1:29839`
+      ——ポートは全コンテナで同じ（それぞれ自分のネットワーク名前空間。中のサービスがこの番号で待ち受けるとぶつかる）
+    - 鍵の窓口：host の窓口を `-R` で `/run/user/<U>/banto/p-<Project id>/a-<印>.sock` へ転送し、装置 `banto-a-<印>`
+      （`bind=instance listen=unix:/run/banto-a-<印>.sock connect=unix:<そこ>`）で中に出す。印は host の窓口のパスの hash（Module から来た
+      文字列は使わない）。**中のパスは `/run/banto/…` でなく `/run` の直下**——forkproxy は待ち受けの親のフォルダを作らず、コンテナを
+      起こし直すと `/run` は空になるので、残った装置が起こすときに待ち受けられない。host の窓口が消えたら転送と装置を外し、接続を
+      張り直したら（最初にコンテナを用意するときに）前の接続の `banto-a-*` を外す（転送は接続と一緒に消えている）
+    - **`security.uid/gid` の番号は向きで決まる**：forkproxy は繋ぐ側の名前空間で `security.uid/gid` に落とし、待ち受ける側の名前空間で
+      UNIX ソケットの持ち主（`uid`/`gid`/`mode`）を付ける（Incus の `cmd/incusd/main_forkproxy.go`——どちらもその側の user namespace に
+      入ってから）。`bind=instance` は `security.uid/gid`＝VM のユーザー（U/G）・待ち受けの持ち主＝中の番号、`bind=host` はその逆。
+      中の番号はコンテナの宣言（`ProjectContainerSpec.inside`）から取り、決め打ちしない。UNIX の待ち受けは `mode=0600`
   - 公開：Publish のたびに VM のポートを選んで `bind=host` の device を足す。選ぶときは止まっているものも含め全コンテナの device に
     書かれたポートを避ける。**取り消し・Service を消す・移す・閉じるときだけ外し、眠らせても外さない**（止まったコンテナの device は
     待ち受けない。外すと眠っている間にほかの Project に番号を取られる、Fable の B4）。同じ VM の Project が同じ Service のポートで
