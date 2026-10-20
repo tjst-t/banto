@@ -10938,6 +10938,30 @@
       "updatedAt": "2026-10-20T08:59:46.570Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "containers-virtualization",
+      "number": 456,
+      "kind": "story",
+      "title": "containers で仮想化の実験——/dev/kvm・hugepages・特権を Project ごとに",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime",
+        "container"
+      ],
+      "body": "同じサーバ（containers の実行場所）に置いた複数の Project が、それぞれ KVM の VM・containerlab 等の仮想化の実験をできるようにする（決定・2026-10-20、ユーザー。閉じ込めが弱まるのは承知）。\n\n仕様：docs/specs/v4-security.md §1「`containers` で仮想化の実験——/dev/kvm と特権」。実測：docs/notes/2026-10-20-containers-virtualization.md（ベアメタル 10.10.254.50）。\n\n形：実行場所の「仮想化の実験を許す」（区画に unix-char、特権は最初に特権が押されたときだけ、lowlevel は開けない）→ Project ごとに「/dev/kvm を見せる」（/dev/kvm・/dev/vhost-net、vhost_net を core が sudo で modprobe）・「hugepages の数」（limits.hugepages.2MB、全コンテナに書く、memfd で使う）・「特権コンテナにする」（逃げ道、強い警告と Project 名の入力）。すべて人だけが押せ、既定はオフ。前提として containers の中の番号を U にする（既存のコンテナは次に止めるとき1回だけ付け替え）。",
+      "doneWhen": "ベアメタルの containers の実行場所で、仮想化を許し、2つの Project のうち片方に /dev/kvm と hugepages を入れて中で KVM の VM（memfd の hugepages つき）と containerlab が動き、もう片方は hugepages が 0 で取れず /dev/kvm も見えないことを確かめた。特権を押した Project でも中の U で根に書け、ほかの Project の設定に「特権の Project があります」が出た。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T09:20:52.581Z",
+      "updatedAt": "2026-10-20T09:20:52.581Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
