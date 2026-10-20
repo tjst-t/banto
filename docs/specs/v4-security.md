@@ -1034,7 +1034,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458・#459。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
 **同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
@@ -1097,6 +1097,14 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      ブリッジ全部の通り方を変えるので既定に入れず、足すときに注意を出す。containerlab には Docker が要るので、オンにするとき
      「中で Docker を使う」（`container.nesting`＝`security.nesting`）が切れていれば一緒に入れるか聞く。装置は動いているコンテナに
      足せる（起こし直さない）。**特権コンテナにしても /dev/kvm は装置を足さないと見えない**（実測）——特権だけでは KVM は使えない
+     - **実装済み（2026-10-20、Backlog #459）**：Project の設定（runtime config の Project の層）の `container.kvm`（真偽）と
+       `container.kvmModules`（空白で区切った名前）。口は `PUT /api/projects/<id>/container/kvm`（`{ enabled, modules? }`。画面は #462）、
+       様子は `GET /api/projects/<id>/container` の `virtualization`。その実行場所が許していない・`containers` でなければ 409
+       （`code: "virtualization-not-allowed"`）、名前の形が違えば 400。オン：`sudo -n modprobe vhost_net`・`modprobe <名前>` を1つずつ →
+       `banto.conf` を書き直す → 設定に書く → 装置（`kvm`・`vhost-net`）を足す。オフ：装置を外す → 書き直す → 設定に書く（名前の
+       一覧は残す）。和に入るのは /dev/kvm を見せている Project の `vhost_net`＋名前だけ。`br_netfilter` は返事の `warnings` に
+       注意。`nesting` は返すだけ。コンテナを用意するたび、許した実行場所では設定どおりに付け、許していなければ外す
+       （`ProjectContainerSpec.virtualization`、`runtime/containers-virt.ts`）。**閉じたまま設定を消す・移すときの書き直しはまだ**（#462 と移す側）
    - **hugepages（2MiB の数、既定 0）**：Project ごとの上限は **hugetlb の cgroup（Incus の `limits.hugepages.2MB`。lowlevel は要らない）
      で縛る**——hugetlbfs の `size=` はそのマウント経由の確保しか縛らず、`mmap(MAP_HUGETLB)` や qemu の `memory-backend-memfd,hugetlb=on`
      はマウント無しでサーバ全体の確保から取れる（V2）。**仮想化を許した実行場所の全コンテナに書く**（設定の無い Project は 0、有る

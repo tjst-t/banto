@@ -10,7 +10,8 @@
 
 import { runRootCommand, AutoFixError, type RanCommand, type RootCommand } from "./host-autoprep.js";
 import { allowUnixCharCommand, projectNameOf, unsetUnixCharCommand, UNIX_CHAR_KEY, type VmAccess } from "./containers-host.js";
-import { RemoteRuntimeError, runtimeIdOf } from "./remote-runtimes.js";
+import { containerNameFor, DEFAULT_TIMEOUTS, ProjectContainers, type ContainerVirtualization } from "@banto/container";
+import { remoteNameOf, RemoteRuntimeError, runtimeIdOf } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 
 /** サーバの再起動でもモジュールを読み直すファイル（その実行場所の全 Project の名前の和。空なら消す） */
@@ -58,6 +59,64 @@ export function virtualizationInUse(v: ProjectVirtualization): string[] {
   return [...(v.kvm ? ["/dev/kvm を見せる"] : []), ...(v.hugepages > 0 ? [`hugepages ${v.hugepages} 個`] : [])];
 }
 
+/** runtime config の Project の層に書く（既定の値は書かずに外す） */
+export async function writeProjectVirtualization(
+  config: {
+    setProjectOverride(projectId: string, key: string, value: string | number | boolean): Promise<void>;
+    unsetProjectOverride(projectId: string, key: string): Promise<void>;
+  },
+  projectId: string,
+  v: ProjectVirtualization,
+): Promise<void> {
+  const put = (key: string, value: string | number | boolean | undefined) =>
+    value === undefined ? config.unsetProjectOverride(projectId, key) : config.setProjectOverride(projectId, key, value);
+  await put(VIRT_KEYS.kvm, v.kvm ? true : undefined);
+  await put(VIRT_KEYS.modules, v.modules.length ? v.modules.join(" ") : undefined);
+  await put(VIRT_KEYS.hugepages, v.hugepages > 0 ? v.hugepages : undefined);
+}
+
+/** /dev/kvm を見せるなら必ず読むモジュール（`/dev/vhost-net` を見せる前にサーバに無ければならない。測った4つの 1.） */
+export const ALWAYS_MODULES = ["vhost_net"] as const;
+/** サーバのブリッジ全部の通り方を変えるので、足すときに注意を出すモジュール */
+const BRIDGE_NETFILTER = "br_netfilter";
+
+/**
+ * **人が足したモジュールの名前を確かめて揃える**（`[a-z0-9_-]+`、`-` は `_` と同じ扱いで `_` に揃える。重ねない。`vhost_net` は
+ * 必ず読むので除く）。形が違えば断る——sudo の引数になる
+ */
+export function parseModuleNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new RemoteRuntimeError(400, "modules はモジュールの名前の配列で渡してください");
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== "string" || !/^[a-z0-9_-]{1,64}$/.test(x)) {
+      throw new RemoteRuntimeError(400, `モジュールの名前は英小文字・数字・_・- で 64 字までにしてください：${JSON.stringify(x).slice(0, 80)}`);
+    }
+    const name = x.replace(/-/g, "_");
+    if (!(ALWAYS_MODULES as readonly string[]).includes(name) && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * **`/etc/modules-load.d/banto.conf` の中身**：その実行場所の Project のうち /dev/kvm を見せるものの名前の和（閉じたものも）。
+ * 見せる Project が無ければ undefined（ファイルを消す）
+ */
+export function modulesLoadContent(settings: ProjectVirtualization[]): string | undefined {
+  const names = new Set<string>();
+  for (const v of settings) if (v.kvm) for (const m of [...ALWAYS_MODULES, ...v.modules]) names.add(m);
+  if (names.size === 0) return undefined;
+  return [
+    "# banto が書く（仮想化の実験。この実行場所の Project が /dev/kvm を見せるときに読むモジュール）。手で変えても次に書き直す",
+    ...[...names].sort(),
+    "",
+  ].join("\n");
+}
+
+/** VM のユーザーとして Incus を呼ぶ（仮想化の実験の装置を付け外す） */
+function containersOver(vm: VmAccess): ProjectContainers {
+  return new ProjectContainers((args, opts) => vm.run(["incus", ...args], opts), DEFAULT_TIMEOUTS);
+}
+
 export interface ContainersVirtualizationDeps {
   /** 実行場所の記録 */
   runtime(name: string): RemoteRuntime | undefined;
@@ -69,6 +128,12 @@ export interface ContainersVirtualizationDeps {
   projectsOn(runtimeId: string): Array<{ id: string; name: string }>;
   /** Project ごとの仮想化の設定（host 側の Project の設定） */
   settingsOf(projectId: string): ProjectVirtualization;
+  /** Project の設定に書く（人が押して、向こうを整えたあと） */
+  saveSettings(projectId: string, v: ProjectVirtualization): Promise<void>;
+  /** Project（無ければ undefined）。`runtime` は Project の記録の実行場所の印 */
+  project(projectId: string): { id: string; name: string; runtime?: string } | undefined;
+  /** その Project の「中で Docker を使う」（`container.nesting`）。変えない——画面が聞くのに返すだけ */
+  nestingOf(projectId: string): boolean;
 }
 
 /** 人に返す結果（画面に出す注意つき） */
@@ -117,6 +182,84 @@ export class ContainersVirtualization {
     });
     if (Boolean(r.virtualization) !== allowed) await this.deps.recordAllowed(runtimeName, allowed);
     return { warnings: [], ran };
+  }
+
+  /**
+   * **Project の「/dev/kvm を見せる」を変える**（人が押した。v4-security.md §1「`containers` で仮想化の実験」の 2.）。オン：
+   * `sudo -n modprobe vhost_net` と人が足したモジュールを読み、`/etc/modules-load.d/banto.conf` をその実行場所の全 Project（閉じた
+   * ものも）の名前の和で書き直し（`tee` に標準入力、空なら消す）、コンテナに /dev/kvm と /dev/vhost-net を足す（動いていても
+   * 起こし直さない）。オフ：装置を外してから書き直す（読み込んだモジュールは抜かない——ほかの Project が使っているかもしれない）。
+   * 「中で Docker を使う」は変えない（返すだけ——画面が一緒に入れるか聞く）。識別子は Project id だけを使う
+   */
+  async setKvm(projectId: string, input: { enabled: boolean; modules?: unknown }): Promise<VirtualizationResult & { kvm: boolean; modules: string[]; nesting: boolean }> {
+    const { runtimeName } = this.mustAllowedProject(projectId);
+    const cur = this.deps.settingsOf(projectId);
+    const modules = input.modules === undefined ? cur.modules : parseModuleNames(input.modules);
+    const next: ProjectVirtualization = { ...cur, kvm: input.enabled, modules };
+    const warnings: string[] = [];
+    if (next.kvm && modules.includes(BRIDGE_NETFILTER)) {
+      warnings.push(
+        `${BRIDGE_NETFILTER} はサーバのブリッジ全部の通り方を変えます（ブリッジを通るものが iptables・nftables を通るようになる）。` +
+          "同じサーバのほかの Project と、サーバそのもののネットワークにも効きます。外しても読み込んだままです",
+      );
+    }
+    const container = containerNameFor(projectId);
+    const ran: RanCommand[] = [];
+    await this.deps.withVm(runtimeName, async (vm) => {
+      const incus = containersOver(vm);
+      if (next.kvm) {
+        // 先に vhost_net を読む——/dev/vhost-net がサーバに無いと装置を足せない
+        for (const m of [...ALWAYS_MODULES, ...modules]) await root(vm, { args: ["modprobe", m] }, ran, `モジュール ${m} を読む`);
+      } else {
+        await incus.applyVirtualization(container, { kvm: false });
+      }
+      await this.rewriteModulesLoad(vm, runtimeName, projectId, next, ran);
+      await this.deps.saveSettings(projectId, next);
+      if (next.kvm) await incus.applyVirtualization(container, { kvm: true });
+    });
+    return { warnings, ran, kvm: next.kvm, modules, nesting: this.deps.nestingOf(projectId) };
+  }
+
+  /** その Project のコンテナに付ける設定（実行場所が許していなければ null——付いていれば外す） */
+  containerSpecOf(runtimeName: string, projectId: string): ContainerVirtualization | null {
+    if (!this.deps.runtime(runtimeName)?.virtualization) return null;
+    return { kvm: this.deps.settingsOf(projectId).kvm };
+  }
+
+  /** 画面に出す様子（その Project で使えるか・今の設定） */
+  describe(projectId: string): ProjectVirtualization & { available: boolean; reason?: string } {
+    const settings = this.deps.settingsOf(projectId);
+    try {
+      this.mustAllowedProject(projectId);
+      return { ...settings, available: true };
+    } catch (err) {
+      return { ...settings, available: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** modules-load.d のファイルを、その実行場所の全 Project（閉じたものも）の名前の和で書き直す。空なら消す */
+  private async rewriteModulesLoad(vm: VmAccess, runtimeName: string, projectId: string, next: ProjectVirtualization, ran: RanCommand[]): Promise<void> {
+    const all = this.deps.projectsOn(runtimeIdOf(runtimeName)).filter((p) => p.id !== projectId).map((p) => this.deps.settingsOf(p.id));
+    const content = modulesLoadContent([...all, next]);
+    if (content === undefined) await root(vm, { args: ["rm", "-f", MODULES_LOAD_FILE] }, ran, "再起動で読むモジュールの一覧を消す");
+    else await root(vm, { args: ["tee", MODULES_LOAD_FILE], input: async () => content, display: `sudo tee ${MODULES_LOAD_FILE}（${content.split("\n").filter((l) => l && !l.startsWith("#")).join("・")}）` }, ran, "再起動で読むモジュールの一覧を書く");
+  }
+
+  /** 仮想化の実験を許した `containers` の実行場所の Project か（でなければ断る） */
+  private mustAllowedProject(projectId: string): { runtimeName: string } {
+    const project = this.deps.project(projectId);
+    if (!project) throw new RemoteRuntimeError(404, "Project がありません");
+    const runtimeName = remoteNameOf(project.runtime);
+    const r = runtimeName ? this.deps.runtime(runtimeName) : undefined;
+    if (!runtimeName || !r || r.mode !== "containers") {
+      throw new RemoteRuntimeError(409, "仮想化の実験は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
+    }
+    if (!r.virtualization) {
+      throw new RemoteRuntimeError(409, `実行場所「${runtimeName}」は仮想化の実験を許していません——先に実行場所の設定で許してください`, {
+        code: "virtualization-not-allowed",
+      });
+    }
+    return { runtimeName };
   }
 
   private mustContainers(runtimeName: string): RemoteRuntime {

@@ -39,6 +39,9 @@ export {
   type ContainerLimits,
   type ProjectContainerSpec,
   type ContainerTimeouts,
+  KVM_DEVICES,
+  virtualizationDeviceChanges,
+  type ContainerVirtualization,
 } from "./project-container.js";
 export { toolsContainerId, dropSudo, missingPackages, freeBytes, installPackages, TOOLS_MIN_FREE_BYTES } from "./tools-container.js";
 export { ensureBaseImage, baseImageAlias, packHostNode, BASE_PACKAGES, UPSTREAM_IMAGE, type BaseImageOptions } from "./base-image.js";

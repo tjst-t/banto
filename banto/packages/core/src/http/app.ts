@@ -4423,6 +4423,8 @@ export function createApp(deps: AppDeps) {
           nesting: deps.runtimeConfig?.resolve(CONTAINER_NESTING_KEY, projectId) === true,
           container: (await deps.projectContainerStatus?.(projectId)) ?? null,
           limits: deps.containerLimits?.describe(projectId) ?? null,
+          // 仮想化の実験（containers の Project だけ。使えないなら理由つき）
+          virtualization: deps.containersVirtualization?.describe(projectId) ?? null,
         });
         return;
       }
@@ -4465,6 +4467,22 @@ export function createApp(deps: AppDeps) {
         }
         json(res, 200, deps.containerLimits.describe());
         return;
+      }
+      // **/dev/kvm を見せる**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 2.）。人の画面からだけ（AI の
+      // tool も Module からの中継も無い）。その実行場所が許していなければ断る。「中で Docker を使う」は変えない（返すだけ）
+      const containerKvmMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/kvm$/);
+      if (containerKvmMatch && req.method === "PUT") {
+        const projectId = containerKvmMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        const body = (await readJsonBody(req)) as { enabled?: unknown; modules?: unknown };
+        if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+        try {
+          return json(res, 200, await deps.containersVirtualization.setKvm(projectId, { enabled: body.enabled, modules: body.modules }));
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          throw err;
+        }
       }
       if (containerMatch && req.method === "PUT") {
         const projectId = containerMatch[1]!;

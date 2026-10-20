@@ -48,7 +48,7 @@ import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { patrolAllowedTools, type RestrictionFor } from "./relay/read-only.js";
 import { TurnEventBus } from "./http/turn-events.js";
-import { ContainersVirtualization, readProjectVirtualization } from "./runtime/containers-virt.js";
+import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtualization } from "./runtime/containers-virt.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
@@ -498,6 +498,9 @@ async function main(): Promise<void> {
     recordAllowed: (name, allowed) => remoteRuntimes.recordVirtualization(name, allowed),
     projectsOn: (rt) => remoteRuntimes.projectsOn(rt),
     settingsOf: (projectId) => readProjectVirtualization((key) => runtimeConfig.layerValue(key, projectId)),
+    saveSettings: (projectId, v) => writeProjectVirtualization(runtimeConfig, projectId, v),
+    project: (projectId) => projectThread.getProject(projectId),
+    nestingOf: (projectId) => runtimeConfig.resolve(CONTAINER_NESTING_KEY, projectId) === true,
   });
   /**
    * **実行場所の SSH 鍵が置き場の外にあれば、受信箱に実行場所ごとに1枚**（決定・2026-10-17、Backlog #375、
@@ -595,6 +598,7 @@ async function main(): Promise<void> {
     monorepoRoot,
     runtimes: remoteRuntimes,
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
+    containerVirtualization: (runtimeName, projectId) => containersVirtualization.containerSpecOf(runtimeName, projectId),
     createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },

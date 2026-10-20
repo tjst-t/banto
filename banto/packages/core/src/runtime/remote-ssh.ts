@@ -54,6 +54,7 @@ import {
   ProjectContainers,
   defaultContainerLimits,
   ensureBaseImage,
+  type ContainerVirtualization,
 } from "@banto/container";
 import {
   INSIDE_IDS,
@@ -129,6 +130,11 @@ export interface RemoteSshRuntimeOptions {
    * `<置き場>/agent-binaries/` のうちこれに無いものを消す。渡さなければ片づけない
    */
   agentBinaryDirNames?: () => ReadonlySet<string>;
+  /**
+   * **containers のコンテナに付ける仮想化の実験の設定**（追加・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」）。
+   * 実行場所が許していなければ null（付いていれば外す）。渡さなければ付けない
+   */
+  containerVirtualization?: (runtimeName: string, projectId: string) => ContainerVirtualization | null;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -224,7 +230,7 @@ interface Connection {
   /** containers：この接続の上で Incus を呼ぶ口（装置の書き換えを1本ずつ通すので、接続ごとに1つ） */
   incus?: ProjectContainers;
   /** containers：用意したコンテナ（根・入れ子が変われば用意し直す） */
-  container?: { root: string | undefined; nesting: boolean; ready: Promise<string> };
+  container?: { root: string | undefined; nesting: boolean; virtualization: string; ready: Promise<string> };
 }
 
 /**
@@ -1436,9 +1442,11 @@ export class RemoteSshRuntime {
    */
   private ensureProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
     const cur = conn.container;
-    if (cur && cur.root === place.root && cur.nesting === place.nesting) return cur.ready;
-    const ready = this.createProjectContainer(conn, place);
-    conn.container = { root: place.root, nesting: place.nesting, ready };
+    const virtualization = this.opts.containerVirtualization?.(conn.runtimeName, place.id);
+    const virtKey = JSON.stringify(virtualization ?? null);
+    if (cur && cur.root === place.root && cur.nesting === place.nesting && cur.virtualization === virtKey) return cur.ready;
+    const ready = this.createProjectContainer(conn, place, virtualization);
+    conn.container = { root: place.root, nesting: place.nesting, virtualization: virtKey, ready };
     // 失敗したら覚えない（次に使うときにやり直す）
     ready.catch(() => {
       if (conn.container?.ready === ready) delete conn.container;
@@ -1446,7 +1454,7 @@ export class RemoteSshRuntime {
     return ready;
   }
 
-  private async createProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
+  private async createProjectContainer(conn: Connection, place: RuntimePlace, virtualization: ContainerVirtualization | null | undefined): Promise<string> {
     if (!place.root) throw new Error(`別のサーバ「${conn.runtimeName}」の Project ${place.id} に根がありません`);
     if (place.tools) throw new Error("道具用の箱は別のサーバには置きません");
     const shell = this.vmShell(conn);
@@ -1471,6 +1479,7 @@ export class RemoteSshRuntime {
       inside: INSIDE_IDS,
       portIsolation: true,
       limits: defaultContainerLimits(await vmResources(shell)),
+      ...(virtualization !== undefined ? { virtualization } : {}),
     });
     return name;
   }

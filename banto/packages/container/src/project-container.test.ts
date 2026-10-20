@@ -399,6 +399,11 @@ function statefulIncus() {
       for (const kv of args.slice(3)) inst!.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
       return ok();
     }
+    if (args[0] === "config" && args[1] === "device" && args[2] === "remove") {
+      if (!inst!.devices[args[4]!]) return { code: 1, stdout: "", stderr: "Error: Device doesn't exist" };
+      delete inst!.devices[args[4]!];
+      return ok();
+    }
     if (args[0] === "start") {
       inst!.status = "Running";
       return ok();
@@ -537,4 +542,49 @@ test("付け直しを頼まれたら、同じ形で付いていても外して�
   const changes = calls.filter((a) => a[0] === "config" || patchedDevices(a)).map((a) => (patchedDevices(a) ? "add" : a.slice(0, 5).join(" ")));
   assert.deepEqual(changes, ["config device remove banto-x m-pkg", "add"]);
   assert.deepEqual(devices["m-pkg"], { type: "disk", source: "/p", path: "/p", readonly: "true" });
+});
+
+test("/dev/kvm を見せる：固定の2つ（/dev/kvm・/dev/vhost-net、mode=0666）を足し、動いているコンテナは起こし直さない。外すと消し、null でも消す", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    uid: 1001,
+    gid: 1001,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  // 作るときに付ける
+  await c.ensure({ ...spec, virtualization: { kvm: true } });
+  assert.deepEqual(f.inst()!.devices["kvm"], { type: "unix-char", path: "/dev/kvm", mode: "0666" });
+  assert.deepEqual(f.inst()!.devices["vhost-net"], { type: "unix-char", path: "/dev/vhost-net", mode: "0666" });
+  // 同じなら何もしない
+  f.calls.length = 0;
+  assert.equal(await c.applyVirtualization("banto-p1", { kvm: true }), true);
+  assert.ok(!f.calls.some((a) => a[0] === "config" || patchedDevices(a)), "同じなのに書き換えた");
+  // 外す：動いたまま装置だけ消す
+  await c.applyVirtualization("banto-p1", { kvm: false });
+  assert.equal(f.inst()!.devices["kvm"], undefined);
+  assert.equal(f.inst()!.devices["vhost-net"], undefined);
+  assert.equal(f.inst()!.status, "Running");
+  assert.ok(!f.calls.some((a) => a[0] === "stop"), "装置の付け外しで止めた");
+  // 形の違う同じ名前の装置（人の手で mode を変えた）は付け直す
+  await c.applyVirtualization("banto-p1", { kvm: true });
+  f.inst()!.devices["kvm"] = { type: "unix-char", path: "/dev/kvm" };
+  await c.applyVirtualization("banto-p1", { kvm: true });
+  assert.equal(f.inst()!.devices["kvm"]!["mode"], "0666");
+  // 実行場所が許していない（null）：付いていれば外す
+  await c.ensure({ ...spec, virtualization: null });
+  assert.equal(f.inst()!.devices["kvm"], undefined);
+  // この機械のコンテナ（undefined）は触らない
+  f.inst()!.devices["kvm"] = { type: "unix-char", path: "/dev/kvm", mode: "0666" };
+  await c.ensure(spec);
+  assert.ok(f.inst()!.devices["kvm"]);
+  // 無いコンテナには何もしない
+  assert.equal(await new ProjectContainers(statefulIncus().run).applyVirtualization("banto-none", { kvm: true }), false);
 });
