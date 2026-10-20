@@ -10699,7 +10699,7 @@
       "number": 447,
       "kind": "task",
       "title": "インストーラ（NSIS・人ごと）と GitHub Actions の Windows の組み立て・E2E を作る",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-electron-shell"
@@ -10713,7 +10713,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:59:03.703Z",
       "closedAt": null,
       "extra": {}
     },
