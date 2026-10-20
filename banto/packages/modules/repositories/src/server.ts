@@ -81,6 +81,8 @@ export interface RepositoriesServerDeps {
   /** 時計と待ち（試験で差し替える） */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** ブランチを送る口を処理している間、進み具合を送る間隔（ms。試験で縮める） */
+  progressIntervalMs?: number;
 }
 
 function adminTool(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) {
@@ -143,7 +145,28 @@ const PLACE_SCHEMA = {
   required: ["implementation", "name"],
 };
 
+/** 進み具合の知らせを送る口（MCP の要求の `extra` のうち要るもの） */
+interface ProgressExtra {
+  _meta?: { progressToken?: string | number };
+  sendNotification(n: { method: "notifications/progress"; params: { progressToken: string | number; progress: number; message?: string } }): Promise<void>;
+}
+
+const PROGRESS_INTERVAL_MS = 10_000;
+
 export function createRepositoriesServer(deps: RepositoriesServerDeps) {
+  /** 頼んだ側が進み具合を受けるなら、終わるまで一定の間隔で送る。返すのは止める関数 */
+  const heartbeat = (extra: ProgressExtra): (() => void) => {
+    const token = extra._meta?.progressToken;
+    if (token === undefined) return () => undefined;
+    let beats = 0;
+    const timer = setInterval(() => {
+      void extra
+        .sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++beats, message: "ブランチを運んでいます" } })
+        .catch(() => undefined);
+    }, deps.progressIntervalMs ?? PROGRESS_INTERVAL_MS);
+    timer.unref();
+    return () => clearInterval(timer);
+  };
   const store = new LedgerStore(deps.dataDir);
   const home = deps.home;
   const accounts = new GithubAccounts({
@@ -308,7 +331,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const name = request.params.name;
     const meta = request.params._meta as Record<string, unknown> | undefined;
@@ -334,18 +357,26 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         if (!deps.projects.callerProject) throw new Error("この Repositories は呼び出し元の Project を引く口を持っていません");
         const project = await deps.projects.callerProject(callIdOf(meta));
         if (project.id !== stamped) throw new Error(`呼び出しの刻印の Project（${stamped}）と、host の台帳の Project（${project.id}）が違います`);
-        if (name === "branch_target") {
-          if (!isRemote(project)) return json({ remote: false });
-          const d = await branchSync.remoteTarget(project, callIdOf(meta));
-          if (d.kind === "not-handled") return json({ remote: true, handled: false, reason: d.reason });
-          if (d.kind === "refused") return json({ remote: true, handled: true, ok: false, message: d.message });
-          return json({ remote: true, repository: repositoryLabel(d.at), account: d.login, pinned: d.pinned });
+        // **処理している間は進み具合を送る**（レビュー M3）——別のサーバの Project では bundle を遅い線で運ぶ。頼んだ側
+        // （Backlog → host の中継）は宛先の進み具合で待ちを数え直すので、送らないと 60 秒で切れ、Backlog が自分の git へ落ちる
+        // （こちらは送り続けている）。中の仕事にはそれぞれ上限がある（core の口は1回 5 分・git は何も言わないまま 5 分で切る）
+        const stopBeats = heartbeat(extra);
+        try {
+          if (name === "branch_target") {
+            if (!isRemote(project)) return json({ remote: false });
+            const d = await branchSync.remoteTarget(project, callIdOf(meta));
+            if (d.kind === "not-handled") return json({ remote: true, handled: false, reason: d.reason });
+            if (d.kind === "refused") return json({ remote: true, handled: true, ok: false, message: d.message });
+            return json({ remote: true, repository: repositoryLabel(d.at), account: d.login, pinned: d.pinned });
+          }
+          const claimed = {
+            ...(typeof args.repository === "string" ? { repository: args.repository } : {}),
+            ...(typeof args.account === "string" ? { account: args.account } : {}),
+          };
+          return json(await branchSync.sync(name === "push_branch" ? "push" : "fetch", str(args.branch, "branch"), project, callIdOf(meta), claimed));
+        } finally {
+          stopBeats();
         }
-        const claimed = {
-          ...(typeof args.repository === "string" ? { repository: args.repository } : {}),
-          ...(typeof args.account === "string" ? { account: args.account } : {}),
-        };
-        return json(await branchSync.sync(name === "push_branch" ? "push" : "fetch", str(args.branch, "branch"), project, callIdOf(meta), claimed));
       }
       if (!caller || !("admin" in caller)) throw new Error(`${name} は人の操作からだけ呼べます`);
       switch (name) {
