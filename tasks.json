@@ -11683,7 +11683,7 @@
       "number": 486,
       "kind": "task",
       "title": "サブエージェント：ACP の取りこぼしを拾う（tool_call_update の題・説明・触ったファイル、途中の発言、やること一覧）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "item-3",
       "dependsOn": [],
       "milestone": null,
@@ -11695,7 +11695,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-20T20:29:58.745Z",
+      "updatedAt": "2026-10-20T20:30:17.926Z",
       "closedAt": null,
       "extra": {}
     },
