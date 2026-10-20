@@ -251,10 +251,10 @@ test("画面：使い方の2択の保存（banto 全体・Project）と説明文
 
         await openApp(page, own.url);
         const meter = page.getByRole("button", { name: /^文脈使用量/ }).first();
-        const chip = page.getByTestId("claude-account-chip");
+        const chip = page.locator('[data-testid="claude-account-chip"]:visible');
         // まだ固定の無い会話（Fork）には何も足さない——隣の会話の host を出さない
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${forkId}`);
-        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(page.locator("textarea[placeholder*=\"に送る\"]:visible").first()).toBeVisible({ timeout: 30_000 });
         await expect(meter).toBeVisible();
         await page.waitForTimeout(1_500); // 最初の取り直し（時計の 0ms）が済むのを待ってから「無い」を見る
         await expect(chip).toHaveCount(0);
@@ -264,7 +264,7 @@ test("画面：使い方の2択の保存（banto 全体・Project）と説明文
 
         // base の画面：host（~/.claude・5時間 50%・週 —）
         await page.goto(`/p/${projectId}?bantoHost=${own.url}`);
-        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(page.locator("textarea[placeholder*=\"に送る\"]:visible").first()).toBeVisible({ timeout: 30_000 });
         await expect(chip.getByTestId("claude-account-chip-name")).toHaveText("~/.claude", { timeout: 15_000 });
         await expect(chip.getByTestId("claude-account-chip-usage")).toHaveText("50%/—");
         await chip.click();
@@ -272,7 +272,7 @@ test("画面：使い方の2択の保存（banto 全体・Project）と説明文
         await page.keyboard.press("Escape");
         // Fork の画面：B（b・5時間 25%・週 —）
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${forkId}`);
-        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(page.locator("textarea[placeholder*=\"に送る\"]:visible").first()).toBeVisible({ timeout: 30_000 });
         await expect(chip.getByTestId("claude-account-chip-name")).toHaveText("b", { timeout: 15_000 });
         await expect(chip.getByTestId("claude-account-chip-usage")).toHaveText("25%/—");
         await chip.click();
