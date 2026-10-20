@@ -10625,7 +10625,7 @@
       "number": 444,
       "kind": "task",
       "title": "Shell と Factory のコマンドを Windows では Git Bash で流す",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-kill-tree",
@@ -10640,7 +10640,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:47.267Z",
       "closedAt": null,
       "extra": {}
     },
