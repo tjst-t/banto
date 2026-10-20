@@ -616,6 +616,8 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
               group={keysGroup}
               hasKeys={identities.length > 0}
               taken={identities}
+              user={user.trim() || "banto"}
+              mode={mode}
               onCreated={(made) => {
                 setIdentities((cur) => [...new Set([...(cur ?? []), made])].sort());
                 setIdentity(made);
@@ -743,6 +745,12 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   );
 }
 
+/** 向こうで root で打つ下ごしらえの1行（runtime-setup.sh。公開鍵は単一引用で包む——公開鍵に「'」は入らない） */
+export function runtimeSetupCommand(publicKey: string, user: string, mode: RealRuntimeMode): string {
+  const opts = [`--pubkey '${publicKey.trim()}'`, ...(user !== "banto" ? [`--user '${user.replace(/'/g, "")}'`] : []), ...(mode !== "containers" ? [`--mode ${mode}`] : [])];
+  return `curl -fsSL https://banto.tjst-t.dev/runtime-setup.sh | sudo bash -s -- ${opts.join(" ")}`;
+}
+
 /**
  * **実行場所の鍵の置き場に新しい SSH 鍵を作る入口**（追加・2026-10-17、Backlog 375 番）。Vault の中で鍵ペアを作り（秘密鍵は
  * Vault の外に出ない）、公開鍵を出して「向こうの authorized_keys に足す」を案内する。作った鍵はそのまま選ばれる。
@@ -752,11 +760,15 @@ function NewRuntimeIdentity({
   group,
   hasKeys,
   taken,
+  user,
+  mode,
   onCreated,
 }: {
   group: string;
   hasKeys: boolean;
   taken: readonly string[];
+  user: string;
+  mode: RealRuntimeMode;
   onCreated: (name: string) => void;
 }) {
   const [open, setOpen] = useState(!hasKeys);
@@ -789,6 +801,16 @@ function NewRuntimeIdentity({
             data-testid="runtime-identity-new-public-key"
           >
             {made.publicKey}
+          </code>
+          <p className="text-ink-2">
+            新しいサーバなら、向こうで次を root で打つと、ユーザー {user} を作り、パスワード無しの sudo・この公開鍵・前提の道具
+            {mode === "containers" ? "・Incus" : ""} までまとめて整えます（下ごしらえのスクリプト）。
+          </p>
+          <code
+            className="rounded-sm bg-surface-2 px-2 py-1.5 font-mono break-all whitespace-pre-wrap text-ink-2 select-all"
+            data-testid="runtime-identity-new-setup-command"
+          >
+            {runtimeSetupCommand(made.publicKey, user, mode)}
           </code>
         </>
       ) : (

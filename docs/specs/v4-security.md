@@ -634,6 +634,18 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
     （登録）に限る、などを決める。(b) 登録・確かめ直しを裏で進め、実行場所の行に進み具合を出す形（コードの送り込みと同じ）——
     画面を閉じても結果が残る
 
+#### 実行場所の下ごしらえのスクリプト（決定・2026-10-20、ユーザー。実装・2026-10-20、`runtime-setup.sh`、手順 `docs/runbooks/runtime-setup.md`）
+
+**新しいサーバを実行場所にする前の root の要る下ごしらえを、install.sh と同じノリの1行にまとめる。** 向こうで
+`curl -fsSL https://banto.tjst-t.dev/runtime-setup.sh | sudo bash -s -- --pubkey "<公開鍵>" [--user banto] [--mode containers|machine]`
+（公開サイトの `/runtime-setup.sh` は GitHub の release の `runtime-setup.sh` へ 302）。banto 専用のユーザーを作り（パスワード無し）、
+`/etc/sudoers.d/banto-<ユーザー>` でパスワード無しの sudo を許し、公開鍵を authorized_keys に足し、前提の道具・sshd の
+`00-banto.conf`・linger を整え、`containers` なら Incus を Zabbly から入れて incus グループだけに入れる。値と手順は上の「足りないものは
+banto が入れる」と同じ（`ZABBLY_FPR`・`SSHD_CONF`・`SSHD_LINES` は写し）。区画の設定と置き場 banto は登録のときに banto が整える
+（スクリプトは持たない——同じことを2か所に書かない）。何度打っても壊れず、公開鍵は足すだけ。最後に登録の画面に入れる値
+（ホスト・ユーザー・ポート・host 鍵の指紋）を出す。画面は「新しい鍵を作る」で作った鍵の公開鍵の下に、その鍵を入れたこの1行を出す。
+パスワード無しの sudo を全部に許すのは、`containers` の準備・「足りないものは banto が入れる」が `sudo -n` を使うため（VM は banto 専用）。
+
 #### 向こうとの道——SSH の接続1本
 
 - **Project ごとに SSH の接続を1本**（多重化、`ControlMaster`）張り、その上に載せる：Module の標準入出力（Module ごとの

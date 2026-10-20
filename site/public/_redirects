@@ -1,3 +1,5 @@
 # Cloudflare Pages の転送。インストールの1行（curl -fsSL https://banto.tjst-t.dev/install.sh | bash）を
 # GitHub の release ブランチの最新の install.sh へ向ける（curl -L で辿る）。302 にして、キャッシュに古い行き先を残さない
 /install.sh https://raw.githubusercontent.com/tjst-t/banto/release/install.sh 302
+# 別のサーバを実行場所にする前の下ごしらえ（curl -fsSL https://banto.tjst-t.dev/runtime-setup.sh | sudo bash -s -- --pubkey "…"）
+/runtime-setup.sh https://raw.githubusercontent.com/tjst-t/banto/release/runtime-setup.sh 302
