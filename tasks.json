@@ -10146,7 +10146,7 @@
       "number": 421,
       "kind": "task",
       "title": "任務：start_mission・schedule_followup・finish_mission と起こし方",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "missions-patrols",
       "dependsOn": [],
       "milestone": null,
@@ -10158,7 +10158,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T05:40:15.320Z",
+      "updatedAt": "2026-10-20T05:43:51.956Z",
       "closedAt": null,
       "extra": {}
     },
