@@ -37,12 +37,16 @@ function setup(settings: Partial<FactorySettings> = {}) {
   const held: Array<{ replyId: string; body: unknown }> = [];
   /** 出した出来事（出口の箱の手前） */
   const emitted: EmittedEvent[] = [];
-  const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0 };
+  const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0, backlogMissing: 0 };
   const hand = (replyId: string, body: unknown) =>
     setTimeout(() => state.current!.receiveReply({ replyId, from: "subagent", title: "終わりました", text: JSON.stringify(body), final: true, lost: false }), 5);
   const relay = async (name: string, args: Record<string, unknown>): Promise<RelayResult> => {
     if (name === "relayListTargets") {
-      return { text: JSON.stringify([{ name: "subagent-p1", roles: ["subagent"] }, { name: "backlog-p1", roles: ["backlog"] }]), isError: false };
+      // Backlog の Module が起き直している・繋ぎ直している間（一覧は繋がっているものだけを返す）
+      const missing = state.backlogMissing > 0;
+      if (missing) state.backlogMissing--;
+      const listed = [{ name: "subagent-p1", roles: ["subagent"] }, ...(missing ? [] : [{ name: "backlog-p1", roles: ["backlog"] }])];
+      return { text: JSON.stringify(listed), isError: false };
     }
     if (name === "relayDeliverToThread") {
       // host が落ちて届かなかった知らせ
@@ -86,7 +90,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   };
   const open: Client[] = [];
   /** サーバを起こして繋ぐ（2本目からは「起こし直した」もの） */
-  const start = async (opts: { resumeAskWaitMs?: number; minuteMs?: number } = {}) => {
+  const start = async (opts: { resumeAskWaitMs?: number; minuteMs?: number; targetWaitMs?: number } = {}) => {
     const { server, factory } = createFactoryServer({ projectRoot: project, dataDir: data, relay, emitEvent: (e) => emitted.push(e), ...opts });
     state.current = factory;
     const [s, c] = InMemoryTransport.createLinkedPair();
@@ -363,6 +367,45 @@ test("取り込む直前のテストで止まった1件に answerFactory で「�
   } finally {
     await h.cleanup();
     rmSync(join(counter, ".."), { recursive: true, force: true });
+  }
+});
+
+test("起き直したあとのマージの段で Backlog の Module が一時的に一覧から消えていても、問い直して止まらずに取り込む（Backlog #477）", async () => {
+  const h = setup();
+  try {
+    const first = await h.start();
+    const { runId } = JSON.parse((await first.call("runFactory", { items: ["a"] }, runMeta)).text) as { runId: string };
+    await until(() => h.held.length === 1, "実装役に頼まない");
+
+    // Factory が起き直す（宛先の覚えは消える）。その間に Backlog の Module も起き直していて、一覧に3回続けて出てこない
+    h.state.holdImplementer = false;
+    h.state.backlogMissing = 3;
+    const second = await h.start({ targetWaitMs: 2_000 });
+    await second.call(RESUME_AFTER_RESTART_TOOL, ask("rt_run"));
+    release(h);
+    await until(() => ["done", "stopped"].includes(second.factory.get(runId)?.items[0]?.status ?? ""), "取り込みも止まりもしない");
+    const item = second.factory.get(runId)!.items[0]!;
+    assert.equal(item.status, "done", item.stopped?.reason);
+    assert.equal(h.state.backlogMissing, 0, "一覧を問い直していない");
+    assert.equal(existsSync(join(h.project, "done.txt")), true, "main に入っていない");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("Backlog の Module が待ちの上限を越えても一覧に無ければ、理由つきで断る（黙って先へ進まない）", async () => {
+  const h = setup();
+  try {
+    h.state.holdImplementer = false;
+    h.state.backlogMissing = 1_000;
+    const s = await h.start({ targetWaitMs: 300 });
+    // 始める前に項目を読む（getItem）ところで、待ったうえで理由つきで断る
+    const started = await s.call("runFactory", { items: ["a"] }, runMeta);
+    assert.equal(started.isError, true, started.text);
+    assert.match(started.text, /backlog の Module がありません.*問い直しても現れませんでした/);
+    assert.equal(h.state.implements, 0, "断ったのに実装役に頼んだ");
+  } finally {
+    await h.cleanup();
   }
 });
 
