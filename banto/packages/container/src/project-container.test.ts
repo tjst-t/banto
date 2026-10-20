@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ContainerAddressUnavailable, ProjectContainers, proxyDevice, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, parseResourceEvents, execInContainer, limitCeiling, idmapFor, instanceContainerId } from "./project-container.js";
+import { ContainerAddressUnavailable, ProjectContainers, proxyDevice, containerNameFor, defaultContainerLimits, effectiveLimitNumbers, parseResourceEvents, execInContainer, limitCeiling, idmapFor, instanceContainerId, KVM_UDEV_RULE_PATH } from "./project-container.js";
 import type { RunIncus } from "./incus.js";
 
 /** 偽の Incus の PATCH（装置の表に差分として混ぜる——本物と同じ、実測・2026-09-26） */
@@ -567,14 +567,21 @@ test("/dev/kvm を見せる：固定の2つ（/dev/kvm・/dev/vhost-net、mode=0
   await c.ensure({ ...spec, virtualization: { kvm: true, hugepagesBytes: 0, privileged: false } });
   assert.deepEqual(f.inst()!.devices["kvm"], { type: "unix-char", path: "/dev/kvm", mode: "0666" });
   assert.deepEqual(f.inst()!.devices["vhost-net"], { type: "unix-char", path: "/dev/vhost-net", mode: "0666" });
+  // 中の udev が root:kvm 0660 に戻さないよう、中の root で 0666 の決まりを置く（2026-10-20、qemu-bmc で KVM が見えなかった）
+  const kvmRule = (calls: string[][]) => calls.find((a) => a[0] === "exec" && a.includes("banto-kvm"));
+  assert.ok(kvmRule(f.calls), "作るときに /dev/kvm の決まりを置いていない");
+  assert.ok(kvmRule(f.calls)!.some((x) => x.includes(KVM_UDEV_RULE_PATH)));
+  assert.ok(kvmRule(f.calls)!.includes('KERNEL=="kvm", MODE="0666"'));
   // 同じなら何もしない
   f.calls.length = 0;
   assert.equal(await c.applyVirtualization("banto-p1", { kvm: true, hugepagesBytes: 0, privileged: false }), true);
   assert.ok(!f.calls.some((a) => a[0] === "config" || patchedDevices(a)), "同じなのに書き換えた");
+  assert.ok(kvmRule(f.calls), "動いているコンテナで /dev/kvm の決まりを確かめていない");
   // 外す：動いたまま装置だけ消す
   await c.applyVirtualization("banto-p1", { kvm: false, hugepagesBytes: 0, privileged: false });
   assert.equal(f.inst()!.devices["kvm"], undefined);
   assert.equal(f.inst()!.devices["vhost-net"], undefined);
+  assert.ok(f.calls.some((a) => a[0] === "exec" && a.some((x) => x === `rm -f ${KVM_UDEV_RULE_PATH}`)), "外したのに決まりを消していない");
   assert.equal(f.inst()!.status, "Running");
   assert.ok(!f.calls.some((a) => a[0] === "stop"), "装置の付け外しで止めた");
   // 形の違う同じ名前の装置（人の手で mode を変えた）は付け直す

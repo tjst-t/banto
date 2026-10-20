@@ -79,6 +79,14 @@ export interface ProjectContainerSpec {
 }
 
 /** コンテナに付ける仮想化（KVM）の設定 */
+/** 中の udev の決まり（/dev/kvm・/dev/vhost-net を 0666 に。`ensureKvmAccess`） */
+export const KVM_UDEV_RULE_PATH = "/etc/udev/rules.d/99-banto-kvm.rules";
+export const KVM_UDEV_RULE = [
+  "# banto：/dev/kvm を見せた Project では、中のユーザーが使えるように（udev の既定は root:kvm 0660）",
+  'KERNEL=="kvm", MODE="0666"',
+  'KERNEL=="vhost-net", MODE="0666"',
+];
+
 export interface ContainerVirtualization {
   /** `/dev/kvm` と `/dev/vhost-net` を unix-char で見せる（`mode=0666`。path は固定の2つ） */
   kvm: boolean;
@@ -729,6 +737,7 @@ export class ProjectContainers {
     await this.ensureNode(name, spec);
     if (spec.inside) await this.ensureUser(name, spec.inside);
     await this.ensureWorkSlices(name, insideIds(spec).uid, spec.limits);
+    if (spec.virtualization !== undefined) await this.ensureKvmAccess(name, spec.virtualization?.kvm === true);
     return { name, created, inside: insideIds(spec) };
   }
 
@@ -820,6 +829,23 @@ export class ProjectContainers {
     }
     return r.stdout.trim() === "1";
   }
+
+  /**
+   * **中のユーザーが `/dev/kvm` を使えるようにする**（追加・2026-10-20、ユーザー報告「qemu-bmc で KVM を有効にしたのに見えない」）。
+   * 装置は `mode=0666` で見せるが、中で qemu 等を入れて `kvm` グループができると、中の udev の既定の決まり
+   * （`50-udev-default.rules` の `KERNEL=="kvm", GROUP="kvm", MODE="0660"`）が起動のときに root:kvm 0660 に戻し、中のユーザーの
+   * Module（グループは user@ が起きたときのもの）から開けなくなった。中の root で `/etc/udev/rules.d/99-banto-kvm.rules` に 0666 の
+   * 決まりを置き（udev は名前の順に読み、後の MODE が勝つ）、いま見えているものも chmod する。見せないなら決まりを消す。
+   * 書けなくても用意は止めない（ログに残す）
+   */
+  async ensureKvmAccess(name: string, on: boolean): Promise<void> {
+    const script = on
+      ? `printf '%s\\n' "$@" > ${KVM_UDEV_RULE_PATH}\nfor d in /dev/kvm /dev/vhost-net; do [ -c "$d" ] && chmod 0666 "$d"; done; true`
+      : `rm -f ${KVM_UDEV_RULE_PATH}`;
+    const r = await this.run(["exec", name, "--", "/bin/sh", "-c", script, "banto-kvm", ...(on ? KVM_UDEV_RULE : [])], { timeoutMs: 30_000 });
+    if (r.code !== 0) console.warn(`[container] ${name} の /dev/kvm の権限を整えられませんでした: ${r.stderr.trim()}`);
+  }
+
 
   /**
    * **中にその番号のユーザーを作る**（無ければ）。起動役はユーザーの systemd（`/run/user/<uid>`）を使うので、番号だけで
@@ -1064,6 +1090,7 @@ export class ProjectContainers {
       const st = await this.state(name);
       if (!st) return false;
       await this.applyVirtualizationNow(name, st, v);
+      if (st.status === "Running") await this.ensureKvmAccess(name, v?.kvm === true);
       return true;
     });
   }
