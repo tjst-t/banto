@@ -10260,6 +10260,27 @@
       "updatedAt": "2026-10-20T07:53:27.457Z",
       "closedAt": "2026-10-20T07:53:27.457Z",
       "extra": {}
+    },
+    {
+      "id": "memory",
+      "number": 426,
+      "kind": "task",
+      "title": "Memory から外した「残りの確かめ」を片づける",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [],
+      "body": "## なぜ\n2026-10-20 に Project Memory を小さくしたとき（docs/notes/2026-10-20-memory-diet.md）、「入れた記録」の行に書いてあった残りの作業を、ここへ移した。\n\n## 残り\n- 試しの自動化3つ（auto-7fcf5523・auto-e65bad5a・auto-fcb9bf70、一時停止中）を remove_automation で消す（元 #44731）\n- 携帯の Drawer の高さの直しを Android の実機で確かめる（元 #52827）\n- 持ち主の記録が無い oauth-token の件数を数え、v4-modules.md §2.1 の 3. の「まだ数えていない」を置き換える（元 #53170・#57043）\n- ansible-nas の Base Thread（c04700af-a68e-4d91-871a-8a29de6e7e91）で、秘密をまとめて引く（27件）の承認カードが1枚か・Infisical の回数制限に当たらないかを確かめる（元 #52078）\n- 複数の Claude アカウント：上限のあと自動で続くのを本物で見る（元 #54119・#56062）\n- 均す：2つの会話が別のアカウントに固定されるのを本物で見る（元 #58680）\n- 会話と Canvas の境のつかみ方を本物のマウスで確かめる（元 #57729）",
+      "doneWhen": "上の7つが、それぞれ確かめた・片づけた・別の項目に移した、のどれかになっている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:17:50.088Z",
+      "updatedAt": "2026-10-20T08:17:50.088Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
