@@ -2945,8 +2945,14 @@ async function main(): Promise<void> {
     hostContainers: hostRuntime,
     hostActivity,
     disableServices: (projectId) => callServiceAdminTool(projectId, "disableAllServices", "disabled", "元の場所の Service を止めておけ"),
-    releaseModules: async (projectId) => {
-      await releaseProjectModules(projectId, { stopContainer: true });
+    releaseModules: async (projectId, opts) => {
+      await releaseProjectModules(projectId, { stopContainer: opts?.stopContainer ?? true });
+    },
+    // containers の移す先のコンテナ（v4-security.md §1「`containers` との間で移す」、#464）
+    containers: {
+      prepareTarget: (runtimeName, projectId, root, moduleDirs) =>
+        remoteSsh.prepareMoveTarget(runtimeName, { id: projectId, root, nesting: projectNesting(projectId) }, moduleDirs),
+      closeTarget: (runtimeName, projectId) => remoteSsh.closeMoveTarget(runtimeName, projectId),
     },
     revokeClaudeLogin: (projectId) => claudeLogin.revoke(projectId),
     deliver: async (threadId, title, text) => {

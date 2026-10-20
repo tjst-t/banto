@@ -66,7 +66,10 @@ import {
   RELAY_DEVICE,
   agentInsidePath,
   createOnlyDirScript,
+  inodePairsScript,
   insideCommand,
+  moduleDiskName,
+  parseInodePairs,
   insideShellHomeCommand,
   insideStopUnitCommand,
   vmIncus,
@@ -629,6 +632,12 @@ export class RemoteSshRuntime {
         stopError = new RuntimeStopError(`別のサーバ「${name}」のコンテナ ${containerNameFor(placeId)}`, err instanceof Error ? err.message : String(err));
       }
     }
+    await this.closeConnectionOf(key);
+    if (stopError) throw stopError;
+  }
+
+  /** その鍵（実行場所＋Project）の接続と待ち受けを閉じる */
+  private async closeConnectionOf(key: string): Promise<void> {
     // 繋いでいる途中の接続（まだ表に入っていない）に「手放された」と分かるようにする——待ち受けはここで閉じるので、
     // そのまま表に入ると閉じた待ち受けへのトンネルを張った接続が残る
     this.releases.set(key, (this.releases.get(key) ?? 0) + 1);
@@ -638,7 +647,61 @@ export class RemoteSshRuntime {
       await closeConnection(conn);
     }
     this.closeListener(key);
-    if (stopError) throw stopError;
+  }
+
+  /**
+   * **移す先のコンテナを用意する**（v4-security.md §1「`containers` との間で移す」の 3.、#464）。作るときと同じ手（土台のイメージ・
+   * pool・idmap・port_isolation・道）を、**移している Project・移す先の根で**呼ぶ——移している間は Project の記録が元の実行場所・
+   * 元の根のままなので、`prepare` の形（記録から実行場所と根を引く）では呼べない。接続は（移す先・Project）が鍵で、成功ならそのまま
+   * 使い（切り替えたあとの `prepare` が同じ接続を拾う）、失敗なら呼び元が `closeMoveTarget` で閉じる。
+   *
+   * 根と**写す Module の置き場の全部**を disk device で見せ（Module の置き場は Module を起こすときにしか付けないので、ここで付ける）、
+   * VM と中の inode を比べて見えていることを確かめる（`mountIsStale` と同じ手）。退かせて作り直したフォルダを前からあったコンテナが
+   * 古い装置で掴んでいれば、付け直す。返すのはコンテナの名前と中の番号（展開・印・`git worktree repair` を中でするため）
+   */
+  async prepareMoveTarget(
+    runtimeName: string,
+    place: { id: string; root: string; nesting: boolean },
+    moduleDirs: readonly string[],
+  ): Promise<{ container: string; inside: InsideIds }> {
+    const key = remoteConnectionKey(runtimeName, place.id);
+    const live = this.connections.get(key);
+    const conn = live?.alive ? live : await this.connecting.run(this.flightKey(runtimeName, place.id), () => this.connect(runtimeName, place.id));
+    if (conn.runtime.mode !== "containers") throw new Error(`別のサーバ「${runtimeName}」は Project ごとのコンテナ（containers）ではありません`);
+    this.refuseUnusable(conn, place);
+    // 前の接続で用意したものを使わない（根が違う・装置が古い）——確かめ直す
+    if (conn.container && conn.container.root !== place.root) delete conn.container;
+    const container = await this.ensureProjectContainer(conn, place);
+    const { inside } = await this.containerIdsOf(conn);
+    const incus = this.incusOf(conn);
+    const dirs = [place.root, ...moduleDirs];
+    const read = async () =>
+      parseInodePairs(await this.mustRun(conn, "移す先のフォルダが中から見えるかを確かめられ", inodePairsScript(container, dirs)), dirs.length);
+    const before = await read();
+    // 根は `ensure` が付けている。古いフォルダを掴んでいれば（根を作り直した）付け直す。Module の置き場は全部ここで付ける
+    await Promise.all(
+      dirs.map((dir, i) => {
+        const p = before[i]!;
+        const stale = p.inside !== undefined && p.inside !== p.vm;
+        if (i === 0) return stale ? incus.ensureDisk(container, "project", dir, { remount: true }) : Promise.resolve();
+        return incus.ensureDisk(container, moduleDiskName(dir), dir, { remount: stale });
+      }),
+    );
+    const after = await read();
+    const unseen = dirs.filter((_, i) => !after[i]!.vm || after[i]!.vm !== after[i]!.inside);
+    if (unseen.length > 0) {
+      throw new Error(`別のサーバ「${runtimeName}」のコンテナ ${container} に、移す先のフォルダが見えていません（${unseen.join("・")}）`);
+    }
+    this.log(`[host] 別のサーバ「${runtimeName}」に移す先のコンテナ ${container} を用意しました（根 ${place.root}・Module の置き場 ${moduleDirs.length} 個）`);
+    return { container, inside };
+  }
+
+  /**
+   * **移す先の接続を閉じる**（移せなかったとき・起き直して片づけるとき）。今の `release` は Project の記録から実行場所を引くが、
+   * 移せなかった Project の記録は元の実行場所のまま——実行場所を指して閉じる。繋いでいなければ何もしない（繋がない）
+   */
+  async closeMoveTarget(runtimeName: string, projectId: string): Promise<void> {
+    await this.closeConnectionOf(remoteConnectionKey(runtimeName, projectId));
   }
 
   /** 実行場所の動かし方（張っている接続があればその登録、無ければ今の登録） */
@@ -1878,7 +1941,7 @@ export class RemoteSshRuntime {
     const launcherPath = `${conn.codeDir}/${REMOTE_LAUNCHER_REL}`;
     /** Module の置き場を見せ終えるまで（Shell のホームはその中で展開する） */
     const mounts = new Map<string, Promise<void>>();
-    const diskName = (dir: string) => `m-${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
+    const diskName = moduleDiskName;
     const { moduleEnv: _noSudo, ...rest } = base;
     return {
       ...rest,

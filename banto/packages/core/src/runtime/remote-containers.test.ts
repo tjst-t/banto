@@ -602,3 +602,103 @@ test("VM だけの場所：Project の id はパスに使える字だけ（で�
   assert.equal(vmProjectRunDir("/run/user/1001", "0b6e8c2a-1f3d-4e5a-9b7c-123456789abc"), "/run/user/1001/banto/p-0b6e8c2a-1f3d-4e5a-9b7c-123456789abc");
   for (const bad of ["../x", "a/b", "", "-x", "a b"]) assert.throws(() => vmProjectRunDir("/run/user/1001", bad), /作れません/, bad);
 });
+
+test("移す先のコンテナを用意する（#464）：移す先の根と写す Module の置き場を見せ、作り直したフォルダは付け直す。閉じる口は接続と待ち受けを閉じる", async () => {
+  const root = mkdtempSync("/tmp/banto-move-target-");
+  const bin = join(root, "bin");
+  const dataDir = join(root, "data");
+  const base = join(root, "vm", "base");
+  const codeDir = `${base}/code/v-1`;
+  const target = join(root, "vm", "work", "t");
+  const modDir = `${base}/modules/shell-p9`;
+  for (const d of [bin, dataDir, codeDir, target, modDir]) mkdirSync(d, { recursive: true });
+  writeFileSync(join(bin, "incus"), FAKE_INCUS.replace("__STATE__", join(root, "incus.json")).replace("__ILOG__", join(root, "incus.log")));
+  writeFileSync(join(bin, "ssh"), FAKE_SSH.replaceAll("__SLOG__", join(root, "ssh.log")).replaceAll("__OLOG__", join(root, "control.log")));
+  chmodSync(join(bin, "incus"), 0o755);
+  chmodSync(join(bin, "ssh"), 0o755);
+  const runDir = mkdtempSync("/tmp/banto-run-");
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  const masters: ChildProcess[] = [];
+  const servers: Server[] = [];
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: join(root, "repo"),
+    runtimes: {
+      withConnection: async () => {
+        const master = spawn("sleep", ["60"], { stdio: "ignore" });
+        masters.push(master);
+        const exited = new Promise<void>((resolve) => master.once("close", () => resolve()));
+        const c: Record<string, unknown> = {
+          runtimeName: "vm",
+          projectId: "p9",
+          runtime: { name: "vm", host: "vm.example", port: 22, user: "u", mode: "containers" },
+          controlPath: join(root, "cm"),
+          knownHostsFile: "/dev/null",
+          master,
+          alive: true,
+          exited,
+          remotePort: undefined,
+          base,
+          codeDir,
+          checks: [],
+          forwards: new Map(),
+          cautioned: new Set(),
+        };
+        void exited.then(() => (c.alive = false));
+        return c;
+      },
+      get: () => ({ mode: "containers", host: "vm.example" }),
+    } as never,
+    // 移している間、Project の記録は元の実行場所（この機械）のまま——実行場所は引数で渡す
+    remoteNameOf: () => undefined,
+    createRelayListener: () => {
+      const s = createServer();
+      servers.push(s);
+      return s;
+    },
+    notify: async () => undefined,
+    log: () => undefined,
+    vmRunDir: () => runDir,
+    lookupIPv4: async () => "192.168.1.20",
+  });
+  const state = () =>
+    JSON.parse(readFileSync(join(root, "incus.json"), "utf8")) as {
+      instances: Record<string, { devices: Record<string, Record<string, string>>; status: string }>;
+      mounted: Record<string, number>;
+    };
+  const diskOf = (dir: string) => Object.entries(state().instances["banto-p9"]!.devices).find(([, d]) => d["type"] === "disk" && d["path"] === dir)?.[0];
+  try {
+    const got = await rt.prepareMoveTarget("vm", { id: "p9", root: target, nesting: false }, [modDir]);
+    const { uid, gid } = userInfo();
+    assert.deepEqual(got, { container: "banto-p9", inside: { uid, gid } });
+    assert.equal(state().instances["banto-p9"]!.status, "Running");
+    assert.equal(diskOf(target), "project", "移す先の根を見せていない");
+    const modDisk = diskOf(modDir);
+    assert.ok(modDisk, "写す Module の置き場を見せていない（Module を起こすまで待った）");
+    assert.equal(state().mounted[`banto-p9/${modDisk}`], statSync(modDir).ino);
+
+    // 退かせて作り直した（前のコンテナが古いフォルダを掴んでいる）・根を作り直した——付け直す
+    rmSync(modDir, { recursive: true });
+    mkdirSync(modDir);
+    rmSync(target, { recursive: true });
+    mkdirSync(target);
+    await rt.prepareMoveTarget("vm", { id: "p9", root: target, nesting: false }, [modDir]);
+    assert.equal(state().mounted[`banto-p9/${modDisk}`], statSync(modDir).ino, "作り直した Module の置き場を付け直していない");
+    assert.equal(state().mounted["banto-p9/project"], statSync(target).ino, "作り直した根を付け直していない");
+
+    // 閉じる口：（移す先・Project）の接続と中継の待ち受けを閉じる
+    const connections = (rt as unknown as { connections: Map<string, unknown> }).connections;
+    assert.ok([...connections.keys()].some((k) => k === "vm\0p9"));
+    await rt.closeMoveTarget("vm", "p9");
+    assert.ok(![...connections.keys()].some((k) => k === "vm\0p9"), "移す先の接続が残っている");
+    assert.equal(servers.filter((s) => s.listening).length, 0, "中継の待ち受けが残っている");
+  } finally {
+    await rt.closeAll();
+    for (const m of masters) m.kill("SIGKILL");
+    for (const s of servers) s.close();
+    process.env.PATH = savedPath;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
