@@ -22,7 +22,7 @@ const total = { req: 0, in: 0, cw5m: 0, cw1h: 0, cr: 0, out: 0 };
 const buckets = [50e3, 100e3, 200e3, 400e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
 let breaks = { req: 0, tokens: 0, cost: 0 };
 // 書き直しの前に空いた時間ごと（1時間のキャッシュが切れたのか、それ以外か）
-const gaps = [5 * 60e3, 60 * 60e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
+const gaps = [5 * 60e3, 60 * 60e3, 2 * 3600e3, 4 * 3600e3, 8 * 3600e3, 24 * 3600e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
 let images = 0;
 const breakDays = new Map();
 const shortBreaks = new Map();
