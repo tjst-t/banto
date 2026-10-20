@@ -11602,6 +11602,33 @@
       "updatedAt": "2026-10-20T20:04:01.087Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "virt-privileged-rail-mark",
+      "number": 482,
+      "kind": "task",
+      "title": "畳んだサイドバー（レール）にも特権の Project の印を出し、ほかの画面で切り替えたぶんも追う",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "frontend",
+        "container"
+      ],
+      "body": "#462 で作らなかった：特権の印は広いサイドバーと携帯の Drawer だけで、畳んだレールには無い。また印は自分の画面で特権を切り替えたときだけ読み直し、別の画面で切り替えたぶんは次に一覧を読み直すまで出ない（projects.changed で取り直すなど）。",
+      "doneWhen": "E2E で、畳んだレールに印が出ること、別のブラウザ文脈で切り替えると印が追従すること。",
+      "resolution": null,
+      "refs": [
+        "#456",
+        "#462"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T20:04:08.285Z",
+      "updatedAt": "2026-10-20T20:04:08.285Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
