@@ -10082,7 +10082,7 @@
       "number": 418,
       "kind": "task",
       "title": "画面：使い方の2択（banto 全体と Project）・説明文・右上のメーターをその会話の固定先に・直近1時間に使った Project",
-      "status": "in-progress",
+      "status": "done",
       "parent": "claude-accounts-balance",
       "dependsOn": [
         "balance-core"
@@ -10092,12 +10092,12 @@
       "labels": [],
       "body": "v4-frontend.md §6.46「使い方『均す』『上から順に』」と「右上の文脈のメーター」。呼び名は「並び」のまま、説明文だけ使い方で変える。均すときの右上のメーターは GET /api/threads/:id/claude-account（固定が無ければ何も出さない）。設定の「いま使っている Project」は均すとき「直近1時間に使った Project」。",
       "doneWhen": "E2E で、使い方の保存（banto 全体・Project）、説明文の切り替わり、均すとき2つの会話の右上のメーターがそれぞれの固定先を出す、が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/balance-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:11:21.638Z",
-      "updatedAt": "2026-10-20T06:23:36.790Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T06:42:05.149Z",
+      "closedAt": "2026-10-20T06:42:05.149Z",
       "extra": {}
     },
     {
