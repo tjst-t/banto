@@ -80,6 +80,8 @@ export const GIT_COMMANDS: readonly string[] = [
   "push",
   // Backlog のブランチを送る・取ってくる（`branch-sync.ts`。環境は `writeEnv`）
   "fetch",
+  // 別のサーバの Project のブランチを運ぶ——host の使い捨ての置き場で bundle にする（`branch-sync.ts`）
+  "bundle create",
 ];
 
 /**
@@ -796,16 +798,6 @@ export async function removeWorktreeRecord(main: string, worktree: string): Prom
 // ── 1本のブランチを origin と行き来させる（Backlog の一覧のブランチ、`branch-sync.ts`） ─────────────────────────
 
 /**
- * ブランチ名として受けるか。**git の決まり（`check-ref-format`）のうち、ここで要るものだけ**を見る——引数として
- * git に渡すので、`-` で始まるもの・refspec の記号（`:` `+` `*` 等）・`..`・`@{` は通さない
- */
-export function isSafeBranchName(name: string): boolean {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/.test(name)) return false;
-  if (name.includes("..") || name.includes("//") || name.includes("/.") || name.includes("@{")) return false;
-  return !name.endsWith("/") && !name.endsWith(".") && !name.endsWith(".lock");
-}
-
-/**
  * 送り先・取ってくる先・TLS を、そのリポジトリの設定が変えていないか（`pushBlockers` に、取ってくる側の
  * `remote.origin.uploadpack` を足したもの）。あればどちらもしない
  */
@@ -830,11 +822,12 @@ export async function fetchUrls(path: string): Promise<string[]> {
 
 /**
  * そのブランチだけを origin に送る（`refs/heads/<b>:refs/heads/<b>`。**force しない**——origin が先に進んでいれば
- * 断られる）。upstream は付けない（人のブランチの設定を変えない）。呼ぶ側が `isSafeBranchName` で確かめてから
+ * 断られる）。upstream は付けない（人のブランチの設定を変えない）。呼ぶ側が `isSafeBranchName` で確かめてから。
+ * `remote` は送り先（既定 origin。別のサーバの Project では、使い捨ての置き場から host で決めた URL へ）
  */
-export function gitPushBranch(input: { path: string; branch: string; credential: GitCredential }): Promise<CloneResult> {
+export function gitPushBranch(input: { path: string; branch: string; credential: GitCredential; remote?: string }): Promise<CloneResult> {
   return streamGit({
-    args: ["push", "--porcelain", "origin", `refs/heads/${input.branch}:refs/heads/${input.branch}`],
+    args: ["push", "--porcelain", input.remote ?? "origin", `refs/heads/${input.branch}:refs/heads/${input.branch}`],
     cwd: input.path,
     credential: input.credential,
     // porcelain の行（To …・Done・送れた ref）は文言から外す。断られた ref の行（`!`）は残す——理由がそこにある
@@ -844,19 +837,56 @@ export function gitPushBranch(input: { path: string; branch: string; credential:
 
 /**
  * そのブランチだけを origin から取ってくる（`refs/remotes/origin/<b>` に。追跡の ref なので `+`——origin で
- * 書き換えられていても写しは origin に合わせる。手元のブランチには触らない）。タグ・submodule は取らない
+ * 書き換えられていても写しは origin に合わせる。手元のブランチには触らない）。タグ・submodule は取らない。
+ * `remote` を渡すと、その URL から `refs/heads/<b>` へ（別のサーバの Project の使い捨ての置き場——bundle にして運ぶ）
  */
-export function gitFetchBranch(input: { path: string; branch: string; credential: GitCredential }): Promise<CloneResult> {
+export function gitFetchBranch(input: { path: string; branch: string; credential: GitCredential; remote?: string }): Promise<CloneResult> {
+  const into = input.remote === undefined ? `refs/remotes/origin/${input.branch}` : `refs/heads/${input.branch}`;
   return streamGit({
     args: [
       "fetch",
       "--no-tags",
       "--no-recurse-submodules",
       "--no-write-fetch-head",
-      "origin",
-      `+refs/heads/${input.branch}:refs/remotes/origin/${input.branch}`,
+      input.remote ?? "origin",
+      `+refs/heads/${input.branch}:${into}`,
     ],
     cwd: input.path,
     credential: input.credential,
   });
+}
+
+// ── 別のサーバの Project のブランチを運ぶ置き場（使い捨ての bare リポジトリ、`branch-sync.ts`） ─────────────────────
+
+/** 使い捨ての bare リポジトリを作る（フォルダは呼ぶ側が作ったもの。人の git の設定は読まない） */
+export async function gitInitBare(path: string): Promise<void> {
+  const r = await git(path, ["init", "-q", "--bare"], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) throw new Error(`使い捨ての置き場を作れませんでした：${r.stderr.trim() || String(r.code)}`);
+}
+
+/**
+ * **向こうから来た bundle の、そのブランチだけを取り込む**（`refs/heads/<b>`）。bundle は中の AI が作りうるので、中身を
+ * 確かめて（`transfer.fsckObjects`）から受ける。bundle はこの Module が書いた置き場のファイルなので、手元のパスを読ませる
+ * （`protocol.file.allow` をここだけ戻す）。ほかの ref・タグは取らない
+ */
+export async function gitFetchBundle(path: string, bundle: string, branch: string): Promise<void> {
+  const env = withConfig(writeEnv({ kind: "none" }), [
+    ["protocol.file.allow", "always"],
+    ["transfer.fsckObjects", "true"],
+  ]);
+  const r = await git(path, ["fetch", "--no-tags", "--no-write-fetch-head", bundle, `+refs/heads/${branch}:refs/heads/${branch}`], GIT_TIMEOUTS.losses, env);
+  if (!r.ok) throw new Error(`向こうから来た ${branch} を取り込めませんでした：${r.stderr.trim().slice(-500) || String(r.code)}`);
+}
+
+/** そのブランチの指すコミット */
+export async function gitResolveBranch(path: string, branch: string): Promise<string> {
+  const r = await git(path, ["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`], GIT_TIMEOUTS.default, writeEnv({ kind: "none" }));
+  if (!r.ok) return fail(`${branch} の指すコミット`, r);
+  return r.stdout.trim();
+}
+
+/** そのブランチだけの bundle を書く（`refs/heads/<b>`。向こうへ運ぶ） */
+export async function gitBundleBranch(path: string, file: string, branch: string): Promise<void> {
+  const r = await git(path, ["bundle", "create", "-q", file, `refs/heads/${branch}`], GIT_TIMEOUTS.losses, writeEnv({ kind: "none" }));
+  if (!r.ok) throw new Error(`${branch} を bundle にできませんでした：${r.stderr.trim().slice(-500) || String(r.code)}`);
 }

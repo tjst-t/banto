@@ -31,6 +31,11 @@ export interface ProjectSummary {
   status: "active" | "closed";
   /** 実行場所（`host-container` か `remote:<名前>`。無ければこの機械のコンテナ） */
   runtime?: string;
+  /**
+   * core の「clone」のタブ（別のサーバの新しい Project、v4-frontend.md §6.49）で作り終えたときの、clone した URL と選んだ
+   * アカウント（GitHub の login）。別のサーバの Project のブランチを送るアカウントを決めるのに使う（`branch-sync.ts`）
+   */
+  clonedFrom?: { url: string; account?: string };
 }
 
 /** どの Project が使っているかを引けたか。**引けなかったことを「使っていない」と言わない**（規則2） */

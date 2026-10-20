@@ -37,7 +37,7 @@ import {
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
 import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
-import { BranchSync } from "./branch-sync.js";
+import { BranchSync, type ProjectGitAccess } from "./branch-sync.js";
 import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
 import { Publisher } from "./publish.js";
@@ -73,6 +73,8 @@ export interface RepositoriesServerDeps {
   githubEndpoints?: GithubEndpoints;
   /** 受信箱（ログインの更新に失敗したとき） */
   notices: NoticeSink;
+  /** 別のサーバの Project の git に届く口（host の中継）。無ければ別のサーバの Project のブランチは引き受けない */
+  projectGit?: ProjectGitAccess;
   /** home（試験で差し替える）。既定は `os.homedir()` */
   home?: string;
   /** 時計と待ち（試験で差し替える） */
@@ -162,6 +164,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     vault: deps.vault,
     dataDir: deps.dataDir,
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
+    ...(deps.projectGit ? { projectGit: deps.projectGit } : {}),
   });
   const lookupProjects = async (meta: Record<string, unknown> | undefined): Promise<ProjectsLookup> => {
     try {
@@ -585,6 +588,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     github: httpGithub(web && api ? { web, api } : GITHUB_COM),
     githubEndpoints: web && api ? { web, api } : GITHUB_COM,
     notices: relay,
+    projectGit: relay,
   });
   await server.connect(new StdioServerTransport());
 }

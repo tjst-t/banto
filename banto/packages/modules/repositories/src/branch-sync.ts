@@ -12,14 +12,34 @@
 // **引き受けないもの**は `handled: false` と理由で返す（台帳に無い・origin が GitHub の外・アカウントが無い）——
 // 呼び出し元はそのリポジトリ自身の git の設定のまま試す。引き受けたうえで断ったもの（送り先を変える設定がある等）は
 // `handled: true`——呼び出し元は自分で試し直さない。
+//
+// **別のサーバの Project**（追加・2026-10-20、Backlog #466、§2.4「別のサーバの Project」）：根は向こうのパスで、この機械には
+// 無い。**資格情報は向こうへ出さない**——core の口（`ProjectGitAccess`。実行場所の接続の上で、向こうの中のユーザーの git が
+// bundle を作る・取り込む）で中身だけを運び、ここの使い捨ての bare リポジトリから、host で決めた GitHub の URL へ送る・取ってくる。
+// 送り先は向こうの `remote.origin.url`（申告）から GitHub の場所を読んで決め、アカウントは clone の記録 → 台帳の同じ場所の行 →
+// 持ち主と同じ login の順に決める（`accountForRemote`）。
 
-import { realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { PROJECT_GIT_BUNDLE_MAX_BYTES, isSafeBranchName, type ProjectGitOrigin } from "@banto/module-contract";
 import type { GithubAccounts } from "./accounts.js";
-import { fetchUrls, gitFetchBranch, gitPushBranch, isSafeBranchName, pushUrls, readFolder, syncBlockers } from "./git.js";
+import {
+  fetchUrls,
+  gitBundleBranch,
+  gitFetchBranch,
+  gitFetchBundle,
+  gitInitBare,
+  gitPushBranch,
+  gitResolveBranch,
+  pushUrls,
+  readFolder,
+  syncBlockers,
+  type CloneResult,
+} from "./git.js";
 import type { GithubEndpoints } from "./github.js";
-import type { LedgerStore } from "./ledger.js";
-import { gitCredentialFor } from "./publish.js";
-import { parseRemoteUrl } from "./remote.js";
+import type { LedgerEntry, LedgerStore } from "./ledger.js";
+import { gitCredentialFor, githubRemoteUrl } from "./publish.js";
+import { parseRemoteUrl, sameGithubLocation, type GithubLocation } from "./remote.js";
 import type { ProjectSummary } from "./repositories.js";
 import type { VaultAccess } from "./vault.js";
 
@@ -30,12 +50,61 @@ export type BranchSyncResult =
   | { handled: true; ok: true; message: string; absent?: true }
   | { handled: true; ok: false; message: string };
 
+/**
+ * **別のサーバの Project の根の git に、1本のブランチの中身を出し入れする口**（core の中継の `relayProjectGit*`）。どの Project
+ * かは host の台帳が呼び出しの印（`callId`）で決める——ここから選べない
+ */
+export interface ProjectGitAccess {
+  origin(callId?: string): Promise<ProjectGitOrigin>;
+  /** そのブランチの bundle。向こうにそのブランチが無ければ undefined */
+  bundle(branch: string, callId?: string): Promise<Buffer | undefined>;
+  /** bundle のそのブランチを、向こうの `refs/remotes/origin/<branch>` に取り込む */
+  unbundle(branch: string, bundle: Buffer, callId?: string): Promise<void>;
+  /** 向こうの `refs/remotes/origin/<branch>` を、向こうにもうあるコミットに合わせる（送り終えたあと） */
+  track(branch: string, commit: string, callId?: string): Promise<void>;
+}
+
 export interface BranchSyncDeps {
   store: LedgerStore;
   accounts: GithubAccounts;
   vault: VaultAccess;
   dataDir: string;
   endpoints: GithubEndpoints;
+  /** 別のサーバの Project の git に届く口。無ければ別のサーバの Project は引き受けない */
+  projectGit?: ProjectGitAccess;
+}
+
+/** 別のサーバの Project で、どのアカウントで送るか（決めた理由つき——返事の文言に出す） */
+type RemoteAccount = { login: string; via: string } | { reason: string };
+
+/**
+ * **別のサーバの Project のブランチを扱うアカウント**。向こうのリポジトリは台帳に無いので、人が決めたものから順に引く：
+ * 1. その Project を core の「clone」のタブで作ったときに選んだアカウント（clone した URL が origin と同じ GitHub の場所のとき）
+ * 2. 台帳で同じ GitHub の場所を扱うアカウント（この機械に同じリポジトリを置いている。行どうしで違えば決めない）
+ * 3. 登録したアカウントのうち、origin の持ち主と同じ login（Import のときと同じ決まり）
+ */
+export function accountForRemote(
+  project: ProjectSummary,
+  at: GithubLocation,
+  entries: readonly LedgerEntry[],
+  logins: readonly string[],
+): RemoteAccount {
+  const cloned = project.clonedFrom;
+  if (cloned?.account) {
+    const from = parseRemoteUrl(cloned.url);
+    if (from.kind === "github" && sameGithubLocation(from, at)) return { login: cloned.account, via: "clone したときのアカウント" };
+  }
+  const inLedger = [...new Set(entries.filter((e) => e.account && sameGithubLocation(e.github, at)).map((e) => e.account!.toLowerCase()))];
+  if (inLedger.length > 1) {
+    return { reason: `リポジトリの一覧で github.com/${at.owner}/${at.name} を扱うアカウントが1つに決まりません（${inLedger.map((l) => `@${l}`).join("・")}）` };
+  }
+  if (inLedger.length === 1) {
+    const login = entries.find((e) => e.account?.toLowerCase() === inLedger[0])!.account!;
+    return { login, via: "リポジトリの一覧のアカウント" };
+  }
+  const owner = logins.find((l) => l.toLowerCase() === at.owner.toLowerCase());
+  if (owner) return { login: owner, via: "持ち主と同じアカウント" };
+  return { reason: `github.com/${at.owner}/${at.name} を扱うアカウントが決まっていません（clone したときの記録・リポジトリの一覧・持ち主と同じ login のどれも無い）` };
 }
 
 /** URL の方式が ssh か（`git@host:o/n`・`ssh://…`） */
@@ -49,10 +118,17 @@ function explain(direction: "push" | "fetch", own: string): string {
     return "資格情報が通りませんでした（アカウントのトークンが切れた・権限が無い）";
   }
   if (/\b403\b|permission to .* denied|not allowed to push/i.test(own)) return "このアカウントには書く権限がありません";
-  if (direction === "push" && /\[rejected\]|non-fast-forward|fetch first|stale info|behind its remote/i.test(own)) {
+  // 「remote contains work」は手元に origin のコミットが無いときの言い方（別のサーバの Project の使い捨ての置き場から送ったとき）
+  if (direction === "push" && /\[rejected\]|non-fast-forward|fetch first|stale info|behind its remote|remote contains work/i.test(own)) {
     return "origin のブランチが先に進んでいます（取り込んでから送り直します）";
   }
   return "";
+}
+
+/** 運べる大きさを越えた */
+function tooLarge(branch: string, bytes: number): string {
+  const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
+  return `${branch} が大きすぎて、別のサーバとの間で運べません（${mb(bytes)}。上限は ${mb(PROJECT_GIT_BUNDLE_MAX_BYTES)}）`;
 }
 
 export class BranchSync {
@@ -82,11 +158,8 @@ export class BranchSync {
    */
   async sync(direction: "push" | "fetch", branch: string, project: ProjectSummary, callId?: string): Promise<BranchSyncResult> {
     if (!isSafeBranchName(branch)) throw new Error(`ブランチ名として受け付けられない形です：${JSON.stringify(branch.slice(0, 80))}`);
-    // **別のサーバの Project は引き受けない**（v4-security.md §1）——根は向こうのパスで、この機械の同じ文字列のフォルダは
-    // 別物。向こうの git の設定と Vault の SSH 鍵で送ってもらう
-    if (project.runtime !== undefined && project.runtime !== "host-container") {
-      return { handled: false, reason: "この Project は別のサーバで動いています（根はこの機械のフォルダではありません）" };
-    }
+    // **別のサーバの Project**——根は向こうのパスで、この機械の同じ文字列のフォルダは別物。core の口で中身だけを運ぶ
+    if (project.runtime !== undefined && project.runtime !== "host-container") return this.syncRemote(direction, branch, project, callId);
     const entry = await this.entryFor(project);
     if ("reason" in entry) return { handled: false, reason: entry.reason };
 
@@ -146,6 +219,94 @@ export class BranchSync {
       return { handled: true, ok: false, message: `${direction} できませんでした：${why ? `${why}——` : ""}${result.message}` };
     } finally {
       await c.window?.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * **別のサーバの Project**（v4-modules.md §2.4「別のサーバの Project」）。向こうの origin の設定を読み、送り先（GitHub の場所）と
+   * アカウントを host で決め、使い捨ての bare リポジトリを通して運ぶ
+   */
+  private async syncRemote(direction: "push" | "fetch", branch: string, project: ProjectSummary, callId?: string): Promise<BranchSyncResult> {
+    const git = this.deps.projectGit;
+    if (!git) return { handled: false, reason: "この Repositories は別のサーバの Project の git に届く口を持っていません" };
+    const origin = await git.origin(callId);
+    if (origin.kind === "not-repo") return { handled: false, reason: "この Project の根は git のリポジトリではありません" };
+    if (origin.urls.length === 0) return { handled: false, reason: "origin がありません" };
+    // **送り先を変える設定があれば、どちらもしない**——向こうの git が送る先と、ここが送る先（url の GitHub の場所）が食い違う。
+    // どちらが正しいかは決められない（この機械の Project と同じ線。向こうの http.* 等は、ここの git が読まないので見ない）
+    if (origin.redirects.length > 0) {
+      return {
+        handled: true,
+        ok: false,
+        message: `リポジトリの設定に、送り先を変える設定があります（${origin.redirects.join("・")}）——どこへ${direction === "push" ? "送る" : "取ってくる"}のが正しいか決められないので、Repositories は ${direction} しません`,
+      };
+    }
+    if (origin.urls.length !== 1) {
+      return { handled: true, ok: false, message: `origin の URL が1つではない（${origin.urls.join("・")}）ので、${direction} しません` };
+    }
+    const at = parseRemoteUrl(origin.urls[0]!);
+    if (at.kind !== "github") return { handled: false, reason: `origin が GitHub の外です（${origin.urls[0]}）` };
+    const where = `github.com/${at.owner}/${at.name}`;
+    const registered = (await this.deps.accounts.list()).accounts;
+    const chosen = accountForRemote(project, at, await this.deps.store.entries(), registered.map((a) => a.login));
+    if ("reason" in chosen) return { handled: false, reason: chosen.reason };
+    const account = registered.find((a) => a.login.toLowerCase() === chosen.login.toLowerCase());
+    if (!account) return { handled: false, reason: `@${chosen.login}（${chosen.via}）は登録が外れています` };
+    // 送り先は host で組む（方式はアカウントに合わせる——向こうの URL の方式は見ない。トークンは GitHub の host にしか渡らない）
+    const url = githubRemoteUrl(this.deps.endpoints, !!account.ssh, at.owner, at.name);
+    const by = `@${account.login}、${chosen.via}`;
+
+    const parent = join(this.deps.dataDir, "branch-sync");
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    const work = await mkdtemp(join(parent, "w-"));
+    const repo = join(work, "repo.git");
+    const file = join(work, "branch.bundle");
+    try {
+      await mkdir(repo, { mode: 0o700 });
+      await gitInitBare(repo);
+      if (direction === "push") {
+        const bundle = await git.bundle(branch, callId);
+        if (!bundle) return { handled: true, ok: false, message: `この Project のリポジトリに ${branch} がありません` };
+        if (bundle.length > PROJECT_GIT_BUNDLE_MAX_BYTES) return { handled: true, ok: false, message: tooLarge(branch, bundle.length) };
+        await writeFile(file, bundle, { mode: 0o600 });
+        await gitFetchBundle(repo, file, branch);
+      }
+      const c = await gitCredentialFor(this.deps, account.login, callId);
+      let result: CloneResult;
+      try {
+        result =
+          direction === "push"
+            ? await gitPushBranch({ path: repo, branch, credential: c.credential, remote: url })
+            : await gitFetchBranch({ path: repo, branch, credential: c.credential, remote: url });
+      } finally {
+        await c.window?.close().catch(() => undefined);
+      }
+      if (!result.ok) {
+        if (direction === "fetch" && result.kind === "failed" && /couldn't find remote ref|could not find remote ref/i.test(result.own ?? "")) {
+          return { handled: true, ok: true, absent: true, message: `${where} にはまだ ${branch} がありません` };
+        }
+        const why = result.kind === "failed" ? explain(direction, result.own ?? "") : "";
+        return { handled: true, ok: false, message: `${direction} できませんでした：${why ? `${why}——` : ""}${result.message}` };
+      }
+      if (direction === "push") {
+        // 向こうの追跡の ref も進める（この機械のリポジトリの `git push origin` と同じ——Backlog はこれで「まだ送っていない」を数える）。
+        // 進められなくても送れたことは変わらない——投げると、頼んだ側が自分の git で送り直そうとする。理由を添えて返す（次に取って
+        // くれば揃う）
+        const sent = `${branch} を ${where} に送りました（${by}）`;
+        try {
+          await git.track(branch, await gitResolveBranch(repo, branch), callId);
+        } catch (err) {
+          return { handled: true, ok: true, message: `${sent}——ただし、この Project のリポジトリの origin/${branch} を進められませんでした（${(err as Error).message}）` };
+        }
+        return { handled: true, ok: true, message: sent };
+      }
+      await gitBundleBranch(repo, file, branch);
+      const size = (await stat(file)).size;
+      if (size > PROJECT_GIT_BUNDLE_MAX_BYTES) return { handled: true, ok: false, message: tooLarge(branch, size) };
+      await git.unbundle(branch, await readFile(file), callId);
+      return { handled: true, ok: true, message: `${where} の ${branch} を取ってきました（${by}）` };
+    } finally {
+      await rm(work, { recursive: true, force: true });
     }
   }
 }
