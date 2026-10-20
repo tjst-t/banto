@@ -33,6 +33,13 @@ import { usePanelStack } from "./use-panel-stack";
 const CANVAS_LIFT = 20; // px。Canvas の紙が浮く分（mt-5）
 const CANVAS_OVERLAP = 10; // px。Base の横に出る Canvas が Base に重なる分（-ml-2.5）
 
+/**
+ * 会話の列の幅（並びの幅に対する割合）の下限・上限。既定は 1/3。上限は以前 0.5 で、Canvas を画面の半分より
+ * 小さくできなかった（2026-10-20、ユーザー報告「小さくしようとしても小さくならない」）——Canvas は 1/4 まで縮められる
+ */
+const SPLIT_MIN = 0.2;
+const SPLIT_MAX = 0.75;
+
 type Box = { left: number; width: number; top: number };
 
 /** 境界。つかんで左右に動かす。矢印キーでも動く */
@@ -49,15 +56,55 @@ function SplitHandle({
   /** 矢印キー：-1（左）/ +1（右） */
   onKeyStep: (dir: -1 | 1) => void;
 }) {
+  // **掴んでいる間は、取っ手がポインタを捕まえる**（修正・2026-10-20、ユーザー報告「小さくならない・離しても続く」）。
+  // 以前は window で pointermove・pointerup を聞いていたので、Canvas を小さくしようと右へ動かしてポインタが
+  // Canvas の iframe（別の生まれの文書）の上に入ると、動きも「離した」も親の文書に届かず、追従が止まり、
+  // 離したあとも掴んだままになっていた。いまは setPointerCapture で取っ手に集め、掴んでいる間は
+  // `<html data-canvas-resizing>` で iframe がポインタを取らないようにし（globals.css）、
+  // 離した・取り消された・捕まえが外れた・窓から焦点が外れた、のどれでも必ず終える
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const move = (ev: PointerEvent) => onMove(ev.clientX);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+    const handle = e.currentTarget;
+    const pointerId = e.pointerId;
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      // 捕まえられない環境でも、下の印と window の聞き取りで動く
+    }
+    const root = document.documentElement;
+    root.setAttribute("data-canvas-resizing", "");
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      // ボタンが離れているのに来た動き（離したのを取りこぼした）なら、ここで終える
+      if (ev.buttons === 0) {
+        end();
+        return;
+      }
+      onMove(ev.clientX);
     };
+    const end = () => {
+      root.removeAttribute("data-canvas-resizing");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      handle.removeEventListener("lostpointercapture", end);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("blur", end);
+      try {
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      } catch {
+        // 外れていれば何もしない
+      }
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+    handle.addEventListener("lostpointercapture", end);
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("blur", end);
   }
   return (
     <div
@@ -245,9 +292,9 @@ export function PanelStack({
           label={frontConv === "fork" ? "Fork Thread と Canvas の境界" : "Base Thread と Canvas の境界"}
           onMove={(x) => {
             const f = toFrac(x);
-            if (f !== null) setConvCanvasSplit(clampFrac(f, 0.2, 0.5));
+            if (f !== null) setConvCanvasSplit(clampFrac(f, SPLIT_MIN, SPLIT_MAX));
           }}
-          onKeyStep={(dir) => setConvCanvasSplit((v) => clampFrac(v + dir * 0.02, 0.2, 0.5))}
+          onKeyStep={(dir) => setConvCanvasSplit((v) => clampFrac(v + dir * 0.02, SPLIT_MIN, SPLIT_MAX))}
         />
       ) : null}
     </div>

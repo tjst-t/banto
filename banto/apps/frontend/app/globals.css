@@ -397,6 +397,17 @@
   user-select: none;
 }
 
+/* 会話と Canvas の境をドラッグしている間だけ（panel-stack.tsx の SplitHandle が `<html data-canvas-resizing>` を立てる）：
+   - Canvas の iframe（別の生まれの文書）がポインタを取らない——取ると動きも「離した」も親に届かない
+   - 文字が選択されるのを防ぐ・cursor を画面全体で col-resize に固定する */
+[data-canvas-resizing] iframe {
+  pointer-events: none !important;
+}
+[data-canvas-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
 @custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
 
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
