@@ -186,3 +186,21 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   装置の表に残る。害は無い（待ち受けるのは VM の `<置き場>/s` の中の UNIX ソケットで、繋ぐ先が無ければ繋いだ流れが閉じるだけ。
   ポートも取らない）ので記録だけにした。気になるなら、Module の宣言から外したときに外す・コンテナを用意するときに今の Module に
   無いものを外す、のどちらかを足す
+
+## 本物の Incus で道を手で張って測ったこと（2026-10-20、banto-dev-vm、レビューの M2 の一部）
+
+banto を動かした通しではなく、実装と同じ設定の proxy device を `incus config device add` で手で張った。区画は使い捨ての
+`probe369`（`restricted=true`・`restricted.devices.proxy=allow`・`restricted.idmap.uid/gid=1000`・自分の profiles）、コンテナは
+`raw.idmap` で中の 1000 を VM の 1000 に合わせた noble。操作は sudo（区画の管理者）で行った——**一般ユーザーの区画
+`user-<uid>` から同じに通るかは測っていない**。
+
+- 中から banto へ：動いているコンテナに `banto-relay`（`bind=instance listen=tcp:127.0.0.1:29839 connect=unix:<VM の 0600 のソケット>
+  security.uid/gid=1000`）を足すと、中の `curl 127.0.0.1:29839` が VM のソケットの先に届いた（PATCH で足してすぐ効く）
+- 鍵の窓口：`bind=instance listen=unix:/run/banto-a-x.sock`（uid/gid=1000・mode=0600）→ VM のソケット。中に 0600 で出て届いた
+- 流れの口：`bind=host listen=unix:<VM の home の下> connect=unix:<中の Module のソケット>`（security.uid/gid=1000）。VM の側に
+  0600 で出て、中の待ち受けに届いた
+- 公開：`bind=host listen=tcp:0.0.0.0:20000 connect=tcp:127.0.0.1:8080` で VM から 200。装置を外すと届かない
+- コンテナを起こし直すと、中継と鍵の窓口の道は戻った（`/run` の下の待ち受けも Incus が作り直す）
+- VM からコンテナのアドレスの 29839 には届かない（中の口は中の 127.0.0.1 だけ）
+- 測っていないもの：sshd の `-O forward -R <UNIX のパス>` での張り直し（前の実測は 2026-10-11 の notes）・一般ユーザーの区画・
+  VM の再起動・banto を動かした通し（Vault の値・Repositories・Factory）
