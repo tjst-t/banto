@@ -11395,7 +11395,7 @@
       "number": 470,
       "kind": "story",
       "title": "新しい Project の画面に3つのスイッチ（まとめ・自動で許可・空いた会話の要約）",
-      "status": "ready",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -11403,14 +11403,14 @@
       "labels": [],
       "body": "## 仕様\nv4-frontend.md §6.51（main 06d9ea2a）。「作る」の上に見出し「この Project の AI」で3行（thread.turnSummary・approvals.autoApproveAll・thread.idleCompaction）。初めの位置はどれもオン（ユーザー了承済み、自動で許可も含む）。POST /api/projects に settings: {turnSummary, autoApproveAll, idleCompaction} を足し、Project を作るのと同じ処理の中で Configuration に書く。渡されなかった鍵は書かない。既存の Project は変えない。自動で許可がオンのときは警告色で注意を出す。",
       "doneWhen": "新しい Project の画面のどのタブでも3つのスイッチが出て初めはオン、切って作ればその値で作られ、最初のターンから効く（E2E で確かめる）。settings を渡さない POST /api/projects は今までどおりの既定",
-      "resolution": null,
+      "resolution": "#474 を main（db53e625）と release（7efe202b）に入れた。両方の版で組み立て・単体・E2E 8本27件通過。",
       "refs": [
         "docs/specs/v4-frontend.md#6.51"
       ],
       "threads": [],
       "createdAt": "2026-10-20T14:17:06.721Z",
-      "updatedAt": "2026-10-20T14:17:06.721Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T17:11:06.186Z",
+      "closedAt": "2026-10-20T17:11:06.186Z",
       "extra": {}
     },
     {
