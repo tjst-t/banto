@@ -337,6 +337,8 @@ class FarRepo implements ProjectGitAccess {
   readonly calls: string[] = [];
   /** 次の bundle をこれに差し替える（大きすぎるものを返す向こう） */
   forgedBundle?: Buffer;
+  /** その口で core が断ったのと同じ形で投げる（向こうに繋がらない・core の上限で止まった） */
+  failWith?: { op: "origin" | "bundle" | "unbundle"; message: string };
   constructor(readonly dir: string) {}
 
   private g(...args: string[]): string {
@@ -345,6 +347,7 @@ class FarRepo implements ProjectGitAccess {
 
   async origin(): Promise<ProjectGitOrigin> {
     this.calls.push("origin");
+    if (this.failWith?.op === "origin") throw new Error(this.failWith.message);
     try {
       this.g("rev-parse", "--git-dir");
     } catch {
@@ -368,6 +371,7 @@ class FarRepo implements ProjectGitAccess {
 
   async bundle(branch: string): Promise<Buffer | undefined> {
     this.calls.push(`bundle ${branch}`);
+    if (this.failWith?.op === "bundle") throw new Error(this.failWith.message);
     if (this.forgedBundle) return this.forgedBundle;
     try {
       this.g("rev-parse", "-q", "--verify", `refs/heads/${branch}^{commit}`);
@@ -379,6 +383,7 @@ class FarRepo implements ProjectGitAccess {
 
   async unbundle(branch: string, bundle: Buffer): Promise<void> {
     this.calls.push(`unbundle ${branch}`);
+    if (this.failWith?.op === "unbundle") throw new Error(this.failWith.message);
     const file = join(this.dir, "..", "in.bundle");
     writeFileSync(file, bundle);
     try {
@@ -536,9 +541,26 @@ test("別のサーバの Project：アカウントが決まらない・登録が
     const big = await asBacklog(sync, "push", "backlog", project, "c");
     assert.equal(big.handled && !big.ok, true);
     assert.match((big as { message: string }).message, /backlog が大きすぎて、別のサーバとの間で運べません/);
-    // 壊れた bundle——取り込めずに理由つきで止まる（中身を確かめる）
+    // 壊れた bundle——取り込めずに、引き受けて断る（投げると Backlog が自分の git で送り直そうとする。レビュー M2）
     far.forgedBundle = Buffer.from("# v2 git bundle\n0000000000000000000000000000000000000000 refs/heads/backlog\n\nPACKgarbage");
-    await assert.rejects(() => asBacklog(sync, "push", "backlog", project, "c"), /向こうから来た backlog を取り込めませんでした/);
+    const broken = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(broken.handled && !broken.ok, true, JSON.stringify(broken));
+    assert.match((broken as { message: string }).message, /push できませんでした：向こうから来た backlog を取り込めませんでした/);
+    delete far.forgedBundle;
+    // core の上限で止まった（向こうの bundle を読むのをやめた）——同じく引き受けて断る
+    far.failWith = { op: "bundle", message: "backlog が大きすぎて、別のサーバとの間で運べません（上限は 6MB）" };
+    const capped = await asBacklog(sync, "push", "backlog", project);
+    assert.deepEqual(capped, { handled: true, ok: false, message: "push できませんでした：backlog が大きすぎて、別のサーバとの間で運べません（上限は 6MB）" });
+    // 取り込む途中で切れた（GitHub にある main を取ってきて、向こうへ運ぶところ）
+    far.failWith = { op: "unbundle", message: "SSH の接続がありません" };
+    assert.deepEqual(await asBacklog(sync, "fetch", "main", project), { handled: true, ok: false, message: "fetch できませんでした：SSH の接続がありません" });
+    // origin を読めない（向こうに繋がらない）——引き受けて断る（自前の道も同じ接続の上なので落とさない）
+    far.failWith = { op: "origin", message: "別のサーバ「lab」で git を流せません——SSH の接続がありません" };
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", project), {
+      handled: true,
+      ok: false,
+      message: "この Project のリポジトリの origin を読めませんでした（別のサーバ「lab」で git を流せません——SSH の接続がありません）——Repositories は送りも取ってきもしません",
+    });
     assert.equal(bareHead(w.gh, "backlog"), undefined);
     assert.ok(!existsSync(join(w.home, ".data", "branch-sync")) || readdirSync(join(w.home, ".data", "branch-sync")).length === 0);
   });
@@ -632,7 +654,9 @@ test("別のサーバの Project：向こうから来た bundle の中身を fsc
     await addAccount(w, "alice", TOKEN);
     const { far, sync, project } = await farClone(w);
     far.forgedBundle = malformedBundle(w.home);
-    await assert.rejects(() => asBacklog(sync, "push", "backlog", project), /git の形として正しくないので送りません：error in commit [0-9a-f]+: missingEmail/);
+    const r = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(r.handled && !r.ok, true, JSON.stringify(r));
+    assert.match((r as { message: string }).message, /git の形として正しくないので送りません：error in commit [0-9a-f]+: missingEmail/);
     assert.equal(bareHead(w.gh, "backlog"), undefined, "正しくない中身を GitHub に送った");
     assert.equal(w.gh.gitRequests.filter((r) => r.path.includes("receive-pack")).length, 0);
   });

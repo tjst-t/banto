@@ -272,7 +272,14 @@ export class BranchSync {
   async remoteTarget(project: ProjectSummary, callId?: string): Promise<RemoteTargetDecision> {
     const git = this.deps.projectGit;
     if (!git) return { kind: "not-handled", reason: "この Repositories は別のサーバの Project の git に届く口を持っていません" };
-    const origin = await git.origin(callId);
+    // **origin を読めない（向こうに繋がらない等）は引き受けて断る**——頼む側（Backlog）はその向こうで動き、中継も同じ接続の上を
+    // 通る。繋がらないなら自前の git の道でも送れないので、そちらへ落とさない（レビュー M2）
+    let origin: ProjectGitOrigin;
+    try {
+      origin = await git.origin(callId);
+    } catch (err) {
+      return { kind: "refused", message: `この Project のリポジトリの origin を読めませんでした（${(err as Error).message}）——Repositories は送りも取ってきもしません` };
+    }
     if (origin.kind === "not-repo") return { kind: "not-handled", reason: "この Project の根は git のリポジトリではありません" };
     if (origin.urls.length === 0) return { kind: "not-handled", reason: "origin がありません" };
     // **送り先を変える設定があれば、どちらもしない**——向こうの git が送る先と、ここが送る先（url の GitHub の場所）が食い違う。
@@ -360,6 +367,23 @@ export class BranchSync {
     const url = githubRemoteUrl(this.deps.endpoints, account.ssh, at.owner, at.name);
     const by = `@${account.login}、${via}`;
 
+    // **送り先とアカウントが決まったあとの失敗は、すべて引き受けて断る**（`handled: true`。レビュー M2）——投げると頼む側
+    // （Backlog）は自分の git（SSH 鍵の道）で送り直そうとし、上限を越えた・壊れた bundle を別の道で通すことになる
+    try {
+      return await this.carry(direction, branch, { git, at, where, url, by, login: account.login }, callId);
+    } catch (err) {
+      return { handled: true, ok: false, message: `${direction} できませんでした：${(err as Error).message}` };
+    }
+  }
+
+  /** 使い捨ての bare リポジトリを通して運ぶ（送り先とアカウントは決まったもの） */
+  private async carry(
+    direction: "push" | "fetch",
+    branch: string,
+    t: { git: ProjectGitAccess; at: GithubLocation; where: string; url: string; by: string; login: string },
+    callId: string | undefined,
+  ): Promise<BranchSyncResult> {
+    const { git, where, url, by } = t;
     const parent = join(this.deps.dataDir, "branch-sync");
     await mkdir(parent, { recursive: true, mode: 0o700 });
     const work = await mkdtemp(join(parent, "w-"));
@@ -375,7 +399,7 @@ export class BranchSync {
         await writeFile(file, bundle, { mode: 0o600 });
         await gitFetchBundle(repo, file, branch);
       }
-      const c = await gitCredentialFor(this.deps, account.login, callId);
+      const c = await gitCredentialFor(this.deps, t.login, callId);
       let result: CloneResult;
       try {
         result =
