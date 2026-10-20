@@ -10409,9 +10409,11 @@
       "number": 435,
       "kind": "task",
       "title": "Windows の実機で Event Store の書き替えと Vault（local）の道具を実測する（§9 の5・6）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "desktop-0-measure",
-      "dependsOn": [],
+      "dependsOn": [
+        "desktop-dev-vm"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [],
@@ -10421,7 +10423,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T08:57:59.679Z",
+      "updatedAt": "2026-10-20T10:06:32.723Z",
       "closedAt": null,
       "extra": {}
     },
