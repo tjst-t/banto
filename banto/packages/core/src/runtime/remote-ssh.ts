@@ -170,6 +170,11 @@ export interface RemoteSshRuntimeOptions {
    * 中継をやめる形にさせる。無ければ閉じていない）
    */
   projectClosed?: (projectId: string) => boolean;
+  /**
+   * containers：その Project は眠っていて、眠らせたときにコンテナを止めてある（出来事を待たれている Module が無い）か。止めるために
+   * わざわざ繋がない（繋がらない VM で、もう止まっているコンテナを「止められませんでした」と言わない——レビュー L6）。無ければ false
+   */
+  stoppedWhileAsleep?: (projectId: string) => boolean;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -604,7 +609,10 @@ export class RemoteSshRuntime {
     if (!name) return;
     const key = remoteConnectionKey(name, placeId);
     let stopError: RuntimeStopError | undefined;
-    if (opts.stop && this.modeOf(name, key) === "containers") {
+    // 眠らせたときに止めてあって、そのあと繋いでいない（＝起こしていない）なら、止めるために繋がない
+    const alreadyStopped = !this.connections.get(key)?.alive && this.opts.stoppedWhileAsleep?.(placeId) === true;
+    if (alreadyStopped && opts.stop) this.log(`[host] 別のサーバ「${name}」の Project ${placeId} のコンテナは眠らせたときに止めてあるので、止めに行きません`);
+    if (opts.stop && !alreadyStopped && this.modeOf(name, key) === "containers") {
       try {
         await this.stopProjectContainer(name, placeId);
       } catch (err) {

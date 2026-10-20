@@ -230,6 +230,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   let connecting: string | undefined;
   /** 閉じた Project（core の記録の代わり） */
   const closed = new Set<string>();
+  /** 眠らせたときにコンテナを止めた Project（core の記録の代わり） */
+  const asleep = new Set<string>();
   const conn = () => {
     const master = spawn("sleep", ["60"], { stdio: "ignore" });
     masters.push(master);
@@ -269,6 +271,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     shellHomeSource: join(root, "nohome"),
     vmRunDir: () => runDir,
     projectClosed: (id) => closed.has(id),
+    stoppedWhileAsleep: (id) => asleep.has(id),
     lookupIPv4: async () => "192.168.1.20",
   });
   const state = () =>
@@ -574,6 +577,17 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.equal(state().instances["banto-p2"]!.devices["banto-pub-5000"], undefined, "眠っている Project の公開の道を外していない");
     assert.ok(![...connections.keys()].some((k) => k.endsWith("\0p2")), "外すためだけに張った接続が残っている");
     assert.equal(listening(), before, "外すためだけに作った中継の待ち受けが残っている");
+    // 眠らせたときに止めてある Project を閉じる（レビュー L6）：止めるために繋がない——VM に繋がらなくても「止められませんでした」に
+    // ならない。接続があれば（起こした・待たれている Module がある）今どおり止める
+    asleep.add("p2");
+    writeFileSync(incusLog, "");
+    const connectsBefore = masters.length;
+    await rt.release("p2", { stop: true });
+    assert.equal(masters.length, connectsBefore, "眠らせたときに止めてあるのに、止めるために繋いだ");
+    assert.equal(readFileSync(incusLog, "utf8"), "", "眠らせたときに止めてあるのに Incus を呼んだ");
+    await rt.prepare({ id: "p2", root: rootB, nesting: false });
+    await rt.release("p2", { stop: true });
+    assert.equal(state().instances["banto-p2"]!.status, "Stopped", "繋いでいた（起きていた）のに止めなかった");
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");

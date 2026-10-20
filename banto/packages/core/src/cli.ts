@@ -601,6 +601,8 @@ async function main(): Promise<void> {
     containerVirtualization: (runtimeName, projectId) => containersVirtualization.containerSpecOf(runtimeName, projectId),
     hugepagesReservedBytes: (runtimeName) => containersVirtualization.hugepagesReservedBytes(runtimeName),
     projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
+    // 眠っていて、出来事を待たれている Module が無い（眠らせたときにコンテナを止めた）
+    stoppedWhileAsleep: (projectId) => Boolean(projectThread.getProject(projectId)?.sleep) && (projectSleep?.partlyAwake(projectId).length ?? 0) === 0,
     createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },
