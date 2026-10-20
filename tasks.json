@@ -10674,7 +10674,7 @@
       "number": 446,
       "kind": "task",
       "title": "Electron の殻を作る（node.exe で core を起こす・1つだけ起こす・データの置き場・外のリンク・窓の設定）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-local-runtime",
@@ -10690,7 +10690,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:58.677Z",
       "closedAt": null,
       "extra": {}
     },
