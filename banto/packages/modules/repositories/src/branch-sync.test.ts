@@ -547,6 +547,13 @@ test("別のサーバの Project：アカウントが決まらない・登録が
     const broken = await asBacklog(sync, "push", "backlog", project);
     assert.equal(broken.handled && !broken.ok, true, JSON.stringify(broken));
     assert.match((broken as { message: string }).message, /push できませんでした：向こうから来た backlog を取り込めませんでした/);
+    // bundle でないもの——git は置き場のファイルのパスを言うが、返事（向こうの中へ行く）には出さない（レビュー L4）
+    far.forgedBundle = Buffer.from("not a bundle at all\n");
+    const notBundle = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(notBundle.handled && !notBundle.ok, true, JSON.stringify(notBundle));
+    const said = (notBundle as { message: string }).message;
+    assert.ok(!said.includes(join(w.home, ".data")) && !said.includes(w.home), `この機械のパスが出ている：${said}`);
+    assert.match(said, /（Repositories の置き場）/);
     delete far.forgedBundle;
     // core の上限で止まった（向こうの bundle を読むのをやめた）——同じく引き受けて断る
     far.failWith = { op: "bundle", message: "backlog が大きすぎて、別のサーバとの間で運べません（上限は 6MB）" };

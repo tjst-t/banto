@@ -532,8 +532,11 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
           throw new Error(`unknown tool: ${name}`);
       }
     } catch (err) {
-      // **理由をそのまま返す**——画面はこれを人に見せる（黙って失敗しない、規則2）
-      return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true };
+      // **理由をそのまま返す**——画面はこれを人に見せる（黙って失敗しない、規則2）。ブランチを送る口の頼み手は Project の中
+      // （AI が読める）なので、この Module の置き場のパスは伏せる（レビュー L4）
+      const text = err instanceof Error ? err.message : String(err);
+      const fromProject = name === "push_branch" || name === "fetch_branch" || name === "branch_target";
+      return { content: [{ type: "text", text: fromProject ? text.split(deps.dataDir).join("（Repositories の置き場）") : text }], isError: true };
     }
   });
 
