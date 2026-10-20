@@ -29,6 +29,7 @@ import {
   CANVAS_META_KEY,
   MODULE_META_KEY,
   PRESENTS_OWNED_SECRET_META_KEY,
+  VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
   callIdOf,
   callerModuleOf,
@@ -37,7 +38,7 @@ import {
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
 import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
-import { BranchSync, type ProjectGitAccess } from "./branch-sync.js";
+import { BranchSync, isRemote, repositoryLabel, type ProjectGitAccess } from "./branch-sync.js";
 import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
 import { Publisher } from "./publish.js";
@@ -91,12 +92,25 @@ function adminTool(name: string, description: string, properties: Record<string,
   };
 }
 
+/**
+ * ブランチを送る口。**`repository`・`account` は別のサーバの Project のときだけ**（`branch_target` で引いたもの）——名乗った引数
+ * なので、中継のゲートが承認のカードに出し、コンテナからの呼び出しでは承認の鍵にも入れる（送り先・アカウントが違えば聞き直す）。
+ * この機械の Project は台帳が決めるので載せない（今までの承認がそのまま効く）
+ */
 function branchTool(name: string, description: string) {
   return {
     name,
     description,
-    inputSchema: { type: "object", properties: { branch: { type: "string" } }, required: ["branch"] },
-    _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch"] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        branch: { type: "string" },
+        repository: { type: "string", description: "別のサーバの Project の送り先（branch_target の答えのまま）" },
+        account: { type: "string", description: "別のサーバの Project で使う GitHub のアカウント（branch_target の答えのまま）" },
+      },
+      required: ["branch"],
+    },
+    _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch", "repository", "account"] },
   };
 }
 
@@ -265,6 +279,16 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       // 名乗る——中継のゲートは、コンテナからの呼び出しをブランチごとに初回だけ人に聞く ──
       branchTool("push_branch", "呼び出し元の Project のリポジトリの、そのブランチだけを origin へ送る（force しない）"),
       branchTool("fetch_branch", "呼び出し元の Project のリポジトリの origin から、そのブランチだけを refs/remotes/origin/<branch> に取ってくる"),
+      // 別のサーバの Project の送り先とアカウントを引く（値を返さない——場所と login だけ）。頼む側は push_branch・fetch_branch の
+      // 引数に載せる。この機械の Project は {remote: false}
+      {
+        name: "branch_target",
+        description:
+          "呼び出し元の Project が別のサーバのとき、ブランチを送る先（repository）とアカウント（account）。答えは {remote:false}・" +
+          "{remote:true, handled:false, reason}・{remote:true, handled:true, ok:false, message}・{remote:true, repository, account, pinned}",
+        inputSchema: { type: "object", properties: {} },
+        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true },
+      },
       // ── Vault が、持ち主でない呼び元に GitHub のログインを渡す前に呼ぶ口（2026-10-18、Backlog #405。§2.4）。**中継からだけ**
       // （可視性 module）。host は役割 vault の同梱の Module からの中継を、依存を見ず人に聞かずに通す——確かめはここでする ──
       {
@@ -303,14 +327,25 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         );
         return { content: [{ type: "text", text: token }] };
       }
-      if (name === "push_branch" || name === "fetch_branch") {
+      if (name === "push_branch" || name === "fetch_branch" || name === "branch_target") {
         // **Project のための呼び出しだけ**（AI のターンでも人の画面でも）。どの Project かは host に聞き、刻印と照らす
         const stamped = caller && "project" in caller ? caller.project : caller && "admin" in caller ? caller.forProject : undefined;
         if (!stamped) throw new Error(`${name} は Project のための呼び出しからだけ呼べます`);
         if (!deps.projects.callerProject) throw new Error("この Repositories は呼び出し元の Project を引く口を持っていません");
         const project = await deps.projects.callerProject(callIdOf(meta));
         if (project.id !== stamped) throw new Error(`呼び出しの刻印の Project（${stamped}）と、host の台帳の Project（${project.id}）が違います`);
-        return json(await branchSync.sync(name === "push_branch" ? "push" : "fetch", str(args.branch, "branch"), project, callIdOf(meta)));
+        if (name === "branch_target") {
+          if (!isRemote(project)) return json({ remote: false });
+          const d = await branchSync.remoteTarget(project, callIdOf(meta));
+          if (d.kind === "not-handled") return json({ remote: true, handled: false, reason: d.reason });
+          if (d.kind === "refused") return json({ remote: true, handled: true, ok: false, message: d.message });
+          return json({ remote: true, repository: repositoryLabel(d.at), account: d.login, pinned: d.pinned });
+        }
+        const claimed = {
+          ...(typeof args.repository === "string" ? { repository: args.repository } : {}),
+          ...(typeof args.account === "string" ? { account: args.account } : {}),
+        };
+        return json(await branchSync.sync(name === "push_branch" ? "push" : "fetch", str(args.branch, "branch"), project, callIdOf(meta), claimed));
       }
       if (!caller || !("admin" in caller)) throw new Error(`${name} は人の操作からだけ呼べます`);
       switch (name) {

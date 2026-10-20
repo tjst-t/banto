@@ -30,11 +30,13 @@ function repo() {
   return { root, bare };
 }
 
-function fakeRelay(answer: (name: string, args: Record<string, unknown>) => { text: string; isError?: boolean } | Error) {
+/** `target` は Repositories の `branch_target` の答え（既定はこの機械の Project——`{remote: false}`） */
+function fakeRelay(answer: (name: string, args: Record<string, unknown>) => { text: string; isError?: boolean } | Error, target: unknown = { remote: false }) {
   const calls: Array<{ name: string; args: Record<string, unknown>; callId?: string }> = [];
   const relay: RelayCall = async (name, args, callId) => {
     calls.push({ name, args, ...(callId ? { callId } : {}) });
     if (name === "relayListTargets") return { text: JSON.stringify([{ name: "repositories", roles: ["repositories"] }]), isError: false };
+    if (args.name === "branch_target") return { text: JSON.stringify(target), isError: false };
     const a = answer(name, args);
     if (a instanceof Error) throw a;
     return { text: a.text, isError: a.isError === true };
@@ -47,8 +49,10 @@ test("Repositories が引き受けたら、自分の git では送らない（�
   const { relay, calls } = fakeRelay(() => ({ text: JSON.stringify({ handled: true, ok: true, message: "送りました" }) }));
   const r = await new RelayingRemote(root, relay).push("backlog", "call-7");
   assert.deepEqual(r, { ok: true, via: "repositories" });
-  assert.deepEqual(calls.map((c) => [c.name, c.callId]), [["relayListTargets", "call-7"], ["relayCallTool", "call-7"]]);
-  assert.deepEqual(calls[1]!.args, { targetModule: "repositories", name: "push_branch", arguments: { branch: "backlog" } });
+  assert.deepEqual(calls.map((c) => [c.name, c.callId]), [["relayListTargets", "call-7"], ["relayCallTool", "call-7"], ["relayCallTool", "call-7"]]);
+  assert.deepEqual(calls[1]!.args, { targetModule: "repositories", name: "branch_target", arguments: {} });
+  // この機械の Project：送り先は名乗らない（台帳が決める——今までの承認がそのまま効く）
+  assert.deepEqual(calls[2]!.args, { targetModule: "repositories", name: "push_branch", arguments: { branch: "backlog" } });
   assert.throws(() => git(bare, "rev-parse", "--verify", "-q", "refs/heads/backlog"), "自分の git でも送った");
 
   // 引き受けて断った——自分では試し直さない
@@ -59,7 +63,28 @@ test("Repositories が引き受けたら、自分の git では送らない（�
   // 取ってくる：origin にまだ無い
   const absent = fakeRelay(() => ({ text: JSON.stringify({ handled: true, ok: true, absent: true, message: "まだ無い" }) }));
   assert.deepEqual(await new RelayingRemote(root, absent.relay).fetch("backlog"), { ok: true, via: "repositories", absent: true });
-  assert.equal(absent.calls[1]!.args.name, "fetch_branch");
+  assert.equal(absent.calls[2]!.args.name, "fetch_branch");
+});
+
+test("別のサーバの Project：branch_target の送り先とアカウントを名乗って頼む。断る・引き受けないと分かれば、送る口は呼ばない", async () => {
+  const { root, bare } = repo();
+  const target = { remote: true, repository: "github.com/alice/notes", account: "alice", pinned: false };
+  const ok = fakeRelay(() => ({ text: JSON.stringify({ handled: true, ok: true, message: "送りました" }) }), target);
+  assert.deepEqual(await new RelayingRemote(root, ok.relay).push("backlog", "c"), { ok: true, via: "repositories" });
+  assert.deepEqual(ok.calls[2]!.args, {
+    targetModule: "repositories",
+    name: "push_branch",
+    arguments: { branch: "backlog", repository: "github.com/alice/notes", account: "alice" },
+  });
+  // 断る（origin が決めた送り先と違う等）——送る口を呼ばず、自分でも試さない
+  const refused = fakeRelay(() => new Error("呼ばれないはず"), { remote: true, handled: true, ok: false, message: "送り先は github.com/alice/notes に決めてあります" });
+  assert.deepEqual(await new RelayingRemote(root, refused.relay).push("backlog"), { ok: false, via: "repositories", message: "送り先は github.com/alice/notes に決めてあります" });
+  assert.equal(refused.calls.filter((c) => c.name === "relayCallTool").length, 1);
+  assert.throws(() => git(bare, "rev-parse", "--verify", "-q", "refs/heads/backlog"));
+  // 引き受けない（GitHub の外）——送る口を呼ばず、自分の git で送る
+  const outside = fakeRelay(() => new Error("呼ばれないはず"), { remote: true, handled: false, reason: "origin が GitHub の外です" });
+  assert.deepEqual(await new RelayingRemote(root, outside.relay).push("backlog"), { ok: true, via: "git" });
+  assert.equal(outside.calls.filter((c) => c.name === "relayCallTool").length, 1);
 });
 
 test("引き受けない・中継が断った・Repositories が居ないときは、リポジトリの git の設定のまま送る", async () => {
@@ -173,7 +198,10 @@ function vaultRelay(opts: { refuseVault?: boolean } = {}) {
         isError: false,
       };
     }
-    if (args.targetModule === "repositories") return { text: JSON.stringify({ handled: false, reason: "根はこの機械のフォルダではありません" }), isError: false };
+    // 別のサーバの Project で origin が GitHub の外——Repositories は引き受けない（送る口は呼ばれない）
+    if (args.targetModule === "repositories" && args.name === "branch_target") {
+      return { text: JSON.stringify({ remote: true, handled: false, reason: "origin が GitHub の外です" }), isError: false };
+    }
     if (args.name === "lookupAlias") return { text: JSON.stringify({ implementation: "vault-local", name: "deploy-key", group: "proj-g" }), isError: false };
     if (args.name === "startSshAgent") {
       if (opts.refuseVault) throw new Error("backlog から vault-local の startSshAgent への中継は許可されていません：人が断りました");
@@ -195,7 +223,7 @@ test("鍵を設定すると、Repositories が引き受けないとき Vault の
   // 呼んだ中継：Repositories に頼み → 窓口で在りか → その金庫の startSshAgent（三つ組のまま）。印はどれにも添える
   const relayed = calls.filter((c) => c.name === "relayCallTool").map((c) => [c.args.targetModule, c.args.name, c.args.arguments]);
   assert.deepEqual(relayed, [
-    ["repositories", "push_branch", { branch: "backlog" }],
+    ["repositories", "branch_target", {}],
     ["vault-directory", "lookupAlias", { name: "deploy-key" }],
     ["vault-local", "startSshAgent", { identity: "deploy-key", group: "proj-g" }],
   ]);
@@ -228,7 +256,7 @@ test("Vault が断ったら鍵無しで試し、失敗の理由に借りられ�
   const message = (r as { message: string }).message;
   assert.match(message, /Permission denied \(publickey\)/);
   assert.match(message, /（SSH 鍵 deploy-key を借りられませんでした（.*人が断りました）/);
-  assert.match(message, /（Repositories は引き受けませんでした（根はこの機械のフォルダではありません））/);
+  assert.match(message, /（Repositories は引き受けませんでした（origin が GitHub の外です））/);
   assert.equal(seen(), "");
   // 中継が無い banto でも、選んだ鍵を使えなかったことを言う
   const none = await new RelayingRemote(root, undefined, () => "deploy-key").push("backlog");

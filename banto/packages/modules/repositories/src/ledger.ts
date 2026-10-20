@@ -74,6 +74,22 @@ export const DEFAULT_REPO_HOME = "~/banto";
 const LEDGER_FILE = "ledger.json";
 const SETTINGS_FILE = "settings.json";
 const ACCOUNTS_FILE = "accounts.json";
+const REMOTE_TARGETS_FILE = "remote-targets.json";
+
+/**
+ * **別のサーバの Project の、ブランチを送る先とアカウント**（追加・2026-10-20、Backlog #466、v4-modules.md §2.4「別のサーバの
+ * Project」）。最初に引き受けたとき（人が承認のカードで場所とアカウントを見た呼び出し）に Project の id ごとに覚え、以降は
+ * 向こうの origin がこの場所と違えば断る——中の AI が origin を書き換えて、別のリポジトリ・別のアカウントを選べないように
+ */
+export interface RemoteTarget {
+  github: GithubLocation;
+  /** GitHub の login */
+  account: string;
+  /** どう決まったか（clone したときのアカウント 等。返事の文言に出す） */
+  via: string;
+  /** 覚えた時刻 */
+  at: string;
+}
 
 /**
  * フォルダの origin に合わせて台帳の1行を直す。**フォルダが読めない（無い・git でない等）間は直さない**
@@ -241,6 +257,39 @@ export class LedgerStore {
     const list = (raw as { accounts?: unknown }).accounts;
     if (!Array.isArray(list)) throw new Error(`アカウントの一覧（${ACCOUNTS_FILE}）の形が違います`);
     return list.map((a, i) => parseAccount(a, `アカウントの ${i + 1} 件目`));
+  }
+
+  /** 別のサーバの Project ごとの送り先（Project の id → 送り先）。読めないものは黙って落とさない */
+  async remoteTargets(): Promise<Map<string, RemoteTarget>> {
+    const raw = await this.readJson(REMOTE_TARGETS_FILE);
+    const out = new Map<string, RemoteTarget>();
+    if (raw === undefined) return out;
+    const projects = (raw as { projects?: unknown }).projects;
+    if (typeof projects !== "object" || projects === null || Array.isArray(projects)) throw new Error(`送り先の記録（${REMOTE_TARGETS_FILE}）の形が違います`);
+    for (const [id, v] of Object.entries(projects as Record<string, unknown>)) {
+      const r = v as Record<string, unknown>;
+      if (!isLocation(r?.github) || typeof r.account !== "string" || r.account === "" || typeof r.via !== "string" || typeof r.at !== "string") {
+        throw new Error(`送り先の記録（${REMOTE_TARGETS_FILE}）の Project ${id} が読めません`);
+      }
+      out.set(id, { github: { owner: r.github.owner, name: r.github.name }, account: r.account, via: r.via, at: r.at });
+    }
+    return out;
+  }
+
+  /**
+   * その Project の送り先を、まだ無ければ覚える（**あれば上書きしない**——先に覚えたものを返す）。台帳と同じ列で1本ずつ走る
+   */
+  pinRemoteTarget(projectId: string, target: RemoteTarget): Promise<RemoteTarget> {
+    const run = this.queue.then(async () => {
+      const all = await this.remoteTargets();
+      const existing = all.get(projectId);
+      if (existing) return existing;
+      all.set(projectId, target);
+      await this.writeJson(REMOTE_TARGETS_FILE, { version: 1, projects: Object.fromEntries(all) });
+      return target;
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 
   /** アカウントの一覧を読み、直して、書く。台帳と同じ列で**1本ずつ**走る */
