@@ -434,7 +434,7 @@ function AccountRow({
           {/* 均すは固定が最後の要求から1時間生きるので「直近1時間」（v4-security.md §2「均す」の 9.） */}
           {a.usedBy.length > 0
             ? `${usedByLabel}：${a.usedBy.map((p) => p.name).join("、")}`
-            : `${usedByLabel}はありません`}
+            : `${usedByLabel} はありません`}
         </span>
         {hostLoggedOut ? <span className="text-xs text-stop">{hostLoggedOut}</span> : null}
         {failure ? (
