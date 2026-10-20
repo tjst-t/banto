@@ -26,6 +26,7 @@ import {
 } from "./fold.js";
 import type { AutomationStore } from "./store.js";
 import { previousRunUnfinished } from "./busy.js";
+import { patrolDeliveryText } from "./patrol.js";
 
 export interface AutomationRunnerDeps {
   projectThread: ProjectThreadStore;
@@ -40,8 +41,16 @@ export interface AutomationRunnerDeps {
    * ——流さないと、開いている画面では再読み込みまでサイドバーの開いた一覧に残る
    */
   announceClosed?(input: { threadId: string; projectId: string; reason: string }): void;
+  /**
+   * **その Project の Claude のアカウントが全部閾値を越えているか**（アーキ仕様 §4.4「見回り」——見回りのために上限を使い切らない）。
+   * 無ければ越えていない扱い
+   */
+  allAccountsOver?(projectId: string): boolean;
   now?: () => Date;
 }
+
+/** 見回りを飛ばした理由（アカウントが全部閾値越え） */
+export const PATROL_SKIPPED_OVER_THRESHOLD = "Claude の使用量が閾値を越えています";
 
 /** 時計で動かす回の添え書き（`automation.fired` に残す） */
 export interface AutomationRunExtras {
@@ -212,6 +221,7 @@ export class AutomationRunner {
     if (!project) return skip("この Project がありません");
     if (project.status === "closed") return skip("この Project は閉じられています");
     if (project.move) return skip("この Project はいま別の実行場所へ移しています");
+    if (automation.mode === "patrol" && this.deps.allAccountsOver?.(automation.projectId)) return skip(PATROL_SKIPPED_OVER_THRESHOLD);
 
     // 作ったときに立てていなかった（立てる口を繋ぐ前に作ったもの）なら、ここで立てる
     let current = automation;
@@ -268,12 +278,13 @@ export class AutomationRunner {
       receivedIds,
     );
     const external = externalOf(received);
+    const instruction = current.mode === "patrol" ? patrolDeliveryText(current) : current.instruction;
     try {
       const delivered = await this.deps.deliveries.deliver({
         threadId,
         from: FROM,
-        title: `自動化「${current.name}」`,
-        text: external.omitted > 0 ? `${current.instruction}\n\n（まとめた出来事が大きすぎるので、${external.omitted} 件の本文を省き、見出しだけを添えました）` : current.instruction,
+        title: current.mode === "patrol" ? `見回り「${current.name}」` : `自動化「${current.name}」`,
+        text: external.omitted > 0 ? `${instruction}\n\n（まとめた出来事が大きすぎるので、${external.omitted} 件の本文を省き、見出しだけを添えました）` : instruction,
         hop: hopOf(received),
         kind: "automation",
         automation: { id: current.id, runId },
@@ -396,11 +407,15 @@ export class AutomationRunner {
     });
   }
 
-  /** 専用の Fork を立てる。名前は自動化の名前。`from` を渡さなければ Base Thread から会話を引き継がずに */
+  /**
+   * 専用の Fork を立てる。名前は自動化の名前。`from` を渡さなければ Base Thread から会話を引き継がずに。
+   * **見回りの Fork は読むだけの印を刻んで立てる**（立て直す・乗り換えるときも。アーキ仕様 §4.4「読むだけの回」）
+   */
   private async newFork(automation: Automation, from?: ThreadState): Promise<ThreadState> {
-    if (from) return this.deps.projectThread.forkThread(from.id, { title: automation.name });
+    const restriction = automation.mode === "patrol" ? { restriction: "read-only" as const } : {};
+    if (from) return this.deps.projectThread.forkThread(from.id, { title: automation.name, ...restriction });
     const base = this.deps.projectThread.listThreadsForProject(automation.projectId).find((t) => t.kind === "base");
     if (!base) throw new Error(`Project ${automation.projectId} に Base Thread が無いので、専用の Fork を立てられません`);
-    return this.deps.projectThread.forkThread(base.id, { title: automation.name, fresh: true });
+    return this.deps.projectThread.forkThread(base.id, { title: automation.name, fresh: true, ...restriction });
   }
 }

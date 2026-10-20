@@ -93,10 +93,15 @@ export interface MessageEntry {
 
 /** 画面から人が添えた塊1つ。出所の Module と、第三者か（host が宣言から決めた値） */
 export interface MessageQuote {
-  /** Module の宣言上の名前 */
+  /** Module の宣言上の名前（見回りの気づきの引用は `banto`） */
   module: string;
   thirdParty: boolean;
   text: string;
+  /**
+   * **見回り〈名前〉の気づきの引用**（追加・2026-10-20、アーキ仕様 §4.4「気づき（受信箱）」）。受信箱の「やって」「任務にする」で
+   * 人の発言に添えたもの。中身は host が受信箱の気づきから組む（外から来た文を読んだ見回りが書いたもの）
+   */
+  patrol?: string;
 }
 
 /** 記録に残すまとめ。中身（summary）の形は `http/turn-summary.ts` の `TurnSummary` */

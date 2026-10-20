@@ -31,16 +31,24 @@ export interface CanvasQuote {
   /** どの画面から来たか。同じ画面からのものは1つにする */
   slot: string;
   text: string;
+  /**
+   * **見回り〈名前〉の気づきの引用**（追加・2026-10-20、v4-frontend.md §6.47）。受信箱の「やって」「任務にする」で送った発言に
+   * host が添えたもの（記録から組み直すときだけ付く）
+   */
+  patrol?: string;
 }
 
-/** 塊の出所を人に見せる1行。**第三者は強く言う** */
-export function quoteSourceLabel(quote: Pick<CanvasQuote, "module" | "thirdParty">): string {
+/** 塊の出所を人に見せる1行。**第三者は強く言う**。見回りの気づきは外から来た文を読んで書いたもの */
+export function quoteSourceLabel(quote: Pick<CanvasQuote, "module" | "thirdParty" | "patrol">): string {
+  if (quote.patrol !== undefined) return `見回り〈${quote.patrol}〉の気づきの引用`;
   return quote.thirdParty ? `第三者の Module「${quote.module}」の画面から` : `${quote.module} の画面から`;
 }
 
 export function quoteToAttachment(quote: CanvasQuote): CreateAttachment {
   return {
-    id: ID_PREFIX + JSON.stringify({ module: quote.module, thirdParty: quote.thirdParty, slot: quote.slot }),
+    id:
+      ID_PREFIX +
+      JSON.stringify({ module: quote.module, thirdParty: quote.thirdParty, slot: quote.slot, ...(quote.patrol !== undefined ? { patrol: quote.patrol } : {}) }),
     type: CANVAS_QUOTE_TYPE,
     name: quoteSourceLabel(quote),
     contentType: CANVAS_QUOTE_CONTENT_TYPE,
@@ -56,14 +64,20 @@ export function quoteFromAttachment(attachment: {
 }): CanvasQuote | undefined {
   if (attachment.type !== CANVAS_QUOTE_TYPE || !attachment.id.startsWith(ID_PREFIX)) return undefined;
   try {
-    const meta = JSON.parse(attachment.id.slice(ID_PREFIX.length)) as { module?: unknown; thirdParty?: unknown; slot?: unknown };
+    const meta = JSON.parse(attachment.id.slice(ID_PREFIX.length)) as { module?: unknown; thirdParty?: unknown; slot?: unknown; patrol?: unknown };
     if (typeof meta.module !== "string" || typeof meta.slot !== "string") return undefined;
     const text = (attachment.content ?? [])
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
     // 出所が読めないものは第三者として扱う（弱く出さない）
-    return { module: meta.module, thirdParty: meta.thirdParty !== false, slot: meta.slot, text };
+    return {
+      module: meta.module,
+      thirdParty: meta.thirdParty !== false,
+      slot: meta.slot,
+      text,
+      ...(typeof meta.patrol === "string" ? { patrol: meta.patrol } : {}),
+    };
   } catch {
     return undefined;
   }

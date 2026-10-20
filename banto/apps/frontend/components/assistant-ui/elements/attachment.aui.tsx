@@ -146,7 +146,9 @@ const CanvasQuoteTile: FC<{ quote: CanvasQuote; isComposer: boolean }> = ({ quot
         <DialogContent className="sm:max-w-2xl">
           <DialogTitle className="text-sm">{label}</DialogTitle>
           <p className="text-muted-foreground text-xs">
-            人が書いた文ではなく、画面がまとめたものです。送ると、AI には出所つきの引用として渡ります。
+            {quote.patrol !== undefined
+              ? "外から来た文を読んだ見回りが書いたものです。AI には出所つきの引用として渡りました。"
+              : "人が書いた文ではなく、画面がまとめたものです。送ると、AI には出所つきの引用として渡ります。"}
           </p>
           <pre data-testid="canvas-quote-full" className="bg-muted max-h-[60vh] overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">
             {quote.text}

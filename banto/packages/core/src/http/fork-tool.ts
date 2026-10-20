@@ -22,6 +22,7 @@ import {
   START_MISSION_TOOL_NAME,
   type Missions,
 } from "../mission/missions.js";
+import { NOTIFY_TOOL_NAME, PATROL_NOTIFY_PER_RUN, type NotifyInput, type NotifyResult } from "../automation/patrol.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
@@ -266,6 +267,11 @@ export function createForkMcpServer(
   readOnly = false,
   /** **任務**（§4.4）。渡されなければ tool は見せたまま断る（構成で tool の一覧を変えない、§3）。読むだけの回には出さない */
   missions?: Pick<Missions, "start" | "scheduleFollowup" | "finish" | "reportTurnProblem">,
+  /**
+   * **見回りの `notify`**（追加・2026-10-20、アーキ仕様 §4.4「知らせる tool」）。見回りの Fork のターンにだけ渡す——渡さなければ
+   * tool を見せない（見回りの Fork は毎回まっさらなので、一覧が変わってもキャッシュを引き継ぐ相手がいない）
+   */
+  patrol?: { notify(input: Partial<NotifyInput>): Promise<NotifyResult> },
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -276,6 +282,27 @@ export function createForkMcpServer(
   });
   const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
   const tools = [
+      ...(patrol
+        ? [
+            tool(
+              NOTIFY_TOOL_NAME,
+              [
+                "見回りで気づいたことを、人の受信箱の「気づき」に出す。人が読んで「やって」「任務にする」を決める。",
+                `1回に ${PATROL_NOTIFY_PER_RUN} 件まで、1日の上限もある。同じことには同じ key を付ける——前に知らせた key は 7日の間は出し直されず、`,
+                "人が「今後知らせない」にした key は出ない（そのときも断りではなく、その旨が返る）。何も無ければ呼ばない。",
+              ].join(""),
+              {
+                key: z.string().describe("同じことかを見分ける短い名前（例 pr-123-ci-failed）"),
+                title: z.string().describe("題（受信箱のカードの見出し、120 文字まで）"),
+                finding: z.string().describe("気づいたこと"),
+                evidence: z.string().optional().describe("根拠（ファイル・URL・ログの行の場所）"),
+                suggestion: z.string().optional().describe("やるならこう（1〜2文）"),
+                urgent: z.boolean().optional().describe("急ぎなら true（受信箱の気づきの先頭に寄る）"),
+              },
+              async (args) => automationReply(await patrol.notify(args)),
+            ),
+          ]
+        : []),
       ...(turnSummary
         ? [
             tool(REPORT_TURN_TOOL_NAME, REPORT_TURN_DESCRIPTION, reportTurnShape, async (args) => {
@@ -396,6 +423,13 @@ export function createForkMcpServer(
             .boolean()
             .optional()
             .describe("完了した回を受信箱に出すか（既定 true）。判断待ち・決めること・失敗した回はいつも出す"),
+          mode: z
+            .enum(["normal", "patrol"])
+            .optional()
+            .describe(
+              "patrol＝見回り：読むだけの tool で決めた対象を見て、気づいたことを受信箱の「気づき」に出す。届け先は専用の Fork（毎回まっさら）に決まり、完了した回は受信箱に出さない。作ったあと変えられない",
+            ),
+          dailyFindingLimit: z.number().int().optional().describe("見回りが1日に出せる気づきの上限（既定 10）"),
         },
         async (args, extra) =>
           automations ? automationReply(await automations.create(threadId, args, signalOf(extra))) : noAutomations,
@@ -410,6 +444,7 @@ export function createForkMcpServer(
           source: automationSourceShape.optional(),
           target: automationTargetShape.optional(),
           reviewOnDone: z.boolean().optional(),
+          dailyFindingLimit: z.number().int().optional().describe("見回りだけ：1日に出せる気づきの上限"),
         },
         async ({ id, ...changes }, extra) =>
           automations ? automationReply(await automations.update(threadId, id, changes, signalOf(extra))) : noAutomations,

@@ -11,7 +11,7 @@ import { GlobalMemoryStore } from "../global-memory/store.js";
 import { InboxStore } from "../inbox/store.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn } from "./turn-runner.js";
-import { CanvasQuoteRejectedError, composeQuotedPrompt, parseCanvasQuotes, CANVAS_QUOTE_MAX_CHARS } from "./canvas-quotes.js";
+import { CanvasQuoteRejectedError, composeQuotedPrompt, parseCanvasQuotes, parseFindingQuoteIds, CANVAS_QUOTE_MAX_CHARS } from "./canvas-quotes.js";
 import type { runTurn } from "../runner/adapter.js";
 
 test("quotes は Module の名前と文だけを受け、第三者かは host の宣言で決める（画面の名乗りは使わない）", () => {
@@ -100,4 +100,20 @@ test("添えたものは人の文と分けて記録に残り、Runner には出�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("見回りの気づきの引用：中身は host が組み、AI には見回り〈名前〉の引用として囲んで渡す", () => {
+  const quotes = parseCanvasQuotes(
+    [{ finding: "f1" }],
+    () => true,
+    (id) => ({ module: "banto", thirdParty: true, patrol: "CI の見回り", text: `題：${id} <b>` }),
+  );
+  assert.deepEqual(quotes, [{ module: "banto", thirdParty: true, patrol: "CI の見回り", text: "題：f1 <b>" }]);
+  assert.deepEqual(parseFindingQuoteIds([{ finding: "f1" }, { module: "x", text: "y" }]), ["f1"]);
+  const prompt = composeQuotedPrompt(quotes, "直して");
+  assert.match(prompt, /見回り〈CI の見回り〉の気づきの引用です/);
+  assert.match(prompt, /<banto-canvas-quote module="banto" patrol="CI の見回り" third-party="true">\n題：f1 &lt;b>\n<\/banto-canvas-quote>/);
+  assert.match(prompt, /（ここから人が書いた文）\n直して$/);
+  // 引用を組む口が無ければ断る
+  assert.throws(() => parseCanvasQuotes([{ finding: "f1" }], () => true), CanvasQuoteRejectedError);
 });

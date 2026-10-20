@@ -45,6 +45,7 @@ import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import { MISSION_TOOL_NAMES, type Missions } from "../mission/missions.js";
+import { NOTIFY_TOOL_NAME, type PatrolTurnState, type Patrols } from "../automation/patrol.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -358,6 +359,8 @@ async function* runThreadTurnInner(
      * 確かめもしない
      */
     missions?: Pick<Missions, "start" | "scheduleFollowup" | "finish" | "reportTurnProblem" | "stopReason">;
+    /** **見回り**（追加・2026-10-20、アーキ仕様 §4.4）。見回りの Fork のターンにだけ `notify` を見せる */
+    patrols?: Pick<Patrols, "patrolOf" | "notify">;
     /**
      * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
@@ -588,6 +591,13 @@ async function* runThreadTurnInner(
   // 読むだけの回では `report_turn` を出さない（core の tool は読むだけのものだけ、§4.4）
   const turnSummary: TurnSummaryState | undefined =
     !readOnly && deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
+  // **見回りの Fork なら `notify`**（§4.4「知らせる tool」）。見回りを消したあとの Fork（読むだけのまま）には出さない。
+  // 見回りの印は読むだけの会話にしか付かないが、念のため両方を見る（読むだけでない会話に notify を出さない）
+  const patrolTurn: PatrolTurnState = { notified: 0 };
+  const patrolNotify =
+    readOnly && deps.patrols?.patrolOf(input.threadId)
+      ? { notify: (args: Parameters<Patrols["notify"]>[1]) => deps.patrols!.notify(input.threadId, args, patrolTurn) }
+      : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -602,6 +612,7 @@ async function* runThreadTurnInner(
     deps.claudeUsage ? (threadId) => deps.claudeUsage!(thread.projectId, threadId) : undefined,
     readOnly,
     deps.missions,
+    patrolNotify,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -718,7 +729,12 @@ async function* runThreadTurnInner(
       // **読むだけの回は、使える tool（読むだけのもの）を聞かずに通す**——人が見ていない回で判断待ちを積まない（§4.4）。ここに
       // 載らないものが承認に来たら、下で人に聞かずに断る
       allowedTools: readOnly
-        ? [...READ_ONLY_BUILTIN_TOOLS, ...readOnlyCoreToolNames(), ...readOnlyModuleTools]
+        ? [
+            ...READ_ONLY_BUILTIN_TOOLS,
+            // `notify` は見回りの Fork のターンにだけ在る——無い回には載せない
+            ...readOnlyCoreToolNames().filter((name) => patrolNotify || name !== `mcp__banto-thread__${NOTIFY_TOOL_NAME}`),
+            ...readOnlyModuleTools,
+          ]
         : [
             `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
             // Claude の使用量を読むだけ（環境を変えない）——毎回聞かない（v4-security.md §2「AI が使用量を見る」）

@@ -1,6 +1,8 @@
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
 import type {
+  FindingClosed,
+  FindingItem,
   InboxReadModel,
   JudgmentItem,
   JudgmentSource,
@@ -60,7 +62,10 @@ export type InboxEvent =
         claudeAccounts?: NoticeClaudeAccounts;
       };
     }
-  | { type: "inbox.notice_acknowledged"; payload: { id: string } };
+  | { type: "inbox.notice_acknowledged"; payload: { id: string } }
+  // 見回りの気づき（追加・2026-10-20、アーキ仕様 §4.4「気づき（受信箱）」）
+  | { type: "inbox.finding_raised"; payload: Omit<FindingItem, "kind" | "closed" | "createdAt"> }
+  | { type: "inbox.finding_closed"; payload: { id: string } & Omit<FindingClosed, "at"> };
 
 export const inboxFold: Fold<InboxReadModel> = {
   initial: () => ({ items: new Map() }),
@@ -160,6 +165,18 @@ export const inboxFold: Fold<InboxReadModel> = {
         const existing = items.get(event.payload.id);
         if (existing && existing.kind === "notice") {
           items.set(existing.id, { ...existing, acknowledged: true });
+        }
+        return { items };
+      }
+      case "inbox.finding_raised": {
+        items.set(event.payload.id, { ...event.payload, kind: "finding", createdAt: raw.ts });
+        return { items };
+      }
+      case "inbox.finding_closed": {
+        const existing = items.get(event.payload.id);
+        if (existing && existing.kind === "finding" && !existing.closed) {
+          const { id: _id, ...closed } = event.payload;
+          items.set(existing.id, { ...existing, closed: { ...closed, at: raw.ts } });
         }
         return { items };
       }

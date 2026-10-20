@@ -108,6 +108,7 @@ export function automationForAi(a: Automation, now: Date = new Date()): Record<s
     when: describeAutomationSource(a.source),
     target: a.target,
     reviewOnDone: a.reviewOnDone,
+    ...(a.mode === "patrol" ? { mode: a.mode, dailyFindingLimit: a.dailyFindingLimit } : {}),
     paused: a.paused,
     ...(a.pausedReason ? { pausedReason: a.pausedReason } : {}),
     createdBy: a.createdBy.kind,
@@ -146,6 +147,7 @@ export class AutomationTools {
       // 出来事が名乗られているか・条件が名乗りに合うか・判断役の届け先（断る理由は `guard` が AI に返す）
       this.deps.automations.checkFields(projectId, fields);
       const toolInput = {
+        ...(fields.mode === "patrol" ? { 種類: `見回り（読むだけ。気づいたことを受信箱に出す。1日 ${fields.dailyFindingLimit} 件まで）` } : {}),
         名前: fields.name,
         いつ: describeAutomationSource(fields.source),
         毎回届ける指示: fields.instruction,
@@ -193,6 +195,7 @@ export class AutomationTools {
       if (changes.instruction !== undefined) rows["毎回届ける指示"] = changes.instruction;
       if (changes.target) rows["どの会話で動かすか"] = `${this.describeTarget(current.target)} → ${this.describeTarget(next.target)}`;
       if (changes.reviewOnDone !== undefined) rows["終わったら受信箱に出す"] = changes.reviewOnDone ? "出す" : "出さない";
+      if (changes.dailyFindingLimit !== undefined) rows["1日の気づきの上限"] = `${current.dailyFindingLimit ?? "-"} → ${changes.dailyFindingLimit}`;
       const answer = await this.ask(threadId, "この自動化を変えてよいですか", rows, AUTOMATION_UPDATE_CHOICES, signal);
       if (!answer.allowed) return { ok: false, text: `人が変えないと答えたので、自動化は変えていません。${answer.note}` };
       let updated = await this.deps.automations.update(automationId, raw);

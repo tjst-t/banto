@@ -17,9 +17,14 @@ import {
   type AutomationSignature,
   type AutomationSource,
   type AutomationTarget,
+  type PatrolNoteChange,
 } from "./fold.js";
 import { cronExpressionProblem } from "./schedule.js";
 import { BANTO_EVENTS, bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
+
+/** 見回りが1日に出せる気づきの既定と上限（アーキ仕様 §4.4「知らせる tool」） */
+export const PATROL_DAILY_LIMIT_DEFAULT = 10;
+const PATROL_DAILY_LIMIT_MAX = 50;
 
 /** 入力が決まりに合わない（画面・AI に理由をそのまま返す） */
 export class AutomationInputError extends Error {}
@@ -94,7 +99,7 @@ export class AutomationStore {
    * ——人が許したあとで「入力が違う」と断らないように。`create`・`update` も同じものを通る。直すときは、きっかけを変えた
    * ときだけ名乗りと照らす（`sourceChanged`——名前だけ直すのを、あとで Module を外したことで断らない）
    */
-  checkFields(projectId: string, fields: Pick<AutomationFields, "source" | "target">, sourceChanged = true): void {
+  checkFields(projectId: string, fields: Pick<AutomationFields, "source" | "target" | "mode">, sourceChanged = true): void {
     if (sourceChanged && fields.source.kind === "event") this.checkEventSource(projectId, fields.source);
     checkJudgeTarget(fields);
   }
@@ -158,7 +163,11 @@ export class AutomationStore {
   async update(id: string, changes: unknown): Promise<Automation> {
     const current = this.mustGet(id);
     const parsed = parseAutomationChanges(changes, current);
-    this.checkFields(current.projectId, { source: parsed.source ?? current.source, target: parsed.target ?? current.target }, parsed.source !== undefined);
+    this.checkFields(
+      current.projectId,
+      { source: parsed.source ?? current.source, target: parsed.target ?? current.target, ...(current.mode ? { mode: current.mode } : {}) },
+      parsed.source !== undefined,
+    );
     await this.append("automation.updated", { id, changes: parsed });
     return this.mustGet(id);
   }
@@ -197,6 +206,16 @@ export class AutomationStore {
   async recordRun(id: string, run: AutomationRun, receivedIds?: string[]): Promise<void> {
     this.mustGet(id);
     await this.append("automation.fired", { id, ...run, ...(receivedIds?.length ? { receivedIds } : {}) });
+  }
+
+  /**
+   * **見回りの手帳に書く**（アーキ仕様 §4.4「手帳」）。人・AI の入力（`update`）からは書けない——host が `notify` と受信箱の
+   * 押したものから書く
+   */
+  async notePatrol(id: string, key: string, change: PatrolNoteChange, title?: string): Promise<void> {
+    const current = this.mustGet(id);
+    if (current.mode !== "patrol") throw new Error(`自動化 ${id} は見回りではありません`);
+    await this.append("automation.patrol_noted", { id, key, change, ...(title ? { title } : {}) });
   }
 
   /** Webhook で受けたものを残す（届けるまで溜める。届けた回の `automation.fired` の `receivedIds` で外れる） */
@@ -253,7 +272,11 @@ export class AutomationStore {
  * **判断役の届け先は専用の Fork に限る**（アーキ仕様 §4.3「banto.turn-decisions と判断役」の「守り」）——既存の Thread（Base 等）を
  * 届け先にすると、その会話の承認を「必ず聞く」に固定することになる
  */
-function checkJudgeTarget(fields: Pick<AutomationFields, "source" | "target">): void {
+function checkJudgeTarget(fields: Pick<AutomationFields, "source" | "target" | "mode">): void {
+  // 見回りの回は読むだけで answer_decision を持たない——判断役にはなれない（§4.4「判断役の道を断つ」）
+  if (isJudgeAutomation(fields) && fields.mode === "patrol") {
+    throw new AutomationInputError(`見回りは ${TURN_DECISIONS_EVENT} を待てません（判断役にはなれません）`);
+  }
   if (isJudgeAutomation(fields) && fields.target.kind !== "dedicated") {
     throw new AutomationInputError(`${TURN_DECISIONS_EVENT} を待つ自動化（判断役）の届け先は、専用の Fork だけです`);
   }
@@ -414,8 +437,43 @@ function parseReviewOnDone(v: unknown): boolean {
   return v;
 }
 
+function parseMode(v: unknown): "patrol" | undefined {
+  if (v === undefined || v === "normal") return undefined;
+  if (v === "patrol") return "patrol";
+  throw new AutomationInputError("mode は normal（ふつう）か patrol（見回り）です");
+}
+
+function parseDailyFindingLimit(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > PATROL_DAILY_LIMIT_MAX) {
+    throw new AutomationInputError(`dailyFindingLimit（1日の気づきの上限）は 1〜${PATROL_DAILY_LIMIT_MAX} の整数で渡してください`);
+  }
+  return v;
+}
+
 export function parseAutomationFields(raw: unknown): AutomationFields {
   if (!isRecord(raw)) throw new AutomationInputError("自動化の中身はオブジェクトで渡してください");
+  const mode = parseMode(raw.mode);
+  if (mode === "patrol") {
+    // **見回りの届け先は専用の Fork・毎回まっさらに固定**し、完了した回は受信箱に出さない（アーキ仕様 §4.4「違うところ」）
+    // ——違う値を渡されたら黙って直さずに断る（規則2）
+    if (raw.target !== undefined) {
+      const t = parseTarget(raw.target);
+      if (t.kind !== "dedicated" || t.mode !== "fresh") {
+        throw new AutomationInputError("見回りの届け先は専用の Fork（毎回まっさら）だけです");
+      }
+    }
+    if (raw.reviewOnDone === true) throw new AutomationInputError("見回りは完了した回を受信箱に出しません（気づきは notify で出します）");
+    return {
+      name: parseName(raw.name),
+      instruction: parseInstruction(raw.instruction),
+      source: parseSource(raw.source),
+      target: { kind: "dedicated", mode: "fresh" },
+      reviewOnDone: false,
+      mode,
+      dailyFindingLimit: raw.dailyFindingLimit === undefined ? PATROL_DAILY_LIMIT_DEFAULT : parseDailyFindingLimit(raw.dailyFindingLimit),
+    };
+  }
+  if (raw.dailyFindingLimit !== undefined) throw new AutomationInputError("dailyFindingLimit は見回り（mode: patrol）だけの欄です");
   return {
     name: parseName(raw.name),
     instruction: parseInstruction(raw.instruction),
@@ -437,10 +495,27 @@ export function parseAutomationChanges(raw: unknown, current: Automation): Parti
       throw new AutomationInputError("きっかけの種類（決まった時刻／Webhook／出来事）は変えられません。作り直してください");
     }
   }
-  if (raw.target !== undefined) changes.target = parseTarget(raw.target, current.target);
-  if (raw.reviewOnDone !== undefined) changes.reviewOnDone = parseReviewOnDone(raw.reviewOnDone);
+  // **種類は作ったあと変えない**（アーキ仕様 §4.4「mode は作ったあと変えない」）。同じ値なら直したことにしない
+  if (raw.mode !== undefined && parseMode(raw.mode) !== current.mode) {
+    throw new AutomationInputError("種類（ふつう／見回り）は変えられません。作り直してください");
+  }
+  const patrol = current.mode === "patrol";
+  if (raw.target !== undefined) {
+    changes.target = parseTarget(raw.target, current.target);
+    if (patrol && (changes.target.kind !== "dedicated" || changes.target.mode !== "fresh")) {
+      throw new AutomationInputError("見回りの届け先は専用の Fork（毎回まっさら）だけです");
+    }
+  }
+  if (raw.reviewOnDone !== undefined) {
+    changes.reviewOnDone = parseReviewOnDone(raw.reviewOnDone);
+    if (patrol && changes.reviewOnDone) throw new AutomationInputError("見回りは完了した回を受信箱に出しません（気づきは notify で出します）");
+  }
+  if (raw.dailyFindingLimit !== undefined) {
+    if (!patrol) throw new AutomationInputError("dailyFindingLimit は見回り（mode: patrol）だけの欄です");
+    changes.dailyFindingLimit = parseDailyFindingLimit(raw.dailyFindingLimit);
+  }
   if (Object.keys(changes).length === 0) {
-    throw new AutomationInputError("直す欄がありません（name・instruction・source・target・reviewOnDone）");
+    throw new AutomationInputError("直す欄がありません（name・instruction・source・target・reviewOnDone・dailyFindingLimit）");
   }
   return changes;
 }

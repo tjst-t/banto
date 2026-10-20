@@ -34,6 +34,7 @@ import {
   CircleX,
   CornerDownLeft,
   ExternalLink,
+  Eye,
   GitFork,
   Hand,
   Loader2,
@@ -53,12 +54,15 @@ import {
   moveRealRuntimeKey,
   resumeRealNoticeTurn,
   sendRealThreadMessage,
+  closeRealFinding,
+  type RealInboxFinding,
   type RealInboxJudgment,
   type RealInboxNotice,
   type RealInboxReview,
   type RealReviewJudge,
 } from "@/lib/backend/client";
 import {
+  getRealFindings,
   getRealJudgments,
   getRealNotices,
   getRealReviews,
@@ -78,13 +82,16 @@ import { ElicitationFormView } from "./elicitation-form";
 import { formFieldsOf } from "@/lib/form-fields";
 import { ClaudeAccountsAllOverNotice } from "./claude-accounts-notice";
 import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
+import { FindingBody } from "./finding-card";
 
-type Section = "judgment" | "decide" | "returned" | "fix";
+type Section = "judgment" | "decide" | "returned" | "finding" | "fix";
 
 const SECTIONS: { key: Section; label: string }[] = [
   { key: "judgment", label: "あなたの判断を待っています" },
   { key: "decide", label: "決めることがあります" },
   { key: "returned", label: "返ってきた会話" },
+  // 見回りの気づき（追加・2026-10-20、§6.47）。急ぎを先頭に
+  { key: "finding", label: "見回りの気づき" },
   { key: "fix", label: "直してほしいこと" },
 ];
 
@@ -94,13 +101,15 @@ const LEAVE_AFTER_MS = 2600;
 type Card =
   | { kind: "judgment"; id: string; createdAt: string; item: RealInboxJudgment }
   | { kind: "returned"; id: string; createdAt: string; item: RealInboxReview }
-  | { kind: "fix"; id: string; createdAt: string; item: RealInboxNotice };
+  | { kind: "fix"; id: string; createdAt: string; item: RealInboxNotice }
+  | { kind: "finding"; id: string; createdAt: string; item: RealInboxFinding };
 
 type Outcome = { kind: "sent"; text: string } | { kind: "answered"; choice: string } | { kind: "seen" };
 
 function sectionOf(card: Card): Section {
   if (card.kind === "judgment") return "judgment";
   if (card.kind === "fix") return "fix";
+  if (card.kind === "finding") return "finding";
   return (reviewSummaryOf(card.item)?.decisions.length ?? 0) > 0 ? "decide" : "returned";
 }
 
@@ -169,6 +178,7 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
     ...getRealJudgments().map((item): Card => ({ kind: "judgment", id: item.id, createdAt: item.createdAt, item })),
     ...getRealReviews().map((item): Card => ({ kind: "returned", id: item.id, createdAt: item.createdAt, item })),
     ...getRealNotices().map((item): Card => ({ kind: "fix", id: item.id, createdAt: item.createdAt, item })),
+    ...getRealFindings().map((item): Card => ({ kind: "finding", id: item.id, createdAt: item.createdAt, item })),
   ];
   /**
    * **片づけたカード**。host から消えたあとも少しの間だけ「送りました」等を出してから外す——押した結果が見えないまま
@@ -179,7 +189,9 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
   const cards = [...live, ...Object.values(leaving).map((l) => l.card).filter((c) => !liveIds.has(c.id))].sort(
     (a, b) => b.createdAt.localeCompare(a.createdAt),
   );
-  const ordered = SECTIONS.flatMap((s) => cards.filter((c) => sectionOf(c) === s.key));
+  // 気づきは急ぎを先頭に（中は新しい順のまま、§6.47）
+  const urgentFirst = (c: Card) => (c.kind === "finding" && c.item.urgent ? 0 : 1);
+  const ordered = SECTIONS.flatMap((s) => cards.filter((c) => sectionOf(c) === s.key).sort((a, b) => urgentFirst(a) - urgentFirst(b)));
 
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const focused = ordered.some((c) => c.id === focusedId) ? focusedId : (ordered.find((c) => !leaving[c.id])?.id ?? null);
@@ -208,9 +220,10 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
     );
   }
 
-  /** 「見た」にする（レビュー待ち・お知らせ）。失敗したら投げる——カードは残る */
+  /** 「見た」にする（レビュー待ち・お知らせ。気づきは「片づけた」）。失敗したら投げる——カードは残る */
   async function markSeen(card: Card): Promise<void> {
-    await acknowledgeRealNotice(card.id);
+    if (card.kind === "finding") await closeRealFinding(card.id, "dismiss");
+    else await acknowledgeRealNotice(card.id);
     settle(card, { kind: "seen" });
     void refreshRealInbox();
   }
@@ -326,7 +339,15 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
                           }}
                           onFocusCapture={() => focus(card.id, false)}
                           onMouseDown={() => focus(card.id, false)}
-                          data-testid={card.kind === "judgment" ? "inbox-judgment" : card.kind === "fix" ? "inbox-notice" : "inbox-review"}
+                          data-testid={
+                            card.kind === "judgment"
+                              ? "inbox-judgment"
+                              : card.kind === "fix"
+                                ? "inbox-notice"
+                                : card.kind === "finding"
+                                  ? "inbox-finding"
+                                  : "inbox-review"
+                          }
                           data-id={card.id}
                           data-focused={focused === card.id || undefined}
                           className={cn(
@@ -342,6 +363,18 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
                             <SettledBody outcome={settled} card={card} />
                           ) : card.kind === "judgment" ? (
                             <JudgmentBody item={card.item} onAnswered={(choice) => settle(card, { kind: "answered", choice })} />
+                          ) : card.kind === "finding" ? (
+                            <FindingBody
+                              item={card.item}
+                              onSent={(text) => {
+                                settle(card, { kind: "sent", text });
+                                void refreshRealInbox();
+                              }}
+                              onClosed={() => {
+                                settle(card, { kind: "seen" });
+                                void refreshRealInbox();
+                              }}
+                            />
                           ) : card.kind === "returned" ? (
                             <ReturnedBody
                               item={card.item}
@@ -452,6 +485,12 @@ function Mark({ card }: { card: Card }) {
     return (
       <span className={cn(base, "bg-warn-soft text-warn")}>
         <Wrench className="size-3.5" />
+      </span>
+    );
+  if (card.kind === "finding")
+    return (
+      <span className={cn(base, card.item.urgent ? "bg-turn-soft text-turn" : "bg-surface-2 text-ink-2")}>
+        <Eye className="size-3.5" />
       </span>
     );
   const summary = reviewSummaryOf(card.item);

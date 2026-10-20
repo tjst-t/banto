@@ -6,6 +6,7 @@
 // RemoteThreadListRuntime の前提とは相性が悪い。Thread ごとに Runtime を分けることで、
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
+import { Eye } from "lucide-react";
 import { TurnSummaryFooter } from "@/components/banto/thread/turn-summary-card";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { AssistantRuntimeProvider, ExportedMessageRepository, useLocalRuntime } from "@assistant-ui/react";
@@ -387,6 +388,13 @@ function ThreadRuntime({
       <ProjectCodeTransferLine projectId={projectId} testId="thread-code-transfer" className="mb-2" />
       {/* 上限が戻るのを待っている——自動で続ける時刻と「今すぐ続ける」「待つのをやめる」（§6.46） */}
       <RateLimitWaitBanner threadId={threadId} />
+      {/* **見回りの会話**（§6.47）：どう起こしても読むだけで動く——人がここで頼んでも書けないことを先に言う */}
+      {getThread(threadId)?.restriction === "read-only" ? (
+        <p data-testid="patrol-thread-band" className="mb-2 flex items-center gap-1.5 rounded-md bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
+          <Eye className="size-3.5 shrink-0" aria-hidden />
+          見回りの会話です。ここで頼んだことも読むだけで動きます
+        </p>
+      ) : null}
       <ThreadMarkers markers={markers} />
     </>
   );
