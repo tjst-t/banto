@@ -641,3 +641,20 @@ test("あとから足す道（鍵の窓口）：同じなら触らず、外す�
   assert.deepEqual(await new ProjectContainers(statefulIncus().run).removeDevices("banto-none", () => true), []);
   await assert.rejects(new ProjectContainers(statefulIncus().run).ensureProxy("banto-none", "x", route, ids), /ありません/);
 });
+
+test("道を足すのが断られたら（中のポートがぶつかった等）、断りの文に道が入る——マウントのせいに見せない（レビュー L3）", async () => {
+  const f = statefulIncus();
+  const run: RunIncus = async (args) =>
+    patchedDevices(args)?.["banto-relay"] ? { code: 1, stdout: "", stderr: "Error: Failed to listen on 127.0.0.1:29839: address already in use" } : f.run(args);
+  const c = new ProjectContainers(run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  await assert.rejects(
+    c.ensure({
+      ...SPEC,
+      uid: 1001,
+      gid: 1002,
+      inside: { uid: 1000, gid: 1000 },
+      proxies: { "banto-relay": { bind: "instance", listen: "tcp:127.0.0.1:29839", connect: "unix:/run/user/1001/banto/p-p1/t.sock" } },
+    }),
+    /道（banto-relay：tcp:127\.0\.0\.1:29839 → unix:\/run\/user\/1001\/banto\/p-p1\/t\.sock）を足すのに失敗しました：.*address already in use/,
+  );
+});

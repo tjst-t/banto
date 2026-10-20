@@ -511,7 +511,15 @@ export class ProjectContainers {
       if (st.devices[device]) await this.incus(["config", "device", "remove", name, device], `古い道（${device}）を外すの`);
       toAdd[device] = want;
     }
-    await this.addDevices(name, toAdd, "banto のコードと Project の根をマウントするの");
+    // 何を足そうとしたかを断りの文に入れる（中の道のポートがぶつかった等で断られたとき、マウントのせいに見せない）
+    const proxyNames = Object.keys(toAdd).filter((d) => toAdd[d]!["type"] === "proxy");
+    await this.addDevices(
+      name,
+      toAdd,
+      proxyNames.length > 0
+        ? `banto のコードと Project の根のマウントと、道（${proxyNames.map((d) => `${d}：${toAdd[d]!["listen"]} → ${toAdd[d]!["connect"]}`).join("・")}）を足すの`
+        : "banto のコードと Project の根をマウントするの",
+    );
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
       // AppArmor のプロファイルは起動のときに作られる——動いているなら起こし直さないと効かない
