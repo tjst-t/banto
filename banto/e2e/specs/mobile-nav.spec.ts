@@ -9,7 +9,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, fakeTurn, openApp, confirmForkDialog } from "../helpers.js";
+import { createProject, fakeTurn, openApp, confirmForkDialog, openForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -60,7 +60,7 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
     )
     .toBeTruthy();
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(back).toBeVisible({ timeout: 15_000 });
 
@@ -70,6 +70,16 @@ test("携帯で、別 Project の Fork へも、Fork から別の Thread へも�
 
   // ---- (2) Fork の面にも ≡ がある。そこから別 Project（Fork なし）へ1回で行ける -------------
   await expect(nav, "Fork の面に ≡ が無い").toHaveCount(1);
+  // **右上は文脈のメーター・検索・受信箱・「…」だけ**（2026-10-20、ユーザー要望）——「Fork を開く」と Close は「…」の中。
+  // 携帯は右上の検索で Command Palette が開き、一番上の組は「Module の入口」
+  await expect(page.getByRole("button", { name: "Fork を開く" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "この Fork Thread を Close" })).toHaveCount(0);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).locator("visible=true").click();
+  const headings = page.locator("[cmdk-group-heading]");
+  await expect(headings.first()).toBeVisible({ timeout: 10_000 });
+  await expect(headings.first(), "検索の一番上が Module の入口でない").toHaveText("Module の入口");
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-slot="dialog-content"]')).toHaveCount(0, { timeout: 10_000 });
   await nav.click();
   await expect(drawer).toBeVisible();
   // Drawer の高さは会話の面と同じ h-dvh（2026-10-18、Android で一番下の行が画面の外に出ていた）——一番下の1行が画面に収まる

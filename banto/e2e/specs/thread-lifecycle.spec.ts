@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, openNav, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, openNav, confirmForkDialog, openForkFromHeader, closeForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -36,7 +36,7 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   // Fork作成。**開いた印はヘッダの「戻る」**——題は Fork の名前だけになり
   // 「Fork Thread —」の接頭辞は付かない（改訂・2026-09-09）
   const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
 
@@ -52,7 +52,7 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   await expect(assistantBubble.filter({ hasText: "フォークめじるし456" })).toBeVisible({ timeout: 60_000 });
 
   // Fork Threadを畳む
-  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
+  await closeForkFromHeader(page);
   await expect(forkPanelBack).not.toBeVisible();
 
   // 履歴（Archive）に出る。**入口は幅で変わる**（改訂・2026-09-09）——
@@ -111,7 +111,7 @@ test("閉じた Fork に URL で直接来ても、その Fork の会話が出る
   await expect(assistantBubble.filter({ hasText: "めじるし789" })).toBeVisible({ timeout: 60_000 });
 
   const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
   await page.waitForURL(/[?&]fork=[0-9a-f-]+/);
@@ -121,7 +121,7 @@ test("閉じた Fork に URL で直接来ても、その Fork の会話が出る
   await forkComposer.fill("目印として「じかにめじるし012」と1語だけ返してください。");
   await forkComposer.press("Enter");
   await expect(assistantBubble.filter({ hasText: "じかにめじるし012" })).toBeVisible({ timeout: 60_000 });
-  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
+  await closeForkFromHeader(page);
   await expect(forkPanelBack).not.toBeVisible();
 
   // 読み直して手元の中身を消し、閉じた Fork の URL へ直接行く

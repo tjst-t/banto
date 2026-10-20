@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect, type Locator, type Page } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog, openForkFromHeader } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -114,7 +114,7 @@ test("Fork も、メニューから名前を変えられる・並べ替えられ
 
   // Fork を2つ作る（会話は要らない——分ける操作だけ）
   for (let i = 0; i < 2; i += 1) {
-    await page.getByRole("button", { name: "Fork を開く" }).click();
+    await openForkFromHeader(page);
     await confirmForkDialog(page);
     const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
     await expect(back).toBeVisible({ timeout: 15_000 });
@@ -244,7 +244,7 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   await createProject(page, "点々の spec", mkdtempSync(join(tmpdir(), "banto-e2e-dots-")));
 
   // Fork を1つ作る
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await expect(back).toBeVisible({ timeout: 15_000 });
@@ -344,7 +344,7 @@ test("面の題は Project 名だけ——そこを右クリックすると名�
   ).toHaveCount(1);
 
   // ---- Fork の題も同じ ----------------------------------------------------
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await expect(back).toBeVisible({ timeout: 15_000 });
@@ -373,19 +373,23 @@ test("Fork と Close のアイコンは、下向き（会話が流れる向き�
       return new DOMMatrixReadOnly(style.transform).d;
     });
 
-  // ヘッダの「Fork を開く」
-  const forkButtonIcon = page.getByRole("button", { name: "Fork を開く" }).locator("svg").first();
+  // ヘッダの「…」の「Fork を開く」（2026-10-20 に右上のボタンからメニューへ移した）
+  await page.getByRole("button", { name: "Thread の操作" }).locator("visible=true").first().click();
+  const forkButtonIcon = page.getByRole("menuitem", { name: "Fork を開く" }).locator("svg").first();
   expect(await scaleYOf(forkButtonIcon), "Fork のアイコンが上下反転していない").toBeCloseTo(-1, 2);
+  await page.keyboard.press("Escape");
 
   // サイドバーの Fork 行と、メニューの Close
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await expect(back).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Thread の操作" }).locator("visible=true").first().click();
   expect(
-    await scaleYOf(page.getByRole("button", { name: "この Fork Thread を Close" }).locator("svg").first()),
+    await scaleYOf(page.getByRole("menuitem", { name: "この Fork Thread を Close" }).locator("svg").first()),
     "Close のアイコンが上下反転していない",
   ).toBeCloseTo(-1, 2);
+  await page.keyboard.press("Escape");
   await back.click();
 
   const row = page

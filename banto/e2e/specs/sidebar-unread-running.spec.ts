@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
-import { confirmForkDialog, createProject, fakeTurn, openApp } from "../helpers.js";
+import { confirmForkDialog, createProject, fakeTurn, openApp, openForkFromHeader } from "../helpers.js";
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -20,7 +20,7 @@ test("いま開いていない Project で動いていれば回り、返った�
   await createProject(page, "読む前の A", mkdtempSync(join(tmpdir(), "banto-e2e-unread-a-")));
 
   // ---- 3. 同じ Project の中：Fork で返事が来て、まだ開いていなければ太字 -------------------
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page, { title: "あとで読む Fork" });
   const forkComposer = page.getByPlaceholder("この Fork Thread に送る");
   await forkComposer.fill(`返して${fakeTurn({ say: "Fork の返事です。".repeat(4), streamMs: 6_000 })}`);

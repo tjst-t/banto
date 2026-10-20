@@ -9,7 +9,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
-import { confirmForkDialog, createProject, fakeTurn, openApp } from "../helpers.js";
+import { confirmForkDialog, createProject, fakeTurn, openApp, openForkFromHeader } from "../helpers.js";
 
 // サイドバーが出る幅で見る
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -41,7 +41,7 @@ test("AI が動いている Thread は、サイドバーの行のアイコンが
   });
 
   // ---- 3. Fork で動いているときは、その Fork の行だけ回る -----------------------------
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page, { title: "回す Fork" });
   const forkRow = sidebar.getByRole("link", { name: /回す Fork/ });
   await expect(forkRow).toBeVisible({ timeout: 15_000 });

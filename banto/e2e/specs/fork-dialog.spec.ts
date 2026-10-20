@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, fakeTurn, openApp, waitTurnEnded } from "../helpers.js";
+import { createProject, fakeTurn, openApp, waitTurnEnded, openForkFromHeader } from "../helpers.js";
 
 // 前面の1枚だけが出る幅で見る（同じ aria-label が Base と Fork に並ばない）
 test.use({ viewport: { width: 390, height: 844 } });
@@ -52,7 +52,7 @@ test("Fork は名前を聞いて作り、ヘッダからだけ「まっさらで
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
 
   // ---- 1. ヘッダの Fork：名前と始め方を聞く。やめれば作らない -------------------
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("radiogroup")).toBeVisible();
   await expect(dialog.getByTestId("fork-start-continue")).toHaveAttribute("aria-checked", "true");
@@ -62,7 +62,7 @@ test("Fork は名前を聞いて作り、ヘッダからだけ「まっさらで
   expect((await listThreads()).filter((t) => t.kind === "fork"), "やめたのに Fork ができた").toHaveLength(0);
 
   // ---- 2. 名前を付けて、まっさらで始める -------------------------------------
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await dialog.getByLabel("名前").fill("調べもの");
   await dialog.getByTestId("fork-start-fresh").click();
   await dialog.getByTestId("fork-dialog-submit").click();

@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { confirmForkDialog, createProject, fakeTurn, openApp, settleProjectsInbox, waitTurnEnded } from "../helpers.js";
+import { confirmForkDialog, createProject, fakeTurn, openApp, settleProjectsInbox, waitTurnEnded, openForkFromHeader, closeForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -44,7 +44,7 @@ async function hostThread(page: Page, threadId: string): Promise<HostThread> {
 
 /** ヘッダの「Fork を開く」から名前つきで Fork を作り、開いた Fork の id を返す */
 async function openNamedFork(page: Page, title: string): Promise<string> {
-  await page.getByRole("button", { name: "Fork を開く" }).first().click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page, { title });
   await page.waitForURL(/[?&]fork=[0-9a-f-]+/);
   return new URL(page.url()).searchParams.get("fork")!;
@@ -154,7 +154,7 @@ test("AI が閉じた Fork：開いている画面は飛ばずに帯と「開き
   // 比べるために、人が閉じた Fork を1つ置いておく（履歴の行に「AI が閉じました」が出ないこと）
   const HUMAN = "人が閉じる";
   const humanId = await openNamedFork(page, HUMAN);
-  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
+  await closeForkFromHeader(page);
   await expect(page).not.toHaveURL(/[?&]fork=/, { timeout: 15_000 });
   await expect.poll(async () => (await hostThread(page, humanId)).status).toBe("closed");
 
@@ -184,7 +184,9 @@ test("AI が閉じた Fork：開いている画面は飛ばずに帯と「開き
   await expect(forkLayer.locator('[data-role="assistant"]').filter({ hasText: "この Fork を閉じます。" })).toBeVisible();
   // 入力欄は開き直すまで使えない。Close も出さない（もう閉じている）
   await expect(forkComposer, "閉じた Fork に入力欄が残っている").toHaveCount(0);
-  await expect(page.getByRole("button", { name: "この Fork Thread を Close" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Thread の操作" }).locator("visible=true").first().click();
+  await expect(page.getByRole("menuitem", { name: "この Fork Thread を Close" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   // サイドバーの開いている一覧から外れる
   await expect(sidebar.getByTestId("sidebar-fork-name").filter({ hasText: TITLE }), "AI が閉じたのにサイドバーに残っている").toHaveCount(0);
 

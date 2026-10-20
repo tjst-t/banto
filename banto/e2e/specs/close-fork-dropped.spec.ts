@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { confirmForkDialog, createProject, fakeTurn, openApp, settleProjectsInbox, waitTurnEnded } from "../helpers.js";
+import { confirmForkDialog, createProject, fakeTurn, openApp, settleProjectsInbox, waitTurnEnded, openForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -30,7 +30,7 @@ test.afterAll(async ({ request }) => {
 });
 
 async function openNamedFork(page: Page, title: string): Promise<string> {
-  await page.getByRole("button", { name: "Fork を開く" }).first().click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page, { title });
   await page.waitForURL(/[?&]fork=[0-9a-f-]+/);
   return new URL(page.url()).searchParams.get("fork")!;
