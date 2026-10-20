@@ -11225,7 +11225,7 @@
       "number": 466,
       "kind": "bug",
       "title": "別のサーバの Project で、Backlog の push が資格情報なしで失敗する（Repositories が引き受けない）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -11233,13 +11233,18 @@
       "labels": [
         "runtime"
       ],
-      "body": "2026-10-20、sakutei開発（containers の実行場所 baremetal）で、#369 で中継に届くようになったあとも Backlog の push だけが失敗する。\n\npushError：「このリポジトリの git の設定では資格情報がありません——fatal: could not read Username for 'https://github.com': terminal prompts disabled（Repositories は引き受けませんでした（この Project は別のサーバで動いています（根はこの機械のフォルダではありません）））」\n\n既知の仕様と実態の食い違い（docs/notes/2026-10-08-remote-runtime.md「host が Project のフォルダに触っていたものを合わせたとき」の「Backlog の push と sshIdentity」）：仕様の表は「Backlog の push は向こうの git の設定と、Vault の SSH 鍵（sshIdentity）で送る」と書くが、Backlog は sshIdentity を持たず、Repositories が handled: false を返したあとは向こうの根で素の git push を流すだけ。資格情報は向こうのユーザーの git・ssh の設定次第で、containers のコンテナの中には何も無い。\n\n決めること：Repositories が別のサーバの Project の push も引き受ける（中継越しに、Repositories の資格情報で向こうの git に push させる）か、Backlog に Vault の資格情報（oauth-token の envSecrets 相当か ssh-agent の窓口）を渡す形を宣言に足すか。\n\n当座の逃げ道：Shell の runCommand に envSecrets（Repositories の alias）を付けて git push origin backlog を手で流す。",
+      "body": "2026-10-20、sakutei開発（containers の実行場所 baremetal）で、#369 で中継に届くようになったあとも Backlog の push だけが失敗する。\n\npushError：「このリポジトリの git の設定では資格情報がありません——fatal: could not read Username for 'https://github.com': terminal prompts disabled（Repositories は引き受けませんでした（この Project は別のサーバで動いています（根はこの機械のフォルダではありません）））」\n\n既知の仕様と実態の食い違い（docs/notes/2026-10-08-remote-runtime.md「Backlog の push と sshIdentity」）：Backlog は sshIdentity を持たず、Repositories が handled: false を返したあとは向こうの根で素の git push を流すだけ。containers のコンテナの中には資格情報が無い。\n\n## 決定（2026-10-20、ユーザー）\n案A：Repositories が別のサーバ（machine・containers）の Project の push・fetch も引き受ける。資格情報はコンテナ（向こう）に入れない——向こうとの間は core の実行場所の接続で git の中身だけを運び、送るのは host の Repositories。作業は .worktrees/remote-branch-sync（fork/remote-branch-sync）。\n\n当座の逃げ道：Shell の runCommand に envSecrets（Repositories の alias）を付けて git push origin backlog を手で流す。",
       "doneWhen": "別のサーバ（machine と containers）の Project で、Backlog の書き込みのあと pushError が出ずに origin の backlog ブランチへ届く（単体試験と、remote-runtime の E2E か実機の sakutei開発 で確かめる）。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "d913ed74-625a-402d-8fa7-feafcadc84d8"
+        }
+      ],
       "createdAt": "2026-10-20T12:11:19.543Z",
-      "updatedAt": "2026-10-20T12:11:19.543Z",
+      "updatedAt": "2026-10-20T12:14:38.143Z",
       "closedAt": null,
       "extra": {}
     }
