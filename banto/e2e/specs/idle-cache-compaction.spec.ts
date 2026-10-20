@@ -105,6 +105,7 @@ async function acknowledgeReviews(host: OwnHost, threadId: string): Promise<void
 test("4時間空いた会話は冷める前に要約され、会話に印が出て受信箱に出ない。帯で取りやめられ、温め直しが外れた会話は要約しない", async ({ page }) => {
   const fakeApi = await startFakeAnthropic();
   const root = mkdtempSync(join(tmpdir(), "banto-e2e-idle-compaction-"));
+  const rootB = mkdtempSync(join(tmpdir(), "banto-e2e-idle-compaction-b-"));
   try {
     await withOwnHost(
       async (own) => {
@@ -169,8 +170,12 @@ test("4時間空いた会話は冷める前に要約され、会話に印が出�
         const warmsAfterCompact = warms(fakeApi, a.session).length;
 
         // ---- B：帯で取りやめる ------------------------------------------------------------------------------------
-        const b = await bigThread(own, fakeApi, projectId, "B：");
-        await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${b.threadId}`);
+        // B は自分の Project の Base Thread にする——Base Thread は Project にただ1つ（アーキ仕様 §2）で、画面は Project の
+        // 最初の Base しか読まない。A と同じ Project に作ると、画面からは開けない
+        const projectB = await api<{ id: string }>(own, "/api/projects", { method: "POST", body: { name: "E2E 冷める前の要約 B", root: rootB } });
+        expect(projectB.status, JSON.stringify(projectB.body)).toBe(201);
+        const b = await bigThread(own, fakeApi, projectB.body.id, "B：");
+        await page.goto(`/p/${projectB.body.id}?bantoHost=${own.url}`);
         const composer = page.locator('textarea[placeholder*="に送る"]:visible').first();
         await expect(composer).toBeVisible({ timeout: 30_000 });
         // 帯は要約の 8 秒前から（それまでは出ない）
@@ -209,5 +214,6 @@ test("4時間空いた会話は冷める前に要約され、会話に印が出�
   } finally {
     await fakeApi.close();
     rmSync(root, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
   }
 });
