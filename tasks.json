@@ -10195,7 +10195,7 @@
       "number": 423,
       "kind": "task",
       "title": "見回り：自動化の mode patrol・notify と手帳・受信箱の気づき",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "missions-patrols",
       "dependsOn": [
         "read-only-runs",
@@ -10210,7 +10210,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T06:45:05.340Z",
+      "updatedAt": "2026-10-20T07:20:42.767Z",
       "closedAt": null,
       "extra": {}
     },
