@@ -156,6 +156,11 @@ export interface RemoteSshRuntimeOptions {
    */
   containerVirtualization?: (runtimeName: string, projectId: string) => ContainerVirtualization | null;
   /**
+   * **その実行場所で確保した hugepages の合計（バイト）**。メモリの cgroup に数えないので、コンテナのメモリの上限の計算から引く
+   * （渡さなければ 0）
+   */
+  hugepagesReservedBytes?: (runtimeName: string) => number;
+  /**
    * containers：VM のユーザーの、コンテナに見せていない場所（既定は `/run/user/<uid>`。試験だけが差し替える——この機械の
    * `/run/user` を使わない）
    */
@@ -1729,7 +1734,7 @@ export class RemoteSshRuntime {
       ...ids,
       portIsolation: true,
       proxies: { [RELAY_DEVICE]: relayRoute(tunnel) },
-      limits: defaultContainerLimits(await vmResources(shell)),
+      limits: await this.containerLimitsOn(conn.runtimeName, shell),
       ...(virtualization !== undefined ? { virtualization } : {}),
     });
     // 前の接続で張った鍵の窓口の装置を外す（窓口の転送は接続と一緒に消えている。窓口は Vault が開き直したときに張り直す）。
@@ -1740,6 +1745,13 @@ export class RemoteSshRuntime {
       if (gone.length > 0) this.log(`[host] 別のサーバ「${conn.runtimeName}」のコンテナ ${name} から、前の接続の鍵の窓口の道を外しました（${gone.join("・")}）`);
     }
     return name;
+  }
+
+  /** VM の資源で計算した上限（hugepages の合計はメモリから引く——hugepages はメモリの cgroup に数えない） */
+  private async containerLimitsOn(runtimeName: string, shell: VmShell) {
+    const vm = await vmResources(shell);
+    const reserved = this.opts.hugepagesReservedBytes?.(runtimeName) ?? 0;
+    return defaultContainerLimits({ ...vm, memoryBytes: vm.memoryBytes - reserved });
   }
 
   /** この接続の上で Incus を呼ぶ口（装置の書き換えを1本ずつ通すので、接続ごとに1つ） */

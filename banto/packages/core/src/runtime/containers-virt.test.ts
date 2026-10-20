@@ -29,6 +29,13 @@ interface FakeVm {
   modules: Set<string>;
   /** 区画のコンテナ（名前 → 様子） */
   containers: Map<string, { status: string; config: Record<string, string>; devices: Record<string, Record<string, string>> }>;
+  /** サーバのメモリ（KiB） */
+  memTotalKiB: number;
+  /** vm.nr_hugepages と、確保できる上限（断片化） */
+  nrHugepages: number;
+  hugepagesCap: number;
+  /** コンテナごとの hugetlb.2MB.current（バイト） */
+  hugetlbCurrent: Map<string, number>;
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -40,6 +47,10 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     incusCalls: [],
     modules: new Set(),
     containers: new Map(),
+    memTotalKiB: 16 * 1024 * 1024,
+    nrHugepages: 0,
+    hugepagesCap: Infinity,
+    hugetlbCurrent: new Map(),
     ...over,
   };
 }
@@ -69,6 +80,10 @@ function accessOf(vm: FakeVm): VmAccess {
       vm.files.set(rest[0]!, input ?? "");
       return ok();
     }
+    if (cmd === "sysctl" && rest[0] === "-w" && /^vm\.nr_hugepages=\d+$/.test(rest[1]!)) {
+      vm.nrHugepages = Number(rest[1]!.split("=")[1]);
+      return ok();
+    }
     if (cmd === "modprobe" && rest.length === 1) {
       vm.modules.add(rest[0]!);
       return ok();
@@ -82,6 +97,10 @@ function accessOf(vm: FakeVm): VmAccess {
     run: async (args, opts) => {
       const [cmd, ...rest] = args;
       if (cmd === "/usr/bin/sudo" && rest[0] === "-n") return root(rest.slice(1), opts?.input);
+      if (cmd === "cat" && rest[0] === "/proc/meminfo") {
+        return ok(`MemTotal:       ${vm.memTotalKiB} kB\nHugePages_Total:    ${Math.min(vm.nrHugepages, vm.hugepagesCap)}\nHugepagesize:       2048 kB\n`);
+      }
+      if (cmd === "nproc") return ok("8\n");
       if (cmd === "incus") {
         vm.incusCalls.push(rest);
         if (rest[0] === "query" && rest[1] === "/1.0/projects/user-1001") return ok(JSON.stringify({ config: vm.project }));
@@ -104,6 +123,16 @@ function incusAsUser(vm: FakeVm, args: string[]): IncusResult {
       return ok();
     }
     return ok(JSON.stringify(c));
+  }
+  if (args[0] === "exec" && args.at(-1) === "/sys/fs/cgroup/hugetlb.2MB.current") return ok(`${vm.hugetlbCurrent.get(args[1]!) ?? 0}\n`);
+  if (args[0] === "config" && (args[1] === "set" || args[1] === "unset")) {
+    const c = vm.containers.get(args[2]!);
+    if (!c) return fail("Error: Instance not found");
+    for (const kv of args.slice(3)) {
+      if (args[1] === "unset") delete c.config[kv];
+      else c.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
+    }
+    return ok();
   }
   if (args[0] === "config" && args[1] === "device" && args[2] === "remove") {
     const c = vm.containers.get(args[3]!);
@@ -332,7 +361,7 @@ test("/dev/kvm を見せる：実行場所が許していない・containers で
   // コンテナがまだ無い（次に作るときに付く）
   await h.virt.setKvm("p-aaa", { enabled: true });
   assert.equal(h.settings.get("p-aaa")!.kvm, true);
-  assert.deepEqual(h.virt.containerSpecOf("lab", "p-aaa"), { kvm: true });
+  assert.deepEqual(h.virt.containerSpecOf("lab", "p-aaa"), { kvm: true, hugepagesBytes: 0 });
   assert.equal(notAllowed.virt.containerSpecOf("lab", "p-aaa"), null, "許していない実行場所のコンテナには付けない（付いていれば外す）");
 });
 
@@ -357,4 +386,97 @@ test("modprobe が落ちたら設定を変えず、装置も足さない", async
   assert.equal(h.settings.get("p-aaa"), undefined);
   assert.deepEqual(h.vm.containers.get("banto-p-aaa")!.devices, {});
   assert.equal(h.vm.files.has(MODULES_LOAD_FILE), false);
+});
+
+test("許す・止める：その実行場所の全コンテナ（閉じた Project のものも）に hugepages の上限 0 を書き、止めるときに外す", async () => {
+  const h = harness({ projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", runningContainer());
+  h.vm.containers.set("banto-p-bbb", { status: "Stopped", config: {}, devices: {} });
+  h.vm.containers.set("banto-p-ccc", runningContainer());
+  await h.virt.setAllowed("lab", true);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "0");
+  assert.equal(h.vm.containers.get("banto-p-bbb")!.config["limits.hugepages.2MB"], "0");
+  assert.equal(h.vm.containers.get("banto-p-ccc")!.config["limits.hugepages.2MB"], undefined, "ほかの実行場所のコンテナに書いた");
+  await h.virt.setAllowed("lab", false);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], undefined);
+  assert.equal(h.vm.containers.get("banto-p-bbb")!.config["limits.hugepages.2MB"], undefined);
+});
+
+test("hugepages：合計（閉じた Project も）を sysctl と sysctl.d に書き、上限を N×2MiB にし、同じ実行場所の動いているコンテナのメモリの上限を合計を引いて引き直す", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", runningContainer());
+  h.vm.containers.set("banto-p-bbb", { status: "Stopped", config: {}, devices: {} });
+  h.vm.containers.set("banto-p-ccc", runningContainer());
+  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 100 });
+  h.settings.set("p-ccc", { kvm: false, modules: [], hugepages: 999 });
+  const result = await h.virt.setHugepages("p-aaa", 412);
+  assert.equal(result.total, 512);
+  assert.equal(result.allocated, 512);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(h.vm.sudoCalls, [
+    ["sysctl", "-w", "vm.nr_hugepages=512"],
+    ["tee", HUGEPAGES_SYSCTL_FILE],
+  ]);
+  assert.match(h.vm.files.get(HUGEPAGES_SYSCTL_FILE)!, /^vm\.nr_hugepages = 512$/m);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "824MiB");
+  assert.deepEqual(h.settings.get("p-aaa"), { kvm: false, modules: [], hugepages: 412 });
+  // メモリの上限：16GiB − 512×2MiB（1GiB）− 残す 4GiB = 11GiB。動いているものだけ、ほかの実行場所には触らない
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.memory"], "11264MiB");
+  assert.equal(h.vm.containers.get("banto-p-bbb")!.config["limits.memory"], undefined, "止まっているコンテナ（次に用意するときに付く）");
+  assert.equal(h.vm.containers.get("banto-p-ccc")!.config["limits.memory"], undefined);
+  assert.equal(h.virt.hugepagesReservedBytes("lab"), 512 * 2 * 1024 ** 2);
+  // 識別子は Project id だけ
+  assert.doesNotMatch(JSON.stringify([...h.vm.sudoCalls, ...h.vm.incusCalls]), /実験|閉じた|rm -rf/);
+
+  // 0 に戻す：合計が 100 に、sysctl.d も書き直す。誰も持たなければ消す
+  await h.virt.setHugepages("p-aaa", 0);
+  assert.equal(h.vm.nrHugepages, 100);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "0");
+  h.settings.set("p-bbb", NO_VIRTUALIZATION);
+  h.vm.sudoCalls.length = 0;
+  await h.virt.setHugepages("p-aaa", 0);
+  assert.deepEqual(h.vm.sudoCalls, [
+    ["sysctl", "-w", "vm.nr_hugepages=0"],
+    ["rm", "-f", HUGEPAGES_SYSCTL_FILE],
+  ]);
+  assert.equal(h.vm.files.has(HUGEPAGES_SYSCTL_FILE), false);
+});
+
+test("hugepages：合計がサーバのメモリの半分を越える・使っているのに減らす・許していない・数がおかしい、は断って何も打たない", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", runningContainer());
+  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 2048 });
+  // 16GiB の半分＝8GiB＝4096 個。閉じた Project の 2048 個と合わせて越える
+  await assert.rejects(h.virt.setHugepages("p-aaa", 2049), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && /半分を越えます/.test(err.message));
+  assert.deepEqual(h.vm.sudoCalls, []);
+  await h.virt.setHugepages("p-aaa", 2048);
+
+  // 使っている（hugetlb の使用中がある）なら減らせない。増やすのはよい
+  h.vm.hugetlbCurrent.set("banto-p-aaa", 64 * 2 * 1024 ** 2);
+  h.vm.sudoCalls.length = 0;
+  await assert.rejects(h.virt.setHugepages("p-aaa", 10), (err: unknown) => err instanceof RemoteRuntimeError && /使っています（64 個）.*止めてから/.test(err.message));
+  assert.deepEqual(h.vm.sudoCalls, []);
+  assert.equal(h.settings.get("p-aaa")!.hugepages, 2048);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "4096MiB");
+  // 止まっていれば減らせる
+  h.vm.containers.get("banto-p-aaa")!.status = "Stopped";
+  await h.virt.setHugepages("p-aaa", 10);
+  assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "20MiB");
+
+  for (const bad of [-1, 1.5, "3", null]) {
+    await assert.rejects(h.virt.setHugepages("p-aaa", bad), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 400);
+  }
+  const notAllowed = harness({ projects: LAB_PROJECTS });
+  await assert.rejects(notAllowed.virt.setHugepages("p-aaa", 1), /許していません/);
+  assert.deepEqual(notAllowed.vm.sudoCalls, []);
+  assert.equal(notAllowed.virt.hugepagesReservedBytes("lab"), 0);
+});
+
+test("hugepages：確保できた数が足りなければ、その数を言う（設定は残す）", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS, vm: { hugepagesCap: 40 } });
+  const result = await h.virt.setHugepages("p-aaa", 64);
+  assert.equal(result.allocated, 40);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0]!, /64 個頼みましたが、確保できたのは 40 個/);
+  assert.equal(h.settings.get("p-aaa")!.hugepages, 64);
 });

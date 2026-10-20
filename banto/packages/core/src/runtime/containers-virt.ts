@@ -10,7 +10,8 @@
 
 import { runRootCommand, AutoFixError, type RanCommand, type RootCommand } from "./host-autoprep.js";
 import { allowUnixCharCommand, projectNameOf, unsetUnixCharCommand, UNIX_CHAR_KEY, type VmAccess } from "./containers-host.js";
-import { containerNameFor, DEFAULT_TIMEOUTS, ProjectContainers, type ContainerVirtualization } from "@banto/container";
+import { containerNameFor, DEFAULT_TIMEOUTS, defaultContainerLimits, ProjectContainers, type ContainerVirtualization } from "@banto/container";
+import { INSIDE_IDS } from "./remote-containers.js";
 import { remoteNameOf, RemoteRuntimeError, runtimeIdOf } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 
@@ -112,6 +113,44 @@ export function modulesLoadContent(settings: ProjectVirtualization[]): string | 
   ].join("\n");
 }
 
+/** 2MiB の hugepages の1つ */
+export const HUGEPAGE_BYTES = 2 * 1024 ** 2;
+/** 1つの Project の hugepages の数の上限（壊れた値を弾くだけ。本当の上限はサーバのメモリの半分） */
+const MAX_HUGEPAGES = 1 << 20;
+
+/** Project の設定 → コンテナに付けるもの */
+function specOf(v: ProjectVirtualization): ContainerVirtualization {
+  return { kvm: v.kvm, hugepagesBytes: v.hugepages * HUGEPAGE_BYTES };
+}
+
+/** `/proc/meminfo` から、メモリの全体・hugepages の確保した数・既定の大きさ */
+export function parseMeminfo(text: string): { totalKiB: number; hugepagesTotal: number; hugepageKiB: number } | undefined {
+  const field = (name: string) => Number(new RegExp(`^${name}:\\s+(\\d+)`, "m").exec(text)?.[1]);
+  const v = { totalKiB: field("MemTotal"), hugepagesTotal: field("HugePages_Total"), hugepageKiB: field("Hugepagesize") };
+  return Object.values(v).every((x) => Number.isFinite(x)) ? v : undefined;
+}
+
+async function readMeminfo(vm: VmAccess): Promise<NonNullable<ReturnType<typeof parseMeminfo>>> {
+  const r = await vm.run(["cat", "/proc/meminfo"]);
+  const m = r.code === 0 ? parseMeminfo(r.stdout) : undefined;
+  if (!m) throw new RemoteRuntimeError(502, `サーバのメモリ（/proc/meminfo）を読めませんでした：${r.stderr.trim() || `終了コード ${r.code}`}`);
+  return m;
+}
+
+/**
+ * **そのコンテナが使っている hugepages（バイト）**：中の cgroup の `hugetlb.2MB.current`（cgroup 名前空間でコンテナの枠が根に
+ * 見える）。無い・動いていなければ 0。動いているのに読めなければ断る（使っていないと決めつけない——規則2）
+ */
+async function hugepagesInUse(incus: ProjectContainers, vm: VmAccess, container: string): Promise<number> {
+  if ((await incus.state(container))?.status !== "Running") return 0;
+  const r = await vm.run(["incus", "exec", container, "--", "cat", "/sys/fs/cgroup/hugetlb.2MB.current"]);
+  const n = Number(r.stdout.trim());
+  if (r.code !== 0 || !/^\d+$/.test(r.stdout.trim())) {
+    throw new RemoteRuntimeError(502, `コンテナが hugepages を使っているか読めませんでした：${r.stderr.trim() || r.stdout.trim() || `終了コード ${r.code}`}`);
+  }
+  return n;
+}
+
 /** VM のユーザーとして Incus を呼ぶ（仮想化の実験の装置を付け外す） */
 function containersOver(vm: VmAccess): ProjectContainers {
   return new ProjectContainers((args, opts) => vm.run(["incus", ...args], opts), DEFAULT_TIMEOUTS);
@@ -171,10 +210,16 @@ export class ContainersVirtualization {
     }
     const ran: RanCommand[] = [];
     await this.deps.withVm(runtimeName, async (vm) => {
+      const incus = containersOver(vm);
+      const containers = this.deps.projectsOn(runtimeIdOf(runtimeName)).map((p) => containerNameFor(p.id));
       if (allowed) {
         await root(vm, allowUnixCharCommand(vm.uid), ran, "区画に unix-char の装置を許す");
+        // 許した実行場所の全コンテナに hugepages の上限 0 を書く（付けないと制限が無い。まだ無いコンテナは作るときに書く）
+        for (const name of containers) await incus.applyVirtualization(name, { kvm: false, hugepagesBytes: 0 });
         return;
       }
+      // hugepages の上限を外す（どの Project も 0 に戻してある）
+      for (const name of containers) await incus.applyVirtualization(name, null);
       // 足した項目だけを unset する（無いものは触らない——何度流しても同じ）
       const config = await projectConfigOf(vm);
       if (config[UNIX_CHAR_KEY] !== undefined) await root(vm, unsetUnixCharCommand(vm.uid), ran, "区画の unix-char を戻す");
@@ -211,11 +256,11 @@ export class ContainersVirtualization {
         // 先に vhost_net を読む——/dev/vhost-net がサーバに無いと装置を足せない
         for (const m of [...ALWAYS_MODULES, ...modules]) await root(vm, { args: ["modprobe", m] }, ran, `モジュール ${m} を読む`);
       } else {
-        await incus.applyVirtualization(container, { kvm: false });
+        await incus.applyVirtualization(container, specOf(next));
       }
       await this.rewriteModulesLoad(vm, runtimeName, projectId, next, ran);
       await this.deps.saveSettings(projectId, next);
-      if (next.kvm) await incus.applyVirtualization(container, { kvm: true });
+      if (next.kvm) await incus.applyVirtualization(container, specOf(next));
     });
     return { warnings, ran, kvm: next.kvm, modules, nesting: this.deps.nestingOf(projectId) };
   }
@@ -223,7 +268,99 @@ export class ContainersVirtualization {
   /** その Project のコンテナに付ける設定（実行場所が許していなければ null——付いていれば外す） */
   containerSpecOf(runtimeName: string, projectId: string): ContainerVirtualization | null {
     if (!this.deps.runtime(runtimeName)?.virtualization) return null;
-    return { kvm: this.deps.settingsOf(projectId).kvm };
+    return specOf(this.deps.settingsOf(projectId));
+  }
+
+  /**
+   * **その実行場所で確保した hugepages の合計（バイト）**。hugepages はメモリの cgroup に数えないので、コンテナのメモリの上限の
+   * 計算からこれを引く（v4-security.md §1「`containers` で仮想化の実験」の 2. の運用）。許していなければ 0
+   */
+  hugepagesReservedBytes(runtimeName: string): number {
+    if (!this.deps.runtime(runtimeName)?.virtualization) return 0;
+    return this.hugepagesTotal(runtimeName) * HUGEPAGE_BYTES;
+  }
+
+  /**
+   * **Project の hugepages の数を変える**（人が押した。2MiB の数）。その実行場所の合計を求め、サーバのメモリの半分を越えるなら断る。
+   * 減らすとき、その Project が使っている（コンテナの hugetlb の使用中がある）なら「止めてから」と断る。通れば
+   * `sudo -n sysctl -w vm.nr_hugepages=<合計>` と `/etc/sysctl.d/90-banto-hugepages.conf` を合計で書き直し（tee。0 なら消す）、
+   * 確保できた数を読んで足りなければ言い、コンテナの `limits.hugepages.2MB` を N×2MiB にする。合計が変わったら、同じ実行場所の
+   * 動いているコンテナのメモリの上限を、合計を引いて引き直す。hugetlbfs のマウントは作らない（memfd で使う）
+   */
+  async setHugepages(projectId: string, count: unknown): Promise<VirtualizationResult & { hugepages: number; total: number; allocated: number }> {
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > MAX_HUGEPAGES) {
+      throw new RemoteRuntimeError(400, `hugepages の数は 0 から ${MAX_HUGEPAGES} までの整数で渡してください`);
+    }
+    const { runtimeName } = this.mustAllowedProject(projectId);
+    const cur = this.deps.settingsOf(projectId);
+    const next: ProjectVirtualization = { ...cur, hugepages: count };
+    const before = this.hugepagesTotal(runtimeName);
+    const total = before - cur.hugepages + count;
+    const container = containerNameFor(projectId);
+    const ran: RanCommand[] = [];
+    const warnings: string[] = [];
+    let allocated = 0;
+    await this.deps.withVm(runtimeName, async (vm) => {
+      const incus = containersOver(vm);
+      const mem = await readMeminfo(vm);
+      if (mem.hugepageKiB !== HUGEPAGE_BYTES / 1024) {
+        throw new RemoteRuntimeError(409, `サーバの既定の hugepages の大きさが 2MiB ではありません（${mem.hugepageKiB} kB）。vm.nr_hugepages では 2MiB の数を決められません`);
+      }
+      if (total * HUGEPAGE_BYTES > (mem.totalKiB * 1024) / 2) {
+        throw new RemoteRuntimeError(
+          409,
+          `hugepages の合計（${total} 個＝${(total * 2) / 1024} GiB。この実行場所の全 Project の和）がサーバのメモリ（${Math.floor(mem.totalKiB / 1024 ** 2)} GiB）の半分を越えます`,
+          { code: "hugepages-too-many" },
+        );
+      }
+      if (count < cur.hugepages) {
+        const inUse = await hugepagesInUse(incus, vm, container);
+        if (inUse > 0) {
+          throw new RemoteRuntimeError(
+            409,
+            `この Project のコンテナは hugepages を使っています（${Math.ceil(inUse / HUGEPAGE_BYTES)} 個）。使っているもの（qemu 等）を止めてから減らしてください`,
+            { code: "hugepages-in-use" },
+          );
+        }
+        // 先に上限を下げる（その間にコンテナが新しく取らない）
+        await incus.applyVirtualization(container, specOf(next));
+      }
+      await root(vm, { args: ["sysctl", "-w", `vm.nr_hugepages=${total}`] }, ran, "サーバの hugepages を合計に揃える");
+      if (total > 0) {
+        const content = `# banto が書く（仮想化の実験。この実行場所の Project の hugepages の合計）。手で変えても次に書き直す\nvm.nr_hugepages = ${total}\n`;
+        await root(vm, { args: ["tee", HUGEPAGES_SYSCTL_FILE], input: async () => content, display: `sudo tee ${HUGEPAGES_SYSCTL_FILE}（vm.nr_hugepages = ${total}）` }, ran, "再起動でも hugepages を戻す");
+      } else {
+        await root(vm, { args: ["rm", "-f", HUGEPAGES_SYSCTL_FILE] }, ran, "再起動で hugepages を戻す設定を消す");
+      }
+      allocated = (await readMeminfo(vm)).hugepagesTotal;
+      if (allocated < total) {
+        warnings.push(
+          `hugepages は ${total} 個頼みましたが、確保できたのは ${allocated} 個です（サーバのメモリが断片化していると揃わないことがあります）。` +
+            "hugepages が足りないので、使うものが起きられないことがあります",
+        );
+      }
+      await this.deps.saveSettings(projectId, next);
+      if (count >= cur.hugepages) await incus.applyVirtualization(container, specOf(next));
+      if (total !== before) await this.reapplyMemoryLimits(vm, incus, runtimeName, mem.totalKiB * 1024 - total * HUGEPAGE_BYTES);
+    });
+    return { warnings, ran, hugepages: count, total, allocated };
+  }
+
+  /** その実行場所の全 Project（閉じたものも）の hugepages の和（数） */
+  private hugepagesTotal(runtimeName: string): number {
+    return this.deps.projectsOn(runtimeIdOf(runtimeName)).reduce((sum, p) => sum + this.deps.settingsOf(p.id).hugepages, 0);
+  }
+
+  /** 同じ実行場所の動いているコンテナのメモリの上限を、hugepages の合計を引いたメモリで引き直す（sudo は要らない） */
+  private async reapplyMemoryLimits(vm: VmAccess, incus: ProjectContainers, runtimeName: string, memoryBytes: number): Promise<void> {
+    const nproc = await vm.run(["nproc"]);
+    const cpus = Number(nproc.stdout.trim());
+    if (nproc.code !== 0 || !Number.isFinite(cpus) || cpus <= 0) throw new RemoteRuntimeError(502, `VM の CPU の数を読めませんでした：${nproc.stderr.trim() || nproc.stdout.trim()}`);
+    const limits = defaultContainerLimits({ cpus, memoryBytes });
+    for (const p of this.deps.projectsOn(runtimeIdOf(runtimeName))) {
+      const name = containerNameFor(p.id);
+      if ((await incus.state(name))?.status === "Running") await incus.applyLimits(name, limits, INSIDE_IDS.uid);
+    }
   }
 
   /** 画面に出す様子（その Project で使えるか・今の設定） */

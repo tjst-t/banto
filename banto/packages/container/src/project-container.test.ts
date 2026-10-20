@@ -399,6 +399,10 @@ function statefulIncus() {
       for (const kv of args.slice(3)) inst!.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
       return ok();
     }
+    if (args[0] === "config" && args[1] === "unset") {
+      delete inst!.config[args[3]!];
+      return ok();
+    }
     if (args[0] === "config" && args[1] === "device" && args[2] === "remove") {
       if (!inst!.devices[args[4]!]) return { code: 1, stdout: "", stderr: "Error: Device doesn't exist" };
       delete inst!.devices[args[4]!];
@@ -560,23 +564,23 @@ test("/dev/kvm を見せる：固定の2つ（/dev/kvm・/dev/vhost-net、mode=0
     limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
   };
   // 作るときに付ける
-  await c.ensure({ ...spec, virtualization: { kvm: true } });
+  await c.ensure({ ...spec, virtualization: { kvm: true, hugepagesBytes: 0 } });
   assert.deepEqual(f.inst()!.devices["kvm"], { type: "unix-char", path: "/dev/kvm", mode: "0666" });
   assert.deepEqual(f.inst()!.devices["vhost-net"], { type: "unix-char", path: "/dev/vhost-net", mode: "0666" });
   // 同じなら何もしない
   f.calls.length = 0;
-  assert.equal(await c.applyVirtualization("banto-p1", { kvm: true }), true);
+  assert.equal(await c.applyVirtualization("banto-p1", { kvm: true, hugepagesBytes: 0 }), true);
   assert.ok(!f.calls.some((a) => a[0] === "config" || patchedDevices(a)), "同じなのに書き換えた");
   // 外す：動いたまま装置だけ消す
-  await c.applyVirtualization("banto-p1", { kvm: false });
+  await c.applyVirtualization("banto-p1", { kvm: false, hugepagesBytes: 0 });
   assert.equal(f.inst()!.devices["kvm"], undefined);
   assert.equal(f.inst()!.devices["vhost-net"], undefined);
   assert.equal(f.inst()!.status, "Running");
   assert.ok(!f.calls.some((a) => a[0] === "stop"), "装置の付け外しで止めた");
   // 形の違う同じ名前の装置（人の手で mode を変えた）は付け直す
-  await c.applyVirtualization("banto-p1", { kvm: true });
+  await c.applyVirtualization("banto-p1", { kvm: true, hugepagesBytes: 0 });
   f.inst()!.devices["kvm"] = { type: "unix-char", path: "/dev/kvm" };
-  await c.applyVirtualization("banto-p1", { kvm: true });
+  await c.applyVirtualization("banto-p1", { kvm: true, hugepagesBytes: 0 });
   assert.equal(f.inst()!.devices["kvm"]!["mode"], "0666");
   // 実行場所が許していない（null）：付いていれば外す
   await c.ensure({ ...spec, virtualization: null });
@@ -586,7 +590,38 @@ test("/dev/kvm を見せる：固定の2つ（/dev/kvm・/dev/vhost-net、mode=0
   await c.ensure(spec);
   assert.ok(f.inst()!.devices["kvm"]);
   // 無いコンテナには何もしない
-  assert.equal(await new ProjectContainers(statefulIncus().run).applyVirtualization("banto-none", { kvm: true }), false);
+  assert.equal(await new ProjectContainers(statefulIncus().run).applyVirtualization("banto-none", { kvm: true, hugepagesBytes: 0 }), false);
+});
+
+test("hugepages の上限：許した実行場所では設定の無いコンテナにも 0 を書き、N 個なら N×2MiB。同じなら書かず、null（許していない）なら外す", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    uid: 1001,
+    gid: 1001,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  await c.ensure({ ...spec, virtualization: { kvm: false, hugepagesBytes: 0 } });
+  assert.equal(f.inst()!.config["limits.hugepages.2MB"], "0", "設定の無いコンテナに 0 を書いていない（付けないと制限が無い）");
+  await c.applyVirtualization("banto-p1", { kvm: false, hugepagesBytes: 64 * 2 * 1024 ** 2 });
+  assert.equal(f.inst()!.config["limits.hugepages.2MB"], "128MiB");
+  assert.equal(f.inst()!.status, "Running");
+  f.calls.length = 0;
+  await c.applyVirtualization("banto-p1", { kvm: false, hugepagesBytes: 64 * 2 * 1024 ** 2 });
+  assert.ok(!f.calls.some((a) => a[0] === "config"), "同じなのに書き直した");
+  await c.applyVirtualization("banto-p1", null);
+  assert.equal(f.inst()!.config["limits.hugepages.2MB"], undefined);
+  // この機械（undefined）は触らない
+  f.inst()!.config["limits.hugepages.2MB"] = "0";
+  await c.ensure(spec);
+  assert.equal(f.inst()!.config["limits.hugepages.2MB"], "0");
 });
 
 // ── proxy device の道（#369、v4-security.md §1「道」）────────────────────────
