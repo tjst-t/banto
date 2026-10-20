@@ -11142,7 +11142,7 @@
       "number": 461,
       "kind": "task",
       "title": "Project ごとの「特権コンテナにする」（逃げ道。区画の privilege は最初に押されたときだけ、強い警告と印）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "containers-virtualization",
       "dependsOn": [
         "containers-inside-uid-u",
@@ -11155,9 +11155,14 @@
       "doneWhen": "ベアメタルで押すと特権で起き中の U で根に書け、戻すと特権無しに戻る。ほかの Project の設定に注意が出る。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "6f4f4fae-ab8c-49d0-b6ac-35ffc7539892"
+        }
+      ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T09:21:20.427Z",
+      "updatedAt": "2026-10-20T12:01:22.445Z",
       "closedAt": null,
       "extra": {}
     },
