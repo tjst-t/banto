@@ -9003,6 +9003,29 @@
       "extra": {}
     },
     {
+      "id": "containers-project",
+      "number": 464,
+      "kind": "task",
+      "title": "containers の実行場所：Project を別の実行場所へ移す（向こうの手順を中から書く形に）",
+      "status": "backlog",
+      "parent": "1-vm-project-a",
+      "dependsOn": [
+        "containers-proxy-device-banto-ssh-agent"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "#369 から残したもの（2026-10-20）。#369 では「動いているものをコンテナの中で数える」だけを入れ、containers への・からの「移す」は引き続き断っている。\n\n移す仕組み（v4-security.md §1「Project を別の実行場所へ移す」）の向こうの手順は、VM のユーザーが Project のフォルダ・置き場に直接書く形（tar の展開・git worktree repair・ソケットの片づけ等）。containers では条件3（見せたフォルダへは incus exec で中から書く、VM のユーザーは symlink を辿らずに読むだけ）に従う必要があり、移す仕組みの作り直しが要る。\n\n- 移す先・元が containers のときの写し方を、中から書く形にする\n- 「1つに1つ」（runtimeUnavailableReason）を containers では外す・元のコンテナは止めて残す（この機械と同じ）\n- 経緯：docs/notes/2026-10-20-containers-paths.md",
+      "doneWhen": "偽の RunIncus の単体試験で、containers への・からの移すが VM のユーザーで見せたフォルダに書かずに済むこと。banto-dev-vm で、この機械のコンテナ → containers → この機械のコンテナと移して会話が続くこと。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T10:12:06.964Z",
+      "updatedAt": "2026-10-20T10:12:06.964Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "remote-connect-backoff-multiplies",
       "number": 370,
       "kind": "bug",
