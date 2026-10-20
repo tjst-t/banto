@@ -67,6 +67,18 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   勝手に起こさない（`boot.autostart` は付けていない——VM を起こし直すと、止まる前に動いていたものだけを起こす）ので、残すのは
   人が手で起こした場合だけ
 
+- **資源の画面は別のサーバの読み取り（今の probe）を広げる**。仕様は「コンテナの cgroup `lxc.payload.user-<uid>_<名前>` を読む」。
+  この機械は host が cgroup のファイルを直に読む（incusd が詰まっても見張りが止まらない——規則4）。別のサーバでは、張ってある
+  接続の上の node の読み取りが同じ役（`incus exec` を通さない）なので、そこに足した。中の内訳は今の単位の分け方を使い回し、
+  Project の名前を添える（画面は変えない——1つの実行場所に Project が複数並ぶので、名前が無いとどの Project のものか分からない）
+  - 区画の名前は `user-<uid>`（incus-user が作る区画）と決め打ちした。`containers` は制限の無い区画（incus-admin）を断るので
+    ほかの形にならない
+  - 上限に当たった知らせ：見張り（`ContainerPressureWatch`）の対象に containers の閉じていない Project のコンテナを足し、数えは
+    資源の見張りが最後に読めた回のものを使う（10 秒ごとの読み取りと、1分ごとの見張りの間で読み直さない）。繋いでいない実行場所は
+    読めずに飛ばす（前の値を使い続けない）
+  - 上限の1行（`describeLimits`）は、この機械の設定から計算すると VM と違う値を出してしまうので、読んだ `memory.max`・`pids.max` を
+    見せる。上げ方の文も替えた（この機械の設定では変わらない）
+
 ## 試験
 
 - `packages/container/src/project-container.test.ts`：`proxyDevice` の番号の向き（`instance`/`host`、TCP と UNIX の待ち受け、中の
@@ -78,6 +90,11 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   外さない、手放して繋ぎ直すと前の窓口の装置を外しトンネルを同じパスに張り直す。流れの口の装置の形（`bind=host`、繋ぐのは中の
   番号・VM の待ち受けは VM のユーザー）と `-L` の先、VM に symlink を置かない、2回目は張り直さない。手放すとき `stop` ならその
   Project のコンテナだけ止める（stop なしなら動いたまま、接続が無くても繋いで止める、次に用意すると起こす）
+- `packages/core/src/remote-resources.test.ts`：containers のコンテナの中の単位を Project の名前つきで数え、banto の分に足す・
+  ほかの banto のコンテナは数えない・上限に当たった数えと上限（`max` は入れない）。読み取りの台本そのものをこの機械の node で
+  流して JSON が返ること（この試験で、台本の中の改行が崩れていたのを見つけた）
+- `packages/core/src/resources.test.ts`・`container-pressure.test.ts`：別のサーバのコンテナの数えは最後に読めた回から（読めなくなったら
+  無い）、上げ方の文を Project で替えられる
 - `packages/core/src/runtime/remote-runtimes.test.ts`：実行場所の種類（containers の登録は `remote-containers`、登録が無い名前は
   machine）と、眠らせる・閉じるときの答え
 - 直しを外すと落ちることを、組んだ JS を書き換えて確かめた（窓口を閉じても装置を外さない・前の接続の装置を外さない・見張りが

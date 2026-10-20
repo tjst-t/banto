@@ -6,6 +6,11 @@
 //
 // 読み方：張ってある SSH の接続の上で、向こうの node に小さな読み取りを走らせ（`REMOTE_RESOURCE_PROBE`）、JSON で受け取る。
 // **読むためだけには繋がない**（繋いでいない実行場所は「繋いでいません」と出す）。ここは受け取った JSON を形にするだけ。
+//
+// **`containers`**（追加・2026-10-20、Backlog #369。v4-security.md §1「他の仕組みとの関係」の資源の画面）：Module はその Project の
+// コンテナの中で動くので、SSH ユーザーの systemd にはほとんど何も無い。VM の cgroup の根の、SSH ユーザーの区画のコンテナ
+// （`lxc.payload.user-<uid>_banto-*`）も読み、中の単位を同じ内訳に Project の名前を添えて数える。上限に当たった数え
+// （`memory.events` の oom_kill・`pids.events` の max）と上限（`memory.max`・`pids.max`）も持ち帰る——見張り（`container-pressure.ts`）が使う
 
 import { parseMeminfo, parsePressure, type Pressure } from "./host-health.js";
 import { busyReason, commandLabel, unitServiceName, waitingOf, type ConsumerGroup, type ConsumerGroupId, type Waiting } from "./resources.js";
@@ -32,6 +37,38 @@ const walk = (dir, depth) => {
   }
 };
 walk(base, 0);
+// containers：SSH ユーザーの区画（incus-user の user-<uid>）の、banto のコンテナ。中の単位は .slice と user@<n>.service の下
+const croot = "/sys/fs/cgroup", cprefix = "lxc.payload.user-" + uid + "_";
+const containers = [];
+let roots = [];
+try { roots = fs.readdirSync(croot).filter((n) => n.startsWith(cprefix + "banto-")); } catch {}
+for (const dir of roots) {
+  const full = path.join(croot, dir), cunits = [];
+  const cwalk = (d, depth) => {
+    let entries = [];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const f = path.join(d, e.name);
+      if ((e.name.endsWith(".slice") || /^user@\d+\.service$/.test(e.name)) && depth < 8) cwalk(f, depth + 1);
+      else if (e.name.endsWith(".service") || e.name.endsWith(".scope")) {
+        const pid = (read(path.join(f, "cgroup.procs")) || "").split("\n").filter(Boolean)[0];
+        const cmd = pid ? (read("/proc/" + pid + "/cmdline") || "").split("\0").filter(Boolean) : [];
+        cunits.push({ unit: e.name, stat: read(path.join(f, "memory.stat")), cmd });
+      }
+    }
+  };
+  cwalk(full, 0);
+  containers.push({
+    name: dir.slice(cprefix.length),
+    stat: read(path.join(full, "memory.stat")),
+    events: read(path.join(full, "memory.events")),
+    pidsEvents: read(path.join(full, "pids.events")),
+    memoryMax: read(path.join(full, "memory.max")),
+    pidsMax: read(path.join(full, "pids.max")),
+    units: cunits,
+  });
+}
 process.stdout.write(JSON.stringify({
   meminfo: read("/proc/meminfo"),
   pressure: { cpu: read("/proc/pressure/cpu"), memory: read("/proc/pressure/memory"), io: read("/proc/pressure/io") },
@@ -39,6 +76,7 @@ process.stdout.write(JSON.stringify({
   stat: (read("/proc/stat") || "").split("\n")[0],
   user: read(base + "/memory.stat"),
   units,
+  containers,
 }));
 `;
 
@@ -52,6 +90,42 @@ export interface RemoteProbeRaw {
   /** banto の SSH ユーザーの systemd（user@<uid>.service）の memory.stat */
   user?: string;
   units: Array<{ unit: string; stat?: string; cmd: string[] }>;
+  /** containers：SSH ユーザーの区画の banto のコンテナ（名前は Incus のコンテナの名前） */
+  containers?: Array<{
+    name: string;
+    stat?: string;
+    events?: string;
+    pidsEvents?: string;
+    memoryMax?: string;
+    pidsMax?: string;
+    units: Array<{ unit: string; stat?: string; cmd: string[] }>;
+  }>;
+}
+
+/** containers のコンテナの、上限に当たった数えと上限（見張りが使う。読めなければ数えは無い） */
+export interface RemoteContainerCounts {
+  oomKills: number;
+  pidsMax: number;
+  /** 上限（memory.max のバイト数・pids.max）。`max`（無制限）・読めなければ無い */
+  limits: { memoryBytes?: number; processes?: number };
+}
+
+/** 読み取りから、コンテナの名前 → 上限に当たった数え */
+export function remoteContainerCounts(raw: RemoteProbeRaw | undefined): Map<string, RemoteContainerCounts> {
+  const out = new Map<string, RemoteContainerCounts>();
+  for (const c of raw?.containers ?? []) {
+    const oom = /^oom_kill\s+(\d+)$/m.exec(c.events ?? "")?.[1];
+    if (oom === undefined) continue;
+    const limit = (v: string | undefined) => (v && /^\d+$/.test(v.trim()) ? Number(v.trim()) : undefined);
+    const memoryBytes = limit(c.memoryMax);
+    const processes = limit(c.pidsMax);
+    out.set(c.name, {
+      oomKills: Number(oom),
+      pidsMax: Number(/^max\s+(\d+)$/m.exec(c.pidsEvents ?? "")?.[1] ?? 0),
+      limits: { ...(memoryBytes !== undefined ? { memoryBytes } : {}), ...(processes !== undefined ? { processes } : {}) },
+    });
+  }
+  return out;
 }
 
 /** 1つの実行場所の読み取りの結果（`RemoteSshRuntime.readResources`） */
@@ -143,10 +217,10 @@ const LABEL: Record<ConsumerGroupId, string> = {
 /** 1回の読み取りを形にする。`prev` は前の回の CPU（最初は無い） */
 export function remoteResourcesOf(
   probe: RemoteProbe,
-  projects: Array<{ projectId: string; name: string }>,
+  projects: Array<{ projectId: string; name: string; containerName?: string }>,
   prev: { busy: number; total: number } | undefined,
 ): { resources: RemoteResources; cpu?: { busy: number; total: number } } {
-  const base = { runtime: probe.runtime, address: probe.address, projects, groups: [] as ConsumerGroup[] };
+  const base = { runtime: probe.runtime, address: probe.address, projects: projects.map(({ projectId, name }) => ({ projectId, name })), groups: [] as ConsumerGroup[] };
   if (!probe.raw) return { resources: { ...base, busy: false, unavailable: probe.unavailable ?? "読めませんでした" } };
   const raw = probe.raw;
   const meminfo = parseMeminfo(raw.meminfo ?? "");
@@ -163,13 +237,24 @@ export function remoteResourcesOf(
       : undefined;
 
   const items: Array<{ group: ConsumerGroupId; name: string; detail?: string; bytes: number }> = [];
-  for (const u of raw.units) {
-    if (u.unit === "init.scope") continue;
-    const mem = memOf(u.stat);
-    if (!mem || mem.used < 1024 * 1024) continue;
-    const kind = remoteUnitKind(u.unit);
-    const detail = kind?.group === "modules" || kind?.group === "work" ? undefined : unitDetail(u.cmd);
-    items.push({ group: kind?.group ?? "other", name: kind?.name ?? u.unit, ...(detail ? { detail } : {}), bytes: mem.used });
+  const addUnits = (units: RemoteProbeRaw["units"], suffix: string) => {
+    for (const u of units) {
+      if (u.unit === "init.scope") continue;
+      const mem = memOf(u.stat);
+      if (!mem || mem.used < 1024 * 1024) continue;
+      const kind = remoteUnitKind(u.unit);
+      const detail = kind?.group === "modules" || kind?.group === "work" ? undefined : unitDetail(u.cmd);
+      items.push({ group: kind?.group ?? "other", name: `${kind?.name ?? u.unit}${suffix}`, ...(detail ? { detail } : {}), bytes: mem.used });
+    }
+  };
+  addUnits(raw.units, "");
+  // containers：その実行場所の Project のコンテナの中の単位を、Project の名前を添えて数える（ほかの banto のコンテナは数えない）
+  let containersBytes = 0;
+  for (const c of raw.containers ?? []) {
+    const project = projects.find((p) => p.containerName === c.name);
+    if (!project) continue;
+    containersBytes += memOf(c.stat)?.used ?? 0;
+    addUnits(c.units, `（${project.name}）`);
   }
   const groups = ORDER.map((id) => ({
     id,
@@ -180,7 +265,8 @@ export function remoteResourcesOf(
       .sort((a, b) => b.bytes - a.bytes),
   })).filter((g) => g.items.length > 0);
 
-  const banto = memOf(raw.user)?.used;
+  const userBytes = memOf(raw.user)?.used;
+  const banto = userBytes === undefined && containersBytes === 0 ? undefined : (userBytes ?? 0) + containersBytes;
   const used = meminfo.total !== undefined && meminfo.available !== undefined ? meminfo.total - meminfo.available : undefined;
   const reason = busyReason(pressure, undefined, meminfo.available);
   return {

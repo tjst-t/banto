@@ -227,3 +227,34 @@ test("中身：仕事の組（banto.slice の下）に入った Service・待つ
     ],
   );
 });
+
+test("別のサーバの containers のコンテナの上限に当たった数えは、最後に読めた別のサーバの読み取りから（読めなくなったら無い）", async () => {
+  let probes: Array<{ runtime: string; address: string; raw?: Record<string, unknown>; projects: Array<{ projectId: string; name: string; containerName?: string }> }> = [
+    {
+      runtime: "vm",
+      address: "u@vm",
+      raw: {
+        pressure: {},
+        cores: 2,
+        units: [],
+        containers: [{ name: "banto-r1", events: "oom_kill 4\n", pidsEvents: "max 1\n", memoryMax: "1073741824\n", pidsMax: "max\n", units: [] }],
+      },
+      projects: [{ projectId: "r1", name: "R", containerName: "banto-r1" }],
+    },
+  ];
+  const w = new ResourceWatch({
+    fs: fakeFs({}),
+    incusProject: async () => "default",
+    cores: 1,
+    selfBytes: () => 0,
+    stalls: () => [],
+    remotes: async () => probes as never,
+  });
+  assert.equal(await w.readEvents("banto-r1"), undefined, "読む前から数えがある");
+  await w.tick([]);
+  assert.deepEqual(await w.readEvents("banto-r1"), { oomKills: 4, pidsMax: 1 });
+  assert.deepEqual(w.remoteLimits("banto-r1"), { memoryBytes: 1073741824 });
+  probes = [{ runtime: "vm", address: "u@vm", projects: [] }];
+  await w.tick([]);
+  assert.equal(await w.readEvents("banto-r1"), undefined, "読めなくなった実行場所の古い数えを使い続けた");
+});

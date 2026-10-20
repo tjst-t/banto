@@ -31,6 +31,11 @@ export class ContainerPressureWatch {
       report(n: PressureNotice): Promise<unknown>;
       /** その Project の今の上限（人に見せる1行。例「メモリ 11 GiB・CPU 3 コア分・プロセス 8192」） */
       describeLimits(projectId: string): string;
+      /**
+       * 上げ方の1文をその Project で替える（別のサーバの containers は、この機械の設定では変わらない——追加・2026-10-20）。
+       * undefined ならこの機械の設定の言い方
+       */
+      remedy?(projectId: string): string | undefined;
     },
   ) {}
 
@@ -53,7 +58,8 @@ export class ContainerPressureWatch {
       const where = t.projectId ? "この Project のコンテナ" : "banto 全体用のコンテナ";
       const limits = t.projectId ? `いまの上限：${this.opts.describeLimits(t.projectId)}。` : "";
       const fix = t.projectId
-        ? "上げるなら banto 全体の設定「コンテナ」で、この機械に残す分を減らすか、Project の設定「コンテナ」の値を見直してください。"
+        ? (this.opts.remedy?.(t.projectId) ??
+          "上げるなら banto 全体の設定「コンテナ」で、この機械に残す分を減らすか、Project の設定「コンテナ」の値を見直してください。")
         : "";
       if (oom > 0) {
         await this.opts.report({

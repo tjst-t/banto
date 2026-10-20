@@ -13,7 +13,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UnauthorizedError, auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { BantoOAuthProvider, oauthAliasFor } from "./oauth/provider.js";
-import { hostResources, toContainerLimits } from "@banto/container";
+import { containerNameFor, hostResources, toContainerLimits } from "@banto/container";
 import { loadOrCreateBootstrapConfig, loginOrigins, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { AuthStore } from "./auth/store.js";
 import { AuthService } from "./auth/service.js";
@@ -1248,16 +1248,27 @@ async function main(): Promise<void> {
   });
   // **資源の逼迫を見せる**（決定・2026-10-09、v4-security.md §1、`resources.ts`）。host がコンテナの cgroup のファイルを
   // 直接読む（incus exec を通さない）。10 秒ごと。混んでいる Project が変わったら画面に知らせる
+  /** 別のサーバの containers の Project なら、その Project のコンテナの名前（資源の内訳・上限の見張り） */
+  const remoteContainerOf = (p: { id: string; runtime?: string }): string | undefined => {
+    const name = remoteNameOf(p.runtime);
+    return name !== undefined && remoteRuntimes.get(name)?.mode === "containers" ? containerNameFor(p.id) : undefined;
+  };
   const resourceWatch = new ResourceWatch({
     incusProject: () => runtime.resourceScope(),
-    // 別のサーバ（2026-10-14）。繋いでいる実行場所だけ読み、その実行場所で動く閉じていない Project を添える
+    // 別のサーバ（2026-10-14）。繋いでいる実行場所だけ読み、その実行場所で動く閉じていない Project を添える（containers は
+    // コンテナの名前も——中の単位をその Project に数える）
     remotes: async () => {
       const probes = await remoteSsh.readResources();
       // 眠っている Project は向こうでも測らない（`sleeping` に出る）
       const open = projectThread.listProjects().filter((p) => p.status !== "closed" && !p.sleep);
       return probes.map((probe) => ({
         ...probe,
-        projects: open.filter((p) => remoteNameOf(p.runtime) === probe.runtime).map((p) => ({ projectId: p.id, name: p.name })),
+        projects: open
+          .filter((p) => remoteNameOf(p.runtime) === probe.runtime)
+          .map((p) => {
+            const containerName = remoteContainerOf(p);
+            return { projectId: p.id, name: p.name, ...(containerName ? { containerName } : {}) };
+          }),
       }));
     },
     cores: availableParallelism(),
@@ -3346,12 +3357,37 @@ async function main(): Promise<void> {
     read: (name) => resourceWatch.readEvents(name),
     report: async (n) => console.warn(`[host] ${n.title}：${n.detail}`),
     describeLimits: (projectId) => {
+      // 別のサーバの containers：上限は VM の資源から決めている——最後に読めたコンテナの cgroup の値を見せる
+      const project = projectThread.getProject(projectId);
+      const remote = project ? remoteContainerOf(project) : undefined;
+      if (remote) {
+        const l = resourceWatch.remoteLimits(remote);
+        const parts = [
+          ...(l?.memoryBytes !== undefined ? [`メモリ ${Math.round((l.memoryBytes / 1024 ** 3) * 10) / 10} GiB`] : []),
+          ...(l?.processes !== undefined ? [`プロセス ${l.processes}`] : []),
+        ];
+        return parts.length > 0 ? parts.join("・") : "（読めませんでした）";
+      }
       const n = limitNumbersFor(runtimeConfig, hostResources(), projectId);
       return `メモリ ${Math.round((n.memoryMiB / 1024) * 10) / 10} GiB・CPU ${n.cpus} コア分・プロセス ${n.processes}`;
     },
+    remedy: (projectId) => {
+      const project = projectThread.getProject(projectId);
+      return project && remoteContainerOf(project)
+        ? `別のサーバ「${remoteNameOf(project.runtime)}」のコンテナの上限は、その VM の資源から決めています（実行場所ごとに変える口はまだありません）。`
+        : undefined;
+    },
   });
   const pressureTimer = setInterval(() => {
-    const targets = runtime.resourceTargets();
+    // この機械の用意できているコンテナと、別のサーバの containers の閉じていない Project のコンテナ（数えは資源の見張りが
+    // 最後に読めた回のもの——繋いでいない実行場所は読めずに飛ばす）
+    const targets = [
+      ...runtime.resourceTargets(),
+      ...projectThread.listProjects().flatMap((p) => {
+        const containerName = p.status !== "closed" ? remoteContainerOf(p) : undefined;
+        return containerName ? [{ containerName, projectId: p.id }] : [];
+      }),
+    ];
     void pressureWatch.tick(targets).catch((err: unknown) => console.warn("[host] コンテナの上限の見張りで例外:", err));
     // 間隔は E2E だけ縮める（BANTO_CONTAINER_PRESSURE_INTERVAL_MS）
   }, Number(process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS) || 60_000);
