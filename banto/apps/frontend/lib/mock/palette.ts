@@ -227,5 +227,6 @@ export function buildPaletteGroups(
   }
   if (opItems.length > 0) groups.push({ kind: "operation", label: "操作", items: opItems });
 
-  return groups;
+  // **一番上は「Module の入口」**（2026-10-20、ユーザー要望）。ほかの組の並びはそのまま
+  return [...groups.filter((g) => g.kind === "launcher"), ...groups.filter((g) => g.kind !== "launcher")];
 }

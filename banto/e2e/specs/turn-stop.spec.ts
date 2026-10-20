@@ -8,7 +8,7 @@ import { test, expect, type Locator, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, openApp, fakeTurn, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, fakeTurn, confirmForkDialog, openForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -123,7 +123,7 @@ test("Fork でも、AI が何も出していないうちに止めると発言が
   await createProject(page, `${PROJECT} fork`, mkdtempSync(join(tmpdir(), "banto-e2e-")));
   await sendAndWait(page, baseComposer(page), `ONE を返して${fakeTurn({ say: "ONE-REPLY" })}`, "ONE-REPLY");
 
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({ timeout: 15_000 });
   // デスクトップ幅では Base と Fork が横に並ぶ——Fork の面は data-layer で指す

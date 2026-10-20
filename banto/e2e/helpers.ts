@@ -371,6 +371,25 @@ export async function waitForProjectModule(page: Page, projectName: string, modu
 }
 
 /**
+ * **前面の会話の右上の「…」（Thread の操作）から項目を選ぶ**（2026-10-20、ユーザー要望で「Fork を開く」と
+ * 「この Fork Thread を Close」を右上のボタンから「…」の中へ移した）。隠れた Base の「…」は拾わない
+ */
+export async function chooseThreadAction(page: Page, item: "Fork を開く" | "この Fork Thread を Close"): Promise<void> {
+  await page.getByRole("button", { name: "Thread の操作" }).locator("visible=true").first().click();
+  await page.getByRole("menuitem", { name: item }).click();
+}
+
+/** ヘッダの「…」の「Fork を開く」 */
+export async function openForkFromHeader(page: Page): Promise<void> {
+  await chooseThreadAction(page, "Fork を開く");
+}
+
+/** ヘッダの「…」の「この Fork Thread を Close」 */
+export async function closeForkFromHeader(page: Page): Promise<void> {
+  await chooseThreadAction(page, "この Fork Thread を Close");
+}
+
+/**
  * **Fork を押したあとの、名前を聞くダイアログに答える**（決定・2026-10-02、v4-frontend.md §6.32）。
  * ヘッダの「Fork を開く」も発言の下の「ここから Fork」も、押すとまずダイアログが出る——
  * 名前を空のまま「作る」を押せば、今までどおり連番の Fork になる。

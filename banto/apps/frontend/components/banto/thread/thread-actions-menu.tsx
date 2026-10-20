@@ -11,15 +11,25 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MoreHorizontal } from "lucide-react";
+import { CloseIcon, ForkIcon } from "./thread-icons";
 
+/**
+ * **「Fork を開く」と「この Fork Thread を Close」もこのメニューに入れる**（2026-10-20、ユーザー要望）——右上には
+ * 文脈のメーターと「…」（携帯は検索・受信箱も）だけを並べる。渡されないときは項目を出さない
+ */
 export function ThreadActionsMenu({
   onClear,
   onCompact,
+  onFork,
+  onCloseFork,
 }: {
   onClear: () => void;
+  onFork?: () => void;
+  onCloseFork?: () => void;
   /** hostに残らない操作はまだ繋いでいない——渡されないときは項目自体を出さない（規則13） */
   onCompact?: () => void;
 }) {
@@ -35,6 +45,19 @@ export function ThreadActionsMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {onFork ? (
+          <DropdownMenuItem onClick={onFork}>
+            <ForkIcon className="size-4" />
+            Fork を開く
+          </DropdownMenuItem>
+        ) : null}
+        {onCloseFork ? (
+          <DropdownMenuItem onClick={onCloseFork}>
+            <CloseIcon className="size-4" />
+            この Fork Thread を Close
+          </DropdownMenuItem>
+        ) : null}
+        {onFork || onCloseFork ? <DropdownMenuSeparator /> : null}
         <DropdownMenuItem onClick={onClear}>Clear</DropdownMenuItem>
         {onCompact ? <DropdownMenuItem onClick={onCompact}>Compaction</DropdownMenuItem> : null}
       </DropdownMenuContent>

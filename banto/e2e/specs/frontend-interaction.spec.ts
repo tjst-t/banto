@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, fakeTurn, confirmForkDialog, waitTurnEnded } from "../helpers.js";
+import { createProject, openApp, fakeTurn, confirmForkDialog, waitTurnEnded, openForkFromHeader } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -21,7 +21,7 @@ test("Escape は前面の1枚だけを閉じる——背面のパネルは巻き
   await createProject(page, "Escape の spec", mkdtempSync(join(tmpdir(), "banto-e2e-esc-")));
 
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(back).toBeVisible({ timeout: 15_000 });
 
@@ -135,7 +135,7 @@ test("Canvas の橋は、親が何度再描画されても張り直さない", a
   // ——直す前は、これで Base の画面が「Fork のもの」に化けて橋が張り直されていた
   const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
   for (let i = 0; i < 2; i += 1) {
-    await page.getByRole("button", { name: "Fork を開く" }).click();
+    await openForkFromHeader(page);
     await confirmForkDialog(page);
     await expect(back).toBeVisible({ timeout: 15_000 });
     await back.click();

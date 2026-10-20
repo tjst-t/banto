@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, confirmForkDialog } from "../helpers.js";
+import { createProject, openApp, confirmForkDialog, openForkFromHeader } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -64,7 +64,7 @@ test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) 
   // 「Fork Thread —」の接頭辞は付かない（改訂・2026-09-09、狭い幅で題が
   // 押し出されるのをやめ、種別はアイコンで示す）
   const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
-  await page.getByRole("button", { name: "Fork を開く" }).click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page);
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
 

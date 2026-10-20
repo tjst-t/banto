@@ -13,7 +13,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
-import { confirmForkDialog, createProject, openApp } from "../helpers.js";
+import { confirmForkDialog, createProject, openApp, openForkFromHeader } from "../helpers.js";
 
 const A = "最後の Thread の spec A";
 const B = "最後の Thread の spec B";
@@ -25,7 +25,7 @@ test("ほかの Project から名前を押して戻ると、その Project で�
   const projectLink = (name: string) => sidebar.getByTestId("sidebar-project-name").filter({ hasText: name }).first();
 
   // A で Fork を開く
-  await page.getByRole("button", { name: "Fork を開く" }).first().click();
+  await openForkFromHeader(page);
   await confirmForkDialog(page, { title: "覚えておく Fork" });
   await expect(page).toHaveURL(/\?.*fork=/, { timeout: 15_000 });
   const aUrl = new URL(page.url());

@@ -2,8 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Clock, ExternalLink, Maximize2, Minimize2, Settings, X, Zap } from "lucide-react";
-import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
+import { ArrowLeft, Bell, Clock, ExternalLink, Maximize2, Minimize2, Search, Settings, X, Zap } from "lucide-react";
+import { ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   RenameOnRightClick,
   type RenameTarget,
@@ -169,6 +169,11 @@ function IconHeaderButton({
 }
 
 /** 受信箱の入口（モバイルのヘッダ用）。判断待ち・お知らせの件数をバッジで出す */
+/** 携帯の右上の検索（Command Palette）。パソコンは ⌘K とサイドバーの「検索」 */
+function SearchHeaderButton({ onClick }: { onClick: () => void }) {
+  return <IconHeaderButton icon={Search} label="検索（Command Palette）" onClick={onClick} />;
+}
+
 function InboxHeaderButton({ onClick }: { onClick: () => void }) {
   const judgmentCount = useJudgmentCount();
   return (
@@ -422,11 +427,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             }}
           >
             {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={project.baseThreadId} /> : null}
-            <IconHeaderButton
-              icon={ForkIcon}
-              label="Fork を開く"
-              onClick={() => requestFork(project.baseThreadId, { start: "choose" })}
-            />
+            {/* **携帯は右上に検索**（2026-10-20、ユーザー要望）——「Fork を開く」は「…」の中へ移した */}
+            {isMobile ? <SearchHeaderButton onClick={() => stack.open({ overlay: "palette" })} /> : null}
             {/* **左と同じものを、右上にも置かない**（改訂・2026-09-11、ユーザー指摘）
                 ——設定と履歴はサイドバーの下にある。同じ機能への入口を2つ持つと、
                 どちらかが古くなる（規則3）。判断待ちだけはモバイルに残す
@@ -435,6 +437,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
             ) : null}
             <ThreadActionsMenu
+              onFork={() => requestFork(project.baseThreadId, { start: "choose" })}
               onClear={() => handleClear(project.baseThreadId)}
               onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(project.baseThreadId, "compact") : undefined}
             />
@@ -487,27 +490,18 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               trailing={
                 <div className="flex items-center gap-1.5">
                   {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={threadId} /> : null}
-                  {/* **Fork からも Fork を作れる**（2026-10-11、ユーザー）——Base のヘッダと同じ入口 */}
-                  {!closed ? (
-                    <IconHeaderButton
-                      icon={ForkIcon}
-                      label="Fork を開く"
-                      onClick={() => requestFork(threadId, { start: "choose" })}
-                    />
-                  ) : null}
+                  {isMobile ? <SearchHeaderButton onClick={() => stack.open({ overlay: "palette" })} /> : null}
+                  {/* **Fork からも Fork を作れる**（2026-10-11、ユーザー）。「Fork を開く」と Close は「…」の中（2026-10-20、ユーザー要望） */}
                   <ThreadActionsMenu
+                    onFork={!closed ? () => requestFork(threadId, { start: "choose" }) : undefined}
+                    onCloseFork={
+                      CONNECTED_FEATURES.threadCloseReopen && !closed
+                        ? () => confirmClose(threadId, thread?.title ?? threadId, () => void handleCloseFork(threadId))
+                        : undefined
+                    }
                     onClear={() => handleClear(threadId)}
                     onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(threadId, "compact") : undefined}
                   />
-                  {CONNECTED_FEATURES.threadCloseReopen && !closed ? (
-                    <IconHeaderButton
-                      icon={CloseIcon}
-                      label="この Fork Thread を Close"
-                      onClick={() =>
-                        confirmClose(threadId, thread?.title ?? threadId, () => void handleCloseFork(threadId))
-                      }
-                    />
-                  ) : null}
                 </div>
               }
             />

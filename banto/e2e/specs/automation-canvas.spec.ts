@@ -15,7 +15,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, currentProjectId, fakeTurn, openApp, openPaletteEntry, waitTurnEnded } from "../helpers.js";
+import { createProject, currentProjectId, fakeTurn, openApp, openPaletteEntry, waitTurnEnded, closeForkFromHeader } from "../helpers.js";
 
 test.setTimeout(240_000);
 
@@ -190,7 +190,7 @@ test("画面から時刻の自動化を作り、今すぐ動かすと専用の F
   await expect(page.getByTestId("automations"), "別タブへ出したのに元の画面が開いたまま").toBeHidden({ timeout: 15_000 });
 
   // ---- 7. 専用の Fork を閉じるときは「自動化を一時停止します」と確かめる -----------------------------------------
-  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
+  await closeForkFromHeader(page);
   const warning = page.getByTestId("close-fork-warning");
   await expect(warning).toBeVisible();
   await expect(warning.getByTestId("close-fork-automation")).toContainText(`自動化「${AUTOMATION_NAME}」を一時停止します。`);
