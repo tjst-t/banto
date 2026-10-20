@@ -10749,7 +10749,7 @@
       "number": 448,
       "kind": "task",
       "title": "Service と Shell の待たない形を Windows で動かす（systemd の代わりの見張り役）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-2-daily",
       "dependsOn": [],
       "milestone": null,
@@ -10761,7 +10761,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:31.460Z",
-      "updatedAt": "2026-10-20T08:57:31.460Z",
+      "updatedAt": "2026-10-20T08:59:08.923Z",
       "closedAt": null,
       "extra": {}
     },
