@@ -84,7 +84,7 @@ const skip = (reason) => {
  * @param {string} o.newDir            worktree（`versions/<頭12>`）
  * @param {string} o.id                この回の id（作業フォルダの名前）
  * @param {(msg: string) => void} o.log
- * @param {(patch: object) => void} o.setPrebuilt  state.json の `prebuilt` を替える
+ * @param {(patch: object, opts?: { note?: string }) => void} o.setPrebuilt  state.json の `prebuilt` を替える（`note` を渡せば説明も同じ1回で）
  * @param {(text: string|undefined) => void} o.note state.json の `note`
  * @param {() => void} o.checkStop     やめる印・SIGTERM なら投げる（呼ぶ側の Stop）
  * @param {(extraBytes: number) => void} o.checkSpace 取ってくる分を足した空きの確かめ（足りなければ投げる）
@@ -200,8 +200,7 @@ export async function usePrebuilt(o) {
         }
         if (Date.now() >= deadline) skip(`GitHub での組み立てを ${Math.round(o.waitMs / 60000)} 分待ちましたが出来ません`);
         const mins = Math.floor((Date.now() - startedWaiting) / 60000);
-        o.setPrebuilt({ status: "waiting" });
-        o.note(`GitHub で組み立て中です（${mins} 分）`);
+        o.setPrebuilt({ status: "waiting" }, { note: `GitHub で組み立て中です（${mins} 分）` });
         await nap(o.headIntervalMs ?? 30_000);
         size = await headSize(assetUrl);
         if (size !== undefined) break;
@@ -220,8 +219,10 @@ export async function usePrebuilt(o) {
       checkStop: o.checkStop,
       markMs,
       progress: (done) => {
-        o.setPrebuilt({ status: "downloading", bytes: { done, total: size } });
-        o.note(`組み立て済みの版を取ってきています（${mb(done)} / ${mb(size)} MB）`);
+        o.setPrebuilt(
+          { status: "downloading", bytes: { done, total: size } },
+          { note: `組み立て済みの版を取ってきています（${mb(done)} / ${mb(size)} MB）` },
+        );
       },
     });
     o.note(undefined);

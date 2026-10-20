@@ -301,9 +301,11 @@ test("containers へ移す：根は正規化して1段ずつ作り、started の
     assert.equal(readFileSync(join(shellTo, "state.json"), "utf8"), "{}");
     assert.ok(!existsSync(join(shellTo, "home")), "Shell のホームを写した");
     assert.match(readFileSync(join(shellTo, ".banto-moved.json"), "utf8"), /"remote:vm"/);
-    // 根は 1段ずつ作った（mkdir -m 700）
-    assert.equal(statSync(to).mode & 0o777, 0o700);
+    // 根は 1段ずつ作った（mkdir -m 700）——途中の段は 700 のまま。根そのものは、そのあと展開（tar -xpf）が元の根の mode に
+    // そろえる。元の根の mode は試験を流す機械の umask で変わる（GitHub のランナーは 022 で 755、この開発機は 077 で 700）ので、
+    // 決め打ちの 700 ではなく元と同じかを見る（2026-10-20、GitHub でだけ落ちた）
     assert.equal(statSync(join(h.vmHome, "work")).mode & 0o777, 0o700);
+    assert.equal(statSync(to).mode & 0o777, statSync(src).mode & 0o777);
     // git worktree repair の結果（印が新しい根を指すか）はここでは見ない——偽の VM はこの機械なので元の根も見え、git 2.43 の repair は
     // worktree の .git が指す元のほうを直してしまう（本物では中から元の根は見えない。docs/notes/2026-10-20-containers-move.md）。
     // 中のユーザーで流したかを下で見る
