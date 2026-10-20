@@ -48,9 +48,18 @@ const ORIGIN_MAX_BYTES = 256 * 1024;
 /** そのブランチが無い（bundle の台本が返す） */
 const EXIT_ABSENT = 7;
 
-/** 台本の頭：言語をそろえ、資格情報を聞かせない。`$1` は根、`$2` はブランチ名 */
-const PRELUDE = "export LC_ALL=C LANGUAGE=C GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0";
-const GIT = 'git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$1"';
+/**
+ * 台本の頭：言語をそろえ、資格情報を聞かせない。`$1` は根、`$2` はブランチ名。**向こうの git も時間で切る**（レビュー L3）——
+ * core が線を切っても向こうの git は走り切りうるので、`timeout` があれば core の上限より短い `BANTO_GIT_LIMIT` 秒で止める
+ */
+const PRELUDE = [
+  "export LC_ALL=C LANGUAGE=C GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0",
+  'T=""',
+  'case "$BANTO_GIT_LIMIT" in ""|*[!0-9]*) ;; *) command -v timeout >/dev/null 2>&1 && T="timeout -k 5 $BANTO_GIT_LIMIT" ;; esac',
+].join("\n");
+const GIT = '$T git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$1"';
+/** 取り込む bundle の一時ファイルの名前の頭（片づけ損ねたものは、次に取り込むときに消す） */
+const UNBUNDLE_TMP_PREFIX = "banto-unbundle.";
 
 /**
  * origin の設定（リポジトリの段だけ。`include` は辿らない）。根が git でなければ `not-repo` の1行。値は `--null`
@@ -82,8 +91,13 @@ export const BUNDLE_SCRIPT = [
  */
 export const UNBUNDLE_SCRIPT = [
   PRELUDE,
-  "t=$(mktemp) || exit 4",
+  'd="${TMPDIR:-/tmp}"',
+  // 前の回が片づけ損ねたもの（線が切れた・止められた）を消す。走っている回のもの（上限は数分）には触らない
+  `find "$d" -maxdepth 1 -name '${UNBUNDLE_TMP_PREFIX}*' -user "$(id -u)" -mmin +30 -exec rm -f -- {} + 2>/dev/null`,
+  `t=$(mktemp "$d/${UNBUNDLE_TMP_PREFIX}XXXXXX") || exit 4`,
   "trap 'rm -f -- \"$t\"' EXIT",
+  // 止められたとき（線が切れた・時間切れ）も消してから終わる
+  "for s in HUP INT PIPE TERM; do trap 'rm -f -- \"$t\"; exit 1' \"$s\"; done",
   'cat > "$t" || exit 4',
   `${GIT} fetch -q --no-tags --no-recurse-submodules --no-write-fetch-head "$t" "+refs/heads/$2:refs/remotes/origin/$2"`,
   "",
@@ -135,10 +149,10 @@ export class RemoteProjectGit {
   }
 
   private run(projectId: string, script: string, args: string[], opts: { stdin?: Buffer; maxStdoutBytes: number }): Promise<ProjectRun> {
-    return this.deps.run(projectId, ["/bin/sh", "-c", script, "banto-git", ...args], {
-      ...opts,
-      timeoutMs: this.deps.timeoutMs ?? PROJECT_GIT_TIMEOUT_MS,
-    });
+    const timeoutMs = this.deps.timeoutMs ?? PROJECT_GIT_TIMEOUT_MS;
+    // 向こうの git は core の上限の 9 割で止める（core が線を切るより先に、向こうで終わらせる）
+    const limitSec = Math.max(1, Math.floor((timeoutMs * 0.9) / 1000));
+    return this.deps.run(projectId, ["env", `BANTO_GIT_LIMIT=${limitSec}`, "/bin/sh", "-c", script, "banto-git", ...args], { ...opts, timeoutMs });
   }
 
   async origin(projectId: string): Promise<ProjectGitOrigin> {
