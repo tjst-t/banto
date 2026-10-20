@@ -33,7 +33,7 @@ export const READ_ONLY_BUILTIN_TOOLS: readonly string[] = ["ListMcpResourcesTool
  * `banto-memory` は書く tool しか無いので、読むだけの回にはサーバごと渡さない
  */
 export const READ_ONLY_CORE_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  "banto-thread": ["list_threads", "list_automations"],
+  "banto-thread": ["list_threads", "list_automations", "claude_usage"],
 };
 
 /** その会話の制限を引く口（`autoApproveFor` と同じ形）。制限が無ければ undefined */

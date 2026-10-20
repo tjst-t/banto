@@ -961,6 +961,7 @@ test("読むだけの会話のターンは、組み込みを資源の3つにし�
         "ListMcpResourcesTool",
         "ReadMcpResourceDirTool",
         "ReadMcpResourceTool",
+        "mcp__banto-thread__claude_usage",
         "mcp__banto-thread__list_automations",
         "mcp__banto-thread__list_threads",
         "mcp__filesystem__readFile",
@@ -978,7 +979,7 @@ test("読むだけの会話のターンは、組み込みを資源の3つにし�
     await servers["banto-thread"]!.instance!.connect(b);
     const client = new Client({ name: "t", version: "0" });
     await client.connect(a);
-    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads"]);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "list_automations", "list_threads"]);
     await client.close();
     // 承認は人に聞かずに断る——判断待ちを出さない（自動で許可がオンでも）
     assert.equal(events.some((e) => e.type === "judgment"), false, "読むだけの回で判断待ちを出した");

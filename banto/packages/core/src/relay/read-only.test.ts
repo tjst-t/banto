@@ -49,7 +49,7 @@ test("同梱の Module が読むだけと名乗った tool だけが通る。第
 
 test("PreToolUse の最後の網：組み込みは資源の3つ、core は list_threads・list_automations、Module は引いた一覧だけ", () => {
   const modules = new Set(["mcp__filesystem__readFile"]);
-  for (const ok of ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool", "mcp__banto-thread__list_threads", "mcp__banto-thread__list_automations", "mcp__filesystem__readFile"]) {
+  for (const ok of ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool", "mcp__banto-thread__list_threads", "mcp__banto-thread__list_automations", "mcp__banto-thread__claude_usage", "mcp__filesystem__readFile"]) {
     assert.equal(readOnlyHookAllows(ok, modules), true, ok);
   }
   for (const ng of ["WebFetch", "WebSearch", "Bash", "mcp__shell__runCommand", "mcp__banto-thread__create_automation", "mcp__banto-thread__start_forks", "mcp__banto-memory__remember_decision", "mcp__filesystem__writeFile"]) {
