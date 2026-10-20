@@ -25,7 +25,9 @@ let breaks = { req: 0, tokens: 0, cost: 0 };
 const gaps = [5 * 60e3, 60 * 60e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
 let images = 0;
 const breakDays = new Map();
-const shortBreaks = new Map(); // 5分以内の書き直しの形 → [回数, 値段の比] // 日付（UTC）→ [回数, 値段の比]
+const shortBreaks = new Map();
+let syntheticCount = 0;
+const modelPairs = new Map(); // 5分以内の書き直しで、前の要求のモデル → このモデル // 5分以内の書き直しの形 → [回数, 値段の比] // 日付（UTC）→ [回数, 値段の比]
 const kinds = new Map(); // 履歴の中身の種類 → 文字数
 const tools = new Map(); // tool の名前 → 結果の文字数
 const sessions = [];
@@ -62,7 +64,10 @@ for (const file of files) {
       }
     }
   }
-  const reqs = [...byId.values()];
+  // 中断や「No response requested.」などで CLI が書く合成の発言（model "<synthetic>"・使った量 0）は要求ではないので外す
+  const synthetic = [...byId.values()].filter((m) => m.model === "<synthetic>" || !(m.usage.input_tokens || m.usage.cache_read_input_tokens || m.usage.cache_creation_input_tokens));
+  syntheticCount += synthetic.length;
+  const reqs = [...byId.values()].filter((m) => !synthetic.includes(m));
   if (reqs.length === 0) continue;
   const s = { file: file.slice(root.length + 1), req: reqs.length, in: 0, cw5m: 0, cw1h: 0, cr: 0, out: 0, maxPrompt: 0 };
   reqs.forEach((m, i) => {
@@ -87,6 +92,8 @@ for (const file of files) {
         const shape = `${r.cr < 10_000 ? "丸ごと（読み出し1万未満）" : "途中から（読み出し" + Math.round(r.cr / 1000) / 10 * 1 + "万前後は効いた）"}`.replace(/（読み出し[\d.]+万前後は効いた）/, (m) => (r.cr >= 50_000 ? "（前の5万以上は効いた）" : "（前の1〜5万は効いた）"));
         const key = `${shape}・直前は${m.after === "text" ? "人の発言（ターンの始まり）" : m.after === "tool" ? "tool の結果（ターンの途中）" : m.after}・モデル${m.model === reqs[i - 1].model ? "同じ" : "替わった"}`;
         const v = shortBreaks.get(key) ?? [0, 0]; v[0]++; v[1] += c; shortBreaks.set(key, v);
+        const pair = `${reqs[i - 1].model} → ${m.model}`;
+        const pv = modelPairs.get(pair) ?? [0, 0]; pv[0]++; pv[1] += c; modelPairs.set(pair, pv);
       }
       const day = Number.isFinite(m.at) ? new Date(m.at).toISOString().slice(0, 10) : "?";
       const d = breakDays.get(day) ?? [0, 0]; d[0]++; d[1] += c; breakDays.set(day, d);
@@ -109,6 +116,9 @@ let glo = 0;
 for (const g of gaps) { console.log(`  ${glo / 60e3}分〜${g.max === Infinity ? "" : g.max / 60e3 + "分"}：${fmt(g.req)} 回・${pct(g.cost)}`); glo = g.max; }
 console.log("5分以内の書き直しの形：");
 for (const [k, [n, c]] of [...shortBreaks].sort((a, b) => b[1][1] - a[1][1])) console.log(`  ${k}：${n} 回・${pct(c)}`);
+console.log(`（合成の発言 ${fmt(syntheticCount)} 件は要求に数えていない）`);
+console.log("5分以内の書き直しの、前の要求のモデル → このモデル：");
+for (const [k, [n, c]] of [...modelPairs].sort((a, b) => b[1][1] - a[1][1]).slice(0, 6)) console.log(`  ${k}：${n} 回・${pct(c)}`);
 console.log("書き直しの日ごと（新しい10日）：" + [...breakDays].sort().slice(-10).map(([d, [n, c]]) => `${d.slice(5)} ${n}回 ${pct(c)}`).join("・"));
 console.log(`tool の結果の中の画像：${fmt(images)} 枚（文字数では base64 で大きく見えるが、トークンは1枚おおよそ千〜数千）`);
 console.log("送った量の大きさごとの要求（回数・値段の比）：");
