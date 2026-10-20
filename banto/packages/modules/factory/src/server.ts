@@ -144,6 +144,8 @@ export interface FactoryServerDeps {
   resumeAskWaitMs?: number;
   /** 1分の長さ（ミリ秒）。試験が「長引いている」を短く確かめる口 */
   minuteMs?: number;
+  /** 依存先の Module が一覧に無いとき、問い直しながら待つ上限（既定 `TARGET_WAIT_MS`） */
+  targetWaitMs?: number;
   /**
    * **出来事を出す**（追加・2026-10-16、アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。出口の箱に書いてから host へ
    * 出す口（`EventPublisher.publish`）。札で頼んだ会話に知らせるのとは別に、待つ自動化のために出す。無ければ出さない
@@ -157,6 +159,13 @@ export interface FactoryServerDeps {
  */
 export const RESUME_ASK_WAIT_MS = 150_000;
 
+/**
+ * 依存先の Module が中継の一覧に無いとき、問い直しながら待つ上限（追加・2026-10-20、Backlog #477）。一覧は**いま繋がっている**
+ * Module だけを返す——宛先が起き直している・繋ぎ直している瞬間に当たると無いことになり、テストとレビューに合格した
+ * 1件がマージの段で止まっていた。一時の欠けは待って問い直し、待っても無ければ今までどおり理由つきで止まる
+ */
+export const TARGET_WAIT_MS = 60_000;
+
 export function createFactoryServer(deps: FactoryServerDeps) {
   const server = new Server({ name: "banto-module-factory", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
@@ -165,12 +174,24 @@ export function createFactoryServer(deps: FactoryServerDeps) {
   async function targetOf(role: "subagent" | "backlog", callId?: string): Promise<string> {
     const known = targets.get(role);
     if (known) return known;
-    const listed = await deps.relay("relayListTargets", {}, callId);
-    if (listed.isError) throw new FactoryError(listed.text || "中継が相手の一覧を返しませんでした");
-    const found = (JSON.parse(listed.text) as Array<{ name: string; roles: string[] }>).find((t) => t.roles.includes(role));
-    if (!found) throw new FactoryError(`この Project に ${role} の Module がありません（Factory は ${role} を使います）`);
-    targets.set(role, found.name);
-    return found.name;
+    const waitMs = deps.targetWaitMs ?? TARGET_WAIT_MS;
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const listed = await deps.relay("relayListTargets", {}, callId);
+      if (listed.isError) throw new FactoryError(listed.text || "中継が相手の一覧を返しませんでした");
+      const found = (JSON.parse(listed.text) as Array<{ name: string; roles: string[] }>).find((t) => t.roles.includes(role));
+      if (found) {
+        targets.set(role, found.name);
+        return found.name;
+      }
+      // 一覧はいま繋がっているものだけ——起き直し・繋ぎ直しの最中かもしれないので、上限までは待って問い直す
+      if (Date.now() >= deadline) {
+        throw new FactoryError(
+          `この Project に ${role} の Module がありません（Factory は ${role} を使います。${Math.round(waitMs / 1000)} 秒待って問い直しても現れませんでした）`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, Math.min(1_000, Math.max(10, waitMs / 10))));
+    }
   }
 
   const ports: FactoryPorts = {
