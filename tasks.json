@@ -10203,7 +10203,7 @@
       "number": 422,
       "kind": "task",
       "title": "任務の画面：会話の札と面・サイドバーの1行・受信箱",
-      "status": "ready",
+      "status": "done",
       "parent": "missions-patrols",
       "dependsOn": [
         "missions"
@@ -10213,12 +10213,12 @@
       "labels": [],
       "body": "仕様 v4-frontend.md §6.47 の会話の画面・サイドバー・受信箱の任務の部分。ヘッダの「任務」の札と面（今すぐ起こす・枠を延ばす・止める）、「…」の「任務にする」、任務で起きた回の薄い1行、サイドバーの「任務：次は…」、決めることのカードの「枠を延ばす」、返ってきた会話のカードの任務の結末。",
       "doneWhen": "E2E で、任務を持つ会話の札と面・サイドバーの1行・受信箱の結末と「枠を延ばす」が出て、面とカードから枠を延ばす・止めるが効くことを確かめる",
-      "resolution": null,
+      "resolution": "GitHub の main（〜7706a5f9）。#423 の上の版で、画面の単体 60件・core 単体 1205件・E2E mission・mission-ui・patrol・inbox-page・inbox・sidebar・read-only-runs の12件が通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T07:20:38.045Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:54:18.459Z",
+      "closedAt": "2026-10-20T15:54:18.459Z",
       "extra": {}
     },
     {
