@@ -10250,7 +10250,7 @@
       "number": 424,
       "kind": "task",
       "title": "Repositories に読むだけの GitHub の tool（Issue・PR・CI）",
-      "status": "ready",
+      "status": "done",
       "parent": "missions-patrols",
       "dependsOn": [
         "read-only-runs"
@@ -10260,12 +10260,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §4.4 の土台の最後の項。Repositories に AI に見せる（agent）tool として、Issue・PR・CI の一覧と中身を読む tool を足す。対象は呼んだ Project の root のリポジトリ（台帳で結びついたもの）だけ、引数は状態・番号・件数だけで自由な検索語・URL は受けない、宛先はそのリポジトリの GitHub の API だけ。dev.banto/effect: read を付ける。",
       "doneWhen": "偽の GitHub の E2E で、Project のリポジトリの Issue・PR・CI を読め、ほかのリポジトリは断り、読むだけの回でも使えることを確かめる",
-      "resolution": null,
+      "resolution": "GitHub の main fe7fa0e2（仕様の追記 dacc3818）。E2E repositories-github-read を含む14件・repositories 単体 127件・core 単体 1194件が通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T07:20:40.393Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:43:01.822Z",
+      "closedAt": "2026-10-20T15:43:01.822Z",
       "extra": {}
     },
     {
