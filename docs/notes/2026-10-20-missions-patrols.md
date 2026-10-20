@@ -34,6 +34,23 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
 - **任務の回は受信箱に出さない**（何も起きなかった回）——15分ごとに受信箱が埋まるのを防ぐ
 - **見回りの手帳は Memory に入れない**——Memory は決まったことだけ
 
+## Fable のレビュー1回目（直せば入れてよい）で直したこと
+
+- 守りを4か所に：SDK の `allowedTools` は狭めても何も禁止しない（聞かずに通す一覧）、既定の `auto` は分類器が `canUseTool` を呼ばずに
+  許しうる——組み込みは `tools` で置き換え、core の in-process のサーバ（代理を通らない）は読むだけの tool だけで組み、Module は代理で、
+  最後に PreToolUse
+- 見回りの Fork はどの起こし方でも読むだけ。まとめと `banto.turn-decisions` を出さない（判断役の答えが外の文を読んだ文脈のまま
+  制限なしで動く道があった）
+- 読むだけの回が書いた URL は、banto が知っている場所だけリンクに（人に押させて外へ運ぶ道）
+- 読むだけの回の中継先も読むだけに限る（host が宛先の印を見る）
+- 印の候補の直し：`listServices`（毎回 reconcile で systemctl を打ちうる）・`listPublished`（Caddy の経路を書きうる）・`getNetworkRequest`
+  （見出しを伏せない）を外し、Browser の読む tool はブラウザを起こさない形を条件に、`readDocument` は PDF と docx だけ
+- 受信箱の新しい種類は既存の「お知らせ」（仕組みの異常）と名前が重なるので「気づき」に。§2.4・§6.41・§6.0 を更新、バッジには数えない
+- 任務：`report_turn` が `continue: false` でターンを終えるので、任務の状態が悪ければ `report_turn` が断る。Stop hook は1本にまとめる。
+  起こすかは `deliver` の手前で判断し、空いていなければ次の刻み。出来事の待ちは段2の照合と `awaitedModules` に乗せる。`start_mission` は
+  tool の中でカードを出す（`canUseTool` の自動の許可を通らない）
+- Repositories の GitHub の tool は、呼んだ Project のリポジトリだけ・決まった欄だけ
+
 ## 参考
 
 - [OpenAI launches Dots（TechCrunch）](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/)
