@@ -8951,7 +8951,7 @@
       "number": 368,
       "kind": "task",
       "title": "containers の実行場所：Project ごとのコンテナ・置き場と見せ方・Module の起動・中から書く",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "containers-core-sudo-n"
@@ -8965,7 +8965,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-20T04:44:01.399Z",
+      "updatedAt": "2026-10-20T04:44:09.705Z",
       "closedAt": null,
       "extra": {}
     },
