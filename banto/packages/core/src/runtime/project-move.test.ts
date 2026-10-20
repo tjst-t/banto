@@ -14,8 +14,11 @@ import {
   pathContains,
   pathsOverlap,
   rsyncShellWord,
+  runningInContainerScript,
   sessionIdsOf,
 } from "./project-move.js";
+import { chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 test("動いているもの：Service の unit・待たないコマンド・Terminal の tmux を読む。Module を包む単位（banto-mod-*）は数えない", () => {
   const items = parseRunning(
@@ -126,4 +129,36 @@ test("写す流れは溜めない：600MB を流しても banto 本体のメモ�
   assert.equal(w.stdout.trim(), "600000000");
   // 流れの分（数十MB）を越えて膨らまない。以前は 600MB 全部が文字列に溜まり、上限で RangeError になった
   assert.ok(peak - before < 200 * 1024 * 1024, `メモリが ${Math.round((peak - before) / 1024 / 1024)}MB 増えた`);
+});
+
+test("containers：動いているものはコンテナの中のユーザーで数える。止まっていれば数えない（起こさない）・Incus が答えなければ失敗", () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-running-ct-"));
+  try {
+    const log = join(dir, "log");
+    // 偽の incus：list はコンテナの様子（$STATE）、exec は中で流す台本を受けて、Service が1つ動いているように答える
+    writeFileSync(
+      join(dir, "incus"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$1" in\n  list) [ "$STATE" = fail ] && exit 1; [ -n "$STATE" ] && echo "$STATE"; exit 0 ;;\n  exec) echo unit=banto-web.service; echo unit=banto-mod-shell-x.service; echo tmux=main ;;\nesac\n`,
+    );
+    chmodSync(join(dir, "incus"), 0o755);
+    const run = (state: string) =>
+      spawnSync("sh", ["-c", runningInContainerScript("banto-p1")], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, STATE: state } });
+    const up = run("RUNNING");
+    assert.equal(up.status, 0, up.stderr);
+    assert.deepEqual(parseRunning(up.stdout).map((r) => r.kind), ["service", "terminal"]);
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    assert.match(calls[0]!, /^list \^banto-p1\$ -c s -f csv$/);
+    // 中のユーザーで（VM の SSH ユーザーではない）、中のユーザーの systemd のバスを渡して
+    assert.match(calls[1]!, /^exec banto-p1 --user \d+ --group \d+ .*--env XDG_RUNTIME_DIR=\/run\/user\/\d+ .*-- \/bin\/sh -c /);
+    writeFileSync(log, "");
+    for (const st of ["STOPPED", ""]) {
+      const r = run(st);
+      assert.equal(r.status, 0);
+      assert.equal(r.stdout, "", `止まっている（${st || "無い"}）のに数えた`);
+    }
+    assert.ok(!readFileSync(log, "utf8").includes("exec"), "止まっているコンテナの中で流した");
+    assert.notEqual(run("fail").status, 0, "Incus が答えないのに「何も動いていない」にした");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

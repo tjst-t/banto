@@ -47,6 +47,8 @@ import type { ProjectLocation, ProjectState, RuntimeMoveCreated } from "../proje
 import { RemoteRuntimeError, remoteNameOf, type RemoteRuntimes } from "./remote-runtimes.js";
 import { HOST_CONTAINER_RUNTIME } from "./remote-store.js";
 import { remoteOwnerDirName } from "./remote-ssh.js";
+import { INSIDE_BUS_ENV, insideCommand } from "./remote-containers.js";
+import { containerNameFor } from "@banto/container";
 import { remotePathExpr, shq, sshArgs, sshEnv, SshCommandError, type SshResult } from "./ssh.js";
 
 /** 画面に返す失敗（状態番号つき）。`RemoteRuntimeError` の仲間——SSH の接続の中から投げても状態番号が保たれる */
@@ -211,6 +213,20 @@ const RUNNING_SCRIPT = [
   `exit 0`,
   "",
 ].join("\n");
+
+/**
+ * **containers：動いているものはその Project のコンテナの中で数える**（v4-security.md §1「他の仕組みとの関係」、#369）。Service・
+ * 待たないコマンド・Terminal は中のユーザーの systemd・tmux で動く——VM の SSH ユーザーには無い。VM で流す台本：コンテナが動いて
+ * いなければ何も出さずに終わる（この機械のコンテナと同じく、数えるために起こさない）。動いていれば中のユーザーで同じ台本を流す
+ */
+export function runningInContainerScript(container: string): string {
+  return [
+    `st=$(incus list ${shq(`^${container}$`)} -c s -f csv 2>/dev/null) || exit 5`,
+    `[ "$st" = RUNNING ] || exit 0`,
+    `${insideCommand(container, ["/bin/sh", "-c", RUNNING_SCRIPT], INSIDE_BUS_ENV)}`,
+    "",
+  ].join("\n");
+}
 
 export function parseRunning(stdout: string): RunningItem[] {
   const items: RunningItem[] = [];
@@ -1291,6 +1307,7 @@ export class ProjectMover {
     if (this.sourceTakenBy(project)) return [];
     let r: SshResult | undefined;
     if (usesHostContainer(project.runtime)) r = await this.deps.hostContainers.runInside(project.id, RUNNING_SCRIPT);
+    else if (this.isContainers(from)) r = await this.withSide(from, (side) => side.run(runningInContainerScript(containerNameFor(project.id))));
     else r = await this.withSide(from, (side) => side.run(RUNNING_SCRIPT));
     if (r && r.code !== 0) throw new SshCommandError(`${hostLabel(from)}で動いているものを確かめられませんでした`, r);
     return r ? parseRunning(r.stdout) : [];
@@ -1302,8 +1319,15 @@ export class ProjectMover {
    */
   private sourceTakenBy(project: ProjectState): { id: string; name: string } | undefined {
     const name = remoteNameOf(project.runtime);
-    if (!name || project.status !== "closed") return undefined;
+    // containers は Project ごとのコンテナなので、閉じても空かない（同じ実行場所のほかの Project はこの Project の場所を使わない）
+    if (!name || project.status !== "closed" || this.isContainers(project.runtime)) return undefined;
     return this.deps.remoteRuntimes.get(name)?.usedBy.find((p) => p.id !== project.id);
+  }
+
+  /** 別のサーバの Project ごとのコンテナ（containers）か */
+  private isContainers(runtime: string | undefined): boolean {
+    const name = remoteNameOf(runtime);
+    return name !== undefined && this.deps.remoteRuntimes.get(name)?.mode === "containers";
   }
 
   // ── 片側 ─────────────────────────────────────────────────────────────────
