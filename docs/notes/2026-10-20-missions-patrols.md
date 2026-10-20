@@ -61,6 +61,10 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
 - 「答えていない決めこと」は判断役の `movedOnReason` と同じ手がかりで判定する
 - 「やって」の引用は外から来たものと同じ囲み、`start_mission` のカードは form の部品、人の「今すぐ起こす」は最短の間隔に縛られない
 
+## Fable のレビュー3回目（main に入れてよい）で足したこと
+
+- 「やって」の引用は既存の `quotes` に乗せる・判断役は枠を延ばす問いを人に任せ、カードに「枠を延ばす」・立て直した見回りの Fork にも印
+
 ## 参考
 
 - [OpenAI launches Dots（TechCrunch）](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/)
