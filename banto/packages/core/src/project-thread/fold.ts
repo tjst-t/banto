@@ -36,6 +36,7 @@ import type {
   MissionStatus,
   MissionWakeCause,
   MissionWakeResult,
+  MissionWakeOrigin,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -162,7 +163,7 @@ export type ProjectThreadEvent =
         /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
         automation?: { id: string; runId: string };
         /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
-        mission?: { id: string; wake: number };
+        mission?: MissionWakeOrigin;
         /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
         external?: ExternalContent[];
       };
@@ -1068,7 +1069,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "mission.finished": {
         const t = next.threads.get(event.payload.threadId);
         const m = t?.mission;
-        if (!t || !m || m.id !== event.payload.missionId || m.status !== "active") return next;
+        if (!t || !m || m.id !== event.payload.missionId) return next;
+        // 動いている任務を終える。枠を使い切った・止まっている任務は、人が止める（stopped）ときだけ（追加・2026-10-20、Backlog #422）
+        const finishable = m.status === "active" || (event.payload.status === "stopped" && (m.status === "exhausted" || m.status === "stalled"));
+        if (!finishable) return next;
         next.threads.set(t.id, { ...t, mission: finishedMission(m, event.payload.status, raw, event.payload.result) });
         return next;
       }

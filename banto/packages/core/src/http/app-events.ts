@@ -4,7 +4,7 @@
 // 気づく道が要る。**ポーリングはしない**（受信箱で踏んだ——再描画が assistant-ui のランタイムを壊した）。
 // 流すのは「何が起きたか」の知らせだけで、中身は画面が既存の口で取りに行く（繋ぎ直す・記録を読む・受信箱）。
 
-import type { AwaitingReply, ProjectStart, ThreadClosedBy } from "../project-thread/types.js";
+import type { AwaitingReply, MissionState, ProjectStart, ThreadClosedBy } from "../project-thread/types.js";
 import type { RuntimeMoveChange } from "../runtime/project-move.js";
 
 /**
@@ -51,6 +51,9 @@ export type AppEvent =
   // 上限が戻るのを待っている Thread が変わった（追加・2026-10-18、v4-frontend.md §6.46）。`continueAt` があれば待っている（その時刻に
   // 自動で続ける）、無ければ待っていない。会話の待ちの帯とサイドバーの1行に使う
   | { type: "rate_limit_wait.changed"; threadId: string; projectId?: string; continueAt?: string }
+  // その Thread の任務が変わった（追加・2026-10-20、v4-frontend.md §6.47）。**今の任務を丸ごと**送る（画面は置き換える）。
+  // 会話の札と面・サイドバーの1行・受信箱の「枠を延ばす」に使う
+  | { type: "mission.changed"; threadId: string; projectId?: string; mission: MissionState }
   // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
   | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }

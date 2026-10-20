@@ -43,6 +43,7 @@ import type {
   MissionStatus,
   MissionWakeCause,
   MissionWakeResult,
+  MissionWakeOrigin,
 } from "./types.js";
 import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -93,6 +94,7 @@ export function normalizeProjectRoot(root: string): string {
 export class ProjectThreadStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof projectThreadFold.initial>>;
   private readonly projectsChangedListeners = new Set<() => void>();
+  private readonly missionChangedListeners = new Set<(threadId: ThreadId) => void>();
 
   constructor(
     private readonly dataDir: string,
@@ -132,6 +134,25 @@ export class ProjectThreadStore {
         listener();
       } catch (err) {
         console.warn("[host] Project の一覧の変更の聞き手が例外を投げました:", err);
+      }
+    }
+  }
+
+  /**
+   * **会話の任務が変わった**（追加・2026-10-20、v4-frontend.md §6.47）。始めた・枠・予約・起きた・終わった、と会話・Project を
+   * 閉じて止まったとき。中身は渡さない——聞き手（`GET /api/events` の `mission.changed`）が今の任務を読む
+   */
+  onMissionChanged(listener: (threadId: ThreadId) => void): () => void {
+    this.missionChangedListeners.add(listener);
+    return () => this.missionChangedListeners.delete(listener);
+  }
+
+  private notifyMissionChanged(threadId: ThreadId): void {
+    for (const listener of this.missionChangedListeners) {
+      try {
+        listener(threadId);
+      } catch (err) {
+        console.warn("[host] 任務の変更の聞き手が例外を投げました:", err);
       }
     }
   }
@@ -444,9 +465,12 @@ export class ProjectThreadStore {
     const project = this.getProject(id);
     if (!project) throw new NotFoundError(`project ${id} not found`);
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
+    const withMission = this.listThreadsForProject(id).filter((t) => t.mission?.status === "active").map((t) => t.id);
     const event = await this.log.append("project.closed", { id });
     this.projection.applyOne(event);
     this.notifyProjectsChanged();
+    // 閉じると動いている任務は止まる（fold）
+    for (const threadId of withMission) this.notifyMissionChanged(threadId);
   }
 
   /**
@@ -556,13 +580,16 @@ export class ProjectThreadStore {
    * 閉じる。`by`・`reason` は記録に残す（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）
    */
   async closeThread(id: ThreadId, opts?: { by: ThreadClosedBy; reason?: string }): Promise<void> {
-    if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
+    const thread = this.getThread(id);
+    if (!thread) throw new NotFoundError(`thread ${id} not found`);
     const event = await this.log.append("thread.closed", {
       id,
       ...(opts ? { by: opts.by } : {}),
       ...(opts?.reason ? { reason: opts.reason } : {}),
     });
     this.projection.applyOne(event);
+    // 閉じると動いている任務は止まる（fold）
+    if (thread.mission?.status === "active") this.notifyMissionChanged(id);
   }
 
   async reopenThread(id: ThreadId): Promise<void> {
@@ -844,16 +871,19 @@ export class ProjectThreadStore {
   ): Promise<void> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
     this.projection.applyOne(await this.log.append("mission.started", { threadId, ...input }));
+    this.notifyMissionChanged(threadId);
   }
 
   async updateMissionFrame(threadId: ThreadId, missionId: string, frame: MissionFrame, reactivate = false): Promise<void> {
     this.projection.applyOne(
       await this.log.append("mission.updated", { threadId, missionId, frame, ...(reactivate ? { reactivate: true } : {}) }),
     );
+    this.notifyMissionChanged(threadId);
   }
 
   async setMissionFollowup(threadId: ThreadId, missionId: string, followup: MissionFollowup | null): Promise<void> {
     this.projection.applyOne(await this.log.append("mission.followup_set", { threadId, missionId, followup }));
+    this.notifyMissionChanged(threadId);
   }
 
   async recordMissionWake(
@@ -861,16 +891,19 @@ export class ProjectThreadStore {
     input: { missionId: string; wake: number; cause: MissionWakeCause; scheduledFor?: string },
   ): Promise<void> {
     this.projection.applyOne(await this.log.append("mission.woke", { threadId, ...input }));
+    this.notifyMissionChanged(threadId);
   }
 
   async settleMissionWake(threadId: ThreadId, missionId: string, wake: number, result: MissionWakeResult): Promise<void> {
     this.projection.applyOne(await this.log.append("mission.wake_settled", { threadId, missionId, wake, result }));
+    this.notifyMissionChanged(threadId);
   }
 
   async finishMission(threadId: ThreadId, missionId: string, status: Exclude<MissionStatus, "active">, result?: string): Promise<void> {
     this.projection.applyOne(
       await this.log.append("mission.finished", { threadId, missionId, status, ...(result ? { result } : {}) }),
     );
+    this.notifyMissionChanged(threadId);
   }
 
   /**
@@ -892,7 +925,7 @@ export class ProjectThreadStore {
     /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
     automation?: { id: string; runId: string };
     /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
-    mission?: { id: string; wake: number };
+    mission?: MissionWakeOrigin;
     /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
     external?: ExternalContent[];
   }): Promise<void> {

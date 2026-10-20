@@ -2931,7 +2931,11 @@ export function createApp(deps: AppDeps) {
           }
         };
         if (missionMatch[2] && req.method === "POST") return respond(() => missions.wakeNow(threadId), 200);
-        if (!missionMatch[2] && req.method === "GET") return json(res, 200, { mission: thread.mission ?? null });
+        // `startRefused`＝この会話で任務を始められない理由（画面の「任務にする」を出すか）。始められれば無い
+        if (!missionMatch[2] && req.method === "GET") {
+          const startRefused = missions.startRefusal(threadId);
+          return json(res, 200, { mission: thread.mission ?? null, ...(startRefused ? { startRefused } : {}) });
+        }
         if (!missionMatch[2] && req.method === "POST") {
           const body = (await readJsonBody(req)) as Record<string, unknown>;
           return respond(() => missions.startByHuman(threadId, body as Partial<MissionStartInput>), 201);
@@ -3272,6 +3276,10 @@ export function createApp(deps: AppDeps) {
             return wait ? [{ threadId: t.id, projectId: p.id, continueAt: wait.continueAt }] : [];
           }),
         );
+        // **任務を持つ Thread も渡す**（追加・2026-10-20、v4-frontend.md §6.47）——以後は mission.changed で置き換える
+        const missions = deps.projectThread.listProjects().flatMap((p) =>
+          deps.projectThread.listThreadsForProject(p.id).flatMap((t) => (t.mission ? [{ threadId: t.id, projectId: p.id, mission: t.mission }] : [])),
+        );
         // **混んでいる Project とこの機械も渡す**（追加・2026-10-09、§6.36）——サイドバーの印。以後は resources.busy で置き換える
         const resources = deps.resources?.busy();
         // **移している Project も渡す**（追加・2026-10-12、Backlog #270）——以後は runtime_move.changed で置き換える
@@ -3283,7 +3291,7 @@ export function createApp(deps: AppDeps) {
         // **新しい Project の始め方の仕事**（追加・2026-10-20、§6.49）——終わっていないもの。以後は project.start.changed で置き換える
         const projectStarts = deps.projectStart?.pending();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}), ...(projectStarts ? { projectStarts } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, missions, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}), ...(projectStarts ? { projectStarts } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);

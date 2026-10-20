@@ -385,6 +385,19 @@ export class Missions {
     });
   }
 
+  /**
+   * **この会話で任務を始められないなら理由**（画面の「任務にする」を出すか、v4-frontend.md §6.47）。動いている任務があるときも理由
+   */
+  startRefusal(threadId: string): string | undefined {
+    try {
+      this.assertCanStart(this.deps.projectThread.getThread(threadId));
+      return undefined;
+    } catch (err) {
+      if (err instanceof MissionConflictError) return err.message;
+      throw err;
+    }
+  }
+
   /** **人が始める**（画面の口）。人が押しているので聞かない */
   async startByHuman(threadId: string, raw: Partial<MissionStartInput>): Promise<MissionState> {
     this.assertCanStart(this.deps.projectThread.getThread(threadId));
@@ -401,7 +414,8 @@ export class Missions {
     const m = thread?.mission;
     if (!thread || !m) throw new MissionConflictError("この会話に任務はありません。");
     if (raw.stop === true) {
-      if (m.status !== "active") throw new MissionConflictError("この任務はもう動いていません。");
+      // 枠を使い切った・止まっている任務も、人が「終える」で止められる（受信箱のカード、v4-frontend.md §6.47）
+      if (m.status !== "active" && m.status !== "exhausted" && m.status !== "stalled") throw new MissionConflictError("この任務はもう終わっています。");
       await this.deps.projectThread.finishMission(threadId, m.id, "stopped", "人が止めました");
       return this.deps.projectThread.getThread(threadId)!.mission!;
     }
@@ -694,7 +708,8 @@ export class Missions {
       // ホップは 0 から（任務の枠が回数を抑える、§4.4）
       hop: 0,
       kind: "mission",
-      mission: { id: m.id, wake },
+      // 会話の薄い1行に出す分（v4-frontend.md §6.47）——起こした時点の上限と前の予約のメモ
+      mission: { id: m.id, wake, maxWakes: m.frame.maxWakes, ...(followup ? { note: oneLine(followup.note, 200) } : {}) },
       ...(external.length > 0 ? { external } : {}),
     });
   }

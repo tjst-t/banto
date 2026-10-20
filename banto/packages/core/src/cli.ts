@@ -888,6 +888,12 @@ async function main(): Promise<void> {
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
+  // **任務が変わったら画面に知らせる**（追加・2026-10-20、v4-frontend.md §6.47）。真実は Thread の任務（Event Store）。今の任務を丸ごと送る
+  projectThread.onMissionChanged((threadId) => {
+    const thread = projectThread.getThread(threadId);
+    if (!thread?.mission) return;
+    appEvents.publish({ type: "mission.changed", threadId, projectId: thread.projectId, mission: thread.mission });
+  });
   inbox.onJudgmentAnswered((item, answer) =>
     appEvents.publish({ type: "judgment.answered", threadId: item.threadId, judgmentId: item.id, answer: judgmentAnswerText(answer, item.choices) }),
   );
