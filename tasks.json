@@ -11181,6 +11181,29 @@
       "updatedAt": "2026-10-20T09:21:20.427Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "machine-project-project",
+      "number": 465,
+      "kind": "bug",
+      "title": "machine の実行場所：閉じた Project の公開の道が、次に来た Project の同じポートのサービスに届く",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "#369 のレビュー（H1）の直しで見つかった、machine 側の同じ形の穴（2026-10-20）。\n\nmachine の実行場所は、Project を閉じると空き、次の Project を置ける。閉じた Project の公開の記録と Caddy の道（dial <VM>:<ポート>）は残るので、次に来た Project が同じポートで待ち受けると、閉じた Project のホスト名（その認証設定のまま、認証なしのこともある）で新しい Project のサービスが出る。\n\ncontainers では #369 で、閉じた Project の address(projectId, port) が VM に繋がずに「閉じています」を返し、publish-caddy の突き合わせが道を 503 にする形にした（RemoteSshRuntime の projectClosed）。machine にも同じ形を広げれば塞がるが、machine の振る舞いを変えるので #369 では入れなかった。\n\n経緯：docs/notes/2026-10-20-containers-paths.md の「レビューの指摘と直し」。",
+      "doneWhen": "単体試験で、machine の閉じた Project の公開が「閉じています」（道は 503）になり、次の Project が同じポートで待ち受けても届かないこと。公開の E2E が通ること。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T10:50:42.146Z",
+      "updatedAt": "2026-10-20T10:50:42.146Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
