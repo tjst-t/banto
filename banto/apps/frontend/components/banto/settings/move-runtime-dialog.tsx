@@ -354,8 +354,9 @@ export function MoveRuntimeDialog({
             <Block tone="ok" title="写すもの" testId="move-copies">
               <ul className="flex flex-col gap-1">
                 <li data-testid="move-size">
-                  Project のフォルダと Module の状態：{formatMoveBytes(estimate.size.bytes)}（{estimate.size.files.toLocaleString()}{" "}
-                  ファイル）——.git ごと、未コミットの変更も
+                  {estimate.sizeNote
+                    ? `Project のフォルダと Module の状態：${estimate.sizeNote}——.git ごと、未コミットの変更も`
+                    : `Project のフォルダと Module の状態：${formatMoveBytes(estimate.size.bytes)}（${estimate.size.files.toLocaleString()} ファイル）——.git ごと、未コミットの変更も`}
                 </li>
                 {estimate.returning ? (
                   <li data-testid="move-diff">

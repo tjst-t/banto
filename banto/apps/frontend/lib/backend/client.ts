@@ -1065,6 +1065,8 @@ export interface RealMoveEstimate {
   from: { runtime: string; root: string; label: string };
   to: { runtime: string; label: string; root: string };
   size: { bytes: number; files: number };
+  /** 大きさを数えなかった理由（移す元の containers のコンテナが止まっている——移すときに起こしてから数える） */
+  sizeNote?: string;
   notMoved: string[];
   rebuild: string[];
   running: Array<{ kind: string; label: string }>;

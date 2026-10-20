@@ -15,6 +15,7 @@
 //   - 鍵の窓口：中の `/run/banto-a-<印>.sock` → VM の `a-<印>.sock`（host の Vault の窓口から `-R` で転送したもの）
 
 import { CONTAINER_USER_NAME, type HostInterfaces, type HostResources, type ProxyRoute, type RunIncus } from "@banto/container";
+import { createHash } from "node:crypto";
 import { shq, type SshResult } from "./ssh.js";
 
 /**
@@ -216,4 +217,80 @@ export function containersRootProblem(root: string, facts: ContainersRootFacts):
   const other = facts.others.find((o) => overlaps(root, o.root));
   if (other) return `根 ${root} が Project「${other.name}」の根（${other.root}）と重なります（閉じた Project も含む）`;
   return undefined;
+}
+
+/** Module の置き場を見せる装置の名前（パスの hash。Module から来た文字列をそのまま装置の名前にしない） */
+export function moduleDiskName(dir: string): string {
+  return `m-${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * **見せたフォルダが中から見えているか**を見る台本（VM で流す）。フォルダごとに VM と中（中の root）の inode を1行
+ * `<番号>=<VM>:<中>` で出す。中で引けなければ「中」は空——装置が付いていない（中の rootfs に同じパスが無い）か、コンテナが
+ * 動いていない。VM の側は symlink を辿らずに読むだけ（`stat` は最後の段の symlink を辿らない——`-L` を付けない）
+ */
+export function inodePairsScript(container: string, dirs: readonly string[]): string {
+  return [
+    ...dirs.map(
+      (dir, i) =>
+        `printf '${i}=%s:%s\\n' "$(stat -c %i -- ${shq(dir)} 2>/dev/null)" "$(incus exec ${shq(container)} -- stat -c %i -- ${shq(dir)} 2>/dev/null)"`,
+    ),
+    "",
+  ].join("\n");
+}
+
+/** `inodePairsScript` の出力を読む（フォルダの順に。読めない行は両方 undefined） */
+export function parseInodePairs(stdout: string, count: number): Array<{ vm?: string; inside?: string }> {
+  const out: Array<{ vm?: string; inside?: string }> = [];
+  for (let i = 0; i < count; i++) {
+    const m = new RegExp(`^${i}=(\\d*):(\\d*)$`, "m").exec(stdout);
+    out.push({ ...(m?.[1] ? { vm: m[1] } : {}), ...(m?.[2] ? { inside: m[2] } : {}) });
+  }
+  return out;
+}
+
+/**
+ * **中の root で台本を流すコマンド行**（VM の上で打つもの。`--user` を付けない）。移す元の `containers` のコンテナから読むとき
+ * ——中の root が作った 0600 のもの等も読め、辿るのはコンテナの中だけ（条件3に触れない。v4-security.md §1「`containers` との間で
+ * 移す」）
+ */
+export function insideRootCommand(container: string, script: string): string {
+  return `exec incus exec ${shq(container)} -- /bin/sh -c ${shq(script)}`;
+}
+
+/**
+ * **移す先のコンテナを片づける台本**（VM で流す。v4-security.md §1「`containers` との間で移す」の片づけ）。その banto の札
+ * （`user.banto.owner`）が付いたコンテナだけに触る：`remove` なら消す、`stop` なら止めて残す（穏やかに止め、上限を過ぎたら強制停止）。
+ * 無い・札が違う（ほかの banto・人が作った）なら何もしない。出すのは何をしたか（`ct=removed|stopped|none|foreign`）
+ */
+export function cleanupContainerScript(container: string, owner: string, action: "remove" | "stop", stopSec = 20): string {
+  const c = shq(container);
+  return [
+    `st=$(incus list ${shq(`^${container}$`)} -c s -f csv) || exit 5`,
+    `[ -n "$st" ] || { echo ct=none; exit 0; }`,
+    `o=$(incus config get ${c} user.banto.owner) || exit 5`,
+    `[ "$o" = ${shq(owner)} ] || { echo ct=foreign; exit 0; }`,
+    action === "remove"
+      ? `incus delete ${c} --force || exit 5\necho ct=removed`
+      : `if [ "$st" = RUNNING ]; then incus stop ${c} --timeout ${stopSec} || incus stop ${c} --force || exit 5; fi\necho ct=stopped`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * **コンテナの中に rsync が無ければ入れる台本**（VM で流す。前に居た場所へ戻すとき——rsync の受け手・送り手は中で動く）。中は
+ * sudo 可なので中の root で `apt-get install`。土台のイメージには入れない（入れると全部の土台を作り直す）。入れられなければ
+ * 終了コード 4（外へ出られない等）
+ */
+export function ensureRsyncInsideScript(container: string): string {
+  return insideRootCommand(
+    container,
+    [
+      "command -v rsync >/dev/null 2>&1 && { echo rsync=present; exit 0; }",
+      "export DEBIAN_FRONTEND=noninteractive",
+      "{ apt-get update -q && apt-get install -y -q --no-install-recommends rsync; } >&2 || exit 4",
+      "command -v rsync >/dev/null 2>&1 || exit 4",
+      "echo rsync=installed",
+    ].join("\n"),
+  );
 }

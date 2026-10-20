@@ -18,6 +18,11 @@
 // この process が起こし、別のサーバの側へは `-e` に同じ SSH の引数を渡す（tar を流すときと同じ道——ControlMaster は使って
 // いない。このファイルの SSH はどれも1回ずつ繋ぐ）。別のサーバどうしは host の一時の置き場を経由して2回
 //
+// **`containers` との間で移す**（追加・2026-10-20、v4-security.md §1「`containers` との間で移す」、#464）：見せたフォルダに書く・中身を
+// 解釈するものはコンテナの中で（条件3）。移す先は started の後にコンテナを用意して根と Module の置き場を見せ、tar の展開・移した印・
+// `git worktree repair`・rsync の受け手を中のユーザーで。移す元は Module を畳むだけでコンテナを止めず、中の root で読み、読み終えて
+// から止める。件数と大きさの確かめは、移す先は VM の側で数える
+//
 // **動いているものの数え方**：host が知っているもの（ターン・返事待ちの札・Module の呼び出し）は host が数え、Service の unit・
 // 待たないコマンドの unit・Terminal の tmux は実行場所で直接引く。Module だけが知っているもの（Factory の件・Shell の待たない
 // コマンド）は、どちらも返事待ちの札を持つので札で数える——Module に tool で聞く口は作っていない（2026-10-11。札を持たない
@@ -47,7 +52,18 @@ import type { ProjectLocation, ProjectState, RuntimeMoveCreated } from "../proje
 import { RemoteRuntimeError, remoteNameOf, type RemoteRuntimes } from "./remote-runtimes.js";
 import { HOST_CONTAINER_RUNTIME } from "./remote-store.js";
 import { remoteOwnerDirName } from "./remote-ssh.js";
-import { insideCommandByLabel } from "./remote-containers.js";
+import {
+  cleanupContainerScript,
+  containersRootProblem,
+  createOnlyDirScript,
+  ensureRsyncInsideScript,
+  inodePairsScript,
+  insideCommand,
+  insideCommandByLabel,
+  insideRootCommand,
+  parseInodePairs,
+  type InsideIds,
+} from "./remote-containers.js";
 import { containerNameFor } from "@banto/container";
 import { remotePathExpr, shq, sshArgs, sshEnv, SshCommandError, type SshResult } from "./ssh.js";
 
@@ -80,6 +96,11 @@ export interface MoveEstimate {
   to: { runtime: string; label: string; root: string };
   /** 写す大きさ（根と Module の置き場。除くもの——Shell と Terminal のホーム・ソケット——は数えない） */
   size: { bytes: number; files: number };
+  /**
+   * 大きさを数えなかった理由（あれば `size` は空）。移す元が `containers` でコンテナが止まっているとき——見積もりでは起こさず、
+   * 移すときに起こしてから数える
+   */
+  sizeNote?: string;
   /** 移らないもの */
   notMoved: string[];
   /** 作り直しが要るかもしれないもの（絶対パスを持つもの） */
@@ -160,8 +181,20 @@ export interface ProjectMoveDeps {
   hostActivity(projectId: string): RunningItem[];
   /** 元の実行場所の Service を全件「止めておきたい」にし、自動起動から外す。Service の Module が無ければ空。外したものの名前 */
   disableServices(projectId: string): Promise<string[]>;
-  /** その Project の Module を畳む */
-  releaseModules(projectId: string): Promise<void>;
+  /**
+   * その Project の Module を畳む。`stopContainer` が false ならコンテナは止めない（移す元が `containers` のとき——中で読むので、
+   * 読み終えてから止める）。既定は止める
+   */
+  releaseModules(projectId: string, opts?: { stopContainer?: boolean }): Promise<void>;
+  /**
+   * **`containers` の移す先のコンテナ**（v4-security.md §1「`containers` との間で移す」、#464）。`prepareTarget`：移している Project・
+   * 移す先の根でコンテナを用意し、根と写す Module の置き場を見せて、見えていることを確かめる（作るときと同じ手）。`closeTarget`：
+   * 移す先の接続を閉じる（繋いでいなければ何もしない）。無ければ `containers` へは移せない
+   */
+  containers?: {
+    prepareTarget(runtimeName: string, projectId: string, root: string, moduleDirs: readonly string[]): Promise<{ container: string; inside: InsideIds }>;
+    closeTarget(runtimeName: string, projectId: string): Promise<void>;
+  };
   /** Claude のログインの合言葉を替える（元に残した環境ファイルの合言葉を効かなくする） */
   revokeClaudeLogin(projectId: string): void;
   /** その Thread に機械からのメッセージを届ける（起こさない・受信箱に出さない） */
@@ -187,8 +220,16 @@ interface Side {
   run(script: string, timeoutMs?: number): Promise<SshResult>;
   /** 流すためのプロセス（標準入出力をつなぐ） */
   spawn(script: string): ChildProcess;
-  /** 別のサーバなら、rsync の `-e` に渡す SSH の命令と宛先。この機械なら無い */
-  rsyncRemote?: { shell: string; host: string };
+  /**
+   * 別のサーバなら、rsync の `-e` に渡す SSH の命令と宛先。この機械なら無い。`path` は向こうで起こす rsync（`--rsync-path`。
+   * `containers` ではコンテナの中の rsync——`incus exec … rsync`）
+   */
+  rsyncRemote?: { shell: string; host: string; path?: string };
+  /**
+   * **`containers` のコンテナの中で書く・読む**（条件3）。`ids` があれば中のその番号のユーザーで（移す先——展開・印・
+   * `git worktree repair`・rsync の受け手）、無ければ中の root で（移す元——tar・rsync の送り手）
+   */
+  inside?: { container: string; ids?: InsideIds };
 }
 
 const NOT_MOVED = [
@@ -448,6 +489,48 @@ export async function pipeCopy(reader: ChildProcess, writer: ChildProcess, throu
   return Promise.all([collect(reader, { stdout: false }), collect(writer)]);
 }
 
+/**
+ * その側で台本を流すコマンド。`containers` のコンテナの中で書く・読む側（`Side.inside`）なら中で——移す先は中のユーザー、
+ * 移す元は中の root（v4-security.md §1「`containers` との間で移す」）。そうでなければ台本のまま
+ */
+function onSide(side: Pick<Side, "inside">, script: string): string {
+  const c = side.inside;
+  if (!c) return script;
+  return c.ids ? insideCommand(c.container, c.ids, ["/bin/sh", "-c", script]) : insideRootCommand(c.container, script);
+}
+
+/** 根の段に空・`.`・`..` があれば理由（正規化の前に断る——1段ずつ作るときに辿り方が変わる） */
+function rootSegmentsProblem(root: string): string | undefined {
+  const rest = root.replace(/\/+$/, "").replace(/^~(?=\/|$)/, "");
+  const segs = rest.split("/").slice(rest.startsWith("/") ? 1 : 0);
+  if (rest !== "" && segs.some((x) => x === "" || x === "." || x === "..")) return `根 ${root} に空の段・.・.. を含めないでください`;
+  return undefined;
+}
+
+/**
+ * **`containers` の移す先の根を正規化する台本**（VM で流す。v4-security.md §1「`containers` との間で移す」の 1.）。存在する最も深い
+ * 親を `cd -P` で正規化し、まだ無い段をその後ろに付けたものを `root=` に出す（まだ作らない）。`state=` は missing・empty・
+ * nonempty。重なりを見るための home と置き場の根も正規化して出す。symlink の切れ端・フォルダでないものは終了コード 3
+ */
+export function containersRootScript(root: string, dataRoot: string): string {
+  return [
+    `p=${remotePathExpr(root)}`,
+    `case "$p" in /*) ;; *) echo '根は絶対パスか ~ で始めてください' >&2; exit 3 ;; esac`,
+    `while [ "$p" != / ] && [ "\${p%/}" != "$p" ]; do p=\${p%/}; done`,
+    `d=$p; rest=`,
+    `while [ "$d" != / ] && [ ! -e "$d" ] && [ ! -L "$d" ]; do rest="/\${d##*/}$rest"; d=\${d%/*}; [ -n "$d" ] || d=/; done`,
+    `[ -d "$d" ] || { printf '%s はフォルダではありません（symlink の先が無いものも）\\n' "$d" >&2; exit 3; }`,
+    `b=$(cd -P -- "$d" && pwd -P) || exit 1`,
+    `[ "$b" = / ] && b=`,
+    `printf 'root=%s%s\\n' "$b" "$rest"`,
+    `if [ -n "$rest" ]; then echo state=missing; elif [ -z "$(ls -A -- "$d")" ]; then echo state=empty; else echo state=nonempty; fi`,
+    `printf 'home=%s\\n' "$(cd -P -- "$HOME" && pwd -P)"`,
+    `dd=${remotePathExpr(dataRoot)}; [ -d "$dd" ] && dd=$(cd -P -- "$dd" && pwd -P)`,
+    `printf 'data=%s\\n' "$dd"`,
+    "",
+  ].join("\n");
+}
+
 function hostLabel(runtime: string): string {
   const name = remoteNameOf(runtime);
   return name ? `別のサーバ「${name}」` : "この機械のコンテナ";
@@ -532,11 +615,20 @@ export class ProjectMover {
     if (running.length > 0) blockers.push("動いているものがあります（止めてから移してください）");
 
     let size = { bytes: 0, files: 0 };
+    let sizeNote: string | undefined;
     let rebuild: string[] = [];
     await this.withSide(from.runtime, async (side) => {
-      for (const unit of await this.copyUnits(project, side, undefined, "")) {
-        const m = parseMeasure((await this.mustRun(side, "大きさを測れ", measureScript(unit.from, unit), 300_000)).stdout);
-        size = { bytes: size.bytes + m.bytes, files: size.files + m.files };
+      // 移す元が containers なら中の root で数える（中の root が作った 0700 のフォルダも数える——読むときと同じ見え方）。
+      // コンテナが止まっていれば、見積もりでは起こさない（移すときに起こしてから数える）
+      const container = this.isContainers(from.runtime) ? containerNameFor(project.id) : undefined;
+      if (container && !(await this.containerRunning(side, container))) {
+        sizeNote = "コンテナが止まっているので、起こしたあとに数えます";
+      } else {
+        const reader = container ? { ...side, inside: { container } } : side;
+        for (const unit of await this.copyUnits(project, side, undefined, "")) {
+          const m = parseMeasure((await this.mustRun(side, "大きさを測れ", onSide(reader, measureScript(unit.from, unit)), 300_000)).stdout);
+          size = { bytes: size.bytes + m.bytes, files: size.files + m.files };
+        }
       }
       rebuild = await this.rebuildCandidates(side, from.root);
     });
@@ -552,7 +644,9 @@ export class ProjectMover {
             blockers.push(...missing);
             const units = await this.copyUnits(project, src, dst, back.root);
             const overwritten = await this.overwrittenFiles(dst, units, back.movedAt);
-            const diff = missing.length === 0 && (!src.rsyncRemote || !dst.rsyncRemote) ? await this.dryRun(src, dst, units) : undefined;
+            // containers が絡むときは差分を測らない（`--dry-run` も中の rsync を使うので、止めてあるコンテナを起こすことになる）
+            const measurable = missing.length === 0 && (!src.rsyncRemote || !dst.rsyncRemote) && !this.isContainers(src.runtime) && !this.isContainers(dst.runtime);
+            const diff = measurable ? await this.dryRun(src, dst, units) : undefined;
             return { ...(back.movedAt ? { movedAt: back.movedAt } : {}), ...(diff ? { diff } : {}), overwritten };
           }),
         );
@@ -562,12 +656,14 @@ export class ProjectMover {
       from: { ...from, label: hostLabel(from.runtime) },
       to: { runtime: target.runtime, label: hostLabel(target.runtime), root: target.root },
       size,
+      ...(sizeNote ? { sizeNote } : {}),
       notMoved: NOT_MOVED,
       rebuild,
       running,
       copiesClaudeRecords: this.runnerCwdChanges(from.runtime, target.runtime),
       claudeRecords: this.claudeRecordCount(project, from, target.runtime),
-      ...(usesHostContainer(from.runtime) && remoteNameOf(target.runtime)
+      // containers へは、移った先もコンテナの中で動く（閉じ込めは保たれる）
+      ...(usesHostContainer(from.runtime) && remoteNameOf(target.runtime) && !this.isContainers(target.runtime)
         ? {
             confinementNote:
               "別のサーバでは、AI はその人のユーザーの権限で動きます（コンテナの閉じ込めはありません）。向こうのそのユーザーが読める" +
@@ -604,7 +700,7 @@ export class ProjectMover {
       try {
         return await this.deps.projectThread.startRuntimeMove(projectId, { from, to, created });
       } catch (err) {
-        await this.cleanupTarget(to, created).catch((e: unknown) => this.log(`[host] 移す先を片づけられませんでした: ${String(e)}`));
+        await this.cleanupTarget(project, to, created).catch((e: unknown) => this.log(`[host] 移す先を片づけられませんでした: ${String(e)}`));
         throw err;
       }
     };
@@ -623,7 +719,7 @@ export class ProjectMover {
       const move = project.move;
       let cleanup = "移す先の banto が作ったものは消しました";
       try {
-        await this.cleanupTarget(move.to, move.created);
+        await this.cleanupTarget(project, move.to, move.created, { container: true });
       } catch (err) {
         cleanup = `移す先の banto が作ったものを消せませんでした（${err instanceof Error ? err.message : String(err)}）。` +
           `残っているかもしれないもの：${this.createdPaths(move.to, move.created).join("・")}`;
@@ -650,10 +746,34 @@ export class ProjectMover {
     const move = project.move!;
     const progress = this.progress.get(projectId)!;
     let disabled: string[] = [];
+    const sync = move.created.syncedPrevious === true;
+    const fromContainers = this.isContainers(move.from.runtime);
+    const toContainers = this.isContainers(move.to.runtime);
+    /** 移す元のコンテナを読んでいる（読み終えたら・失敗したら止めて残す） */
+    let sourceOpen = false;
     try {
       // 押さえたあとに始まったもの（止まっていた並びのターン等）があれば、移さない
       const hostRunning = this.deps.hostActivity(projectId);
       if (hostRunning.length > 0) throw new Error(`動いているものがあります：${hostRunning.map((r) => r.label).join("／")}`);
+
+      // 3. **移す先のコンテナを用意する**（containers。進み具合は「移す先を用意しています」の段——初めての VM では土台のイメージ
+      //    作りで数分かかる）。根と写す Module の置き場を見せて、見えていることを確かめる。戻すときは中に rsync を（無ければ入れる）
+      let target: { container: string; inside: InsideIds } | undefined;
+      if (toContainers) {
+        target = await this.withSide(move.from.runtime, (src) =>
+          this.withSide(move.to.runtime, async (dst) => {
+            const units = await this.copyUnits(project, src, dst, move.to.root);
+            const got = await this.deps.containers!.prepareTarget(
+              remoteNameOf(move.to.runtime)!,
+              projectId,
+              move.to.root,
+              units.filter((u) => u.module).map((u) => u.to),
+            );
+            if (sync) await this.ensureRsyncInside(dst, got.container);
+            return got;
+          }),
+        );
+      }
 
       // 5. 元の Service を止めておく（Module を畳む前に。止まっていても enable のままだと、元の場所の起こし直しで起きる）→ 畳む
       progress.phase = "stopping";
@@ -669,27 +789,55 @@ export class ProjectMover {
           this.modulesAllowed.delete(projectId);
         }
       }
-      await this.deps.releaseModules(projectId);
+      // 移す元が containers なら、Module を畳むだけでコンテナは止めない（中の root で読む。読み終えてから止める）
+      await this.deps.releaseModules(projectId, { stopContainer: !fromContainers });
       if (usesHostContainer(move.from.runtime)) await this.deps.hostContainers.stopProjectContainer(projectId);
 
       // 写す
       progress.phase = "copying";
       this.changed(projectId);
       let rebuild: string[] = [];
-      await this.withSide(move.from.runtime, async (src) => {
-        await this.withSide(move.to.runtime, async (dst) => {
-          const units = await this.copyUnits(project, src, dst, move.to.root);
+      await this.withSide(move.from.runtime, async (srcSide) => {
+        await this.withSide(move.to.runtime, async (dstSide) => {
+          const units = await this.copyUnits(project, srcSide, dstSide, move.to.root);
+          let src = srcSide;
+          if (fromContainers) {
+            // 止まっていれば（閉じた Project・banto を起こし直したあと）起こす（装置はそのまま）。写すフォルダが中から見えて
+            // いることを確かめてから読む——見えていなければ、中の rootfs の同じパスを読んでしまう
+            const container = containerNameFor(projectId);
+            sourceOpen = true;
+            await this.startContainer(srcSide, container);
+            await this.mustSeeInside(srcSide, container, units.map((u) => u.from));
+            src = { ...srcSide, inside: { container }, ...(srcSide.rsyncRemote ? { rsyncRemote: { ...srcSide.rsyncRemote, path: `incus exec ${container} -- rsync` } } : {}) };
+            if (sync) await this.ensureRsyncInside(srcSide, container);
+          }
+          const dst =
+            target !== undefined
+              ? {
+                  ...dstSide,
+                  inside: { container: target.container, ids: target.inside },
+                  ...(dstSide.rsyncRemote
+                    ? {
+                        rsyncRemote: {
+                          ...dstSide.rsyncRemote,
+                          path: `incus exec ${target.container} --user ${target.inside.uid} --group ${target.inside.gid} -- rsync`,
+                        },
+                      }
+                    : {}),
+                }
+              : dstSide;
           const expected: Array<{ unit: CopyUnit; files: number; bytes: number }> = [];
           for (const unit of units) {
-            expected.push({ unit, ...parseMeasure((await this.mustRun(src, "大きさを測れ", measureScript(unit.from, unit), 300_000)).stdout) });
+            expected.push({ unit, ...parseMeasure((await this.mustRun(src, "大きさを測れ", onSide(src, measureScript(unit.from, unit)), 300_000)).stdout) });
           }
-          // 前に居た場所へ戻すときは差分だけ送る——量は rsync の `--dry-run` で（別のサーバどうしは host を経由して全部送る）
-          const sync = move.created.syncedPrevious === true;
+          // 前に居た場所へ戻すときは差分だけ送る——量は rsync の `--dry-run` で（別のサーバどうしは host を経由して全部送る。
+          // containers が絡むときは測らない——見積もりの和）
           const direct = !src.rsyncRemote || !dst.rsyncRemote;
-          progress.totalBytes = sync && direct ? (await this.dryRun(src, dst, units)).bytes : expected.reduce((a, e) => a + e.bytes, 0);
+          const measurable = sync && direct && !fromContainers && !toContainers;
+          progress.totalBytes = measurable ? (await this.dryRun(src, dst, units)).bytes : expected.reduce((a, e) => a + e.bytes, 0);
           if (sync && !direct) progress.totalBytes *= 2;
           this.changed(projectId);
-          rebuild = await this.rebuildCandidates(src, move.from.root);
+          rebuild = await this.rebuildCandidates(srcSide, move.from.root);
           for (const unit of units) {
             progress.current = unit.what;
             const onBytes = () => {
@@ -698,22 +846,29 @@ export class ProjectMover {
             if (sync) await this.sync(src, dst, unit, progress, onBytes);
             else await this.copy(src, dst, unit, progress, onBytes);
           }
-          // 件数と大きさで確かめる
+          // 読み終えた——移す元のコンテナは止めて残す（閉じても実行場所は空かない）
+          if (fromContainers) {
+            sourceOpen = false;
+            await this.deps.releaseModules(projectId, { stopContainer: true });
+          }
+          // 件数と大きさで確かめる。**移す先は VM の側で数える**（containers でも——中で数えると、装置が付いていないとき中の
+          // rootfs を数えて一致してしまう。`--no-same-owner` で全部 VM のユーザーの持ち物になり、読める）
           progress.phase = "verifying";
           this.changed(projectId);
           progress.current = undefined;
           for (const e of expected) {
-            const got = parseMeasure((await this.mustRun(dst, "写したものを確かめられ", measureScript(e.unit.to, e.unit), 300_000)).stdout);
+            const got = parseMeasure((await this.mustRun(dstSide, "写したものを確かめられ", measureScript(e.unit.to, e.unit), 300_000)).stdout);
             if (got.files !== e.files || got.bytes !== e.bytes) {
               throw new Error(
                 `${e.unit.what}を写した先の中身が元と合いません（元 ${e.files} 件・${e.bytes} バイト、先 ${got.files} 件・${got.bytes} バイト）`,
               );
             }
           }
-          // Service に「移した」を知らせる印（Service の Module は起きたときにこれを見て、登録を全件「止めておきたい」にする）
+          // Service に「移した」を知らせる印（Service の Module は起きたときにこれを見て、登録を全件「止めておきたい」にする）。
+          // containers では中で書く
           const marker = JSON.stringify({ from: move.from, to: move.to, at: new Date().toISOString() });
           for (const e of expected.filter((x) => x.unit.module)) {
-            await this.mustRun(dst, "移した印を置け", `printf '%s\\n' ${shq(marker)} > ${shq(`${e.unit.to}/${MARKER}`)}\n`);
+            await this.mustRun(dst, "移した印を置け", `${onSide(dst, `printf '%s\\n' ${shq(marker)} > ${shq(`${e.unit.to}/${MARKER}`)}`)}\n`);
           }
           await this.repairWorktrees(dst, move.from.root, move.to.root);
         });
@@ -753,12 +908,18 @@ export class ProjectMover {
       const why = err instanceof Error ? err.message : String(err);
       let cleanup = "移す先の banto が作ったものは消しました";
       try {
-        await this.cleanupTarget(move.to, move.created);
+        await this.cleanupTarget(project, move.to, move.created, { container: true });
       } catch (cleanupErr) {
         cleanup = `移す先の banto が作ったものを消せませんでした（${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}）。` +
           `残っているかもしれないもの：${this.createdPaths(move.to, move.created).join("・")}`;
       }
       const servicesNote = disabled.length > 0 ? `Service（${disabled.join("・")}）は止めたままです。` : "";
+      // 移す元のコンテナを読んでいる途中で止まったら、止めて残す（読み終えたときと同じ）
+      if (sourceOpen) {
+        await this.deps
+          .releaseModules(projectId, { stopContainer: true })
+          .catch((e: unknown) => this.log(`[host] 移す元のコンテナを止められませんでした: ${String(e)}`));
+      }
       const syncNote = move.created.syncedPrevious ? `前に居た場所 ${move.to.root} は途中までそろえた形のままです。` : "";
       const reason = `${why}。切り替えていません（元の場所のまま）。${cleanup}。${syncNote}${servicesNote}`;
       progress.phase = "failed";
@@ -811,15 +972,8 @@ export class ProjectMover {
   private targetRuntimeProblem(project: ProjectState, runtime: string): string | undefined {
     const from = project.runtime ?? HOST_CONTAINER_RUNTIME;
     if (runtime === from) return "いまと同じ実行場所です";
-    // **containers との間はまだ移せない**（v4-security.md §1 の条件3、#369）：移す手順は向こうで VM のユーザーとして展開・
-    // rsync・git worktree repair をする。containers ではコンテナに見せたフォルダへの書き込みは中から行う決まりで、その形の
-    // 移し方はまだ作っていない——黙って VM のユーザーで書かない
-    for (const side of [from, runtime]) {
-      const name = remoteNameOf(side);
-      if (name && this.deps.remoteRuntimes.get(name)?.mode === "containers") {
-        return `実行場所「${name}」は Project ごとのコンテナ（containers）で、そことの間で移す形はまだ作っていません`;
-      }
-    }
+    // containers の移す先は、コンテナを用意する口が要る（展開・印・git worktree repair をコンテナの中で——条件3）
+    if (this.isContainers(runtime) && !this.deps.containers) return `実行場所「${remoteNameOf(runtime)}」へ移す口がありません（Project ごとのコンテナを用意できません）`;
     if (runtime === HOST_CONTAINER_RUNTIME) return undefined;
     const name = remoteNameOf(runtime);
     if (!name) return "実行場所は host-container か remote:<名前> で渡してください";
@@ -833,6 +987,13 @@ export class ProjectMover {
    * （記録の場所）。正規化したあとの重なりもここで見る
    */
   private async checkTargetRoot(project: ProjectState, side: Side, root: string): Promise<{ problem?: string; back?: ProjectLocation }> {
+    if (this.isContainers(side.runtime)) {
+      const facts = await this.containersRoot(project, side, root.trim());
+      if ("problem" in facts) return { problem: facts.problem };
+      const back = facts.state !== "missing" ? this.previousLocationAt(project, side.runtime, facts.root) : undefined;
+      if (facts.state === "nonempty" && !back) return { problem: notEmptyProblem(root) };
+      return back ? { back } : {};
+    }
     if (rootIsOnThisMachine(side.runtime)) {
       const problem = this.hostRootShapeProblem(root.trim());
       if (problem) return { problem };
@@ -860,6 +1021,39 @@ export class ProjectMover {
     return back ? { back } : {};
   }
 
+  /**
+   * **containers の移す先の根を決める**（まだ作らない。v4-security.md §1「`containers` との間で移す」の 1.）：存在する最も深い親を
+   * VM で正規化し、**正規化した後のパスで**作るときと同じ決まり（`containersRootProblem`——home の下・置き場の根・同じ実行場所の
+   * ほかの Project の根（閉じたもの・移してくる途中のものも）・home そのもの）で断る
+   */
+  private async containersRoot(
+    project: ProjectState,
+    side: Side,
+    root: string,
+  ): Promise<{ root: string; state: "missing" | "empty" | "nonempty" } | { problem: string }> {
+    const shape = rootSegmentsProblem(root);
+    if (shape) return { problem: shape };
+    const name = remoteNameOf(side.runtime)!;
+    const dataRoot = this.deps.remoteRuntimes.get(name)?.dataRoot;
+    if (!dataRoot) throw new Error(`実行場所「${name}」の置き場が分かりません`);
+    const r = await side.run(containersRootScript(root, dataRoot));
+    if (r.code === 3) return { problem: r.stderr.trim().split("\n").pop() ?? `移す先 ${root} を使えません` };
+    if (r.code !== 0) throw new SshCommandError(`${side.label}の移す先を確かめられませんでした`, r);
+    const resolved = /^root=(\/.*)$/m.exec(r.stdout)?.[1];
+    const state = /^state=(missing|empty|nonempty)$/m.exec(r.stdout)?.[1] as "missing" | "empty" | "nonempty" | undefined;
+    const home = /^home=(\/.*)$/m.exec(r.stdout)?.[1];
+    const data = /^data=(\/.*)$/m.exec(r.stdout)?.[1];
+    if (!resolved || !state || !home || !data) throw new Error(`${side.label}の移す先の場所を読めませんでした：${r.stdout.trim().slice(-300)}`);
+    const others: Array<{ name: string; root: string }> = [];
+    for (const p of this.deps.projectThread.listProjects()) {
+      if (p.id === project.id) continue;
+      if (p.runtime === side.runtime) others.push({ name: p.name, root: p.root });
+      if (p.move?.to.runtime === side.runtime) others.push({ name: `${p.name}（移してくる途中）`, root: p.move.to.root });
+    }
+    const problem = containersRootProblem(resolved, { home, dataRoot: data, others });
+    return problem ? { problem: `移す先に置けません：${problem}` } : { root: resolved, state };
+  }
+
   /** その Project が前に居た場所のうち、実行場所と正規化した根が一致するもの */
   private previousLocationAt(project: ProjectState, runtime: string, resolvedRoot: string): ProjectLocation | undefined {
     return (project.previousLocations ?? []).find((l) => l.runtime === runtime && l.root === resolvedRoot);
@@ -873,7 +1067,8 @@ export class ProjectMover {
     if (!hostHasRsync()) {
       out.push("この機械（banto 本体）に rsync がありません。前に居た場所へ戻すときは差分で写すので要ります（入れ方：sudo apt install rsync）");
     }
-    for (const side of sides) {
+    // containers の側は rsync をコンテナの中で動かす（VM には要らない）——中に無ければ、移すときに入れる（`ensureRsyncInside`）
+    for (const side of sides.filter((x) => !this.isContainers(x.runtime))) {
       const r = await side.run(`command -v rsync >/dev/null 2>&1 && echo rsync=1 || echo rsync=0\n`);
       if (r.code !== 0) throw new SshCommandError(`${side.label}で rsync があるかを確かめられませんでした`, r);
       if (/^rsync=0$/m.test(r.stdout)) {
@@ -928,7 +1123,20 @@ export class ProjectMover {
       let resolved: string;
       let rootCreated: boolean;
       let nonEmpty = false;
-      if (rootIsOnThisMachine(side.runtime)) {
+      const containers = this.isContainers(side.runtime);
+      if (containers) {
+        // **正規化 → 断る → 1段ずつ作る**（上の流れの「作り → 正規化」と順が逆。途中が symlink なら断る——`mkdir -p` で辿らない）
+        const facts = await this.containersRoot(project, side, target.root.trim());
+        if ("problem" in facts) throw new RuntimeMoveError(409, facts.problem, { code: "root-overlap" });
+        nonEmpty = facts.state === "nonempty";
+        rootCreated = facts.state === "missing";
+        resolved = facts.root;
+        if (rootCreated) {
+          const r = await side.run(createOnlyDirScript(resolved));
+          if (r.code === 3) throw new RuntimeMoveError(409, r.stderr.trim().split("\n").pop() ?? `移す先 ${resolved} を作れませんでした`);
+          if (r.code !== 0) throw new SshCommandError(`${side.label}に移す先を作れませんでした`, r);
+        }
+      } else if (rootIsOnThisMachine(side.runtime)) {
         const problem = this.hostRootShapeProblem(target.root.trim());
         if (problem) throw new RuntimeMoveError(400, problem);
         const root = target.root.trim();
@@ -973,7 +1181,8 @@ export class ProjectMover {
       if (nonEmpty && !back) throw new RuntimeMoveError(409, notEmptyProblem(target.root.trim()));
       const createdRoot: RuntimeMoveCreated = { rootCreated, moduleDirs: [], movedAside: [], ...(back ? { syncedPrevious: true } : {}) };
       try {
-        const overlap = this.overlapProblem(project, side, resolved);
+        // containers は上で見た（`containersRootProblem`）
+        const overlap = containers ? undefined : this.overlapProblem(project, side, resolved);
         if (overlap) throw new RuntimeMoveError(409, overlap);
         if (back) {
           const missing = await this.withSide(from.runtime, (src) => this.rsyncMissing([src, side]));
@@ -1007,18 +1216,26 @@ export class ProjectMover {
         ].join("\n");
         const r = await side.run(script);
         if (r.code !== 0) throw new SshCommandError(`${side.label}の Module の置き場を用意できませんでした`, r);
+        const fresh: string[] = [];
         for (const n of names) {
           const how = new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(merge|aside|new|keep)$`, "m").exec(r.stdout)?.[1];
           const path = `${side.modulesDir}/${n}`;
           // もとから有って差分でそろえる置き場は、banto が作ったものではない（片づけで触らない）
           if (how === "keep") continue;
           if (how === "aside") createdRoot.movedAside.push({ from: path, to: `${path}.before-${stamp}` });
+          if (containers && (how === "aside" || how === "new")) fresh.push(path);
           createdRoot.moduleDirs.push(path);
           if (how === "merge") createdRoot.mergedModuleDirs = [...(createdRoot.mergedModuleDirs ?? []), path];
         }
+        // containers：退かせた・無かった置き場は、ここで空のフォルダを1段ずつ作る（展開は中から——中で mkdir しない。見せるのは
+        // コンテナを用意するとき）。退かせた置き場を前のコンテナが装置で掴んでいても、用意するときに付け直す
+        for (const path of fresh) {
+          const made = await side.run(createOnlyDirScript(path));
+          if (made.code !== 0) throw new SshCommandError(`${side.label}に Module の置き場（${path}）を作れませんでした`, made);
+        }
         return { to, created: createdRoot };
       } catch (err) {
-        await this.cleanupTarget(to, createdRoot).catch((e: unknown) => this.log(`[host] 移す先を片づけられませんでした: ${String(e)}`));
+        await this.cleanupTarget(project, to, createdRoot).catch((e: unknown) => this.log(`[host] 移す先を片づけられませんでした: ${String(e)}`));
         throw err;
       }
     });
@@ -1060,7 +1277,25 @@ export class ProjectMover {
    * **移す先の banto が作ったものだけを消す**。退かせた置き場は戻す。元には触らない。前に居た場所へ戻すとき（差分でそろえる）は、
    * 根ともとから有った Module の置き場には触らない——途中までそろえた形のまま残る（どちらも元の写しで、元はそのまま）
    */
-  private async cleanupTarget(to: ProjectLocation, created: RuntimeMoveCreated): Promise<void> {
+  private async cleanupTarget(
+    project: ProjectState,
+    to: ProjectLocation,
+    created: RuntimeMoveCreated,
+    opts: { container?: boolean } = {},
+  ): Promise<void> {
+    // **containers：移す先のコンテナ**（started のあと——コンテナを用意したかもしれない）。作ったコンテナかは記録せず導く（規則3）
+    // ——その Project がその実行場所に居たことが無ければ消し、あれば（前に居た場所へ戻す）止めて残す。接続は閉じる。退かせた
+    // 置き場を戻す・作ったものを消すのは、コンテナを止めた（消した）あと
+    let containerStep: ((side: Side) => Promise<void>) | undefined;
+    if (opts.container && this.isContainers(to.runtime)) {
+      await this.deps.containers?.closeTarget(remoteNameOf(to.runtime)!, project.id);
+      const wasThere = (project.previousLocations ?? []).some((l) => l.runtime === to.runtime);
+      containerStep = async (side) => {
+        const r = await side.run(cleanupContainerScript(containerNameFor(project.id), this.deps.dataDir, wasThere ? "stop" : "remove"), 180_000);
+        if (r.code !== 0) throw new SshCommandError(`${side.label}の移す先のコンテナを${wasThere ? "止め" : "消せ"}ませんでした`, r);
+        this.log(`[host] ${side.label}の移す先のコンテナ ${containerNameFor(project.id)}：${/^ct=(\w+)$/m.exec(r.stdout)?.[1] ?? "?"}`);
+      };
+    }
     const safe = (p: string) => {
       if (!p.startsWith("/") || p === "/" || p.split("/").includes("..")) throw new Error(`消す場所 ${p} がおかしいので消しません`);
       return shq(p);
@@ -1083,9 +1318,57 @@ export class ProjectMover {
       "",
     ].join("\n");
     await this.withSide(to.runtime, async (side) => {
+      await containerStep?.(side);
+      // 作った根・置き場の rm -rf は VM のユーザーで（条件3の例外——Module を起こしていない移す先に中から仕込む時間は無く、
+      // rm -rf は symlink を辿らない。途中のパスは用意するときに1段ずつ固めてある）
       const r = await side.run(script, 300_000);
       if (r.code !== 0) throw new SshCommandError(`${side.label}の移す先を片づけられませんでした`, r);
     });
+  }
+
+  // ── containers のコンテナ ───────────────────────────────────────────────
+
+  /** そのコンテナが動いているか（VM で `incus list`。無ければ false） */
+  private async containerRunning(side: Side, container: string): Promise<boolean> {
+    const r = await this.mustRun(side, "コンテナの様子を読め", `incus list ${shq(`^${container}$`)} -c s -f csv\n`);
+    return r.stdout.trim() === "RUNNING";
+  }
+
+  /** 止まっていれば起こす（移す元のコンテナ。装置はそのまま）。無ければ投げる */
+  private async startContainer(side: Side, container: string): Promise<void> {
+    const r = await side.run(
+      [
+        `st=$(incus list ${shq(`^${container}$`)} -c s -f csv) || exit 5`,
+        `[ -n "$st" ] || { echo 'コンテナがありません' >&2; exit 3; }`,
+        `[ "$st" = RUNNING ] && exit 0`,
+        `incus start ${shq(container)} || exit 5`,
+        // 起こした直後は中の stat がまだ通らないことがある——通るまで待つ（上限つき）
+        `i=0; until incus exec ${shq(container)} -- true 2>/dev/null; do i=$((i+1)); [ $i -lt 30 ] || exit 5; sleep 1; done`,
+        "",
+      ].join("\n"),
+      120_000,
+    );
+    if (r.code !== 0) throw new SshCommandError(`${side.label}で移す元のコンテナ ${container} を起こせませんでした`, r);
+  }
+
+  /** 写すフォルダが全部コンテナの中から見えているか（VM と中の inode が同じ）。見えていなければ投げる */
+  private async mustSeeInside(side: Side, container: string, dirs: readonly string[]): Promise<void> {
+    const pairs = parseInodePairs((await this.mustRun(side, "コンテナの中から見えるかを確かめられ", inodePairsScript(container, dirs))).stdout, dirs.length);
+    const unseen = dirs.filter((_, i) => !pairs[i]!.vm || pairs[i]!.vm !== pairs[i]!.inside);
+    if (unseen.length > 0) throw new Error(`${side.label}のコンテナ ${container} の中から見えていないフォルダがあります（${unseen.join("・")}）`);
+  }
+
+  /** コンテナの中に rsync が無ければ入れる（前に居た場所へ戻すとき。中で動く rsync の受け手・送り手） */
+  private async ensureRsyncInside(side: Side, container: string): Promise<void> {
+    const r = await side.run(`${ensureRsyncInsideScript(container)}\n`, 600_000);
+    if (r.code === 4) {
+      throw new Error(
+        `${side.label}のコンテナ ${container} に rsync がありません。前に居た場所へ戻すときは差分で写すので、両側に要ります` +
+          `（コンテナの中で入れようとしましたが入りませんでした——外へ出られるかを確かめるか、中で sudo apt install rsync）：${r.stderr.trim().slice(-300)}`,
+      );
+    }
+    if (r.code !== 0) throw new SshCommandError(`${side.label}のコンテナ ${container} に rsync があるかを確かめられませんでした`, r);
+    if (/^rsync=installed$/m.test(r.stdout)) this.log(`[host] ${side.label}のコンテナ ${container} に rsync を入れました`);
   }
 
   // ── 写す ─────────────────────────────────────────────────────────────────
@@ -1117,8 +1400,13 @@ export class ProjectMover {
   /** 1つを tar で流して写す（流れは host のこの process を通る——量を数える） */
   private async copy(src: Side, dst: Side, unit: CopyUnit, progress: MoveProgress, onBytes: () => void): Promise<void> {
     const { tar } = excludesFor(unit);
-    const reader = src.spawn(`cd -- ${shq(unit.from)} && exec tar --warning=no-file-ignored ${tar} -cf - .`);
-    const writer = dst.spawn(`mkdir -p -- ${shq(unit.to)} && cd -- ${shq(unit.to)} && exec tar --no-same-owner -xpf -`);
+    const reader = src.spawn(onSide(src, `cd -- ${shq(unit.from)} && exec tar --warning=no-file-ignored ${tar} -cf - .`));
+    // containers の移す先は中のユーザーで展開する（`mkdir -p` はしない——用意するときに作って見せてある）
+    const writer = dst.spawn(
+      dst.inside
+        ? onSide(dst, `exec tar -C ${shq(unit.to)} --no-same-owner -xpf -`)
+        : `mkdir -p -- ${shq(unit.to)} && cd -- ${shq(unit.to)} && exec tar --no-same-owner -xpf -`,
+    );
     const counter = new CountingStream((n) => {
       progress.copiedBytes += n;
       onBytes();
@@ -1141,7 +1429,7 @@ export class ProjectMover {
       const r = side.rsyncRemote;
       return r ? `${r.host.includes(":") ? `[${r.host}]` : r.host}:${path}/` : `${path}/`;
     };
-    return spawn("rsync", [...args, ...(remote ? ["-e", remote.shell] : []), "--", at(src, from), at(dst, to)], {
+    return spawn("rsync", [...args, ...(remote ? ["-e", remote.shell] : []), ...(remote?.path ? [`--rsync-path=${remote.path}`] : []), "--", at(src, from), at(dst, to)], {
       stdio: ["ignore", "pipe", "pipe"],
       env: sshEnv(),
     });
@@ -1204,8 +1492,8 @@ export class ProjectMover {
    * 新しい根のパスで名指して直す
    */
   private async repairWorktrees(dst: Side, oldRoot: string, newRoot: string): Promise<void> {
-    const r = await dst.run(
-      [
+    // containers ではコンテナの中で（`.git/config` の `core.fsmonitor` 等が動いても中の権限だけ——条件3）
+    const script = [
         `cd -- ${shq(newRoot)} || exit 3`,
         `[ -d .git ] || exit 0`,
         `command -v git >/dev/null 2>&1 || { echo 'git がありません' >&2; exit 3; }`,
@@ -1218,9 +1506,8 @@ export class ProjectMover {
         `done`,
         `git worktree repair "$@"`,
         "",
-      ].join("\n"),
-      300_000,
-    );
+      ].join("\n");
+    const r = await dst.run(dst.inside ? `${onSide(dst, script)}\n` : script, 300_000);
     if (r.code !== 0) throw new SshCommandError(`${dst.label}で git worktree repair が通りませんでした`, r);
   }
 
