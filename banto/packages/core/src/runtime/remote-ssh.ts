@@ -1286,6 +1286,56 @@ export class RemoteSshRuntime {
     return inside;
   }
 
+  /**
+   * **Project の箱の中で argv を1つ流す**（追加・2026-10-20、Backlog #466——Repositories のブランチを運ぶ git、`remote-git.ts`）。
+   * machine は VM のユーザー（箱そのもの）、containers はコンテナの中のユーザー（`incus exec`、条件3——VM のユーザーでは流さない）。
+   * 標準入出力はバイトのまま。標準出力が `maxStdoutBytes` を越えたら止めて `overflow`。Module が起きていない（接続が無い）なら投げる
+   */
+  async runInProject(
+    projectId: string,
+    argv: readonly string[],
+    opts: { stdin?: Buffer; maxStdoutBytes: number; timeoutMs: number },
+  ): Promise<{ code: number; stdout: Buffer; stderr: string; overflow?: true }> {
+    const conn = this.liveConnection(projectId, "git を流せ");
+    let remote: string;
+    if (conn.runtime.mode === "containers") {
+      const container = await conn.container?.ready;
+      if (!container) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（git を流せません）`);
+      remote = insideCommand(container, (await this.containerIdsOf(conn)).inside, argv);
+    } else {
+      remote = `exec ${argv.map(shq).join(" ")}`;
+    }
+    return new Promise((resolve) => {
+      const child = spawn("ssh", [...this.muxArgs(conn), "--", conn.runtime.host, remote], { stdio: ["pipe", "pipe", "pipe"], env: sshEnv() });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let overflow = false;
+      let stderr = "";
+      child.stdout.on("data", (c: Buffer) => {
+        if (overflow) return;
+        size += c.length;
+        if (size > opts.maxStdoutBytes) {
+          overflow = true;
+          child.kill("SIGKILL");
+          return;
+        }
+        chunks.push(c);
+      });
+      child.stderr.on("data", (c: Buffer) => (stderr = (stderr + String(c)).slice(-8000)));
+      const timer = setTimeout(() => {
+        stderr += `\n（${Math.round(opts.timeoutMs / 1000)} 秒で終わらなかったので止めました）`;
+        child.kill("SIGKILL");
+      }, opts.timeoutMs);
+      child.on("error", (err) => (stderr += err.message));
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code: code ?? 255, stdout: Buffer.concat(chunks), stderr, ...(overflow ? { overflow: true as const } : {}) });
+      });
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(opts.stdin ?? Buffer.alloc(0));
+    });
+  }
+
   private liveConnection(projectId: string, what: string): Connection {
     const name = this.opts.remoteNameOf(projectId);
     const conn = name ? this.connections.get(remoteConnectionKey(name, projectId)) : undefined;

@@ -43,6 +43,12 @@ import {
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   RELAY_EMIT_EVENT_TOOL,
+  RELAY_PROJECT_GIT_BUNDLE_TOOL,
+  RELAY_PROJECT_GIT_ORIGIN_TOOL,
+  RELAY_PROJECT_GIT_UNBUNDLE_TOOL,
+  RELAY_PROJECT_GIT_TRACK_TOOL,
+  PROJECT_GIT_BUNDLE_MAX_BYTES,
+  type ProjectGitOrigin,
   type BantoModuleMeta,
   type Visibility,
 } from "@banto/module-contract";
@@ -413,6 +419,19 @@ export interface HostRelayServerOptions {
    * 取ってくる」）。返すのは呼び元の場所から見えるパス。進み具合は `onProgress` に流す（中継が `notifications/progress` にする）。
    * 呼べる相手は `mayEnsureAgentBinary` が決める。渡さなければこの口は断る
    */
+  /**
+   * **別のサーバの Project の git と、1本のブランチの中身をやり取りする**（追加・2026-10-20、Backlog #466、`docs/specs/v4-modules.md`
+   * §2.4「別のサーバの Project」）。Project は host の台帳が呼び出しの印で決める（引数で選べない）。呼べる相手は `mayUseProjectGit`
+   * が決める。この機械の Project・Module が起きていない Project は理由つきで投げる。渡さなければこの口は断る
+   */
+  projectGit?: {
+    origin(projectId: string): Promise<ProjectGitOrigin>;
+    /** 向こうにそのブランチが無ければ undefined */
+    bundle(projectId: string, branch: string): Promise<Buffer | undefined>;
+    unbundle(projectId: string, branch: string, bundle: Buffer): Promise<void>;
+    /** `refs/remotes/origin/<branch>` を、向こうにもうあるコミットに合わせる */
+    track(projectId: string, branch: string, commit: string): Promise<void>;
+  };
   ensureAgentBinary?(
     caller: CallerIdentity,
     agent: string,
@@ -488,6 +507,11 @@ export interface ProjectSummaryForModule {
   status: "active" | "closed";
   /** 実行場所（`host-container` か `remote:<名前>`。無ければこの機械）。この機械のフォルダと突き合わせる Module はこれを見て外す */
   runtime?: string;
+  /**
+   * core の「clone」のタブ（別のサーバの新しい Project、v4-frontend.md §6.49）で作り終えたときの、clone した URL と選んだ
+   * アカウント（Repositories の GitHub の login）。Repositories がその Project のブランチを送るアカウントを決めるのに使う
+   */
+  clonedFrom?: { url: string; account?: string };
 }
 
 /**
@@ -517,6 +541,21 @@ export function mayReadCallerProject(identity: CallerIdentity): string | undefin
   if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが引ける";
   return undefined;
 }
+
+/**
+ * **別のサーバの Project の git に届いてよい呼び出し元**（追加・2026-10-20、Backlog #466）。`repositories` 役割を名乗る、
+ * banto 本体で動く同梱の banto 全体の Module だけ——資格情報を持ち、ブランチを送る口（`push_branch`・`fetch_branch`）を
+ * 引き受けるもの。コンテナの中の Module（中の AI が合言葉を読める）と第三者のコードには、別の Project の中身を読ませない
+ */
+export function mayUseProjectGit(identity: CallerIdentity): string | undefined {
+  if (!identity.meta.satisfies.includes(REPOSITORIES_ROLE)) return `${REPOSITORIES_ROLE} 役割を名乗る Module だけが届ける`;
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが届ける";
+  if (identity.inContainer || identity.projectId !== undefined) return "banto 本体で動く、banto 全体の Module だけが届ける";
+  return undefined;
+}
+const REPOSITORIES_ROLE = "repositories";
+/** 別のサーバの Project の git を待つ間、進み具合を送る間隔 */
+const PROJECT_GIT_HEARTBEAT_MS = 10_000;
 
 /**
  * **Project のアドレスを引いてよい呼び出し元**（追加・2026-09-27）。公開の実装（`publish` 役割）で、**banto 本体で
@@ -775,6 +814,37 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         inputSchema: { type: "object", properties: {} },
       },
       {
+        // **別のサーバの Project の git**（追加・2026-10-20、§2.4「ブランチを送る口」の「別のサーバの Project」）。4本とも、
+        // Project は host の台帳が決める（いまの呼び出しの Project）。呼べる相手は `mayUseProjectGit` が決める
+        name: RELAY_PROJECT_GIT_ORIGIN_TOOL,
+        description:
+          "いまの呼び出しの Project（別のサーバ）の根のリポジトリの origin の設定（リポジトリの段）。答えは {kind:'not-repo'} か {kind:'repo', urls, redirects}",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: RELAY_PROJECT_GIT_BUNDLE_TOOL,
+        description: "いまの呼び出しの Project（別のサーバ）の根のリポジトリで、そのブランチだけの bundle を作る。答えは {bundle: base64} か {absent: true}",
+        inputSchema: { type: "object", properties: { branch: { type: "string" } }, required: ["branch"] },
+      },
+      {
+        name: RELAY_PROJECT_GIT_UNBUNDLE_TOOL,
+        description: "いまの呼び出しの Project（別のサーバ）の根のリポジトリに、bundle のそのブランチを refs/remotes/origin/<branch> として取り込む",
+        inputSchema: {
+          type: "object",
+          properties: { branch: { type: "string" }, bundle: { type: "string", description: "base64" } },
+          required: ["branch", "bundle"],
+        },
+      },
+      {
+        name: RELAY_PROJECT_GIT_TRACK_TOOL,
+        description: "いまの呼び出しの Project（別のサーバ）の根のリポジトリの refs/remotes/origin/<branch> を、そこにもうあるコミットに合わせる（送り終えたあと）",
+        inputSchema: {
+          type: "object",
+          properties: { branch: { type: "string" }, commit: { type: "string" } },
+          required: ["branch", "commit"],
+        },
+      },
+      {
         // **受信箱に知らせる**（追加・2026-10-02、§2.4 Repositories——ログインの更新に失敗したとき）。
         // 出せる相手は `mayRaiseNotice` が決める。同じ鍵の知らせが開いている間は積まない
         name: "relayRaiseNotice",
@@ -927,6 +997,53 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       const project = opts.listProjects().find((p) => p.id === projectId);
       if (!project) throw new Error(`呼び出し元の Project（${projectId}）が見つかりません`);
       return { content: [{ type: "text", text: JSON.stringify(project) }] };
+    }
+
+    // **宛先は host 自身**。別のサーバの Project の中身を運ぶ口——頼んだ Module（Repositories）は承認つきの口（`push_branch`・
+    // `fetch_branch`）を処理している最中なので、ここでは承認を重ねず、呼べる相手を絞る。Project は host の台帳が決める
+    if (
+      request.params.name === RELAY_PROJECT_GIT_ORIGIN_TOOL ||
+      request.params.name === RELAY_PROJECT_GIT_BUNDLE_TOOL ||
+      request.params.name === RELAY_PROJECT_GIT_UNBUNDLE_TOOL ||
+      request.params.name === RELAY_PROJECT_GIT_TRACK_TOOL
+    ) {
+      const why = mayUseProjectGit(identity);
+      if (why) throw new Error(`${identity.moduleName} は Project の git に届けません（${why}）`);
+      if (!opts.projectGit) throw new Error("この banto は Project の git に届く口を持っていません");
+      const projectId = opts.moduleCalls?.projectFor(identity.connName ?? identity.moduleName, callId);
+      if (!projectId) throw new Error("どの Project のための呼び出しか決められません（Project のための呼び出しを処理している間だけ届けます）");
+      // 遅い線で bundle を運ぶ間、呼び出し元の待ちが切れないように進み具合を送る
+      const progressToken = extra._meta?.progressToken;
+      let beats = 0;
+      const heartbeat =
+        progressToken === undefined
+          ? undefined
+          : setInterval(() => {
+              void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress: ++beats } }).catch(() => undefined);
+            }, PROJECT_GIT_HEARTBEAT_MS);
+      try {
+        const git = opts.projectGit;
+        if (request.params.name === RELAY_PROJECT_GIT_ORIGIN_TOOL) {
+          return { content: [{ type: "text", text: JSON.stringify(await git.origin(projectId)) }] };
+        }
+        const branch = typeof args.branch === "string" ? args.branch : "";
+        if (!branch) throw new Error("branch が要ります");
+        if (request.params.name === RELAY_PROJECT_GIT_BUNDLE_TOOL) {
+          const bundle = await git.bundle(projectId, branch);
+          return { content: [{ type: "text", text: JSON.stringify(bundle ? { bundle: bundle.toString("base64") } : { absent: true }) }] };
+        }
+        if (request.params.name === RELAY_PROJECT_GIT_TRACK_TOOL) {
+          await git.track(projectId, branch, typeof args.commit === "string" ? args.commit : "");
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+        }
+        const b64 = typeof args.bundle === "string" ? args.bundle : "";
+        if (!b64) throw new Error("bundle が要ります");
+        if (b64.length > Math.ceil(PROJECT_GIT_BUNDLE_MAX_BYTES / 3) * 4 + 4) throw new Error(`bundle が大きすぎます（${PROJECT_GIT_BUNDLE_MAX_BYTES / 1024 / 1024}MB まで）`);
+        await git.unbundle(projectId, branch, Buffer.from(b64, "base64"));
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+      }
     }
 
     // **宛先は host 自身**。値は通らない（文言だけ）ので承認は通さず、出せる相手を絞る
