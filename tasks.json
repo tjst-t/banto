@@ -10331,6 +10331,33 @@
       "updatedAt": "2026-10-20T08:56:22.936Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "desktop-1-core",
+      "number": 429,
+      "kind": "story",
+      "title": "デスクトップ版（Windows）段1：会話と開発ができる（Electron の殻・実行場所「この PC」・Shell・FileSystem・Subagent・Factory・インストーラ）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "desktop-0-measure"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "desktop"
+      ],
+      "body": "v4-desktop.md §8 の段1。Windows の PC にインストーラで入れ、Claude に個人のログインで入り、Project を作って AI が Shell（Git Bash）と FileSystem でファイルを直し、コミットできるところまで。\n\nService・通知・トレイ・アプリの更新は段2、Terminal・Browser・Documents・別のサーバは段3。",
+      "doneWhen": "Windows の実機で、インストーラから入れ、Claude にログインし、Project を作り、AI が Shell と FileSystem でファイルを直してコミットできる。GitHub Actions の Windows のランナーで、会話・承認・Shell・FileSystem の E2E が通る",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-desktop.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T08:56:28.219Z",
+      "updatedAt": "2026-10-20T08:56:28.219Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
