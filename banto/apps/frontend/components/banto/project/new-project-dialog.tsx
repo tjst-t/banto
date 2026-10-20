@@ -19,7 +19,7 @@
 // 添えて薄く出す（隠すと「登録したのに出てこない」になる）。別のサーバでは、Root は向こうのフォルダ（host が SSH で名前
 // だけを引く）で、Module が名乗る始め方（clone 等）は出さない——向こうのフォルダは Repositories が扱わない（最初の版）。
 // 実行場所は作ったあとに変えられない
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronRight, CircleCheck, FolderOpen, Server, ShieldCheck } from "lucide-react";
 import {
@@ -42,7 +42,7 @@ import {
 } from "@/components/ui/select";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { cn } from "@/lib/utils";
-import { PathPicker, type FolderSource } from "@/components/banto/settings/path-picker";
+import { HOST_SOURCE_WITH_CREATE, PathPicker, type FolderSource } from "@/components/banto/settings/path-picker";
 import { sshTarget } from "@/components/banto/settings/runtimes-panel";
 import {
   WideRootWarning,
@@ -52,6 +52,7 @@ import { createRealProject, getAllProjects, reopenProject } from "@/lib/mock/pro
 import {
   HOST_CONTAINER_RUNTIME,
   listRealFolderProviders,
+  createRealRuntimeDirectory,
   listRealRuntimeDirectories,
   listRealRuntimes,
   remoteRuntimeName,
@@ -121,9 +122,19 @@ export function NewProjectDialog({
     };
   }, [open]);
   const remoteName = remoteRuntimeName(runtime);
-  const folderSource: FolderSource | undefined = remoteName
-    ? { list: (path) => listRealRuntimeDirectories(remoteName, path), where: remoteName }
-    : undefined;
+  // 「選ぶ」の画面の「新しいフォルダ」はその場で作る（この機械も別のサーバも。追加・2026-10-20、ユーザー）。引き方は実行場所が
+  // 替わったときだけ作り直す（描くたびに作ると、一覧の読み込みが描くたびに走る）
+  const folderSource: FolderSource = useMemo(
+    () =>
+      remoteName
+        ? {
+            list: (path?: string) => listRealRuntimeDirectories(remoteName, path),
+            create: (parent: string, name: string) => createRealRuntimeDirectory(remoteName, parent, name),
+            where: remoteName,
+          }
+        : HOST_SOURCE_WITH_CREATE,
+    [remoteName],
+  );
   const providerKey = (p: RealFolderProvider) => `${p.server}|${p.resourceUri}`;
   // 別のサーバでは、フォルダを用意する Module（Repositories の clone など）は使えない——向こうのフォルダを選ぶだけ
   const visibleProviders = remoteName ? [] : (providers ?? []);
@@ -365,7 +376,7 @@ export function NewProjectDialog({
                 {/* **呼び名は Root にそろえる**（改訂・2026-09-11、ユーザー指摘
                     ——作る画面と設定画面で「Base」「Root」が混ざっていた、規則11） */}
                 <Label htmlFor="new-project-path">Root パス{remoteName ? `（${remoteName} の上）` : ""}</Label>
-                <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} source={folderSource} />
+                <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} source={folderSource} allowNewFolder />
                 <p className="text-xs text-ink-3">
                   {remoteName
                     ? "向こうのサーバのフォルダです。この機械には置きません。リポジトリの clone は、Project を作ったあと AI に頼んでください。"

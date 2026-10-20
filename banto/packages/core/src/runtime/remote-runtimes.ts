@@ -31,6 +31,7 @@ import {
   isHostKeyRefusal,
   isSshUnreachable,
   knownHostsLine,
+  createRemoteDirectory,
   listRemoteDirectories,
   probePrerequisites,
   realpathRemote,
@@ -293,6 +294,12 @@ export class RemoteRuntimes {
   async listDirectories(name: string, path: string | undefined): Promise<RemoteDirectoryListing> {
     const r = this.mustGetUsable(name);
     return this.connect(r, (files) => listRemoteDirectories(r, files, r.hostKey.type, path));
+  }
+
+  /** 向こうにフォルダを1つ作る（新しい Project の「選ぶ」の画面の「新しいフォルダ」）。作ったフォルダの絶対パスを返す */
+  async createDirectory(name: string, parent: string | undefined, folder: string): Promise<string> {
+    const r = this.mustGetUsable(name);
+    return this.connect(r, (files) => createRemoteDirectory(r, files, r.hostKey.type, parent, folder));
   }
 
   /** **広すぎる根か**（向こうの banto の置き場を含むか）。`/api/config/root-scope` と同じ形で返す */

@@ -4,7 +4,7 @@
 // 見るのは「操作が通った」ではなく**効いたか**（規則14）——外したら、その Project で
 // **本当に立たない**（host が用意する Module から消える）ところまで。
 
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
@@ -289,6 +289,39 @@ test("新しい Project：最初は空。選ぶと home から始まる", async 
   await expect(picker).toBeVisible({ timeout: 15_000 });
   const home = process.env.HOME ?? "";
   await expect(picker.getByTestId("path-picker-current")).toHaveText(home);
+});
+
+test("新しい Project：「選ぶ」の画面で新しいフォルダをその場で作り、そこを Root にできる", async ({ page }) => {
+  // ユーザー指摘・2026-10-20：フォルダを画面から作れず、GUI だけで Project を作り終えられなかった
+  const base = mkdtempSync(join(tmpdir(), "banto-e2e-newfolder-"));
+  await openApp(page);
+  await openNav(page);
+  await clickNewProject(page);
+  const dialog = page.getByRole("dialog").first();
+  await dialog.getByLabel("Root パス").fill(base);
+  await dialog.getByRole("button", { name: "選ぶ" }).click();
+  const picker = page.getByTestId("path-picker");
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(base, { timeout: 15_000 });
+  await picker.getByTestId("path-picker-new-folder").click();
+  await picker.getByTestId("path-picker-new-folder-name").fill("新しい作業");
+  await expect(picker.getByTestId("path-picker-new-folder-note")).toContainText("の中に作って、その中へ入ります");
+  await picker.getByTestId("path-picker-new-folder-create").click();
+  // その場で作って中へ入る（host のフォルダが本当にできている）
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(join(base, "新しい作業"), { timeout: 15_000 });
+  expect(existsSync(join(base, "新しい作業"))).toBe(true);
+  // 同じ名前は作らない（上へ戻って、もう一度同じ名前）
+  await picker.getByRole("button", { name: "上へ" }).click();
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(base);
+  await picker.getByTestId("path-picker-new-folder").click();
+  await picker.getByTestId("path-picker-new-folder-name").fill("新しい作業");
+  await expect(picker.getByTestId("path-picker-new-folder-note")).toHaveText("同じ名前のフォルダがあります");
+  await expect(picker.getByTestId("path-picker-new-folder-create")).toBeDisabled();
+  await picker.getByTestId("path-picker-entry").filter({ hasText: "新しい作業" }).click();
+  await picker.getByRole("button", { name: "ここにする" }).click();
+  await expect(dialog.getByLabel("Root パス")).toHaveValue(join(base, "新しい作業"));
+  await dialog.getByLabel("Project 名").fill("新しいフォルダの spec");
+  await dialog.getByTestId("new-project-submit").click();
+  await expect(page).toHaveURL(/\/p\/[^/?]+/, { timeout: 60_000 });
 });
 
 test("設定の節の行き来は、履歴に残る（携帯で戻れる）", async ({ page }) => {

@@ -843,6 +843,11 @@ export async function listRealDirectories(path?: string): Promise<RealDirectoryL
   return request<RealDirectoryListing>(`/api/fs/directories${query}`);
 }
 
+/** フォルダを1つ作る（新しい Project の「選ぶ」の画面の「新しいフォルダ」）。作ったフォルダの絶対パス */
+export async function createRealDirectory(parent: string, name: string): Promise<string> {
+  return (await request<{ path: string }>(`/api/fs/directories`, { method: "POST", body: JSON.stringify({ parent, name }) })).path;
+}
+
 export async function fetchRealRootScope(path: string): Promise<RealRootScope> {
   return request<RealRootScope>(`/api/config/root-scope?path=${encodeURIComponent(path)}`);
 }
@@ -961,6 +966,16 @@ export async function removeRealRuntime(name: string): Promise<void> {
 export async function listRealRuntimeDirectories(name: string, path?: string): Promise<RealDirectoryListing> {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   return request<RealDirectoryListing>(`/api/runtimes/${encodeURIComponent(name)}/directories${query}`);
+}
+
+/** 別のサーバにフォルダを1つ作る */
+export async function createRealRuntimeDirectory(name: string, parent: string, folder: string): Promise<string> {
+  return (
+    await request<{ path: string }>(`/api/runtimes/${encodeURIComponent(name)}/directories`, {
+      method: "POST",
+      body: JSON.stringify({ parent, name: folder }),
+    })
+  ).path;
 }
 
 export async function fetchRealRuntimeRootScope(name: string, path: string): Promise<RealRootScope> {

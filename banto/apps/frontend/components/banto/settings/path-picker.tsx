@@ -10,8 +10,9 @@
 // ——画面はファイルの場所を推測しない（規則3）。別のサーバのフォルダは host が SSH で引いて答える
 // （`/api/runtimes/<名前>/directories`、v4-security.md §1「登録と選び方」）——引き方を `source` で差し替える
 //
-// **「新しいフォルダ」は、別の実行場所へ移す先を選ぶときだけ**（決定・2026-10-11、モック 0d22d225）。ここでは名前を
-// 決めてその中へ入るだけで、作らない——実際に作るのは「移す」を押したときに banto が作る
+// **「新しいフォルダ」**：別の実行場所へ移す先を選ぶとき（決定・2026-10-11、モック 0d22d225）は名前を決めてその中へ入るだけで、
+// 作らない——実際に作るのは「移す」を押したときに banto が作る。新しい Project の Root を選ぶとき（追加・2026-10-20、ユーザー
+// 「フォルダ作成が UI からできないので GUI で Project 作成が完結しない」）は、引き方の `create` でその場で作って中へ入る
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, CornerLeftUp, Folder, FolderOpen, FolderPlus } from "lucide-react";
 import {
@@ -25,16 +26,24 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { describeFailure } from "@/lib/report-failure";
-import { listRealDirectories, type RealDirectoryListing } from "@/lib/backend/client";
+import { createRealDirectory, listRealDirectories, type RealDirectoryListing } from "@/lib/backend/client";
 
 /** フォルダの引き方。既定はこの機械（別のサーバでは host が SSH で名前だけを引く） */
 export interface FolderSource {
   list: (path?: string) => Promise<RealDirectoryListing>;
+  /**
+   * フォルダを1つ作る（あれば「新しいフォルダ」はその場で作って中へ入る。無ければ名前を決めるだけで、作るのは呼び手——
+   * 移す先を選ぶとき）。作ったフォルダの絶対パスを返す
+   */
+  create?: (parent: string, name: string) => Promise<string>;
   /** どこのフォルダか（選ぶ画面の題に出す。この機械なら無し） */
   where?: string;
 }
 
 const HOST_SOURCE: FolderSource = { list: listRealDirectories };
+
+/** この機械のフォルダを、作れる形で（新しい Project の「選ぶ」） */
+export const HOST_SOURCE_WITH_CREATE: FolderSource = { list: listRealDirectories, create: createRealDirectory };
 
 export function PathPicker({
   id,
@@ -113,6 +122,8 @@ function PickerDialog({
   /** まだ無い（これから作る）フォルダ。そこに居る間は host に聞かない（その中は空） */
   const [pending, setPending] = useState<Array<{ path: string; parent: string }>>([]);
   const [naming, setNaming] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const list = source.list;
   const load = useCallback((path: string | undefined) => {
@@ -172,7 +183,22 @@ function PickerDialog({
           ? "同じ名前のフォルダがあります"
           : undefined;
   function addFolder() {
-    if (!shown || !trimmedName || nameError) return;
+    if (!shown || !trimmedName || nameError || creating) return;
+    // 作れる引き方なら、その場で作って中へ入る（新しい Project）。作れなかったら理由を出して、名前の欄を残す
+    if (source.create) {
+      const parent = shown.path;
+      setCreating(true);
+      setCreateError(null);
+      source
+        .create(parent, trimmedName)
+        .then((made) => {
+          setNaming(null);
+          go(made);
+        })
+        .catch((err: unknown) => setCreateError(describeFailure(err)))
+        .finally(() => setCreating(false));
+      return;
+    }
     const path = `${shown.path.replace(/\/$/, "")}/${trimmedName}`;
     setPending((list) => [...list, { path, parent: shown.path }]);
     setNaming(null);
@@ -248,18 +274,23 @@ function PickerDialog({
                 type="button"
                 size="sm"
                 className="h-8 shrink-0 text-xs"
-                disabled={!trimmedName || !!nameError}
+                disabled={!trimmedName || !!nameError || creating}
                 onClick={addFolder}
                 data-testid="path-picker-new-folder-create"
               >
-                作る
+                {creating ? "作っています…" : "作る"}
               </Button>
               <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 text-xs" onClick={() => setNaming(null)}>
                 やめる
               </Button>
             </div>
-            <p className={nameError ? "text-xs text-stop" : "text-xs text-ink-3"} data-testid="path-picker-new-folder-note">
-              {nameError ?? `${shown.path} の中に作ります。実際に作るのは、移すのを押したときです。`}
+            <p className={nameError || createError ? "text-xs text-stop" : "text-xs text-ink-3"} data-testid="path-picker-new-folder-note">
+              {nameError ??
+                (createError
+                  ? `作れませんでした：${createError}`
+                  : source.create
+                    ? `${shown.path} の中に作って、その中へ入ります。`
+                    : `${shown.path} の中に作ります。実際に作るのは、移すのを押したときです。`)}
             </p>
           </div>
         ) : null}

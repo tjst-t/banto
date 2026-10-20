@@ -8,7 +8,7 @@
 // その機械の持ち主にしか見えない）。閉じ込め（Landlock）は Module に掛かるもので、
 // この口とは層が違う（`docs/specs/v4-security.md`）。
 
-import { readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -58,4 +58,28 @@ export async function listDirectories(input: string | undefined): Promise<Direct
   entries.sort((a, b) => a.name.localeCompare(b.name, "ja"));
   const parent = dirname(path);
   return { path, ...(parent !== path ? { parent } : {}), entries };
+}
+
+/** 新しいフォルダの名前として使えるか（1段だけ。区切り・`.`・`..`・NUL・改行は使えない） */
+export function folderNameProblem(name: string): string | undefined {
+  if (!name.trim()) return "フォルダの名前が空です";
+  if (name !== name.trim()) return "名前の前後に空白は使えません";
+  if (/[/\\\0\n\r]/.test(name) || name === "." || name === "..") return "名前に / や .. は使えません";
+  if (Buffer.byteLength(name) > 255) return "名前が長すぎます";
+  return undefined;
+}
+
+/**
+ * **フォルダを1つ作る**（追加・2026-10-20、ユーザー「フォルダ作成が UI からできないので GUI で Project の作成が完結しない」）。
+ * 新しい Project の「選ぶ」の画面から、いま見ている場所の中に1段だけ作る（`mkdir -p` はしない——親はある場所に限る）。
+ * 同じ名前があれば断る。作ったフォルダの絶対パスを返す
+ */
+export async function createDirectory(parentInput: string | undefined, name: string): Promise<string> {
+  const problem = folderNameProblem(name);
+  if (problem) throw new Error(problem);
+  const parent = resolveBrowsePath(parentInput);
+  if (!(await stat(parent)).isDirectory()) throw new Error(`${parent} はフォルダではありません`);
+  const path = join(parent, name);
+  await mkdir(path, { mode: 0o755 });
+  return path;
 }
