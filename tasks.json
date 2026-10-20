@@ -11650,6 +11650,33 @@
       "updatedAt": "2026-10-20T20:26:59.859Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "item-3",
+      "number": 484,
+      "kind": "story",
+      "title": "サブエージェントがいま何をしているか、人が分かるようにする（人が頼む要約つき）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "subagent",
+        "frontend"
+      ],
+      "body": "ユーザー要望（2026-10-20）：「Launcher を見ても Tool の呼び出し状況は分かるが、何をしているのか全然分からない」。案3を採用。要約は人がボタンを押したときだけ作る。\n\n調べると、エージェントが送る中身の大半を拾っていなかった（直近 50 件で経過の 86% の題が「Terminal」）。\n\n仕様（下書き・ブランチ fork/bg-visibility、レビュー前）：v4-architecture.md §4.1「仕事の画面で、いま何をしているかを分かるようにする」・§4.2「札の手がかりを Module があとから足す・結果で画面を名乗る」、v4-frontend.md §6.33。経緯は docs/notes/2026-10-20-background-visibility.md。",
+      "doneWhen": "本物の Claude Code のサブエージェントを待たない形で1件走らせ、仕事の画面の経過で Terminal だけの題が消えて、コマンドや説明が出る。いまの状況（やること一覧・最後の発言・触ったファイル）が出る。「いまの様子を要約」を押すと小さいモデルの要約が画面とサイドバーの一覧に出る。押さなければ要約は作られない（記録と中継の記録で確かめる）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md",
+        "docs/notes/2026-10-20-background-visibility.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T20:29:29.140Z",
+      "updatedAt": "2026-10-20T20:29:29.140Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
