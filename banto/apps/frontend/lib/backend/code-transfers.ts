@@ -60,6 +60,12 @@ export function useRuntimeCodeTransfer(runtime: string): RealCodeTransfer | unde
 
 /** 「banto-dev-vm にコードを送っています（120MB / 809MB）」／送れなかったら「…を送れませんでした（120MB / 809MB で止まりました）」 */
 export function codeTransferText(t: RealCodeTransfer): string {
+  // コンテナの土台のイメージを作っている（containers の最初の1回は数分）
+  if (t.baseImage !== undefined) {
+    return t.failed !== undefined
+      ? `${t.runtime} でコンテナの土台を作れませんでした（${t.baseImage}の途中で止まりました）`
+      : `${t.runtime} でコンテナの土台を作っています（${t.baseImage}・最初の1回は数分かかります）`;
+  }
   const mb = (n: number) => `${Math.round(n / 1e6)}MB`;
   return t.failed !== undefined
     ? `${t.runtime} にコードを送れませんでした（${mb(t.sentBytes)} / ${mb(t.totalBytes)} で止まりました）`

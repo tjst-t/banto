@@ -30,9 +30,12 @@ function Line({ transfer, testId, className }: { transfer: RealCodeTransfer; tes
           {transfer.failed}
         </span>
       ) : null}
-      <span aria-hidden className="h-1 overflow-hidden rounded-full bg-surface-2">
-        <span className="block h-full bg-ink-3 transition-[width]" style={{ width: `${percent}%` }} />
-      </span>
+      {/* 土台のイメージを作っている段は量が分からない——帯は出さない（段の名前だけ） */}
+      {transfer.baseImage === undefined ? (
+        <span aria-hidden className="h-1 overflow-hidden rounded-full bg-surface-2">
+          <span className="block h-full bg-ink-3 transition-[width]" style={{ width: `${percent}%` }} />
+        </span>
+      ) : null}
     </span>
   );
 }

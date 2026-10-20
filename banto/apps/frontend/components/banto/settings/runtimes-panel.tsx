@@ -186,7 +186,10 @@ function ContainersCautions() {
         </li>
         <li>サーバは banto 専用にしてください（ほかのユーザー・サービスを置かない）。Incus 6.0.6 以降が要ります。</li>
         <li>同じサーバの同じユーザーを、サーバ丸ごと（machine）と並べて登録できません。</li>
-        <li>コンテナで Module を起こすところはまだ作っていません。いまは登録と準備までです。</li>
+        <li>
+          {"Module はその Project のコンテナの中で動きます（Shell・FileSystem・Service）。コンテナから banto への道（Claude のログインの中継・" +
+            "Module どうしの中継・SSH 鍵・公開）と、ここへ・ここから移すことは、まだ作っていません。最初の1回はコンテナの土台を作るのに数分かかります。"}
+        </li>
       </ul>
     </div>
   );

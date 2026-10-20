@@ -853,7 +853,7 @@ LAN のアドレス**（名前なら host で引いたもの）を受け取り�
     送る・Repositories の一覧で突き合わせない・ターンの途中で banto が落ちて起き直すと続く）
 - 実機：ユーザーが立てる別の VM で確かめる（本番の物理サーバは同じ LAN の Ubuntu で、これから組む）
 
-#### 別のサーバの中のコンテナ——1台に Project を複数置く（決定・2026-10-17、ユーザー（案A・P1・core が sudo で準備）。Fable のレビュー（2026-10-16）を受けて書き直した。未実装）
+#### 別のサーバの中のコンテナ——1台に Project を複数置く（決定・2026-10-17、ユーザー（案A・P1・core が sudo で準備）。Fable のレビュー（2026-10-16）を受けて書き直した。一部実装——#366・#367・#368、道は #369）
 
 **別のサーバを、丸ごと 1 Project の箱（`machine`）ではなく、Project ごとに Incus のコンテナを立てる場所（`containers`）としても
 使えるようにする。** 上の「段階」で後に足すとした形。`machine` の「1つの実行場所に Project は1つ」（2026-10-08）は、同じ SSH
@@ -933,8 +933,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     sudo せず、崩れていれば「確かめ直す」で整えると言って断る。人が先に整えてあれば `sudo -n` が無くても使える（注意だけ）。
     `incus-admin` で制限の無い区画に繋がるユーザーは、~~人が直すしかないので断る~~ banto が `incus-admin` から外す（改訂・
     2026-10-19、上の「足りないものは banto が入れる」）。`containers` は新しい Project・再開で「1つに1つ」
-    を数えない。**コンテナで Module を起こすところはまだ無い**（Backlog containers-project-module）——`containers` の Project の
-    Module を繋ごうとすると名指しして断る（VM のユーザーで直に起こす `machine` の形へ落ちない）。コードを先に送るだけの接続は通す
+    を数えない。コンテナで Module を起こすところは #368 で入った（下の「コンテナの作りと上限」の「実装済み」）
 - **SSH の接続は Project ごとに1本**（Fable の F1・F2・S4）：`MaxSessions`（既定 10）は 1 Project の Module 数でほぼ埋まる。
   接続・ControlPath・逆向きのトンネル・host の専用の待ち受け（`relay-listener`）を Project ごとに持つ。**トンネルの VM の側は
   番号ではなく Project ごとの決まったパスの UNIX ソケット**（`-R /run/user/<U>/banto/p-<Project>/t.sock:127.0.0.1:<待ち受け>`、
@@ -964,6 +963,33 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   `incus storage create banto <btrfs>`（この機械の install.sh と同じ選び方——`/` が btrfs ならその中、でなければ大きさを決めた
   ファイル）を作り、区画に使わせる。**subuid・subgid を書き換えたら Incus の起こし直しが要るか、動いているコンテナが残るかを測る**
   （B2）。`raw.idmap` は `uid U 1000` と `gid G 1000` の両方
+- **実装済み（2026-10-20、Backlog #368）**——コンテナの作り・置き場と見せ方・Module の起こし方・中から書く（道は #369）：
+  - `ProjectContainers` は Incus を接続の上の `incus`（VM の SSH ユーザー）で呼ぶ（`runtime/remote-containers.ts` の `vmIncus`）。
+    装置の書き換えを1本ずつ通す決まりのため、`ProjectContainers` は Project の接続ごとに1つ。中から host に届くアドレスの読み手は
+    VM の `ip -o -4 addr show`（host のを読まない）。上限は VM の `nproc`・`MemTotal` から既定の決め方で計算する（**実行場所ごとの
+    上書きはまだ無い**）。node は VM のコードの置き場の `bin/node` を `incus file push` で中の `/usr/local/bin/node` に置く
+    （版が同じなら置き直さない）
+  - 中の番号は 1000（`ProjectContainerSpec.inside`）。中にその番号のユーザーが無ければ `banto`（home は `/home/banto`）を作る
+    ——土台のイメージ（`images:ubuntu`）には既定のユーザーが居らず、起動役が使うユーザーの systemd が立たない。仕事の組・linger の
+    印は中の番号のユーザーで
+  - NIC は土台（profile）の NIC を同じ名前の装置で上書きして `security.port_isolation=true`。前から動いているコンテナに付けるときは
+    止めてから付けて起こす
+  - 土台のイメージは VM の上で作る（`ensureBaseImage` を Incus ごとに1回。node の配布一式は host で tar にし、SSH 越しに一時の
+    コンテナの `tar -x` へ流す）。作っている間は、コードを送るときと同じ行に段（元のイメージを取る・道具を入れる・node を置く・
+    イメージにする）を出す（`CodeTransfer.baseImage`。量が分からないので帯は出さない）。失敗したら理由を残す
+  - 見せ方：`<置き場>/code` を丸ごと読み取り専用（版は `<置き場>/code/<版>` のパスで選ぶ）、根はそのまま、Module の置き場
+    （`<置き場>/modules/<接続名>`）はその Project のコンテナにだけ、取ってきた配布物は読み取り専用。どれも VM と同じパス
+  - Module の置き場は、**まだ見せていないものだけ** VM のユーザーで作る——根から1段ずつ見て symlink・フォルダでないものに当たれば
+    断る（`mkdir -p` は途中の symlink を辿るので使わない）。配布物は読み取り専用で見せるので VM のユーザーで置き換える。Shell の
+    ホームは `incus exec <c> --user 1000` の中で、前に送ったものを中の node で消してから tar を展開する（条件3）
+  - 起こし方：`ssh <VM> exec incus exec <c> --user 1000 --group 1000 --env USER/LOGNAME/HOME -- <版>/bin/node <版>/banto-launcher.mjs <単位>`。
+    単位を止めるのも中のユーザーの systemd。中では sudo できるので `BANTO_NO_SUDO` は渡さない
+  - 根の重なり：作る・再開するとき、VM で home と置き場の根を正規化して、根が home そのもの・home の外・置き場の根・同じ実行場所の
+    ほかの Project の根（閉じたもの・移してくる途中のものも）と重なれば 409（`code: "root-overlap"`）
+  - **まだ繋がないもの**（#369 まで）：中から banto への道（Module の住所は VM の 127.0.0.1 のトンネルの番号のまま——中からは届かない）・
+    鍵の窓口（`socketPathInside` は断る）・流れの口（`streamSocketPath` は断る。VM のユーザーで中の置き場の symlink を辿ることになる
+    ため）・公開。**`containers` との間で移すのも断る**（移す手順は向こうで VM のユーザーとして展開・rsync・`git worktree repair` を
+    するので、条件3を満たす形にするまで）
 - **VM は banto 専用**（Fable の A5）：`containers` の VM にはほかのユーザー・サービスを置かない（中の root は U の持ち物に setuid を
   付けられ、ほかの誰かが動かすと U＝sudo できるユーザーになる）。Project のフォルダの置き場を `nosuid` でマウントできるかは任意で測る。
   sudo は NOPASSWD を全部に与えず、準備の台本だけを sudoers で許す形を勧める（前提の確かめで見る、任意）

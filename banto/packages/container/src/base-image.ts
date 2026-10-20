@@ -46,7 +46,7 @@ export function baseImageAlias(nodeVersion = process.version): string {
  * `<prefix>`（例：`/usr/local`）。npm が一緒に無い入れ方（ディストリビューションの node 等）なら断る——
  * 黙って node だけにしない（規則2）
  */
-function packHostNode(): string {
+export function packHostNode(): string {
   const prefix = dirname(dirname(process.execPath));
   const parts = ["bin/node", "bin/npm", "bin/npx", "lib/node_modules/npm"];
   for (const p of parts) {
@@ -58,20 +58,39 @@ function packHostNode(): string {
   return out;
 }
 
-let building: Promise<string> | undefined;
+/**
+ * 作り方の差し替え（追加・2026-10-20、別のサーバの `containers`——土台は VM の上で作る。v4-security.md §1「土台のイメージ」）
+ */
+export interface BaseImageOptions {
+  /** 同時に呼ばれても1回だけ作る単位（Incus ごと。既定はこの機械） */
+  key?: string;
+  /**
+   * host の node の配布一式の tar（`tarPath`、host のパス）を一時のコンテナ `tmp` の `/usr/local` に展開する。既定は
+   * `incus file push`（tar がこの機械にあるとき）。別のサーバでは SSH 越しに `incus exec … tar -x` へ流す
+   */
+  extractNodeTar?: (tmp: string, tarPath: string) => Promise<void>;
+  /** 作り始めた・段が進んだ（作らなくてよければ呼ばない）。人に見せる進み具合 */
+  onStep?: (step: string) => void;
+}
+
+const building = new Map<string, Promise<string>>();
 
 /**
  * 土台イメージが無ければ作って、その名前を返す。同時に呼ばれても1回だけ作る。
  * 作るのは一時のコンテナ → 道具を入れる → 止める → イメージにする → 一時のコンテナを消す
  */
-export function ensureBaseImage(run: RunIncus, timeoutMs = 600_000): Promise<string> {
-  building ??= build(run, timeoutMs).finally(() => {
-    building = undefined;
-  });
-  return building;
+export function ensureBaseImage(run: RunIncus, timeoutMs = 600_000, opts: BaseImageOptions = {}): Promise<string> {
+  const key = opts.key ?? "";
+  let p = building.get(key);
+  if (!p) {
+    p = build(run, timeoutMs, opts).finally(() => building.delete(key));
+    building.set(key, p);
+  }
+  return p;
 }
 
-async function build(run: RunIncus, timeoutMs: number): Promise<string> {
+async function build(run: RunIncus, timeoutMs: number, opts: BaseImageOptions): Promise<string> {
+  const step = opts.onStep ?? (() => undefined);
   const alias = baseImageAlias();
   const project = (await must(run, ["project", "get-current"], "いまの区画を引く")).trim();
   const existing = await run(["query", `/1.0/images/aliases/${alias}?project=${encodeURIComponent(project)}`], { timeoutMs: 30_000 });
@@ -79,6 +98,7 @@ async function build(run: RunIncus, timeoutMs: number): Promise<string> {
 
   const tmp = `${alias}-build-${process.pid}`;
   try {
+    step("元のイメージを取ってきています");
     await must(run, ["launch", UPSTREAM_IMAGE, tmp, "--storage", BANTO_POOL], "土台イメージ用の一時のコンテナを作る", timeoutMs);
     // 起こした直後は名前解決がまだのことがある——apt が通るまで待つのではなく、失敗は失敗として返す（規則2）。
     // 待つのは init が上がるまでだけ
@@ -86,6 +106,7 @@ async function build(run: RunIncus, timeoutMs: number): Promise<string> {
     while ((await run(["exec", tmp, "--", "systemctl", "is-system-running", "--wait"], { timeoutMs: 60_000 })).stdout.trim() === "starting") {
       if (Date.now() > deadline) break;
     }
+    step("道具を入れています");
     await must(
       run,
       ["exec", tmp, "--env", "DEBIAN_FRONTEND=noninteractive", "--", "sh", "-c", `apt-get update -q && apt-get install -y -q --no-install-recommends ${BASE_PACKAGES.join(" ")} && apt-get clean`],
@@ -97,13 +118,19 @@ async function build(run: RunIncus, timeoutMs: number): Promise<string> {
       ["exec", tmp, "--", "sh", "-c", `echo '${SUDOERS_LINE}' > /etc/sudoers.d/banto && chmod 0440 /etc/sudoers.d/banto && visudo -c -q`],
       "中で sudo できるようにする",
     );
+    step("node を置いています");
     const tar = packHostNode();
     try {
-      await must(run, ["file", "push", tar, `${tmp}/tmp/node.tar`], "node を中に送る", timeoutMs);
-      await must(run, ["exec", tmp, "--", "sh", "-c", "tar -C /usr/local -xf /tmp/node.tar && rm /tmp/node.tar && node --version && npm --version"], "node を中に置く", timeoutMs);
+      if (opts.extractNodeTar) await opts.extractNodeTar(tmp, tar);
+      else {
+        await must(run, ["file", "push", tar, `${tmp}/tmp/node.tar`], "node を中に送る", timeoutMs);
+        await must(run, ["exec", tmp, "--", "sh", "-c", "tar -C /usr/local -xf /tmp/node.tar && rm /tmp/node.tar"], "node を中に置く", timeoutMs);
+      }
+      await must(run, ["exec", tmp, "--", "sh", "-c", "node --version && npm --version"], "中で node を確かめる", timeoutMs);
     } finally {
       rmSync(dirname(tar), { recursive: true, force: true });
     }
+    step("イメージにしています");
     await must(run, ["stop", tmp], "一時のコンテナを止める", 120_000);
     const published = await run(["publish", tmp, "--alias", alias], { timeoutMs });
     if (published.code !== 0) {

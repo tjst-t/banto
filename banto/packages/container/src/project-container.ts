@@ -47,6 +47,18 @@ export interface ProjectContainerSpec {
    */
   uid: number;
   gid: number;
+  /**
+   * **中の番号**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「コンテナの作りと上限」）。
+   * 無ければ `uid`/`gid` と同じ番号（この機械）。別のサーバでは VM の SSH ユーザーの uid/gid（`uid`/`gid`）を中の 1000 に
+   * 対応させる（`raw.idmap` の `uid U 1000`・`gid G 1000`）。中にその番号のユーザーが無ければ作る（launcher がユーザーの
+   * systemd を使う）
+   */
+  inside?: { uid: number; gid: number };
+  /**
+   * **NIC に `security.port_isolation=true` を付ける**（追加・2026-10-20、別のサーバの `containers`。同じブリッジの
+   * コンテナどうしが直に届かないようにする——v4-security.md §1「コンテナどうしのネットワーク」）
+   */
+  portIsolation?: boolean;
   /** 資源の上限（`defaultContainerLimits()`）。動いているコンテナにもそのまま効く（起こし直さない） */
   limits: ContainerLimits;
 }
@@ -260,10 +272,20 @@ interface DiskRequest {
   reject(err: unknown): void;
 }
 
-/** 中の同じ番号に対応させる（uid と gid が同じなら `both` の1行） */
-export function idmapFor(uid: number, gid: number): string {
-  return uid === gid ? `both ${uid} ${uid}` : `uid ${uid} ${uid}\ngid ${gid} ${gid}`;
+/**
+ * 外の番号を中の番号に対応させる（既定は中も同じ番号）。外も中も uid と gid が同じなら `both` の1行
+ */
+export function idmapFor(uid: number, gid: number, inside: { uid: number; gid: number } = { uid, gid }): string {
+  return uid === gid && inside.uid === inside.gid ? `both ${uid} ${inside.uid}` : `uid ${uid} ${inside.uid}\ngid ${gid} ${inside.gid}`;
 }
+
+/** 中で使う番号（`inside` が無ければ外と同じ） */
+export function insideIds(spec: Pick<ProjectContainerSpec, "uid" | "gid" | "inside">): { uid: number; gid: number } {
+  return spec.inside ?? { uid: spec.uid, gid: spec.gid };
+}
+
+/** 中に作るユーザーの名前（その番号のユーザーが無いときだけ作る） */
+export const CONTAINER_USER_NAME = "banto";
 
 interface InstanceState {
   status: string;
@@ -275,8 +297,11 @@ interface InstanceState {
 
 type Device = Record<string, string>;
 
-/** ホストのネットワークインターフェースの IPv4（名前 → アドレス）。試験では差し替える */
-export type HostInterfaces = () => Record<string, string[]>;
+/**
+ * ホストのネットワークインターフェースの IPv4（名前 → アドレス）。試験では差し替える。別のサーバでは VM のものを
+ * SSH 越しに読む（host のを読まない——ブリッジは VM のインターフェース）
+ */
+export type HostInterfaces = () => Record<string, string[]> | Promise<Record<string, string[]>>;
 const hostIPv4Interfaces: HostInterfaces = () =>
   Object.fromEntries(
     Object.entries(networkInterfaces()).map(([name, addrs]) => [
@@ -383,7 +408,7 @@ export class ProjectContainers {
       await this.incus(
         [
           "init", spec.image, name, "--storage", BANTO_POOL,
-          "-c", `raw.idmap=${idmapFor(spec.uid, spec.gid)}`,
+          "-c", `raw.idmap=${idmapFor(spec.uid, spec.gid, spec.inside)}`,
           "-c", `security.nesting=${spec.nesting}`,
           "-c", `user.banto.project=${spec.projectId}`,
           "-c", `user.banto.owner=${spec.owner}`,
@@ -417,6 +442,19 @@ export class ProjectContainers {
       if (project) await this.incus(["config", "device", "remove", name, "project"], "古い Project の根を外すの");
       toAdd["project"] = { type: "disk", source: spec.root, path: spec.root };
     }
+    // **NIC を隔てる**（別のサーバの containers）。NIC は土台（profile）から来るので、同じ名前の装置をこのコンテナに
+    // 置いて上書きする。付け替えは動いているコンテナでは効かないことがあるので、変えるときは止めてから
+    if (spec.portIsolation) {
+      const nic = Object.entries(st.expandedDevices).find(([, d]) => d["type"] === "nic");
+      if (!nic) throw new Error(`コンテナ ${name} に NIC がありません（隔てられないので作りません）`);
+      if (nic[1]["security.port_isolation"] !== "true") {
+        if (st.status === "Running") {
+          await this.stop(name);
+          st = { ...st, status: "Stopped" };
+        }
+        toAdd[nic[0]] = { ...nic[1], "security.port_isolation": "true" };
+      }
+    }
     await this.addDevices(name, toAdd, "banto のコードと Project の根をマウントするの");
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
@@ -434,7 +472,8 @@ export class ProjectContainers {
     if (needsRestart || st.status !== "Running") await this.incus(["start", name], `コンテナ ${name} を起こすの`);
     await this.waitReady(name);
     await this.ensureNode(name, spec);
-    await this.ensureWorkSlices(name, spec.uid, spec.limits);
+    if (spec.inside) await this.ensureUser(name, spec.inside);
+    await this.ensureWorkSlices(name, insideIds(spec).uid, spec.limits);
     return { name, created };
   }
 
@@ -468,6 +507,20 @@ export class ProjectContainers {
       return false;
     }
     return r.stdout.trim() === "1";
+  }
+
+  /**
+   * **中にその番号のユーザーを作る**（無ければ）。起動役はユーザーの systemd（`/run/user/<uid>`）を使うので、番号だけで
+   * 名前の無いユーザーでは単位を起こせない。土台のイメージ（`images:ubuntu`）には既定のユーザーが居ない
+   */
+  private async ensureUser(name: string, ids: { uid: number; gid: number }): Promise<void> {
+    const u = CONTAINER_USER_NAME;
+    const script = [
+      "set -e",
+      `getent group ${ids.gid} >/dev/null || groupadd -g ${ids.gid} ${u}`,
+      `getent passwd ${ids.uid} >/dev/null || useradd -m -u ${ids.uid} -g ${ids.gid} -s /bin/bash ${u}`,
+    ].join("\n");
+    await this.incus(["exec", name, "--", "/bin/sh", "-c", script], `コンテナ ${name} の中にユーザー（${ids.uid}）を作るの`, 30_000);
   }
 
   /** 中でコマンドが通るまで待つ（起こした直後は init がまだ立ち上がっていない） */
@@ -576,7 +629,7 @@ export class ProjectContainers {
   async hostAddress(name: string): Promise<string> {
     const st = await this.state(name);
     const nic = Object.values(st?.expandedDevices ?? {}).find((d) => d["type"] === "nic" && d["network"]);
-    const bridge = nic ? this.interfaces()[nic["network"]!] : undefined;
+    const bridge = nic ? (await this.interfaces())[nic["network"]!] : undefined;
     if (bridge && bridge.length > 0) return bridge[0]!;
     return this.hostAddressFromRoute(name);
   }

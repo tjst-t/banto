@@ -478,7 +478,8 @@ async function main(): Promise<void> {
       projectThread
         .listProjects()
         .filter((p) => (p.runtime === rt && (p.status !== "closed" || opts?.includeClosed)) || p.move?.to.runtime === rt)
-        .map((p) => ({ id: p.id, name: p.name })),
+        // 根はその実行場所の側のもの（移してくる途中なら移す先の根）——containers の根の重なりを見る
+        .map((p) => ({ id: p.id, name: p.name, root: p.runtime === rt ? p.root : (p.move?.to.root ?? p.root) })),
   });
   /**
    * **実行場所の SSH 鍵が置き場の外にあれば、受信箱に実行場所ごとに1枚**（決定・2026-10-17、Backlog #375、

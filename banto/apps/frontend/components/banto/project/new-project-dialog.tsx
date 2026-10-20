@@ -591,7 +591,7 @@ function RuntimeStep({
       <p className="text-xs text-ink-3" data-testid="new-project-runtime-note">
         {remote?.mode === "containers"
           ? `${remote.name} の中に、この Project 専用の Incus のコンテナを立てて動かします（同じサーバに Project を複数置けます）。` +
-            "コンテナで Module を起こすところはまだ作っていないので、いまは Module を起こせません。作ったあとで変えられません。"
+            "コンテナから banto への道（中継・SSH 鍵・公開）はまだ作っていないので、それを使う機能は繋がりません。根は home の下で、ほかの Project と重ならない場所にしてください。作ったあとで変えられません。"
           : remote
           ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
           : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。"}

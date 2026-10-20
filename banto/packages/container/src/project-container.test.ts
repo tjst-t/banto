@@ -364,3 +364,156 @@ test("仕事の組の天井：コンテナのメモリの 75%・プロセス数�
   assert.match(files["banto-work-jobs.slice"]!, /CPUWeight=100/);
   assert.match(files["banto-work-services.slice"]!, /CPUWeight=200/);
 });
+
+/**
+ * 状態を持つ偽の Incus（作る・装置を足す・起こす・止める・中で流す）。別のサーバの containers の形（VM の SSH ユーザー
+ * uid 1001・gid 1002 を中の 1000 に対応させる）を確かめるのに使う
+ */
+function statefulIncus() {
+  const calls: string[][] = [];
+  let inst: { status: string; config: Record<string, string>; devices: Record<string, Record<string, string>> } | undefined;
+  const profileNic = { eth0: { type: "nic", network: "incusbr-1001", name: "eth0" } };
+  const run: RunIncus = async (args) => {
+    calls.push(args);
+    const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
+    if (args[0] === "project") return ok("user-1001\n");
+    const patch = patchedDevices(args);
+    if (patch) {
+      Object.assign(inst!.devices, patch);
+      return ok();
+    }
+    if (args[0] === "query") {
+      if (!inst) return { code: 1, stdout: "", stderr: "Error: Instance not found" };
+      return ok(JSON.stringify({ ...inst, expanded_devices: { ...profileNic, ...inst.devices } }));
+    }
+    if (args[0] === "init") {
+      const config: Record<string, string> = {};
+      for (let i = 0; i < args.length; i++) if (args[i] === "-c") {
+        const kv = args[i + 1]!;
+        config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
+      }
+      inst = { status: "Stopped", config, devices: {} };
+      return ok();
+    }
+    if (args[0] === "config" && args[1] === "set") {
+      for (const kv of args.slice(3)) inst!.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
+      return ok();
+    }
+    if (args[0] === "start") {
+      inst!.status = "Running";
+      return ok();
+    }
+    if (args[0] === "stop") {
+      inst!.status = "Stopped";
+      return ok();
+    }
+    if (args[0] === "exec" && args.includes("--version")) return ok("v22.0.0\n");
+    if (args[0] === "exec") return ok("1\n");
+    return ok();
+  };
+  return { run, calls, inst: () => inst };
+}
+
+test("別のサーバの containers の形：VM のユーザーを中の 1000 に対応させ、置き場 banto・コードは丸ごと読み取り専用・根を見せ・NIC を隔てる", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const { name, created } = await c.ensure({
+    projectId: "p1",
+    root: "/home/vm/work/a",
+    bantoDir: "/home/vm/.local/share/banto-remote/abc/code",
+    nodePath: "/home/vm/.local/share/banto-remote/abc/code/v-1/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "banto-base-x",
+    owner: "/data",
+    uid: 1001,
+    gid: 1002,
+    inside: { uid: 1000, gid: 1000 },
+    portIsolation: true,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  });
+  assert.equal(name, "banto-p1");
+  assert.equal(created, true);
+  const init = f.calls.find((a) => a[0] === "init")!;
+  assert.deepEqual(init.slice(0, 5), ["init", "banto-base-x", "banto-p1", "--storage", "banto"]);
+  const st = f.inst()!;
+  assert.equal(st.config["raw.idmap"], "uid 1001 1000\ngid 1002 1000");
+  assert.equal(st.config["user.banto.owner"], "/data");
+  // コードは版のフォルダではなく、置き場の code を丸ごと（版を替えても付け直さない）
+  assert.deepEqual(st.devices["banto"], {
+    type: "disk",
+    source: "/home/vm/.local/share/banto-remote/abc/code",
+    path: "/home/vm/.local/share/banto-remote/abc/code",
+    readonly: "true",
+  });
+  assert.deepEqual(st.devices["project"], { type: "disk", source: "/home/vm/work/a", path: "/home/vm/work/a" });
+  assert.deepEqual(st.devices["eth0"], { type: "nic", network: "incusbr-1001", name: "eth0", "security.port_isolation": "true" });
+  // 中のユーザー（1000）を作り、仕事の組はその番号のユーザーで
+  const execs = f.calls.filter((a) => a[0] === "exec").map((a) => a.join(" "));
+  assert.ok(execs.some((e) => /useradd -m -u 1000 -g 1000/.test(e)), "中のユーザーを作っていない");
+  assert.ok(execs.some((e) => /getent passwd 1000 /.test(e) && /banto-work-slices/.test(e)), "仕事の組を中の番号で置いていない");
+  assert.ok(!execs.some((e) => /getent passwd 1001/.test(e)), "VM の番号を中で使っている");
+  // node は VM のコードの置き場のもの（版が合っていれば置き直さない）
+  assert.ok(!f.calls.some((a) => a[0] === "file"), "版が合っている node を置き直した");
+
+  // 2回目：何も付け直さない・止めない
+  f.calls.length = 0;
+  await c.ensure({
+    projectId: "p1",
+    root: "/home/vm/work/a",
+    bantoDir: "/home/vm/.local/share/banto-remote/abc/code",
+    nodePath: "/home/vm/.local/share/banto-remote/abc/code/v-2/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "banto-base-x",
+    owner: "/data",
+    uid: 1001,
+    gid: 1002,
+    inside: { uid: 1000, gid: 1000 },
+    portIsolation: true,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  });
+  assert.ok(!f.calls.some((a) => patchedDevices(a) || a[0] === "stop" || (a[0] === "config" && a[1] === "device")), `付け直した：${JSON.stringify(f.calls)}`);
+});
+
+test("NIC を隔てる設定が無い動いているコンテナは、止めてから隔てて起こし直す", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    uid: 1000,
+    gid: 1000,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  await c.ensure(spec);
+  assert.equal(f.inst()!.status, "Running");
+  assert.equal(f.inst()!.devices["eth0"], undefined, "隔てを頼んでいないのに NIC を上書きした");
+  f.calls.length = 0;
+  await c.ensure({ ...spec, portIsolation: true });
+  const order = f.calls.map((a) => a[0]).filter((x) => x === "stop" || x === "start" || (x === "query" && false));
+  assert.deepEqual(order, ["stop", "start"]);
+  assert.equal(f.inst()!.devices["eth0"]?.["security.port_isolation"], "true");
+});
+
+test("idmap：外と中の番号が違えば uid と gid を1行ずつ、同じなら both", () => {
+  assert.equal(idmapFor(1000, 1000), "both 1000 1000");
+  assert.equal(idmapFor(1000, 1000, { uid: 1000, gid: 1000 }), "both 1000 1000");
+  assert.equal(idmapFor(1500, 1500, { uid: 1000, gid: 1000 }), "both 1500 1000");
+  assert.equal(idmapFor(1001, 1002, { uid: 1000, gid: 1000 }), "uid 1001 1000\ngid 1002 1000");
+  assert.equal(idmapFor(1001, 1002), "uid 1001 1001\ngid 1002 1002");
+});
+
+test("中から host に届くアドレスは、差し替えた読み手（VM のインターフェース）から読む——非同期でもよい", async () => {
+  const run: RunIncus = async (args) =>
+    args[0] === "project"
+      ? { code: 0, stdout: "p\n", stderr: "" }
+      : { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices: {}, expanded_devices: { eth0: { type: "nic", network: "incusbr0" } } }), stderr: "" };
+  const c = new ProjectContainers(run, undefined, async () => ({ incusbr0: ["10.9.9.1"] }));
+  assert.equal(await c.hostAddress("banto-x"), "10.9.9.1");
+});

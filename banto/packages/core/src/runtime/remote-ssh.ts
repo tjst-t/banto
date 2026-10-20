@@ -49,6 +49,23 @@ import {
   type Layer,
 } from "./remote-code.js";
 import { remoteAddress, type LookupIPv4 } from "./remote-address.js";
+import {
+  DEFAULT_TIMEOUTS,
+  ProjectContainers,
+  defaultContainerLimits,
+  ensureBaseImage,
+} from "@banto/container";
+import {
+  INSIDE_IDS,
+  createOnlyDirScript,
+  insideCommand,
+  insideShellHomeCommand,
+  insideStopUnitCommand,
+  vmIncus,
+  vmInterfaces,
+  vmResources,
+  type VmShell,
+} from "./remote-containers.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
 import type { RemoteRuntimes } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
@@ -121,6 +138,11 @@ export interface CodeTransfer {
   startedAt: string;
   /** 送れなかった理由（止まった・接続が切れた）。次に送り始めるまで残す */
   failed?: string;
+  /**
+   * **コンテナの土台のイメージを作っている段**（追加・2026-10-20、containers。最初の1回は数分）。あればバイト数ではなく
+   * この段を見せる
+   */
+  baseImage?: string;
 }
 
 /** 進み具合を知らせる間隔（これより細かくは知らせない） */
@@ -199,6 +221,10 @@ interface Connection {
   cautioned: Set<string>;
   /** 用意している途中で実行場所の登録が外された */
   removed?: boolean;
+  /** containers：この接続の上で Incus を呼ぶ口（装置の書き換えを1本ずつ通すので、接続ごとに1つ） */
+  incus?: ProjectContainers;
+  /** containers：用意したコンテナ（根・入れ子が変われば用意し直す） */
+  container?: { root: string | undefined; nesting: boolean; ready: Promise<string> };
 }
 
 /**
@@ -374,7 +400,9 @@ export class RemoteSshRuntime {
     const name = this.opts.remoteNameOf(place.id);
     if (!name) throw new Error(`${place.id} は別のサーバの Project ではありません`);
     const conn = await this.ensureConnection(name, place);
-    return this.preparedFrom(conn);
+    if (conn.runtime.mode !== "containers") return this.preparedFrom(conn);
+    const container = await this.ensureProjectContainer(conn, place);
+    return this.preparedInContainer(conn, container);
   }
 
   /**
@@ -394,6 +422,8 @@ export class RemoteSshRuntime {
     const key = remoteConnectionKey(name, placeId);
     const conn = this.connections.get(key);
     if (conn && !conn.alive) this.connections.delete(key);
+    // containers：次に使うとき、コンテナの様子を確かめ直す（止められた・消された）
+    if (conn) delete conn.container;
   }
 
   /**
@@ -503,14 +533,8 @@ export class RemoteSshRuntime {
             failed.map((c) => `${c.label}：${c.detail ?? "足りません"}${c.fix ? `（直し方：${c.fix.replace(/\n/g, " ")}）` : ""}`).join(" ／ "),
         );
       }
-      // **containers の Project の Module はまだ起こせない**（Backlog containers-project-module で作る）。VM のユーザーで直に
-      // 起こすと、その Project の AI が sudo できるユーザーになる——黙って machine の起こし方へ落ちない（規則2）。コードを
-      // 先に送るだけの接続（Project を持たない）は通す——VM の置き場に送るのは containers でも同じ
-      if (r.mode === "containers" && projectId !== undefined) {
-        throw new Error(
-          `別のサーバ「${name}」は Project ごとのコンテナ（containers）で動かす実行場所ですが、コンテナで Module を起こすところはまだ作っていません`,
-        );
-      }
+      // containers の Project の Module は、Project のコンテナの中で起こす（`prepare`→`preparedInContainer`）。VM のユーザーで
+      // 直に起こさない——その Project の AI が sudo できるユーザーになる
 
       // 2. 接続を1本張る（多重化・逆向きのトンネル）
       const controlPath = this.controlPathFor(name, projectId);
@@ -912,6 +936,11 @@ export class RemoteSshRuntime {
    */
   async streamSocketPath(projectId: string, connName: string, remoteSocketRel: string): Promise<string> {
     const conn = this.liveConnection(projectId, "流れの口を繋げ");
+    // containers：転送の先（Module の置き場の中）は中の AI が symlink に差し替えられる——VM のユーザー（incus グループ）として
+    // 辿ると Incus の管理用の口にも届く。中から繋ぐ形（proxy device）は #369 で作る。それまでは繋がない
+    if (conn.runtime.mode === "containers") {
+      throw new Error(`別のサーバ「${conn.runtimeName}」（containers）の流れの口はまだ繋げません（中から繋ぐ形を作っていません）`);
+    }
     const name = `st-${createHash("sha256").update(connName).digest("hex").slice(0, 10)}`;
     const hostPath = this.shortSocketPath(name);
     // 向こうの待ち受けは Module の置き場（長い）。短い symlink を置いて、sshd にはそちらへ繋がせる
@@ -1393,12 +1422,168 @@ export class RemoteSshRuntime {
     };
   }
 
+  // ── containers：Project のコンテナ ───────────────────────────────────────
+
+  /** この接続の上で VM に台本を流す口 */
+  private vmShell(conn: Connection): VmShell {
+    return (script, opts) => this.run(conn, script, opts ?? {});
+  }
+
+  /**
+   * **Project のコンテナを用意する**（v4-security.md §1「コンテナの作りと上限」）。無ければ VM の上の土台のイメージから作り、
+   * VM のユーザーの uid/gid を中の 1000 に対応させ、`<置き場>/code` を丸ごと読み取り専用・根をそのまま見せ、NIC を隔てる。
+   * 上限は VM の資源で計算する。名前・札・アドレスは毎回 Incus に聞く（覚えるのは「この接続で用意した」ことだけ）
+   */
+  private ensureProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
+    const cur = conn.container;
+    if (cur && cur.root === place.root && cur.nesting === place.nesting) return cur.ready;
+    const ready = this.createProjectContainer(conn, place);
+    conn.container = { root: place.root, nesting: place.nesting, ready };
+    // 失敗したら覚えない（次に使うときにやり直す）
+    ready.catch(() => {
+      if (conn.container?.ready === ready) delete conn.container;
+    });
+    return ready;
+  }
+
+  private async createProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
+    if (!place.root) throw new Error(`別のサーバ「${conn.runtimeName}」の Project ${place.id} に根がありません`);
+    if (place.tools) throw new Error("道具用の箱は別のサーバには置きません");
+    const shell = this.vmShell(conn);
+    const run = vmIncus(shell);
+    conn.incus ??= new ProjectContainers(run, DEFAULT_TIMEOUTS, vmInterfaces(shell));
+    const ids = await this.mustRun(conn, "ユーザーの番号を読め", "id -u\nid -g\n");
+    const [uid, gid] = ids.trim().split(/\s+/).map(Number);
+    if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error(`別のサーバ「${conn.runtimeName}」のユーザーの番号を読めませんでした：${ids.trim()}`);
+    const image = await this.ensureVmBaseImage(conn, run);
+    const { name } = await conn.incus.ensure({
+      projectId: place.id,
+      root: place.root,
+      // 版はパスで選ぶ（版を替えても装置を付け直さない——眠っているコンテナが消えた版を指して起きられなくなるのを避ける）
+      bantoDir: `${conn.base}/code`,
+      nodePath: `${conn.codeDir}/${REMOTE_NODE_REL}`,
+      nodeVersion: process.version,
+      nesting: place.nesting,
+      image,
+      owner: this.opts.dataDir,
+      uid: uid!,
+      gid: gid!,
+      inside: INSIDE_IDS,
+      portIsolation: true,
+      limits: defaultContainerLimits(await vmResources(shell)),
+    });
+    return name;
+  }
+
+  /** VM の上の土台のイメージ（VM ごとに1つ）。作るあいだは段を画面に出す */
+  private async ensureVmBaseImage(conn: Connection, run: ReturnType<typeof vmIncus>): Promise<string> {
+    const name = conn.runtimeName;
+    let started: CodeTransfer | undefined;
+    try {
+      const alias = await ensureBaseImage(run, 900_000, {
+        key: `remote:${name}`,
+        extractNodeTar: async (tmp, tarPath) => {
+          await this.mustRun(conn, "土台のイメージに node を置け", `exec incus exec ${shq(tmp)} -- tar -C /usr/local --no-same-owner -xf -`, {
+            stdin: createReadStream(tarPath),
+            timeoutMs: 600_000,
+          });
+        },
+        onStep: (step) => {
+          started ??= { sentBytes: 0, totalBytes: 0, startedAt: new Date().toISOString() };
+          started.baseImage = step;
+          this.transfers.set(name, started);
+          this.opts.onCodeTransfer?.(name, { ...started });
+          this.log(`[host] 別のサーバ「${name}」でコンテナの土台のイメージを作っています：${step}`);
+        },
+      });
+      if (started) this.clearTransfer(name);
+      return alias;
+    } catch (err) {
+      if (started && this.transfers.get(name) === started) {
+        started.failed = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+        this.opts.onCodeTransfer?.(name, { ...started });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * **コンテナの中で Module を起こす箱**。パスは machine と同じ（VM のパスのまま、中にも同じパスで見せる）。違うのは：
+   * Module の置き場はその Project のコンテナにだけ見せる・Shell のホームは中で展開する・起こすのは
+   * `incus exec <c> --user 1000 -- <起動役>`・単位を止めるのも中で
+   */
+  private preparedInContainer(conn: Connection, container: string): PreparedPlace {
+    const base = this.preparedFrom(conn);
+    const self = this;
+    const incus = conn.incus!;
+    const nodePath = `${conn.codeDir}/${REMOTE_NODE_REL}`;
+    const launcherPath = `${conn.codeDir}/${REMOTE_LAUNCHER_REL}`;
+    /** Module の置き場を見せ終えるまで（Shell のホームはその中で展開する） */
+    const mounts = new Map<string, Promise<void>>();
+    const diskName = (dir: string) => `m-${createHash("sha256").update(dir).digest("hex").slice(0, 16)}`;
+    const { moduleEnv: _noSudo, ...rest } = base;
+    return {
+      ...rest,
+      // 中では sudo できる（この機械のコンテナと同じ）——BANTO_NO_SUDO は渡さない
+      name: `別のサーバ「${conn.runtimeName}」のコンテナ ${container}`,
+      nodePath,
+      prepareModuleDirs({ dataDir: moduleDataDir, packageDir }) {
+        const done = (async () => {
+          const dir = base.pathInside(moduleDataDir);
+          // まだ見せていなければ VM のユーザーで作るだけ（symlink は辿らない）。中身は中から
+          await self.mustRun(conn, "Module の置き場を作れ", createOnlyDirScript(dir));
+          const disks = [incus.ensureDisk(container, diskName(dir), dir)];
+          if (existsSync(packageDir) && statSync(packageDir).isDirectory()) {
+            // 配布物は読み取り専用で見せる——中から書き換えられないので、VM のユーザーで置き換えてよい
+            const remote = base.pathInside(packageDir);
+            await self.syncPackageDir(conn, packageDir, remote);
+            disks.push(incus.ensureDisk(container, diskName(remote), remote, { readonly: true }));
+          }
+          await Promise.all(disks);
+        })();
+        mounts.set(moduleDataDir, done);
+        return done;
+      },
+      // 鍵の窓口（ssh-agent）を中へ見せる道はまだ無い（#369 で proxy device にする）
+      socketPathInside() {
+        return Promise.reject(new Error(`別のサーバ「${conn.runtimeName}」（containers）のコンテナには、鍵の窓口をまだ見せられません`));
+      },
+      async prepareShellHome(moduleDataDir, files) {
+        await mounts.get(moduleDataDir);
+        const home = `${base.pathInside(moduleDataDir)}/home`;
+        const resync = (f: readonly string[]) => self.sendShellHome(conn, moduleDataDir, home, f, container);
+        return { home, sync: await resync(files), resync };
+      },
+      processCommand(p: RuntimeProcess) {
+        if (p.asRoot) throw new Error(`${p.name} を別のサーバのコンテナで root として起こすことはできません`);
+        const command = p.command === process.execPath ? nodePath : p.command;
+        const unit = moduleUnitName(p.name);
+        const prelude: LauncherRequest = { command, args: p.args, cwd: p.cwd, env: p.env };
+        // 中のユーザーとして起動役を起こす。単位は中のユーザーの systemd（env・合言葉は最初の1行で渡す）
+        const args = [...self.muxArgs(conn), "--", conn.runtime.host, insideCommand(container, [nodePath, launcherPath, unit])];
+        return {
+          command: "ssh",
+          args,
+          transport: () =>
+            new LauncherTransport(
+              { command: "ssh", args, env: sshEnv() as Record<string, string> },
+              prelude,
+              () => self.stopUnit(conn, unit, container),
+              `${p.name}@${conn.runtimeName}/${container}`,
+            ),
+        };
+      },
+    };
+  }
+
   /** 落とした Module の単位を止める（接続が切れていれば、次に起こすときに起動役が止める） */
-  private async stopUnit(conn: Connection, unit: string): Promise<void> {
+  private async stopUnit(conn: Connection, unit: string, container?: string): Promise<void> {
     if (!conn.alive) return;
     const r = await this.run(
       conn,
-      `u=$(id -u); XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus systemctl --user stop ${shq(`${unit}.service`)}\n`,
+      container
+        ? `${insideStopUnitCommand(container, unit)}\n`
+        : `u=$(id -u); XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus systemctl --user stop ${shq(`${unit}.service`)}\n`,
       { timeoutMs: 30_000 },
     );
     if (r.code !== 0 && !/not loaded|not found/i.test(r.stderr) && conn.alive) {
@@ -1425,7 +1610,7 @@ export class RemoteSshRuntime {
    * **Shell のホームを送る**。host の置き場で整え（資格情報を外す規則は同じ・git の設定の向け直し先は向こうのホーム）、
    * 向こうで前に送ったもの（記録の一覧）を消してから展開する。Shell の中で作られたもの（キャッシュ等）には触らない
    */
-  private async sendShellHome(conn: Connection, moduleDataDir: string, home: string, files: readonly string[]) {
+  private async sendShellHome(conn: Connection, moduleDataDir: string, home: string, files: readonly string[], container?: string) {
     const stage = join(this.opts.dataDir, "remote-runtimes", conn.runtimeName, "shell-home", basename(moduleDataDir));
     rmSync(stage, { recursive: true, force: true });
     const sync = await syncShellHome(stage, files, {
@@ -1437,10 +1622,14 @@ export class RemoteSshRuntime {
     const removeOld =
       `const fs=require("fs"),p=process.argv[1];let c=[];try{c=JSON.parse(fs.readFileSync(p+"/.banto-shell-home.json","utf8")).copied||[]}catch{}` +
       `for(const r of c){if(typeof r!=="string"||r.startsWith("/")||r.split("/").includes(".."))continue;fs.rmSync(p+"/"+r,{recursive:true,force:true})}`;
+    const nodePath = `${conn.codeDir}/${REMOTE_NODE_REL}`;
     await this.mustRun(
       conn,
       "Shell のホームを送れ",
-      `mkdir -p ${shq(home)} && chmod 700 ${shq(home)} && ${shq(`${conn.codeDir}/${REMOTE_NODE_REL}`)} -e ${shq(removeOld)} ${shq(home)} && tar -C ${shq(home)} -xf -`,
+      // containers：ホームは見せたフォルダの中——消すのも展開するのも中のユーザーで（条件3）
+      container
+        ? insideShellHomeCommand(container, home, nodePath, removeOld)
+        : `mkdir -p ${shq(home)} && chmod 700 ${shq(home)} && ${shq(nodePath)} -e ${shq(removeOld)} ${shq(home)} && tar -C ${shq(home)} -xf -`,
       { stdin: tar.stdout },
     );
     return sync;

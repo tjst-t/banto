@@ -18,6 +18,9 @@ export {
   instanceContainerId,
   execInContainer,
   idmapFor,
+  insideIds,
+  CONTAINER_USER_NAME,
+  type HostInterfaces,
   CONTAINER_NODE_PATH,
   DEFAULT_TIMEOUTS,
   defaultContainerLimits,
@@ -38,4 +41,4 @@ export {
   type ContainerTimeouts,
 } from "./project-container.js";
 export { toolsContainerId, dropSudo, missingPackages, freeBytes, installPackages, TOOLS_MIN_FREE_BYTES } from "./tools-container.js";
-export { ensureBaseImage, baseImageAlias, BASE_PACKAGES, UPSTREAM_IMAGE } from "./base-image.js";
+export { ensureBaseImage, baseImageAlias, packHostNode, BASE_PACKAGES, UPSTREAM_IMAGE, type BaseImageOptions } from "./base-image.js";

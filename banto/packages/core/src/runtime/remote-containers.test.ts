@@ -1,0 +1,323 @@
+// 別のサーバの中の、Project ごとのコンテナ（Backlog #368）。偽の ssh は向こうのコマンドをこの機械の sh で流し、偽の incus
+// （状態をファイルに持つ）がコンテナの作り・装置・中で流したコマンドを記録する。中のユーザー（`--user`）で流したものだけは
+// この機械で本当に走らせる——中から書いたものが、見せたフォルダに本当にできることを見る
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
+import { idmapFor } from "@banto/container";
+import {
+  INSIDE_IDS,
+  containersRootProblem,
+  createOnlyDirScript,
+  insideCommand,
+  insideShellHomeCommand,
+  parseIpAddr,
+} from "./remote-containers.js";
+import { RemoteSshRuntime } from "./remote-ssh.js";
+
+test("VM のインターフェースは ip -o -4 addr show から読む（loopback は除く）", () => {
+  const out = [
+    "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever",
+    "2: enp1s0    inet 192.168.1.20/24 brd 192.168.1.255 scope global enp1s0\\       valid_lft forever",
+    "3: incusbr-1001    inet 10.40.3.1/24 scope global incusbr-1001\\       valid_lft forever",
+    "4: veth1@if5    inet 10.1.1.1/32 scope global veth1",
+  ].join("\n");
+  assert.deepEqual(parseIpAddr(out), { enp1s0: ["192.168.1.20"], "incusbr-1001": ["10.40.3.1"], veth1: ["10.1.1.1"] });
+});
+
+test("containers の根の重なり：home そのもの・home の外・置き場の根・ほかの Project の根（閉じたものも）と重なれば断る", () => {
+  const facts = {
+    home: "/home/vm",
+    dataRoot: "/home/vm/.local/share/banto-remote",
+    others: [{ name: "B", root: "/home/vm/work/b" }],
+  };
+  assert.match(containersRootProblem("/home/vm", facts)!, /home そのもの/);
+  assert.match(containersRootProblem("/srv/x", facts)!, /home（\/home\/vm）の下にありません/);
+  assert.match(containersRootProblem("/", facts)!, /home（\/home\/vm）の下にありません/);
+  // 置き場の根を含む・その中
+  assert.match(containersRootProblem("/home/vm/.local", facts)!, /banto の置き場/);
+  assert.match(containersRootProblem("/home/vm/.local/share/banto-remote/abc/code", facts)!, /banto の置き場/);
+  // ほかの Project の根：同じ・含む・その中
+  for (const root of ["/home/vm/work/b", "/home/vm/work", "/home/vm/work/b/sub"]) {
+    assert.match(containersRootProblem(root, facts)!, /Project「B」の根/, root);
+  }
+  // 綴りが前方で一致するだけなら重ならない
+  assert.equal(containersRootProblem("/home/vm/work/bb", facts), undefined);
+  assert.equal(containersRootProblem("/home/vm/work/a", facts), undefined);
+});
+
+test("まだ見せていないフォルダを作る台本：無ければ作り、あれば触らない。symlink は辿らずに断る", () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-create-only-"));
+  const outside = join(dir, "outside");
+  mkdirSync(outside);
+  const sh = (path: string) => spawnSync("sh", ["-c", createOnlyDirScript(path)], { encoding: "utf8" });
+  try {
+    // 無ければ作る（0700）
+    const fresh = join(dir, "modules", "shell-p1");
+    assert.equal(sh(fresh).status, 0);
+    assert.ok(existsSync(fresh));
+    // あれば何もしない
+    writeFileSync(join(fresh, "keep"), "x");
+    assert.equal(sh(fresh).status, 0);
+    assert.ok(existsSync(join(fresh, "keep")));
+    // そのパスが symlink
+    const link = join(dir, "modules", "shell-p2");
+    symlinkSync(outside, link);
+    const r1 = sh(link);
+    assert.equal(r1.status, 3, r1.stderr);
+    assert.match(r1.stderr, /symlink なので使いません/);
+    // 途中が symlink：辿った先に作らない
+    const viaLink = join(dir, "modules", "shell-p2", "deeper");
+    const r2 = sh(viaLink);
+    assert.equal(r2.status, 3, r2.stderr);
+    assert.deepEqual(readdirSync(outside), [], "symlink の先に作った");
+    // フォルダでないもの
+    const file = join(dir, "file");
+    writeFileSync(file, "x");
+    assert.equal(sh(file).status, 3);
+    assert.throws(() => createOnlyDirScript("relative/path"), /おかしい/);
+    assert.throws(() => createOnlyDirScript("/a/../b"), /おかしい/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("中で流すコマンドは incus exec <c> --user 1000 --group 1000 で、引数は崩れない", () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-inside-cmd-"));
+  try {
+    writeFileSync(join(dir, "incus"), `#!/bin/sh\nfor a; do printf '[%s]\\n' "$a"; done\n`);
+    chmodSync(join(dir, "incus"), 0o755);
+    const cmd = insideShellHomeCommand("banto-p1", "/home/vm/x y/home", "/c/bin/node", `const s='a b';"$x"`);
+    const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+    const argv = [...r.stdout.matchAll(/^\[([\s\S]*?)\]$/gm)].map((m) => m[1]);
+    assert.deepEqual(argv.slice(0, 6), ["exec", "banto-p1", "--user", "1000", "--group", "1000"]);
+    assert.ok(argv.includes("HOME=/home/banto"));
+    const rest = argv.slice(argv.indexOf("--") + 1);
+    assert.equal(rest[0], "/bin/sh");
+    assert.deepEqual(rest.slice(3), ["banto-shell-home", "/home/vm/x y/home", "/c/bin/node", `const s='a b';"$x"`]);
+    assert.match(insideCommand("c", ["true"]), /^exec 'incus' 'exec' 'c' '--user' '1000' '--group' '1000' /);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── 偽の VM（ssh → この機械の sh、incus → 状態を持つ偽物）────────────────────
+
+/** 偽の incus（node）。状態は $FAKE_INCUS_STATE、呼ばれた引数は $FAKE_INCUS_LOG に1行ずつ JSON で */
+const FAKE_INCUS = String.raw`#!/usr/bin/env node
+const fs = require("fs");
+const { spawnSync } = require("child_process");
+const statePath = "__STATE__";
+const st = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : { instances: {} };
+const args = process.argv.slice(2);
+fs.appendFileSync("__ILOG__", JSON.stringify(args) + "\n");
+const save = () => fs.writeFileSync(statePath, JSON.stringify(st));
+const out = (s) => { process.stdout.write(s); save(); process.exit(0); };
+const die = (s) => { process.stderr.write(s); save(); process.exit(1); };
+const profileNic = { eth0: { type: "nic", network: "incusbr-1001", name: "eth0" } };
+const [cmd, ...rest] = args;
+if (cmd === "project") out("user-1001\n");
+if (cmd === "query") {
+  if (rest[0] === "-X") {
+    const name = /instances\/([^?]+)/.exec(rest[2])[1];
+    Object.assign(st.instances[name].devices, JSON.parse(rest[rest.indexOf("--data") + 1]).devices);
+    out("");
+  }
+  if (/^\/1\.0\/images\/aliases\//.test(rest[0])) out("{}");
+  const m = /^\/1\.0\/instances\/([^/?]+)\?/.exec(rest[0]);
+  if (m) {
+    const i = st.instances[m[1]];
+    if (!i) die("Error: Instance not found");
+    out(JSON.stringify({ ...i, expanded_devices: { ...profileNic, ...i.devices } }));
+  }
+  die("偽の incus は " + rest[0] + " を知らない");
+}
+if (cmd === "init") {
+  const config = {};
+  for (let i = 0; i < rest.length; i++) if (rest[i] === "-c") { const kv = rest[i + 1]; config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); }
+  st.instances[rest[1]] = { status: "Stopped", config, devices: {}, image: rest[0], storage: rest[rest.indexOf("--storage") + 1] };
+  out("");
+}
+if (cmd === "config" && rest[0] === "set") { for (const kv of rest.slice(2)) st.instances[rest[1]].config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); out(""); }
+if (cmd === "start") { st.instances[rest[0]].status = "Running"; out(""); }
+if (cmd === "stop") { st.instances[rest[0]].status = "Stopped"; out(""); }
+if (cmd === "exec") {
+  const name = rest[0];
+  const dash = rest.indexOf("--");
+  const opts = rest.slice(1, dash);
+  const argv = rest.slice(dash + 1);
+  const user = opts.includes("--user") ? opts[opts.indexOf("--user") + 1] : undefined;
+  if (argv[1] === "--version") out(process.version + "\n");
+  // 中の root で流すもの（ユーザーを作る・仕事の組）はこの機械で走らせない
+  if (user === undefined) out("1\n");
+  // 中のユーザーで流すもの：この機械で本当に走らせる（見せたフォルダに書けたかを見る）
+  const env = { ...process.env };
+  for (let i = 0; i < opts.length; i++) if (opts[i] === "--env") { const kv = opts[i + 1]; env[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); }
+  save();
+  const r = spawnSync(argv[0], argv.slice(1), { stdio: "inherit", env });
+  process.exit(r.status ?? 1);
+}
+out("");
+`;
+
+/** 偽の ssh：`--` の後の宛先を飛ばし、向こうのコマンドをこの機械の sh で流す。流した台本を $FAKE_SSH_LOG に残す */
+const FAKE_SSH = String.raw`#!/bin/sh
+while [ "$1" != "--" ]; do shift; done
+shift; shift
+if [ "$1" = "sh -s" ]; then
+  script=$(cat)
+  printf '%s\n\0' "$script" >> '__SLOG__'
+  exec sh -c "$script"
+fi
+printf '%s\n\0' "$1" >> '__SLOG__'
+exec sh -c "$1"
+`;
+
+test("containers の Project：コンテナの中で起こし、置き場はその Project のコンテナにだけ見せ、見せたフォルダには中から書き、symlink を辿らない", async () => {
+  const root = mkdtempSync(join(tmpdir(), "banto-remote-ct-"));
+  const bin = join(root, "bin");
+  const dataDir = join(root, "data");
+  const base = join(root, "vm", "base");
+  const codeDir = `${base}/code/v-1`;
+  for (const d of [bin, dataDir, codeDir, join(root, "vm", "work", "a"), join(root, "vm", "work", "b")]) mkdirSync(d, { recursive: true });
+  const incusLog = join(root, "incus.log");
+  const sshLog = join(root, "ssh.log");
+  writeFileSync(join(bin, "incus"), FAKE_INCUS.replace("__STATE__", join(root, "incus.json")).replace("__ILOG__", incusLog));
+  writeFileSync(join(bin, "ssh"), FAKE_SSH.replaceAll("__SLOG__", sshLog));
+  chmodSync(join(bin, "incus"), 0o755);
+  chmodSync(join(bin, "ssh"), 0o755);
+  // 中の node＝この機械の node（Shell のホームの古いものを消すのに使う）
+  mkdirSync(join(codeDir, "bin"));
+  symlinkSync(process.execPath, join(codeDir, "bin", "node"));
+  writeFileSync(incusLog, "");
+  writeFileSync(sshLog, "");
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+
+  const masters: ChildProcess[] = [];
+  const servers: Server[] = [];
+  const conn = () => {
+    const master = spawn("sleep", ["60"], { stdio: "ignore" });
+    masters.push(master);
+    const exited = new Promise<void>((resolve) => master.once("close", () => resolve()));
+    const c: Record<string, unknown> = {
+      runtimeName: "vm",
+      runtime: { name: "vm", host: "vm.example", port: 22, user: "u", mode: "containers" },
+      controlPath: join(root, "cm"),
+      knownHostsFile: "/dev/null",
+      master,
+      alive: true,
+      exited,
+      remotePort: 4100,
+      base,
+      codeDir,
+      checks: [],
+      forwards: new Map(),
+      cautioned: new Set(),
+    };
+    void exited.then(() => (c.alive = false));
+    return c;
+  };
+  const rt = new RemoteSshRuntime({
+    dataDir,
+    monorepoRoot: join(root, "repo"),
+    runtimes: { withConnection: async () => conn() } as never,
+    remoteNameOf: (id) => (id.startsWith("p") ? "vm" : undefined),
+    createRelayListener: () => {
+      const s = createServer();
+      servers.push(s);
+      return s;
+    },
+    notify: async () => undefined,
+    log: () => undefined,
+    shellHomeSource: join(root, "nohome"),
+  });
+  const state = () =>
+    JSON.parse(readFileSync(join(root, "incus.json"), "utf8")) as {
+      instances: Record<string, { config: Record<string, string>; devices: Record<string, Record<string, string>>; storage: string; status: string }>;
+    };
+  try {
+    const rootA = join(root, "vm", "work", "a");
+    const rootB = join(root, "vm", "work", "b");
+    const a = await rt.prepare({ id: "p1", root: rootA, nesting: false });
+    const b = await rt.prepare({ id: "p2", root: rootB, nesting: false });
+
+    // コンテナの作り
+    const ca = state().instances["banto-p1"]!;
+    const cb = state().instances["banto-p2"]!;
+    assert.ok(ca && cb, "Project ごとのコンテナが無い");
+    assert.equal(ca.storage, "banto");
+    assert.equal(ca.status, "Running");
+    const { uid, gid } = userInfo();
+    assert.equal(ca.config["raw.idmap"], idmapFor(uid, gid, INSIDE_IDS), "VM のユーザーを中の 1000 に対応させていない");
+    assert.equal(ca.config["user.banto.owner"], dataDir);
+    assert.deepEqual(ca.devices["banto"], { type: "disk", source: `${base}/code`, path: `${base}/code`, readonly: "true" });
+    assert.deepEqual(ca.devices["project"], { type: "disk", source: rootA, path: rootA });
+    assert.equal(ca.devices["eth0"]?.["security.port_isolation"], "true");
+    assert.deepEqual(cb.devices["project"], { type: "disk", source: rootB, path: rootB });
+    assert.equal(a.nodePath, `${codeDir}/bin/node`);
+    assert.equal(a.moduleEnv, undefined, "中では sudo できる——BANTO_NO_SUDO を渡している");
+
+    // Module の置き場：その Project のコンテナにだけ見せる
+    const modA = join(dataDir, "modules", "shell-p1");
+    const modB = join(dataDir, "modules", "shell-p2");
+    await a.prepareModuleDirs({ dataDir: modA, packageDir: join(dataDir, "none") });
+    await b.prepareModuleDirs({ dataDir: modB, packageDir: join(dataDir, "none") });
+    const sources = (c: string) => Object.values(state().instances[c]!.devices).map((d) => d["source"]);
+    assert.ok(sources("banto-p1").includes(`${base}/modules/shell-p1`));
+    assert.ok(!sources("banto-p1").includes(`${base}/modules/shell-p2`), "p1 のコンテナに p2 の置き場が見える");
+    assert.ok(!sources("banto-p1").includes(rootB), "p1 のコンテナに p2 の根が見える");
+    assert.ok(sources("banto-p2").includes(`${base}/modules/shell-p2`));
+    assert.ok(!sources("banto-p2").includes(`${base}/modules/shell-p1`), "p2 のコンテナに p1 の置き場が見える");
+
+    // Shell のホーム：中のユーザーで展開する（VM のユーザーの台本はホームに触らない）
+    writeFileSync(sshLog, "");
+    writeFileSync(incusLog, "");
+    const home = await a.prepareShellHome(modA, []);
+    assert.equal(home.home, `${base}/modules/shell-p1/home`);
+    assert.ok(existsSync(join(home.home, ".banto-shell-home.json")), "中から展開したホームが無い");
+    const incusCalls = readFileSync(incusLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
+    const homeExec = incusCalls.find((c) => c[0] === "exec" && c.includes(home.home));
+    assert.ok(homeExec, "ホームを中で展開していない");
+    assert.deepEqual(homeExec.slice(0, 6), ["exec", "banto-p1", "--user", "1000", "--group", "1000"]);
+    // 中のユーザーで流したもの（`exec 'incus' 'exec' …`、標準入力を流すときは `sh -c` に包まれる）を除いた、VM のユーザーの台本
+    const vmScripts = readFileSync(sshLog, "utf8").split("\0").filter((s) => s.trim() && !/^(sh -c ')?exec '[^a-z]*incus/.test(s.trim()));
+    assert.ok(!vmScripts.some((s) => s.includes(home.home)), `VM のユーザーの台本が見せたフォルダに書いている：${vmScripts.join("\n---\n")}`);
+
+    // symlink を辿らない：置き場が外への symlink に差し替えられていたら断り、装置も足さない
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    const modA2 = join(dataDir, "modules", "files-p1");
+    symlinkSync(outside, `${base}/modules/files-p1`);
+    await assert.rejects(a.prepareModuleDirs({ dataDir: modA2, packageDir: join(dataDir, "none") }), /symlink なので使いません/);
+    assert.ok(!sources("banto-p1").includes(`${base}/modules/files-p1`), "symlink の置き場を見せた");
+    assert.deepEqual(readdirSync(outside), []);
+
+    // 起こし方：ssh <VM> incus exec <c> --user 1000 -- <node> <起動役> <単位>
+    const cmd = a.processCommand({ name: "shell-p1", command: process.execPath, args: ["server.js"], cwd: rootA, env: { SECRET: "s" } });
+    assert.equal(cmd.command, "ssh");
+    const remote = cmd.args[cmd.args.length - 1]!;
+    assert.ok(remote.startsWith("exec 'incus' 'exec' 'banto-p1' '--user' '1000' '--group' '1000' "), remote);
+    assert.ok(remote.endsWith(`'--' '${codeDir}/bin/node' '${codeDir}/banto-launcher.mjs' 'banto-mod-shell-p1'`), remote);
+    assert.ok(!remote.includes("SECRET"), "env がコマンド行に載った");
+    assert.throws(() => a.processCommand({ name: "x", command: "x", args: [], cwd: "/", env: {}, asRoot: true }), /root/);
+    // 鍵の窓口・流れの口はまだ繋がない（#369）
+    await assert.rejects(a.socketPathInside!(join(dataDir, "modules", "shell-p1", "s", "agent.sock")), /まだ見せられません/);
+    await assert.rejects(rt.streamSocketPath("p1", "shell-p1", "s/stream.sock"), /まだ繋げません/);
+
+    // 2回目の用意では作り直さない
+    writeFileSync(incusLog, "");
+    await rt.prepare({ id: "p1", root: rootA, nesting: false });
+    assert.equal(readFileSync(incusLog, "utf8"), "", "用意したコンテナをもう一度確かめに行った");
+  } finally {
+    await rt.closeAll();
+    for (const m of masters) m.kill("SIGKILL");
+    for (const s of servers) s.close();
+    process.env.PATH = savedPath;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

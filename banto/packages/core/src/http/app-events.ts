@@ -79,6 +79,8 @@ export interface CodeTransferView {
   startedAt: string;
   /** 送れなかった理由（次に送り始めるまで残る） */
   failed?: string;
+  /** コンテナの土台のイメージを作っている段（containers の最初の1回。あればバイト数ではなくこれを見せる） */
+  baseImage?: string;
 }
 
 /** 3 分を超えて繋がらない別のサーバ1つ（判定は受信箱のお知らせと同じ——`modules/remote-outage.ts`） */
