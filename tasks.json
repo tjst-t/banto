@@ -10363,9 +10363,11 @@
       "number": 433,
       "kind": "task",
       "title": "Windows の実機で Claude の会話の1ターンと資格情報の置き場を実測する（§9 の1・2）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "desktop-0-measure",
-      "dependsOn": [],
+      "dependsOn": [
+        "desktop-dev-vm"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [],
@@ -10375,7 +10377,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T08:57:49.248Z",
+      "updatedAt": "2026-10-20T10:06:22.066Z",
       "closedAt": null,
       "extra": {}
     },
