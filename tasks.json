@@ -11349,7 +11349,7 @@
       "number": 472,
       "kind": "task",
       "title": "空いた会話のキャッシュ：中継の温め直し（cache keep-alive）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "idle-cache",
       "dependsOn": [
         "idle-cache-probe"
@@ -11363,7 +11363,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T14:17:56.576Z",
-      "updatedAt": "2026-10-20T19:41:57.429Z",
+      "updatedAt": "2026-10-20T19:42:05.359Z",
       "closedAt": null,
       "extra": {}
     },
