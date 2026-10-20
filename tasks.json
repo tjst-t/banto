@@ -11304,7 +11304,7 @@
       "number": 469,
       "kind": "story",
       "title": "空いた会話のキャッシュ——4時間まで温め直し、越えたら冷める前に要約する",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -11312,14 +11312,19 @@
       "labels": [],
       "body": "## なぜ\n本体の会話の費用の約35%が、1時間以上あいた会話を続けたときのキャッシュの書き直しだった（実測 2026-10-20、docs/notes/2026-10-20-memory-diet.md）。\n\n## 仕様\nv4-architecture.md §3.1（Fable のレビュー2回反映、main 33f07045・06d9ea2a）。Project ごとのスイッチ thread.idleCompaction（値が無ければオン）。新しい Project の画面のスイッチは v4-frontend.md §6.51（別ストーリー）。\n\n## 不変条件\n温め直しと要約は、キャッシュが当たっているときだけ。温め直しは送り直しの道に乗せない。",
       "doneWhen": "本物の本体の会話で、1時間以上空けて戻ったときに書き直しが起きず（cache_read がほぼ全部）、4時間を越えて空けた会話が要約されていて戻ったときの書き込みが要約と土台の分だけになっている。受信箱に要約のターンが出ない",
-      "resolution": null,
+      "resolution": "#471〜#473 は main に入った（2847cf45・10c6cf58・311b43f7〜02c20f4c）。残り：release・本物の会話での確かめ（完了条件）、「要約しています」の帯とメーターの温め直しの回数の E2E。",
       "refs": [
         "docs/specs/v4-architecture.md#3.1",
         "docs/notes/2026-10-20-memory-diet.md"
       ],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "ad812814-4610-408a-bdeb-8d64d50d4153"
+        }
+      ],
       "createdAt": "2026-10-20T14:17:00.980Z",
-      "updatedAt": "2026-10-20T14:17:00.980Z",
+      "updatedAt": "2026-10-20T21:20:05.944Z",
       "closedAt": null,
       "extra": {}
     },
