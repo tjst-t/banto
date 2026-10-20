@@ -1,14 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { coreSocketDir, SOCKET_NAME_ALLOWANCE, SOCKET_PATH_LIMIT } from "./socket-dir.js";
 
 const uid = process.getuid!();
 
+/**
+ * 試験の置き場は短い `/tmp` の下に作る（本物の既定の逃がし先と同じ）。`os.tmpdir()`（TMPDIR）が長い環境では、「収まる」はずの
+ * 置き場がそれだけで Unix ソケットの上限を越え、試験の前提が崩れる
+ */
+const shortBase = () => mkdtempSync(join("/tmp", "sd-"));
+
 test("置き場の s に収まれば、そこを使う（0700）", () => {
-  const base = mkdtempSync(join(tmpdir(), "sd-"));
+  const base = shortBase();
   try {
     const dir = coreSocketDir(base, { uid, runtimeDir: undefined, tmpDir: base });
     assert.equal(dir, join(base, "s"));
@@ -19,7 +24,7 @@ test("置き場の s に収まれば、そこを使う（0700）", () => {
 });
 
 test("置き場が深くて収まらなければ、短い場所（XDG_RUNTIME_DIR、無ければ tmp）へ逃がす。置き場ごとに別の名前", () => {
-  const base = mkdtempSync(join(tmpdir(), "sd-"));
+  const base = shortBase();
   try {
     const deep = join(base, "x".repeat(SOCKET_PATH_LIMIT));
     const run = join(base, "run");
@@ -38,7 +43,7 @@ test("置き場が深くて収まらなければ、短い場所（XDG_RUNTIME_DI
 });
 
 test("逃がし先がこのユーザーだけのものでなければ（他人も読み書きできる）使わない", () => {
-  const base = mkdtempSync(join(tmpdir(), "sd-"));
+  const base = shortBase();
   try {
     const deep = join(base, "x".repeat(SOCKET_PATH_LIMIT));
     const first = coreSocketDir(deep, { uid, runtimeDir: undefined, tmpDir: base });
