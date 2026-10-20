@@ -8987,7 +8987,7 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「道」「条件 4」「他の仕組みとの関係」「畳んだとき」。\n\n- すべての proxy device に security.uid/gid。connect=unix: の先は VM だけの場所（/run/user/<U>/banto/p-<Project>/…）\n- 中から banto へ（bind=instance → Project ごとのトンネルのソケット）・ssh-agent（bind=instance）・流れの口（bind=host、向きが逆）・公開（bind=host、全コンテナのポートを避けて選ぶ、眠らせても外さない）\n- 移す（1つに1つを外す・動いているものは中で数える）・閉じたら空く・眠らせる（コンテナを止めるだけ）・資源の画面（lxc.payload.user-<uid>_<名前> を読む、上限に当たった知らせも）\n- port_isolation は測った結果に従う\n- ほかの節の書き分け（「1つに1つ」等は machine の話と明記）\n\n## 経緯（2026-10-20）\nsakutei開発（containers の実行場所 baremetal）で、Module の BANTO_HOST_MCP_URL が VM 側の 127.0.0.1 のトンネル番号のままコンテナの中に渡り、Vault の値・Repositories・Backlog の push が全部 fetch failed になった（コンテナは自分のネットワーク名前空間を持つ）。ユーザーの指示で #369 全体を一度に作る。作業は .worktrees/containers-paths（fork/containers-paths）。",
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「道」「条件 4」「他の仕組みとの関係」「畳んだとき」。\n\n- すべての proxy device に security.uid/gid。connect=unix: の先は VM だけの場所（/run/user/<U>/banto/p-<Project>/…）\n- 中から banto へ（bind=instance → Project ごとのトンネルのソケット）・ssh-agent（bind=instance）・流れの口（bind=host、向きが逆）・公開（bind=host、全コンテナのポートを避けて選ぶ、眠らせても外さない）\n- 移す（1つに1つを外す・動いているものは中で数える）・閉じたら空く・眠らせる（コンテナを止めるだけ）・資源の画面（lxc.payload.user-<uid>_<名前> を読む、上限に当たった知らせも）\n- port_isolation は測った結果に従う\n- ほかの節の書き分け（「1つに1つ」等は machine の話と明記）\n- 中の番号を U にする件は #457 の範囲。ここでは新しく書く security.uid/gid などを ProjectContainerSpec の inside から取る（1000 を決め打ちしない）\n\n## 経緯（2026-10-20）\nsakutei開発（containers の実行場所 baremetal）で、Module の BANTO_HOST_MCP_URL が VM 側の 127.0.0.1 のトンネル番号のままコンテナの中に渡り、中継を使うものが全部 fetch failed になった（コンテナは自分のネットワーク名前空間を持つ）。届かないもの：Vault の値（envSecrets・secretFiles・sshIdentity）・Repositories・Backlog の push・Factory の runFactory（設定を読む／サブエージェントを起こすところ）。ユーザーの指示で #369 全体を一度に作る。作業は .worktrees/containers-paths（fork/containers-paths）。\n\n## 直ったかの確かめ（sakutei開発 から）\nenvSecrets で git push origin main backlog が通る・Backlog の操作で pushError が出ない・runFactory が実行を作る。",
       "doneWhen": "ストーリー #364 の完了条件を実機（banto-dev-vm）で満たす。片方のコンテナからもう片方の中継の口に届かないことを確かめる。単体テスト（偽の RunIncus）で道の張り外し",
       "resolution": null,
       "refs": [],
@@ -8998,7 +8998,7 @@
         }
       ],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-20T09:21:55.010Z",
+      "updatedAt": "2026-10-20T09:27:14.044Z",
       "closedAt": null,
       "extra": {}
     },
