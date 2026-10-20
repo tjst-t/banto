@@ -102,13 +102,18 @@ export async function execCommand(
 ): Promise<{ code: number; out: string }> {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("BANTO_")) env[k] = v;
-  // **Factory が作るコミットは、いつも Factory として名乗る**——リポジトリやホームの git の設定は見ない（環境変数は
-  // git の設定より勝つ）。wip コミットは作者もコミットした者も Factory、rebase は元の作者を残してコミットした者だけ Factory。コンテナや別のサーバでは user.email が無く、wip コミットが
-  // 「unable to auto-detect email address」で落ちた（#478）。banto を起こした環境に GIT_* が明示してあるときだけ、それを使う
-  env.GIT_AUTHOR_NAME ??= FACTORY_GIT_IDENT.name;
-  env.GIT_AUTHOR_EMAIL ??= FACTORY_GIT_IDENT.email;
-  env.GIT_COMMITTER_NAME ??= FACTORY_GIT_IDENT.name;
-  env.GIT_COMMITTER_EMAIL ??= FACTORY_GIT_IDENT.email;
+  // **Factory が自分で走らせる git のコミット（wip・rebase）は、いつも Factory として名乗る**——リポジトリやホームの git の
+  // 設定は見ない（環境変数は git の設定より勝つ）。wip コミットは作者もコミットした者も Factory、rebase は元の作者を残して
+  // コミットした者だけ Factory。コンテナや別のサーバでは user.email が無く、wip コミットが「unable to auto-detect email
+  // address」で落ちた（#478）。banto を起こした環境に GIT_* が明示してあるときだけ、それを使う。
+  // **git を直に起こすときだけ**——Project の testCommand・prepareCommand（/bin/sh）とその子には渡さない。渡すと、その中で
+  // 作られるコミットまで Factory の名になり、人が回したときと結果が食い違う
+  if (argv[0] === "git") {
+    env.GIT_AUTHOR_NAME ??= FACTORY_GIT_IDENT.name;
+    env.GIT_AUTHOR_EMAIL ??= FACTORY_GIT_IDENT.email;
+    env.GIT_COMMITTER_NAME ??= FACTORY_GIT_IDENT.name;
+    env.GIT_COMMITTER_EMAIL ??= FACTORY_GIT_IDENT.email;
+  }
   return new Promise((resolve) => {
     // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——テストが食い尽くしても組の中だけで止まる
     const scoped = inWorkScope(argv[0]!, argv.slice(1), { kind: "factory-test", env });
