@@ -123,6 +123,8 @@ export function registerRealFork(
   title?: string,
   /** 閉じているなら、誰が閉じたか・理由（追加・2026-10-08） */
   closed?: { by?: MockThread["closedBy"]; reason?: string },
+  /** 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4） */
+  restriction?: MockThread["restriction"],
 ): MockThread {
   const existing = mockThreads.find((t) => t.id === threadId);
   if (existing) return existing;
@@ -140,6 +142,7 @@ export function registerRealFork(
     status,
     closedBy: status === "closed" ? closed?.by : undefined,
     closedReason: status === "closed" ? closed?.reason : undefined,
+    ...(restriction ? { restriction } : {}),
     real: true,
     realMessages,
     realMarkers,

@@ -133,6 +133,21 @@ export interface RunnerTurnOptions {
    */
   allowedTools?: string[];
   /**
+   * **組み込みの tool の基底の集合を置き換える**（SDK の `tools`、追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」の守りの 1.）。
+   * 渡さなければ `RUNNER_BUILTIN_TOOLS`。読むだけの回は資源の3つだけを渡し、ほかを文脈から消す
+   */
+  builtinTools?: readonly string[];
+  /**
+   * **tool を使う直前**（SDK の PreToolUse hook、追加・2026-10-20、§4.4 の守りの 4.）。文を返すと、その理由で断る（deny）。
+   * 承認（`canUseTool`）より前に効く——承認モードの `auto` で分類器が `canUseTool` を呼ばずに許す場合も止まる。渡さなければ hook を付けない
+   */
+  onPreToolUse?(input: { toolName: string }): string | undefined;
+  /**
+   * **Elicitation を人に聞かずに断る**（追加・2026-10-20、§4.4「読むだけの回では人に聞かない」）。true なら `onElicitation` を
+   * 呼ばず、すぐに decline を返す——人が見ていない回で判断待ちを積まない
+   */
+  declineElicitations?: boolean;
+  /**
    * **CLI の環境**（SDK の `env`——process.env に足すのではなく置き換える）。会話の本体を Claude のログインの中継に通すとき
    * core が組み立てて渡す（`ClaudeLoginRelay.runnerEnvFor`）。渡さなければ process.env に付随の通信を止める印だけを足す
    */
@@ -305,7 +320,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       // **迂回路にはならない**：resource は Runner が実 Module に直接繋がず、
       // host の代理サーバ越しにしか読めない。代理サーバは `resources/read` の
       // ハンドラの中でも可視性を見て fail closed で拒む（`relay/visibility.ts`）。
-      tools: RUNNER_BUILTIN_TOOLS,
+      tools: opts.builtinTools ? [...opts.builtinTools] : RUNNER_BUILTIN_TOOLS,
       permissionMode: opts.permissionMode ?? "auto",
       // 1ターン＝1回の query()（モデルB、§2.3）なので、ターンごとに渡すだけで切り替わる
       ...(opts.model ? { model: opts.model } : {}),
@@ -314,9 +329,33 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       env: opts.env ?? { ...process.env, ...NONESSENTIAL_TRAFFIC_ENV },
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
       ...(opts.allowedTools && opts.allowedTools.length > 0 ? { allowedTools: opts.allowedTools } : {}),
-      ...(opts.onStop || opts.onToolUsed
+      ...(opts.onStop || opts.onToolUsed || opts.onPreToolUse
         ? {
             hooks: {
+              ...(opts.onPreToolUse
+                ? {
+                    PreToolUse: [
+                      {
+                        hooks: [
+                          async (input: unknown) => {
+                            const name = (input as { tool_name?: unknown }).tool_name;
+                            // 名前が読めないものも断る（最後の網なので fail closed）
+                            const reason = typeof name === "string" ? opts.onPreToolUse!({ toolName: name }) : "tool の名前が読めません";
+                            return reason
+                              ? {
+                                  hookSpecificOutput: {
+                                    hookEventName: "PreToolUse" as const,
+                                    permissionDecision: "deny" as const,
+                                    permissionDecisionReason: reason,
+                                  },
+                                }
+                              : {};
+                          },
+                        ],
+                      },
+                    ],
+                  }
+                : {}),
               ...(opts.onToolUsed
                 ? (() => {
                     const after = async (input: unknown) => {
@@ -330,7 +369,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
               Stop: [
                 {
                   hooks: [
-                    async (input) => {
+                    async (input: unknown) => {
                       if (!opts.onStop) return {};
                       const active = (input as { stop_hook_active?: unknown }).stop_hook_active === true;
                       const reason = opts.onStop({ stopHookActive: active });
@@ -358,6 +397,8 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       // ここで返すPromiseを解決しないまま放置すると、Module側の
       // タイムアウト（既定60秒）で自然にエラーとして扱われる。
       onElicitation: async (request) => {
+        // 読むだけの回は人に聞かない——判断待ちを出さずに断る（§4.4）
+        if (opts.declineElicitations) return { action: "decline" as const };
         const pending: PendingElicitation = {
           toolCallId: `elicitation-${++approvalSeq}`,
           serverName: request.serverName ?? "",

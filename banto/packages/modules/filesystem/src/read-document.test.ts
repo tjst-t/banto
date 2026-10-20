@@ -285,3 +285,35 @@ test("変換役を入れている途中なら「あとでもう一度呼んで�
 test("spreadsheetToCsv：xlsx でないものは理由を出す", () => {
   assert.throws(() => spreadsheetToCsv(Buffer.from("not a zip")), /表を読めません/);
 });
+
+// ---- 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4）----
+
+test("読むだけの印：readFile・readDocument・listDirectory・searchFiles・getFileInfo だけに付き、書く tool には付かない", async () => {
+  await withServer(undefined, async (_call, _root, client) => {
+    const { tools } = await client.listTools();
+    const marked = tools.filter((t) => t._meta?.["dev.banto/effect"] === "read").map((t) => t.name).sort();
+    assert.deepEqual(marked, ["getFileInfo", "listDirectory", "readDocument", "readFile", "searchFiles"]);
+  });
+});
+
+test("読むだけの回の readDocument は PDF の文字だけ。ほかの形式と絵は変換役を呼ばずに断る", async () => {
+  const fake = fakeConverter({});
+  await withServer(fake.converter, async (_call, root, client) => {
+    await writeFile(join(root, "plan.pdf"), makePdf([["見回りで読める"]]));
+    await writeFile(join(root, "sheet.xlsx"), makeXlsx());
+    const readOnly = { "dev.banto/restriction": "read-only" };
+    const pdf = await client.callTool({ name: "readDocument", arguments: { path: "plan.pdf" }, _meta: readOnly });
+    assert.equal(pdf.isError, undefined);
+    assert.match(textOf(pdf.content as Block[]), /見回りで読める/);
+    for (const args of [{ path: "sheet.xlsx" }, { path: "plan.pdf", asImage: true }]) {
+      const refused = await client.callTool({ name: "readDocument", arguments: args, _meta: readOnly });
+      assert.equal(refused.isError, true, JSON.stringify(args));
+      assert.match(textOf(refused.content as Block[]), /この形式は見回りでは読めません/);
+    }
+    assert.equal(fake.calls.length, 0, "読むだけの回で変換役を呼んだ");
+    // 印の無い呼び出しは今までどおり（表は変換役で読む）
+    const normal = await client.callTool({ name: "readDocument", arguments: { path: "sheet.xlsx" } });
+    assert.equal(normal.isError, undefined, textOf(normal.content as Block[]));
+    assert.ok(fake.calls.length > 0);
+  });
+});

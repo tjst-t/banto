@@ -64,6 +64,48 @@ export function safeLinkUrl(url: unknown): string | undefined {
   }
 }
 
+/** banto が知っている場所（`knownPlaceUrl`） */
+export interface KnownPlaces {
+  /** banto の画面のオリジン（会話・Project の中の場所はこの下の `/p/<projectId>`） */
+  bantoOrigin: string;
+  projectId: string;
+  /** その Project のリポジトリの GitHub の場所（`owner/repo`）。分からなければ空 */
+  githubRepos?: readonly string[];
+}
+
+/**
+ * **読むだけの回が書いた URL を、押せるリンクにしてよいか**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回が書いた URL は
+ * リンクにしない」）。外の文を読んだ見回りが操られて、読んだ中身を URL に載せて人に押させるのを防ぐ。banto が知っている場所
+ * （この Project の banto の画面の中・その Project のリポジトリの GitHub の場所）だけを返し、**クエリと `#` 以降は落とす**。
+ * それ以外は undefined（文字のまま出す）
+ */
+export function knownPlaceUrl(url: unknown, places: KnownPlaces): string | undefined {
+  if (typeof url !== "string") return undefined;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+  if (u.username !== "" || u.password !== "") return undefined;
+  const bare = `${u.origin}${u.pathname}`;
+  let banto: URL | undefined;
+  try {
+    banto = new URL(places.bantoOrigin);
+  } catch {
+    banto = undefined;
+  }
+  const projectPath = `/p/${encodeURIComponent(places.projectId)}`;
+  if (banto && u.origin === banto.origin && (u.pathname === projectPath || u.pathname.startsWith(`${projectPath}/`))) return bare;
+  if (u.origin === "https://github.com") {
+    const [owner, repo] = u.pathname.split("/").filter((p) => p !== "");
+    const named = owner && repo ? `${owner}/${repo.replace(/\.git$/, "")}`.toLowerCase() : undefined;
+    if (named && (places.githubRepos ?? []).some((r) => r.toLowerCase() === named)) return bare;
+  }
+  return undefined;
+}
+
 /** 引数として届いたものが描ける形か（AI が書きかけ・壊れた引数でも画面を落とさない） */
 export function asTurnSummary(value: unknown): TurnSummary | undefined {
   const v = value as Partial<TurnSummary> | undefined;

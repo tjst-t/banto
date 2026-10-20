@@ -1315,3 +1315,19 @@ test("Claude のアカウントの切り替え：その Project の Thread に�
     assert.deepEqual(store.getProject(a.id)!.recentClaudeAccountSwitches?.map((s) => s.to), ["acc-0", "acc-1", "acc-2", "acc-3", "acc-4"]);
   });
 });
+
+// **読むだけの回の印は会話に刻み、外さない**（決定・2026-10-20、アーキ仕様 §4.4）——読み直しても（snapshot からでも）残る
+test("読むだけの印は thread.created に刻まれ、読み直しても残る", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("demo", dir);
+    const base = await store.createBaseThread(project.id);
+    const fork = await store.forkThread(base.id, { fresh: true, restriction: "read-only", title: "見回り" });
+    assert.equal(fork.restriction, "read-only");
+    assert.equal(store.getThread(base.id)?.restriction, undefined);
+    await store.save();
+    const reloaded = new ProjectThreadStore(dir, log);
+    await reloaded.load();
+    assert.equal(reloaded.getThread(fork.id)?.restriction, "read-only");
+    assert.equal(reloaded.getThread(base.id)?.restriction, undefined);
+  });
+});

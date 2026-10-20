@@ -39,6 +39,7 @@ import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-c
 import { ProjectInstructionSection } from "@/components/banto/settings/project-instruction-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
 import { ProjectAiSection } from "@/components/banto/settings/project-ai-section";
+import { ProjectPatrolToolsSection } from "@/components/banto/settings/project-patrol-tools-section";
 
 export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -176,6 +177,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
 
       {/* 並びと文は新しい Project の画面とそろえる（§6.51） */}
       <ProjectAiSection projectId={projectId} />
+      <ProjectPatrolToolsSection projectId={projectId} />
 
       {/* **危険な操作は、いちばん下**（決定・2026-09-11、ユーザー要望） */}
       <h2 className="mt-8 mb-2 text-sm font-semibold text-foreground">危険な操作</h2>

@@ -34,6 +34,15 @@ const MARKER = FAKE_RUNNER_MARKER;
  */
 export const FAKE_RUNNER_REPLY_MARKER = "[[fake-runner-reply]]";
 
+/**
+ * **SDK に元から付いている tool を呼ぶときの `server`**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」）。`{ server: "builtin",
+ * name: "WebFetch" }` の形。本物の CLI と同じく、その回の基底の集合（`builtinTools`）に無ければ「No such tool available」で断る。
+ * 在れば PreToolUse と承認を通したあと、呼んだことにした文を返すだけ（外へは何も問い合わせない）
+ */
+export const FAKE_BUILTIN_SERVER = "builtin";
+/** 本物の Runner の既定の基底の集合（`runner/adapter.ts` の `RUNNER_BUILTIN_TOOLS`）。core の型に依存させないので写す */
+const DEFAULT_BUILTIN_TOOLS = ["WebSearch", "WebFetch", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"];
+
 export interface FakePlan {
   /** tool を呼ぶ前に言うこと。 */
   say?: string;
@@ -542,6 +551,10 @@ export async function* runTurn(opts: {
   onStop?(input: { stopHookActive: boolean }): string | undefined;
   /** tool が終わるたび（本物の SDK の PostToolUse）。true ならそこでターンを終える（AI をもう一度呼ばない） */
   onToolUsed?(input: { toolName: string }): boolean;
+  /** 組み込みの tool の基底の集合（本物の SDK の `tools`）。無ければ既定 */
+  builtinTools?: readonly string[];
+  /** tool を使う直前（本物の SDK の PreToolUse）。文が返れば、その理由で断る——承認より前 */
+  onPreToolUse?(input: { toolName: string }): string | undefined;
   /** Runner の作業ディレクトリ（本物の SDK の `options.cwd`） */
   cwd?: string;
   /** 人がこの Thread で選んだモデルと effort（選んでいなければ来ない）。 */
@@ -698,8 +711,9 @@ export async function* runTurn(opts: {
     // **別のスレッドの記録を掴んで「見つかりません」になる**——Canvas が開かない、
     // という形で出た。本物の SDK は毎回一意な id を出す（2026-09-21、実測で判明）
     const toolUseId = `toolu_fake_${sessionId}_${index}_${Math.abs(hash(call.name + JSON.stringify(call.args ?? {})))}`;
-    // SDK は MCP の tool を `mcp__<server>__<tool>` の名前で扱う
-    const qualified = `mcp__${call.server}__${call.name}`;
+    // SDK は MCP の tool を `mcp__<server>__<tool>` の名前で扱う。組み込みの tool は名前のまま
+    const builtin = call.server === FAKE_BUILTIN_SERVER;
+    const qualified = builtin ? call.name : `mcp__${call.server}__${call.name}`;
     const args = withEventFields(call.args ?? {}, opts.prompt);
     if (call.say) {
       lastText = call.say;
@@ -709,6 +723,22 @@ export async function* runTurn(opts: {
       type: "message",
       message: assistantMessage(sessionId, [{ type: "tool_use", id: toolUseId, name: qualified, input: args }]),
     };
+
+    // **その回に無い組み込みの tool**は、本物の CLI と同じく呼べない（基底の集合は `tools` の置き換え）
+    if (builtin && !(opts.builtinTools ?? DEFAULT_BUILTIN_TOOLS).includes(call.name)) {
+      lastText = `Error: No such tool available: ${call.name}`;
+      console.warn(`[fake-runner] ${qualified} はこの回に無い（No such tool available）`);
+      yield { type: "message", message: toolResultMessage(sessionId, toolUseId, lastText, true) };
+      continue;
+    }
+    // **PreToolUse は承認より前**（本物の CLI と同じ順）。断られたら理由を tool_result にする
+    const deniedByHook = opts.onPreToolUse?.({ toolName: qualified });
+    if (deniedByHook) {
+      lastText = deniedByHook;
+      console.warn(`[fake-runner] PreToolUse ${qualified}: 断られた（${deniedByHook}）`);
+      yield { type: "message", message: toolResultMessage(sessionId, toolUseId, lastText, true) };
+      continue;
+    }
 
     // **承認を求めるかどうかは、本物と同じ規則で決める**（規則3——写しを持たない）。
     // SDK は `permissionMode` を見て `canUseTool` を呼ぶか決めており、`auto` では
@@ -762,6 +792,13 @@ export async function* runTurn(opts: {
     // ——題名だけ出て中身が来ない（2026-09-21、フルスクリーンの Canvas が空になった）。
     // **全体に待ちを足さない**（規則6）——要る spec が要るだけ指定する
     if (plan.toolDelayMs) await new Promise((r) => setTimeout(r, plan.toolDelayMs));
+
+    // 組み込みの tool は外へ問い合わせない——呼んだことにした文を返すだけ（試験が見たいのは「呼べたか」）
+    if (builtin) {
+      lastText = `fake-runner: 組み込みの ${call.name} を呼んだことにしました`;
+      yield { type: "message", message: toolResultMessage(sessionId, toolUseId, lastText) };
+      continue;
+    }
 
     // **本物を呼ぶ。** 失敗はそのまま tool_result のエラーとして流す
     // （握りつぶさない・規則2——AI から見た失敗の見え方も本物と同じにする）

@@ -28,10 +28,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useThreadId } from "@/components/banto/thread/thread-id-context";
+import { getThread } from "@/lib/mock/threads";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   OUTCOME_LABEL,
   TURN_SUMMARY_TOOL_NAME,
   asTurnSummary,
+  knownPlaceUrl,
   safeLinkUrl,
   type TurnOutcomeStatus,
   type TurnSummary,
@@ -118,9 +122,23 @@ function OptionButton({
   );
 }
 
+/**
+ * **押せるリンクにする URL**。読むだけの回の会話（アーキ仕様 §4.4）では、banto が知っている場所だけ（クエリと `#` 以降は落とす）。
+ * それ以外の会話は http/https なら何でも
+ */
+function useLinkUrl(): (url: unknown) => string | undefined {
+  const threadId = useThreadId();
+  useMockStoreVersion();
+  const thread = threadId ? getThread(threadId) : undefined;
+  if (thread?.restriction !== "read-only") return safeLinkUrl;
+  // 描き始め（サーバの上）にはオリジンが無い——そのときは banto の場所も文字のまま
+  const places = { bantoOrigin: typeof window === "undefined" ? "" : window.location.origin, projectId: thread.projectId };
+  return (url) => knownPlaceUrl(url, places);
+}
+
 /** 選択肢の中身を開いて見る（`url` がある選択肢だけ）。選ぶボタンとは別——押しても入力欄には入れない */
 function OptionLink({ option }: { option: TurnSummaryOption }) {
-  const url = safeLinkUrl(option.url);
+  const url = useLinkUrl()(option.url);
   if (!url) return null;
   return (
     <a
@@ -158,6 +176,7 @@ export function TurnSummaryView({
   answered: boolean;
 }) {
   const fill = useComposerFill();
+  const linkUrl = useLinkUrl();
   const [picked, setPicked] = useState<Record<number, number>>({});
   const [pickedNext, setPickedNext] = useState<number | null>(null);
   const tone = STATUS_TONE[summary.outcome.status];
@@ -243,9 +262,9 @@ export function TurnSummaryView({
                 <div key={i} className="contents">
                   <dt className="text-ink-3">{a.label}</dt>
                   <dd className="min-w-0 break-all text-ink-2">
-                    {safeLinkUrl(a.url) ? (
+                    {linkUrl(a.url) ? (
                       <a
-                        href={safeLinkUrl(a.url)}
+                        href={linkUrl(a.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         data-testid="turn-summary-artifact-link"

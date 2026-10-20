@@ -15,6 +15,13 @@ import { remoteNameOf } from "../runtime/remote-runtimes.js";
 import { buildTurnContext } from "../runner/turn-context.js";
 import { splitMemory } from "../project-thread/memory-split.js";
 import { assertRelayHealthy } from "../relay/health.js";
+import {
+  READ_ONLY_BUILTIN_TOOLS,
+  READ_ONLY_NO_ASK_REFUSAL,
+  READ_ONLY_REFUSAL,
+  readOnlyCoreToolNames,
+  readOnlyHookAllows,
+} from "../relay/read-only.js";
 import { createMemoryMcpServer, REVISE_MEMORY_TOOL_NAME } from "./memory-tool.js";
 import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import {
@@ -371,6 +378,11 @@ async function* runThreadTurnInner(
      * 続けないなら undefined（受信箱で人に聞くのは呼ばれた側）。渡されなければ印だけ書いて続けない
      */
     rateLimitContinueAt?(threadId: string, resetsAt: number | undefined): Promise<string | undefined>;
+    /**
+     * **読むだけの回で使ってよい Module の tool**（`mcp__<Module>__<tool>`、追加・2026-10-20、アーキ仕様 §4.4 の守りの 4.）。
+     * 読むだけの会話のターンを始めるときに1回引き、PreToolUse の最後の網で使う。渡されなければ Module の tool は1つも通さない
+     */
+    readOnlyModuleTools?(projectId: string): Promise<string[]>;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
@@ -529,20 +541,40 @@ async function* runThreadTurnInner(
   // 判断役のターンなら、届いた出来事（答える先）を覚える——答えられるのはこのターンを起こした届けものの中のものだけ
   deps.turnDecisions?.beginTurn(input.threadId, delivered);
 
+  // **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。印は会話に刻まれたもの（`thread.created`）だけを見る——届けものの文や
+  // AI の引数では決めない。守りは4か所：SDK の組み込み（`builtinTools`）・core のサーバを読むだけの tool で組む・AI の代理
+  // （`agent-proxy.ts` がその都度 host に引く）・PreToolUse（下）。承認と Elicitation は人に聞かずに断る
+  const readOnly = thread.restriction === "read-only";
+  let readOnlyModuleTools: ReadonlySet<string> = new Set();
+  if (readOnly) {
+    try {
+      readOnlyModuleTools = new Set((await deps.readOnlyModuleTools?.(thread.projectId)) ?? []);
+    } catch (err) {
+      // **決められないまま走らせない**（規則2）——最後の網の中身が分からない
+      yield { type: "error", message: `読むだけの回で使える tool を決められませんでした: ${err instanceof Error ? err.message : String(err)}` };
+      return;
+    }
+  }
+
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
-  mcpServers["banto-memory"] = createMemoryMcpServer(
-    deps.projectThread,
-    thread.projectId,
-    input.threadId,
-    deps.memoryAsk,
-    deps.autoApproveAll ? () => deps.autoApproveAll?.(thread.projectId, input.threadId) === true : undefined,
-  );
+  // Memory の tool は書くだけなので、読むだけの回にはサーバごと渡さない（§4.4）
+  if (!readOnly) {
+    mcpServers["banto-memory"] = createMemoryMcpServer(
+      deps.projectThread,
+      thread.projectId,
+      input.threadId,
+      deps.memoryAsk,
+      deps.autoApproveAll ? () => deps.autoApproveAll?.(thread.projectId, input.threadId) === true : undefined,
+    );
+  }
   // Base でも Fork でも同じ tool を見せる（Fork の中で呼ばれたら断る）——tool の一覧はキャッシュの先頭に
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
   const projectInstruction = deps.projectInstruction?.(thread.projectId);
-  const turnSummary: TurnSummaryState | undefined = deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
+  // 読むだけの回では `report_turn` を出さない（core の tool は読むだけのものだけ、§4.4）
+  const turnSummary: TurnSummaryState | undefined =
+    !readOnly && deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -555,6 +587,7 @@ async function* runThreadTurnInner(
     deps.automationTools,
     deps.turnDecisions,
     deps.claudeUsage ? (threadId) => deps.claudeUsage!(thread.projectId, threadId) : undefined,
+    readOnly,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -668,17 +701,31 @@ async function* runThreadTurnInner(
       // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）。自分の Fork を閉じるのも聞かない
       // （開き直せば元に戻る、§2.2「AI が自分の Fork を閉じる」）
       // 自動化の tool も通す——作る・変える・再開するは tool の中で、承認モードに依らず必ず人に聞く（2回聞かない。§4.3）
-      allowedTools: [
-        `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
-        // Claude の使用量を読むだけ（環境を変えない）——毎回聞かない（v4-security.md §2「AI が使用量を見る」）
-        `mcp__banto-thread__${CLAUDE_USAGE_TOOL_NAME}`,
-        ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
-        // Memory を取り消す・改めるも tool の中で人に聞く（自動許可がオンなら tool の中で通す。2回聞かない。§2.2）
-        `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
-        // 判断役の答えは聞かずに通す——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事（§4.3「守り」）
-        `mcp__banto-thread__${ANSWER_DECISION_TOOL_NAME}`,
-        ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
-      ],
+      // **読むだけの回は、使える tool（読むだけのもの）を聞かずに通す**——人が見ていない回で判断待ちを積まない（§4.4）。ここに
+      // 載らないものが承認に来たら、下で人に聞かずに断る
+      allowedTools: readOnly
+        ? [...READ_ONLY_BUILTIN_TOOLS, ...readOnlyCoreToolNames(), ...readOnlyModuleTools]
+        : [
+            `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
+            // Claude の使用量を読むだけ（環境を変えない）——毎回聞かない（v4-security.md §2「AI が使用量を見る」）
+            `mcp__banto-thread__${CLAUDE_USAGE_TOOL_NAME}`,
+            ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
+            // Memory を取り消す・改めるも tool の中で人に聞く（自動許可がオンなら tool の中で通す。2回聞かない。§2.2）
+            `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
+            // 判断役の答えは聞かずに通す——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事（§4.3「守り」）
+            `mcp__banto-thread__${ANSWER_DECISION_TOOL_NAME}`,
+            ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
+          ],
+      // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
+      // Elicitation も聞かずに断る
+      ...(readOnly
+        ? {
+            builtinTools: READ_ONLY_BUILTIN_TOOLS,
+            onPreToolUse: ({ toolName }: { toolName: string }) =>
+              readOnlyHookAllows(toolName, readOnlyModuleTools) ? undefined : READ_ONLY_REFUSAL,
+            declineElicitations: true,
+          }
+        : {}),
       // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
       ...(turnSummary
         ? {
@@ -785,6 +832,13 @@ async function* runThreadTurnInner(
         await replies.add(event.message);
         yield { type: "message", message: event.message };
       } else if (event.type === "approval_requested") {
+        // **読むだけの回では人に聞かない**（§4.4）。判断待ちを出さずに断る——「承認をすべて自動で許可する」がオンでも
+        // （読むだけの tool は聞かずに通す一覧に載せている。ここに来るのはそれ以外——通す理由が無い）
+        if (readOnly) {
+          event.pending.resolve({ behavior: "deny", message: READ_ONLY_NO_ASK_REFUSAL });
+          pending = settle(gen.next());
+          continue;
+        }
         const raise = {
           threadId: input.threadId,
           source: "text" as const,
@@ -823,7 +877,7 @@ async function* runThreadTurnInner(
           toolInput: event.pending.input,
           message: judgment.message,
         };
-      } else if (event.type === "elicitation_requested") {
+      } else if (event.type === "elicitation_requested" && !readOnly) {
         // **どの tool 呼び出しの中の質問か**（追加・2026-10-05）。質問の間は台帳がその呼び出しに印を立てている
         // （`ElicitationRouter`）——この会話で1つに決まるときだけ結びつける
         const withinToolCallId = deps.moduleCalls?.elicitingToolUseId(input.threadId);

@@ -63,6 +63,8 @@ export default function globalSetup(): void {
         },
         // 試験だけ：しばらく開いていない Project の時計を「15日後」の時刻で回す口（sidebar-idle-sleep.spec.ts）
         testOnlyIdleCheck: true,
+        // 試験だけ：読むだけの印を付けた会話を立てる口（read-only-runs.spec.ts。見回りがまだ無いので試験が作る）
+        testOnlyReadOnlyThreads: true,
       },
       null,
       2,

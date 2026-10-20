@@ -7,7 +7,7 @@
 //   画面（`ui://banto-browser/view`、view-app.ts）が使う。AI には見せない
 // - AI が操作したら、人の画面に帯と枠を出す（`ViewHooks.aiAction`、v4-modules.md §4.1「人と AI の同時操作」）
 
-import { CARD_META_KEY, VISIBILITY_META_KEY, threadOf } from "@banto/module-contract";
+import { CARD_META_KEY, EFFECT_META_KEY, VISIBILITY_META_KEY, isReadOnlyCall, threadOf } from "@banto/module-contract";
 import type { Locator, Page } from "playwright-core";
 import {
   BrowserError,
@@ -65,6 +65,15 @@ const EVAL_MAX = 20_000;
 const SETTLE_MS = 1_500;
 
 const agent = { [VISIBILITY_META_KEY]: "agent" };
+/**
+ * **読むだけの道具**（追加・2026-10-20、アーキ仕様 §4.4「土台：読むだけの印」）。記録とページを読むだけで、宛先を AI が選べず、
+ * 秘密を伏せずに返さない。**読むだけの回（host の刻印 `dev.banto/restriction`）ではブラウザを起こさない**——動いていなければ
+ * 「ブラウザは動いていません」を返す（`browserTabs` は list だけ）。開く・操作する・`getNetworkRequest` には付けない
+ */
+const agentRead = { ...agent, [EFFECT_META_KEY]: "read" };
+
+/** 読むだけの回で、動いていないブラウザを読もうとしたときの文 */
+export const BROWSER_NOT_RUNNING = "ブラウザは動いていません（見回りの回ではブラウザを起こしません）";
 const admin = { [VISIBILITY_META_KEY]: "admin" };
 
 const TAB_PROP = { type: "string", description: "タブの id（t1 の形）。省略時はこの会話が最後に使った自分のタブ" };
@@ -120,7 +129,7 @@ export const TOOLS = [
       "ページのアクセシビリティツリー（[ref=…] 付き）。**ページを読む基本の道具**——画像（browserScreenshot）より文脈が安い。" +
       `browserAct の ref にここの値を渡す。${PAGE_NOTE}`,
     inputSchema: { type: "object", properties: { tab: TAB_PROP } },
-    _meta: agent,
+    _meta: agentRead,
   },
   {
     name: "browserAct",
@@ -188,7 +197,8 @@ export const TOOLS = [
       properties: { action: { type: "string", enum: ["list", "select", "close"] }, tab: { type: "string", description: "タブの id（t1 の形）" } },
       required: ["action"],
     },
-    _meta: agent,
+    // 読むだけの回では list だけ（下の callTool）
+    _meta: agentRead,
   },
   {
     name: "listNetwork",
@@ -198,7 +208,7 @@ export const TOOLS = [
       "ブラウザが出した通信だけ（サーバどうしの通信は出ない）。" +
       `URL は ${LIST_URL_MAX} 字で切る（全部は getNetworkRequest）。一覧は全体で ${LIST_TEXT_MAX.toLocaleString("en-US")} 字までで、超えた分は出さない（件数を末尾に書く）`,
     inputSchema: { type: "object", properties: NETWORK_QUERY_PROPS },
-    _meta: agent,
+    _meta: agentRead,
   },
   {
     name: "getNetworkRequest",
@@ -228,7 +238,7 @@ export const TOOLS = [
         limit: { type: "number", description: "最大の件数。省略時 50、最大 500" },
       },
     },
-    _meta: agent,
+    _meta: agentRead,
   },
 
   // ---- 人の画面の口（admin）——AI には見せない。画面は #242 ---------------------------------------
@@ -326,7 +336,7 @@ export const TOOLS = [
   },
 ];
 
-const AI_TOOLS = new Set(TOOLS.filter((t) => t._meta === agent).map((t) => t.name));
+const AI_TOOLS = new Set(TOOLS.filter((t) => t._meta === agent || t._meta === agentRead).map((t) => t.name));
 
 const text = (t: string): ToolResult => ({ content: [{ type: "text", text: t }] });
 const json = (v: unknown): ToolResult => text(JSON.stringify(v));
@@ -343,6 +353,8 @@ export async function callTool(
   const thread = threadOf(meta)?.threadId;
   const notify = (tab: string, text: string, box?: AiActionEvent["box"]) =>
     ctx.view?.aiAction({ tab, text, ...(thread ? { thread } : {}), ...(box ? { box } : {}) });
+  // **読むだけの回**（host の刻印、アーキ仕様 §4.4）。ブラウザを起こさない
+  const readOnly = isReadOnlyCall(meta);
   try {
     if (AI_TOOLS.has(name)) ctx.session.touch();
     switch (name) {
@@ -350,7 +362,9 @@ export async function callTool(
         return await open(ctx, args, onProgress, notify, thread);
       case "browserSnapshot": {
         const { tab } = parseTabOnly(args);
-        await ctx.session.ensure(onProgress, thread);
+        if (readOnly) {
+          if (!ctx.session.running) return text(BROWSER_NOT_RUNNING);
+        } else await ctx.session.ensure(onProgress, thread);
         const { id, page } = ctx.session.page(tab, thread);
         ctx.session.used(id, thread);
         return text(`タブ ${id}　URL: ${page.url()}\n${pageContent("アクセシビリティツリー", truncate(await snapshot(page), FULL_TREE))}`);
@@ -395,8 +409,14 @@ export async function callTool(
       }
       case "browserTabs": {
         const a = parseTabs(args);
-        if (a.action !== "list") refuseIfBlocked(ctx, `browserTabs の ${a.action}`);
-        await ctx.session.ensure(onProgress, thread);
+        if (readOnly) {
+          // 読むだけの回は一覧だけ。切り替える・閉じるは断る
+          if (a.action !== "list") throw new BrowserError(`browserTabs の ${a.action} は見回りの回では使えません（list だけ使えます）`);
+          if (!ctx.session.running) return text(BROWSER_NOT_RUNNING);
+        } else {
+          if (a.action !== "list") refuseIfBlocked(ctx, `browserTabs の ${a.action}`);
+          await ctx.session.ensure(onProgress, thread);
+        }
         if (a.action === "select") {
           ctx.session.select(a.tab, thread);
           notify(a.tab, `タブ ${a.tab} に切り替えました`);

@@ -7,3 +7,4 @@ export * from "./host-relay-endpoint.js";
 // 渡している——試験も同じ形で繋げるように出しておく（省くと、本番には無い
 // 「刻印が付かない」状態で試験することになる・2026-09-15）
 export * from "./module-calls.js";
+export * from "./read-only.js";

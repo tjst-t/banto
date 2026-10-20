@@ -34,6 +34,9 @@ import {
   callIdOf,
   SOCKET_DIR_META_KEY,
   isValueFree,
+  declaresReadEffect,
+  EFFECT_META_KEY,
+  RESTRICTION_META_KEY,
   isCallerOwned,
   isStatelessTransform,
   isPresentsOwnedSecret,
@@ -52,6 +55,7 @@ import {
 } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 import { RESTARTING_REFUSAL } from "./module-calls.js";
+import { READ_ONLY_REFUSAL, mayCallInReadOnly, mayReadResourcesInReadOnly, type RestrictionFor } from "./read-only.js";
 
 /**
  * **中継の本文の上限**（追加・2026-10-15、`docs/specs/v4-modules.md` §2.2「変換役」）。Module の stdio は1通 10MB まで
@@ -367,6 +371,14 @@ export interface HostRelayServerOptions {
    * その Project のための中継の呼び出しに `dev.banto/autoApprove` を刻む。渡されなければ刻まない
    */
   autoApproveFor?(projectId: string, threadId?: string): boolean;
+  /**
+   * **その会話の制限**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回の中継」）。呼び元の呼び出しが読むだけの回のターンから
+   * 始まったなら、宛先の tool の印を host が見て、読むだけのものでなければ断る（境界を Module 任せにしない）。承認が要るものは
+   * 人に聞かずに断る。渡されなければ制限しない
+   */
+  restrictionFor?: RestrictionFor;
+  /** **人が「見回りで使ってよい」と許したもの**（Project の `patrol.allowedTools`）。渡されなければ何も許していない */
+  patrolAllowedTools?(projectId: string): string[];
   /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
   approvalProgressIntervalMs?: number;
   /**
@@ -596,6 +608,8 @@ async function targetTool(
       receivesReplies: boolean;
       /** `dev.banto/projectGit` を名乗っているか（信じるのは同梱の宛先だけ） */
       projectGit: boolean;
+      /** `dev.banto/effect: "read"` を名乗っているか（信じてよいかは宛先の出所で決める） */
+      readEffect: boolean;
       /**
        * **まとめて呼ぶ口の名乗り**（追加・2026-10-18）。名乗っていなければ付かない。`declared` だけで中身が無いのは、
        * 形が違うか、`batchOf.tool` が同じ宛先に無いとき（どちらも断る）
@@ -638,6 +652,7 @@ async function targetTool(
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
     projectGit: x._meta?.[PROJECT_GIT_META_KEY] === true,
+    readEffect: declaresReadEffect(x),
   };
 }
 
@@ -713,6 +728,19 @@ function onBehalfOfProject(identity: CallerIdentity, opts: HostRelayServerOption
  */
 function trustedCallId(identity: CallerIdentity, meta: Record<string, unknown> | undefined): string | undefined {
   return identity.meta.origin === "bundled" ? callIdOf(meta) : undefined;
+}
+
+/**
+ * **呼び元の呼び出しが、読むだけの会話のターンから始まったか**（§4.4）。どの会話かは host の台帳（`threadFor`）だけで決める。
+ * 候補が複数なら、どれかが読むだけなら読むだけ（fail closed）
+ */
+function isReadOnlyRun(identity: CallerIdentity, opts: HostRelayServerOptions, callId: string | undefined): boolean {
+  if (!opts.restrictionFor || !opts.moduleCalls) return false;
+  const connName = identity.connName ?? identity.moduleName;
+  const where = opts.moduleCalls.threadFor(connName, callId) as { kind: string; threadId?: string; threadIds?: string[] };
+  const threads = where.kind === "thread" && where.threadId ? [where.threadId] : where.kind === "ambiguous" ? (where.threadIds ?? []) : [];
+  const project = identity.projectId ?? opts.moduleCalls.projectFor(connName, callId);
+  return threads.some((t) => opts.restrictionFor!(project, t) === "read-only");
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -1265,6 +1293,30 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         throw new Error(`${targetModule} の ${name} への中継を断りました：${why}`);
       }
     }
+    // **読むだけの回の中継**（追加・2026-10-20、アーキ仕様 §4.4）。呼び元の呼び出しが読むだけの会話のターンから始まったなら、
+    // 宛先も読むだけのものに限る——同梱の宛先が `dev.banto/effect: "read"` を名乗る tool か、人が許したもの。資源は同梱か、人が
+    // 「資源を読む」を許した Module だけ。どの会話か1つに決まらないときは、候補のどれかが読むだけなら読むだけとして扱う（fail closed）
+    const readOnlyRun = isReadOnlyRun(identity, opts, callId);
+    if (readOnlyRun) {
+      const targetName = target.declaredName ?? target.name;
+      const project = identity.projectId ?? opts.moduleCalls?.projectFor(identity.connName ?? identity.moduleName, callId);
+      const allowed = project ? (opts.patrolAllowedTools?.(project) ?? []) : [];
+      const bundledTarget = target.meta.origin === "bundled";
+      const ok =
+        kind === "tool"
+          ? targetInfo !== undefined &&
+            mayCallInReadOnly({
+              moduleName: targetName,
+              bundled: bundledTarget,
+              tool: { name, ...(targetInfo.readEffect ? { _meta: { [EFFECT_META_KEY]: "read" } } : {}) },
+              allowed,
+            })
+          : mayReadResourcesInReadOnly({ moduleName: targetName, bundled: bundledTarget, allowed });
+      if (!ok) {
+        await audit(false, "読むだけの回からの、読むだけでない宛先への中継");
+        throw new Error(`${targetModule} の ${name} への中継を断りました：${READ_ONLY_REFUSAL}`);
+      }
+    }
     const humanAdminAction = origin === "canvas" && targetInfo?.visibility === "admin";
     /**
      * **人が画面で押した、同梱どうしの操作**（決定・2026-09-20、ユーザー）。
@@ -1397,6 +1449,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
                     callerConnName: identity.connName ?? identity.moduleName,
                     ...(callId ? { callerCallId: callId } : {}),
                     batch: { name, size: batch.items.length, ...(identity.inContainer ? { scopes: batch.items } : {}) },
+                    ...(readOnlyRun ? { noAsk: true } : {}),
                   }
                 : {
                     ...call,
@@ -1404,6 +1457,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
                     ...(callId ? { callerCallId: callId } : {}),
                     // コンテナからは、何を指していたかごとに聞く（名乗った識別子。無ければ空——それでも印になる）
                     ...(identity.inContainer ? { scope: identifiers ?? {} } : {}),
+                    ...(readOnlyRun ? { noAsk: true } : {}),
                   },
             )
             .finally(() => clearInterval(heartbeat))
@@ -1481,7 +1535,9 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // 始まった、スイッチがオンの Project のための呼び出しにだけ刻む——Publish の窓口が中で実装の `publishRoute` を呼ぶとき、
     // 実装は人の刻印の代わりにこれを見る。**呼び出し元の申告は使わない**（Project と出所は host の台帳から引いている）
     const callerThreadId = callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined;
-    if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject, callerThreadId) === true) {
+    // 読むだけの回では刻まない（人に聞かずに断る回で「聞かずに許可してよい」と伝えない）。代わりに読むだけの回だと刻む
+    if (readOnlyRun) callerMeta[RESTRICTION_META_KEY] = "read-only";
+    else if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject, callerThreadId) === true) {
       callerMeta[AUTO_APPROVE_META_KEY] = true;
     }
 

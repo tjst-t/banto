@@ -46,6 +46,7 @@ import { ModuleCallTracker, STOP_DRAIN_LIMIT_MS } from "./relay/module-calls.js"
 import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
+import { patrolAllowedTools, type RestrictionFor } from "./relay/read-only.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtualization } from "./runtime/containers-virt.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
@@ -985,10 +986,19 @@ async function main(): Promise<void> {
     automations,
     projectThread,
   });
+  /**
+   * **読むだけの回**（決定・2026-10-20、アーキ仕様 §4.4）。どの回が読むだけかは会話に刻んだ印だけで決める。呼び出しのたびに引く
+   */
+  const restrictionFor: RestrictionFor = (_projectId, threadId) =>
+    threadId ? projectThread.getThread(threadId)?.restriction : undefined;
+  const patrolAllowed = (projectId: string) => patrolAllowedTools(runtimeConfig, projectId);
   const agentRelayEndpoint = new AgentRelayEndpoint(bootstrap.authToken, {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     // Module は設定を知らない——人を待つもの（Publish）のために、呼び出しに刻む
     autoApproveFor: autoApproveAll,
+    // 読むだけの回は、読むだけの tool だけを見せ・通す（守りの 3.）
+    restrictionFor,
+    patrolAllowedTools: patrolAllowed,
     moduleCalls,
     elicitations,
     // **始まりの印を持ち越す**（§4.3「段2」の「輪を止める」）。出来事を名乗る Module への呼び出しだけ、Thread・ターン・ホップ・
@@ -2653,11 +2663,13 @@ async function main(): Promise<void> {
           connName: connName ?? undefined,
           client: connName ? connectedModules.get(connName) : undefined,
           scope: declaration.meta.scope,
+          // 目録と同じコードか（読むだけの印を信じてよいか、§4.4）
+          bundled: declaration.meta.origin === "bundled",
         };
       }),
     );
     return spawned.filter(
-      (c): c is { name: string; connName: string; client: Client; scope: "instance" | "project" } =>
+      (c): c is { name: string; connName: string; client: Client; scope: "instance" | "project"; bundled: boolean } =>
         c.client !== undefined,
     );
   }
@@ -2704,6 +2716,9 @@ async function main(): Promise<void> {
   const relayEndpoint = new HostRelayEndpoint({
     registry,
     autoApproveFor: autoApproveAll,
+    // 読むだけの回から始まった中継は、宛先も読むだけのものに限り、人に聞かない（§4.4）
+    restrictionFor,
+    patrolAllowedTools: patrolAllowed,
     connectOnDemand: connectToolsModuleOnDemand,
     onDemandTargets,
     // **札で、呼び出し元の Thread に届ける**（決定・2026-09-25、アーキ仕様 §4.2）
@@ -3118,6 +3133,9 @@ async function main(): Promise<void> {
     sleep: (projectId) => projectSleep!.sleep(projectId, "auto"),
     onChange: () => appEvents.publish({ type: "projects.changed" }),
   });
+  if (bootstrap.testOnlyReadOnlyThreads) {
+    console.warn("[host] **試験が読むだけの印を付けた会話を立てられます**（試験用、config.json の testOnlyReadOnlyThreads）");
+  }
   if (bootstrap.testOnlyIdleCheck) {
     console.warn("[host] **しばらく開いていない Project の時計を、試験が好きな時刻で回せます**（試験用、config.json の testOnlyIdleCheck）");
   }
@@ -3205,6 +3223,7 @@ async function main(): Promise<void> {
     projectSleep,
     projectIdle,
     ...(bootstrap.testOnlyIdleCheck ? { testOnlyIdleCheck: true } : {}),
+    ...(bootstrap.testOnlyReadOnlyThreads ? { testOnlyReadOnlyThreads: true } : {}),
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),
     reviewToolCalls: (thread) => {
       const project = projectThread.getProject(thread.projectId);

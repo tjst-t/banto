@@ -405,6 +405,11 @@ export interface RealThread {
    * リセットの時刻が分からない。上限で終わっていない・Clear や閉じた Fork で畳んだターンなら無い
    */
   rateLimitStop?: "stopped" | "gave_up" | "unknown_reset";
+  /**
+   * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。この会話の AI は読むだけの tool しか使えず、書いた URL は banto が
+   * 知っている場所だけリンクにする。印の無い会話には無い
+   */
+  restriction?: "read-only";
   createdAt: string;
 }
 
@@ -707,6 +712,8 @@ export interface RealThreadSummary {
   /** 誰が閉じたか・理由（追加・2026-10-08）。閉じている間だけ。これより前に閉じた記録には無い */
   closedBy?: RealThreadClosedBy;
   closedReason?: string;
+  /** 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4）。印の無い会話には無い */
+  restriction?: "read-only";
   permissionMode?: MockPermissionModeValue;
   model?: string;
   effort?: RealEffort;
@@ -1452,6 +1459,38 @@ export async function setRealAutoApproveAll(projectId: string, enabled: boolean)
       body: JSON.stringify({ enabled }),
     })
   ).enabled;
+}
+
+/**
+ * **見回りで使ってよい tool**（決定・2026-10-20、v4-frontend.md §6.47「Project の設定」、アーキ仕様 §4.4）。真実は host の
+ * Configuration（Project の `patrol.allowedTools`）。一覧は host が Module の今の tool から導いたもの
+ */
+export type RealPatrolToolsModule =
+  | { name: string; bundled: true; verified: string[] }
+  | {
+      name: string;
+      bundled: false;
+      tools: Array<{ name: string; description?: string; readOnlyHint?: boolean; openWorldHint?: boolean; allowed: boolean }>;
+      resourcesAllowed: boolean;
+    }
+  | { name: string; bundled: boolean; error: string };
+
+export interface RealPatrolTools {
+  /** 人が許したもの（`<Module>/<tool>` と `<Module>/resources`） */
+  allowed: string[];
+  modules: RealPatrolToolsModule[];
+}
+
+export async function fetchRealPatrolTools(projectId: string): Promise<RealPatrolTools> {
+  return request<RealPatrolTools>(`/api/projects/${projectId}/patrol-tools`);
+}
+
+/** 許す一覧そのものを置き換える */
+export async function setRealPatrolTools(projectId: string, allowed: string[]): Promise<RealPatrolTools> {
+  return request<RealPatrolTools>(`/api/projects/${projectId}/patrol-tools`, {
+    method: "PUT",
+    body: JSON.stringify({ allowed }),
+  });
 }
 
 /**

@@ -10,6 +10,7 @@
 //   人もサイドバーから Fork の Fork を作れる。連鎖は届けもののホップ（maxHop）と1ターン5本で止まる
 // - 承認は特別扱いしない——その Thread の承認モードに従う（ユーザー決定・案A）
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { READ_ONLY_CORE_TOOLS } from "../relay/read-only.js";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
@@ -252,6 +253,11 @@ export function createForkMcpServer(
    * Project で使える全部のアカウントの使用量を返す。渡されなければ tool は見せたまま断る（§3）
    */
   claudeUsage?: (threadId: string) => string,
+  /**
+   * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4 の守りの 2.）。サーバを読むだけの tool（`READ_ONLY_CORE_TOOLS`）だけで
+   * 組む——人にカードを出す tool（`create_automation` 等）・Fork を立てる tool は、その回には存在しない
+   */
+  readOnly = false,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -260,11 +266,7 @@ export function createForkMcpServer(
     ...(r.ok ? {} : { isError: true }),
   });
   const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
-  return createSdkMcpServer({
-    name: FORK_SERVER_NAME,
-    // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
-    alwaysLoad: true,
-    tools: [
+  const tools = [
       ...(turnSummary
         ? [
             tool(REPORT_TURN_TOOL_NAME, REPORT_TURN_DESCRIPTION, reportTurnShape, async (args) => {
@@ -482,6 +484,12 @@ export function createForkMcpServer(
           };
         },
       ),
-    ],
+  ];
+  const readOnlyNames = READ_ONLY_CORE_TOOLS[FORK_SERVER_NAME] ?? [];
+  return createSdkMcpServer({
+    name: FORK_SERVER_NAME,
+    // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
+    alwaysLoad: true,
+    tools: readOnly ? tools.filter((t) => readOnlyNames.includes(t.name)) : tools,
   });
 }

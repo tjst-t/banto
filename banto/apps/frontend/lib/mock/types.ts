@@ -84,6 +84,11 @@ export interface MockThread {
    */
   closedBy?: "ai" | "human" | "automation";
   closedReason?: string;
+  /**
+   * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。host が会話を立てたときに刻んだもの（外す口は無い）。AI が書いた URL は
+   * banto が知っている場所だけリンクにする
+   */
+  restriction?: "read-only";
   /** 実bantoホストのThread（決定・2026-09-03）。scriptは使わない（空のプレースホルダ）。 */
   real?: boolean;
   /** real:trueのときだけ意味を持つ。リロード時の会話表示復元用（決定・2026-09-04）
