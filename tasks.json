@@ -10443,6 +10443,31 @@
       "extra": {}
     },
     {
+      "id": "desktop-dev-vm",
+      "number": 463,
+      "kind": "task",
+      "title": "開発用の Windows の VM に AI が ssh で繋がるようにする（標準ユーザー・自動ログオン・画面の写し）",
+      "status": "ready",
+      "parent": "desktop-0-measure",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "desktop"
+      ],
+      "body": "手順は docs/notes/2026-10-20-windows-dev-vm.md（ブランチ fork/desktop-windows）。人が VM を用意して OpenSSH・標準ユーザー banto・自動ログオンを整え、AI は Vault の windows-dev-vm-ssh の公開鍵を渡し、繋がったら最初の確かめ（whoami・PowerShell の版・文字コード・Defender・予約タスク越しの画面の写し）を流してノートに追記する。",
+      "doneWhen": "banto-dev-vm から ssh banto@<VM> で PowerShell のコマンドが通り、予約タスク越しに撮った画面の写しを持ち帰れる。結果がノートに書いてある",
+      "resolution": null,
+      "refs": [
+        "docs/notes/2026-10-20-windows-dev-vm.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T10:06:11.758Z",
+      "updatedAt": "2026-10-20T10:06:11.758Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "desktop-1-core",
       "number": 429,
       "kind": "story",
