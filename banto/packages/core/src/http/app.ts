@@ -54,7 +54,7 @@ import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { InboxItem } from "../inbox/types.js";
 import type { MessageQuote, ProjectWokeCause, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
-import { CanvasQuoteRejectedError, parseCanvasQuotes } from "./canvas-quotes.js";
+import { CanvasQuoteRejectedError, parseCanvasQuotes, parseFindingQuoteIds } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { rateLimitContinuedOf, rateLimitWaitOf } from "../project-thread/rate-limit-wait.js";
 import { RATE_LIMIT_CONTINUE_LIMIT } from "../delivery/rate-limit-continuation.js";
@@ -94,6 +94,7 @@ import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE
 import type { ThreadTurns } from "../delivery/thread-turns.js";
 import { timerDriven, type ThreadDeliveries } from "../delivery/thread-deliveries.js";
 import { MissionConflictError, MissionInputError, type MissionStartInput, type Missions } from "../mission/missions.js";
+import { findingQuoteText, type Patrols } from "../automation/patrol.js";
 import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
@@ -233,6 +234,11 @@ export interface AppDeps {
    * **任務**（追加・2026-10-20、アーキ仕様 §4.4）。会話の tool の中身と `/api/threads/:id/mission`。無ければ tool は断り、口は 501
    */
   missions?: Missions;
+  /**
+   * **見回り**（追加・2026-10-20、アーキ仕様 §4.4「見回り」）。見回りの Fork のターンの `notify` と、受信箱の気づきで人が押したものを
+   * 手帳に残す口。無ければ `notify` は出さず、気づきの「今後知らせない」は手帳に残らない
+   */
+  patrols?: Patrols;
   /**
    * **自動化の Webhook の受け口**（アーキ仕様 §4.3「Webhook」）。`/hooks/<印>` を認証の前で受け、作る・直すときに署名の鍵を
    * Vault から引いて置く。無ければ `/hooks/` は 404、Webhook の自動化は作れない（501）
@@ -1741,7 +1747,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -3138,7 +3144,14 @@ export function createApp(deps: AppDeps) {
           const bundled = new Set(
             deps.runtimeConfig ? listInstanceModules(deps.runtimeConfig).filter((m) => m.origin === "bundled").map((m) => m.name) : [],
           );
-          quotes = parseCanvasQuotes(body.quotes, (module) => bundled.has(module));
+          // 見回りの気づきの引用（`{ finding: <受信箱の id> }`）は、host が受信箱の中身から組む——画面が渡した文は使わない
+          quotes = parseCanvasQuotes(body.quotes, (module) => bundled.has(module), (findingId) => {
+            const item = deps.inbox.get(findingId);
+            const thread = deps.projectThread.getThread(turnMatch[1]!);
+            if (item?.kind !== "finding" || item.closed) throw new CanvasQuoteRejectedError("その気づきはもう片づけられています");
+            if (!thread || thread.projectId !== item.projectId) throw new CanvasQuoteRejectedError("気づきはその Project の会話にだけ送れます");
+            return { module: "banto", thirdParty: true, patrol: item.patrol.name, text: findingQuoteText(item) };
+          });
           // **添えた画像は、ターンを始める前に置く**（決定・2026-09-26）。記録に残るのは名前だけ
           images = await storeTurnImages(imageStore, body.images);
         } catch (err) {
@@ -3151,6 +3164,12 @@ export function createApp(deps: AppDeps) {
         // **別の実行場所へ移している間は、ターンを始めない**（v4-security.md §1「Project を別の実行場所へ移す」の 4）
         const moving = movingReason(threadId);
         if (moving) return json(res, 409, { error: moving, code: "project-moving" });
+        // **気づきを送った**（「やって」「任務にする」、アーキ仕様 §4.4）——受け付けたら受信箱から外す。任務を始めた会話なら「任務にする」
+        const findingIds = parseFindingQuoteIds(body.quotes);
+        if (findingIds.length > 0) {
+          const how = deps.projectThread.getThread(threadId)?.mission?.status === "active" ? "mission" : "acted";
+          for (const id of findingIds) await deps.inbox.closeFinding(id, { how, threadId });
+        }
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
@@ -4100,11 +4119,12 @@ export function createApp(deps: AppDeps) {
 
       // **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。台帳は Event Store（`automation/store.ts`）、
       // 入力の確かめは台帳の側（AI の tool と同じ決まり）。届け先の Thread がこの Project の開いているものかはここで見る
-      const automationsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automations(?:\/([^/]+)(\/run)?)?$/);
+      const automationsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/automations(?:\/([^/]+)(\/run|\/unmute)?)?$/);
       if (automationsMatch) {
         const projectId = automationsMatch[1]!;
         const automationId = automationsMatch[2];
-        const isRun = automationsMatch[3] !== undefined;
+        const isRun = automationsMatch[3] === "/run";
+        const isUnmute = automationsMatch[3] === "/unmute";
         const store = deps.automations;
         if (!store || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
         // 画面に出す「次は」を添える（保存しない、規則3）
@@ -4173,6 +4193,17 @@ export function createApp(deps: AppDeps) {
           }
           const automation = store.get(automationId);
           if (!automation || automation.projectId !== projectId) return json(res, 404, { error: "not found" });
+          // **見回りの手帳の「知らせない」を外す**（v4-frontend.md §6.47「自動化の画面」）
+          if (isUnmute) {
+            if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+            if (automation.mode !== "patrol") return json(res, 400, { error: "見回りではありません" });
+            const body = (await readJsonBody(req)) as { key?: unknown };
+            const note = automation.notebook?.find((n) => n.key === body.key);
+            if (!note) return json(res, 404, { error: "手帳にその key がありません" });
+            if (note.status !== "muted") return json(res, 409, { error: "その key は「知らせない」になっていません" });
+            await store.notePatrol(automation.id, note.key, "unmuted");
+            return json(res, 200, view(store.get(automation.id)!));
+          }
           if (isRun) {
             if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
             // 時刻は1回分、Webhook は中身の無い1回。**前の回が終わっていなければ断る**
@@ -4574,6 +4605,11 @@ export function createApp(deps: AppDeps) {
         const items = await Promise.all(
           deps.inbox.listOpen().map(async (item) => {
             if (item.kind === "notice" && item.claudeAccounts) return withPlace(withClaudeAccountsView(item, item.claudeAccounts));
+            // 気づきは「やって」の宛先（Base）を添える
+            if (item.kind === "finding") {
+              const baseThreadId = deps.projectThread.listThreadsForProject(item.projectId).find((t) => t.kind === "base")?.id;
+              return { ...withPlace(item), ...(baseThreadId ? { baseThreadId } : {}) };
+            }
             if (item.kind !== "review") return withPlace(item);
             const thread = deps.projectThread.getThread(item.threadId);
             if (!thread) return item;
@@ -4603,6 +4639,23 @@ export function createApp(deps: AppDeps) {
         json(res, 200, items);
         return;
       }
+      // **見回りの気づきの「今後知らせない」「片づけた」**（追加・2026-10-20、アーキ仕様 §4.4「気づき（受信箱）」）。手帳にも残す。
+      // 「やって」「任務にする」は会話へ送る口（`/api/threads/:id/messages` の `quotes` の `finding`）で片づく
+      const findingMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/finding$/);
+      if (findingMatch && req.method === "POST") {
+        const item = deps.inbox.get(findingMatch[1]!);
+        if (!item || item.kind !== "finding") return json(res, 404, { error: "not found" });
+        const body = (await readJsonBody(req)) as { action?: unknown };
+        if (body.action !== "mute" && body.action !== "dismiss") {
+          return json(res, 400, { error: "action は mute（今後知らせない）か dismiss（片づけた）です" });
+        }
+        if (item.closed) return json(res, 409, { error: "その気づきはもう片づけられています" });
+        const change = body.action === "mute" ? "muted" : "dismissed";
+        await deps.patrols?.noteHuman(item, change);
+        await deps.inbox.closeFinding(item.id, { how: change });
+        return json(res, 200, { ok: true });
+      }
+
       // お知らせを「見た」ことにする（決定・2026-09-07）。答えるものではないので
       // answer とは別の口——「決着させる」のと「読んだ」を混ぜない
       const inboxAckMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/acknowledge$/);

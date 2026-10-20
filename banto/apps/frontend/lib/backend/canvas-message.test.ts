@@ -29,3 +29,11 @@ test("塊は添付の形で出所を持ち回り、第三者は強く出す", ()
   const odd = quoteFromAttachment({ id: 'canvas-quote:{"module":"m","slot":"s"}', type: "banto-canvas-quote", content: [{ type: "text", text: "t" }] });
   assert.equal(odd?.thirdParty, true);
 });
+
+test("見回りの気づきの引用は、出所を「見回り〈名前〉の気づきの引用」と出し、添付に戻しても見回りの名前が残る", () => {
+  const quote = { module: "banto", thirdParty: true, slot: "3:0", text: "題：CI", patrol: "CI の見回り" };
+  assert.equal(quoteSourceLabel(quote), "見回り〈CI の見回り〉の気づきの引用");
+  const attachment = quoteToAttachment(quote);
+  assert.equal(attachment.name, "見回り〈CI の見回り〉の気づきの引用");
+  assert.deepEqual(quoteFromAttachment({ id: attachment.id!, type: attachment.type!, content: attachment.content as never }), quote);
+});

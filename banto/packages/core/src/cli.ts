@@ -35,6 +35,7 @@ import { AutomationWebhooks } from "./automation/webhook.js";
 import { AutomationEvents, EventLedger } from "./automation/events.js";
 import { awaitingAutomations, type AwaitedModule } from "./automation/keep-awake.js";
 import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
+import { Patrols } from "./automation/patrol.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -718,7 +719,11 @@ async function main(): Promise<void> {
     // 乗り換えで閉じた古い Fork を、開いている画面のサイドバーから外す（Backlog #318）
     announceClosed: ({ threadId, projectId, reason }) =>
       appEvents.publish({ type: "thread.closed", threadId, projectId, by: "automation", reason }),
+    // 見回りは Claude のアカウントが全部閾値を越えていたら飛ばす（§4.4）
+    allAccountsOver: (projectId) => claudeLogin.allAccountsOver(projectId),
   });
+  // **見回り**（アーキ仕様 §4.4）。見回りの Fork の `notify` と手帳
+  const patrols = new Patrols({ automations, inbox, projectThread });
   // **自動化の画面**（v4-frontend.md §6.42）は台帳が変わったら取り直す——どの Project のものかだけ流す
   automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
   // **サイドバーの Project の一覧**（アーキ仕様 §2.2）は一覧が変わったら取り直す——携帯とパソコンでそろえる
@@ -3226,6 +3231,7 @@ async function main(): Promise<void> {
     automationRunner,
     turnDecisions,
     missions: missionsService,
+    patrols,
     automationWebhooks,
     listSecretAliases: (projectId) => secretAliasesFor(projectId),
     ...(bootstrap.publicUrl ? { webhookBaseUrl: bootstrap.publicUrl } : {}),

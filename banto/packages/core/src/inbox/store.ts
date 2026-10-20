@@ -3,6 +3,8 @@ import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
 import type {
+  FindingClosed,
+  FindingItem,
   InboxItem,
   JudgmentItem,
   JudgmentSource,
@@ -71,8 +73,11 @@ export class InboxStore {
     // お知らせは判断待ちの次、レビューの前——**止まっているものが先**（§2.4）だが、
     // 「Module が繋がっていない」は放っておくと静かに機能が減るので、レビューより前
     const notices = all.filter((i): i is NoticeItem => i.kind === "notice" && !i.acknowledged);
+    // 見回りの気づきは返ってきた会話の次（急ぎを先頭に。アーキ仕様 §2.4 の 4.）
+    const findings = all.filter((i): i is FindingItem => i.kind === "finding" && !i.closed);
     const byNewest = (a: InboxItem, b: InboxItem) => b.createdAt.localeCompare(a.createdAt);
-    return [...judgments.sort(byNewest), ...notices.sort(byNewest), ...reviews.sort(byNewest)];
+    const byUrgent = (a: FindingItem, b: FindingItem) => Number(b.urgent) - Number(a.urgent) || byNewest(a, b);
+    return [...judgments.sort(byNewest), ...notices.sort(byNewest), ...reviews.sort(byNewest), ...findings.sort(byUrgent)];
   }
 
   get(id: string): InboxItem | undefined {
@@ -250,6 +255,21 @@ export class InboxStore {
     return raising;
   }
   private readonly raisingNotices = new Map<string, Promise<NoticeItem>>();
+
+  /** **見回りの気づきを出す**（アーキ仕様 §4.4「知らせる tool」）。同じ key を出し直すかは見回りの手帳が決める（ここでは見ない） */
+  async raiseFinding(input: Omit<FindingItem, "kind" | "id" | "closed" | "createdAt">): Promise<FindingItem> {
+    const id = randomUUID();
+    this.apply(await this.log.append("inbox.finding_raised", { id, ...input }));
+    return this.get(id) as FindingItem;
+  }
+
+  /** **気づきを片づける**（人が押した・送った）。もう片づいていれば何も書かず false */
+  async closeFinding(id: string, closed: Omit<FindingClosed, "at">): Promise<boolean> {
+    const item = this.get(id);
+    if (item?.kind !== "finding" || item.closed) return false;
+    this.apply(await this.log.append("inbox.finding_closed", { id, ...closed }));
+    return true;
+  }
 
   async acknowledgeNotice(id: string): Promise<void> {
     const event = await this.log.append("inbox.notice_acknowledged", { id });

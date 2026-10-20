@@ -194,7 +194,39 @@ export interface NoticeRuntimeKey {
   projectIds: string[];
 }
 
-export type InboxItem = JudgmentItem | ReviewItem | NoticeItem;
+/**
+ * **見回りの気づき**（追加・2026-10-20、アーキ仕様 §2.4 の 4.・§4.4「気づき（受信箱）」）。見回りの回の AI が `notify` で出したもの。
+ * 外から来た文を読んだ見回りが書いたもの——中身は申告で、リンクにするかは画面が決まり（`knownPlaceUrl`）で決める。人が
+ * 「やって」「任務にする」「今後知らせない」「片づけた」のどれかを押すまで残る
+ */
+export interface FindingItem {
+  kind: "finding";
+  id: InboxItemId;
+  projectId: string;
+  /** 見回りの Fork（`notify` を呼んだ会話） */
+  threadId: string;
+  /** どの見回りか（名前は出した時点のもの——消した・名前を変えたあとも、どの見回りの気づきかが読めるように） */
+  patrol: { id: string; name: string };
+  key: string;
+  title: string;
+  finding: string;
+  evidence?: string;
+  suggestion?: string;
+  urgent: boolean;
+  /** 人が片づけた（押したもの・送った先）。片づけたら一覧から外れる */
+  closed?: FindingClosed;
+  createdAt: string;
+}
+
+/** 気づきをどう片づけたか。`acted`＝「やって」・`mission`＝「任務にする」・`muted`＝「今後知らせない」・`dismissed`＝「片づけた」 */
+export interface FindingClosed {
+  how: "acted" | "mission" | "muted" | "dismissed";
+  /** 「やって」「任務にする」で送った会話 */
+  threadId?: string;
+  at: string;
+}
+
+export type InboxItem = JudgmentItem | ReviewItem | NoticeItem | FindingItem;
 
 export interface InboxReadModel {
   items: Map<InboxItemId, InboxItem>;

@@ -59,6 +59,7 @@ import {
   runLabel,
   threadTitle,
   timeZoneName,
+  unmutePatrolNote,
   updateAutomation,
   useAutomationEventSources,
   useAutomations,
@@ -74,6 +75,7 @@ import {
   type RealAutomationTarget,
   type RealEventDeclaration,
   type RealEventField,
+  type RealPatrolNote,
 } from "@/lib/backend/client";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -284,6 +286,11 @@ function AutomationRow({
             <span data-testid="automation-name" className={cn("font-medium", a.paused ? "text-ink-2" : "text-foreground")}>
               {a.name}
             </span>
+            {a.mode === "patrol" ? (
+              <span data-testid="automation-patrol-badge" className="rounded-full bg-surface-2 px-1.5 py-0.5 text-xs text-ink-2">
+                見回り
+              </span>
+            ) : null}
             {a.paused ? (
               <span className="text-xs text-ink-3" data-testid="automation-paused">
                 一時停止中
@@ -333,10 +340,12 @@ function AutomationRow({
             <dt className="text-ink-3">届け先</dt>
             <dd className="text-ink-2">{targetSentence(a.target)}</dd>
             <dt className="text-ink-3">受信箱</dt>
-            <dd className="text-ink-2">
-              {a.reviewOnDone
-                ? "終わった回を出します。"
-                : "終わった回は出しません。あなたの答えを待つ回・決めることがある回・失敗した回だけ出します。"}
+            <dd className="text-ink-2" data-testid="automation-review-policy">
+              {a.mode === "patrol"
+                ? `見回りの回は出しません。気づいたことを「気づき」として出します（1日 ${a.dailyFindingLimit ?? 10} 件まで）。失敗した回は出します。`
+                : a.reviewOnDone
+                  ? "終わった回を出します。"
+                  : "終わった回は出しません。あなたの答えを待つ回・決めることがある回・失敗した回だけ出します。"}
             </dd>
             <dt className="text-ink-3">作った人</dt>
             <dd className="text-ink-2">
@@ -349,6 +358,8 @@ function AutomationRow({
               </>
             ) : null}
           </dl>
+
+          {a.mode === "patrol" ? <PatrolNotebook automation={a} /> : null}
 
           {a.runs.length > 0 ? (
             <div className="flex flex-col gap-1.5">
@@ -470,6 +481,63 @@ function AutomationRow({
 }
 
 /** Webhook の受け口の決まり。URL は作ったときに1回だけ見せたので、ここには出さない */
+const NOTE_STATUS: Record<RealPatrolNote["status"], string> = { notified: "知らせた", muted: "知らせない", dismissed: "片づけた" };
+
+/**
+ * **見回りの手帳**（v4-frontend.md §6.47「自動化の画面」）：`key`・題・状態・最後に見た時刻。「知らせない」を外せる
+ */
+function PatrolNotebook({ automation: a }: { automation: RealAutomation }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const notes = a.notebook ?? [];
+  const tz = automationTimeZone(a);
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="patrol-notebook">
+      <p className="text-xs text-ink-3">手帳（知らせたもの。同じ key は 7日の間は出し直しません）</p>
+      {notes.length === 0 ? (
+        <p className="text-xs text-ink-3" data-testid="patrol-notebook-empty">
+          まだ何も知らせていません
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {notes.map((n) => (
+            <li key={n.key} className="flex items-baseline gap-2 text-xs" data-testid="patrol-note" data-key={n.key} data-status={n.status}>
+              <code className="shrink-0 text-ink-3">{n.key}</code>
+              <span className="min-w-0 flex-1 truncate text-ink-2">{n.title}</span>
+              <span className={cn("shrink-0", n.status === "muted" ? "text-warn" : "text-ink-3")} data-testid="patrol-note-status">
+                {NOTE_STATUS[n.status]}
+              </span>
+              <span className="w-24 shrink-0 text-right text-ink-3">{formatWhen(n.lastSeenAt, tz)}</span>
+              {n.status === "muted" ? (
+                <button
+                  type="button"
+                  disabled={busyKey !== null}
+                  data-testid="patrol-note-unmute"
+                  onClick={() => {
+                    setBusyKey(n.key);
+                    setError(null);
+                    unmutePatrolNote(a.projectId, a.id, n.key)
+                      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+                      .finally(() => setBusyKey(null));
+                  }}
+                  className="shrink-0 rounded px-1.5 text-ink-2 hover:bg-accent disabled:opacity-50"
+                >
+                  外す
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {error ? (
+        <p role="alert" className="text-xs text-stop">
+          「知らせない」を外せませんでした：{error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function WebhookDetails({ source: s, pending }: { source: Extract<RealAutomationSource, { kind: "webhook" }>; pending: number }) {
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs" data-testid="webhook-details">
@@ -627,6 +695,11 @@ const SOURCE_TABS: readonly { id: SourceKind; label: string }[] = [
   { id: "event", label: "出来事" },
 ];
 
+const MODE_TABS: readonly { id: "normal" | "patrol"; label: string }[] = [
+  { id: "normal", label: "ふつう" },
+  { id: "patrol", label: "見回り" },
+];
+
 /** 判断役（AI の「決めること」を AI が決める）を待つ出来事——届け先は専用の Fork だけ（アーキ仕様 §4.3） */
 const TURN_DECISIONS_EVENT = "banto.turn-decisions";
 
@@ -703,6 +776,9 @@ function AutomationForm({
     target0?.kind === "thread" ? target0.threadId : (threads.find((t) => t.kind === "base")?.id ?? ""),
   );
   const [reviewOnDone, setReviewOnDone] = useState(automation?.reviewOnDone ?? true);
+  // **種類**（ふつう／見回り、§6.47）。作ったあと変えない
+  const [patrol, setPatrol] = useState(automation?.mode === "patrol");
+  const [dailyFindingLimit, setDailyFindingLimit] = useState<number>(automation?.dailyFindingLimit ?? 10);
   // 出来事：出どころ → 出来事 → 条件。条件は属性ごとの値の並び（空＝どれでも）
   const [eventName, setEventName] = useState(event0?.event ?? "");
   const [eventOrigin, setEventOrigin] = useState(event0 ? (event0.event.split(".")[0] ?? "") : "");
@@ -712,7 +788,7 @@ function AutomationForm({
   // 「この自動化自身の回が起こした出来事では動かない」（既定オン＝allowSelfTriggered: false）
   const [ignoreSelf, setIgnoreSelf] = useState(event0 ? !event0.allowSelfTriggered : true);
   const declared = findEventDeclaration(events.sources, eventName);
-  const isJudge = sourceKind === "event" && eventName === TURN_DECISIONS_EVENT;
+  const isJudge = !patrol && sourceKind === "event" && eventName === TURN_DECISIONS_EVENT;
   const whereProblem = declared ? eventWhereInputProblem(declared, where) : undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -728,8 +804,12 @@ function AutomationForm({
           ? { kind, hours }
           : { kind, expr: cron };
   // 判断役の届け先は専用の Fork だけ（いまある会話は選べない）
-  const target: RealAutomationTarget =
-    targetKind === "dedicated" || isJudge ? { kind: "dedicated", mode } : { kind: "thread", threadId };
+  // 見回りの届け先は専用の Fork・毎回まっさらに決まっている
+  const target: RealAutomationTarget = patrol
+    ? { kind: "dedicated", mode: "fresh" }
+    : targetKind === "dedicated" || isJudge
+      ? { kind: "dedicated", mode }
+      : { kind: "thread", threadId };
   const signatureFilled = !signed || (sigHeader.trim() !== "" && sigAlias.trim() !== "");
   const eventFilled = declared !== undefined && whereProblem === undefined;
   const filled =
@@ -771,7 +851,8 @@ function AutomationForm({
                 allowProjectContainer: allowContainer,
               },
       target,
-      reviewOnDone,
+      reviewOnDone: patrol ? false : reviewOnDone,
+      ...(patrol ? { mode: "patrol" as const, dailyFindingLimit } : {}),
     };
     setSaving(true);
     setError(null);
@@ -793,6 +874,29 @@ function AutomationForm({
   return (
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4" data-testid="automation-form">
       <p className="text-sm font-medium text-foreground">{automation ? `「${automation.name}」を直す` : "自動化を足す"}</p>
+
+      <div className="flex flex-col gap-1.5">
+        <Label>種類</Label>
+        {automation ? (
+          <p className="text-sm text-ink-2" data-testid="automation-mode-fixed">
+            {patrol ? "見回り" : "ふつう"}
+            <span className="ml-1.5 text-xs text-ink-3">（種類は変えられません）</span>
+          </p>
+        ) : (
+          <PillTabs
+            tabs={MODE_TABS}
+            value={patrol ? "patrol" : "normal"}
+            onChange={(v) => setPatrol(v === "patrol")}
+            label="種類"
+            testId="automation-mode"
+          />
+        )}
+        {patrol ? (
+          <p className="text-xs text-ink-3" data-testid="automation-patrol-hint">
+            見回りは読むだけの tool で決めた対象を見て、気づいたことを受信箱の「気づき」に出します。ファイルを書く・コマンドを走らせる・人に聞くことはしません。
+          </p>
+        ) : null}
+      </div>
 
       <div className="flex flex-col gap-1.5">
         <Label>何が起きたら</Label>
@@ -1020,7 +1124,9 @@ function AutomationForm({
           onChange={(e) => setInstruction(e.target.value)}
           rows={4}
           placeholder={
-            sourceKind === "webhook"
+            patrol
+              ? "何を見るか：main の CI と、開いている PR のレビューの状態。\n何を知らせるか：CI が2回続けて落ちている・3日以上動いていない PR。知らせないもの：下書きの PR・CI が1回だけ落ちたもの"
+              : sourceKind === "webhook"
               ? "CI からビルドが落ちたと届きます。失敗したジョブのログを読み、原因の見当を挙げて"
               : sourceKind === "event"
                 ? isJudge
@@ -1040,6 +1146,29 @@ function AutomationForm({
         />
       </Field>
 
+      {patrol ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>どの会話で動かすか</Label>
+            <p className="text-sm text-ink-2" data-testid="automation-patrol-target">
+              専用の Fork・毎回まっさら（見回りの会話は、どう起こしても読むだけで動きます）
+            </p>
+          </div>
+          <Field id="automation-daily-limit" label="1日の気づきの上限" hint="1日は自動化のタイムゾーンで数えます。1回には 5 件まで">
+            <Input
+              id="automation-daily-limit"
+              type="number"
+              min={1}
+              max={50}
+              value={dailyFindingLimit}
+              onChange={(e) => setDailyFindingLimit(Number(e.target.value))}
+              className="h-8 w-24 text-sm"
+              data-testid="automation-daily-limit"
+            />
+          </Field>
+        </div>
+      ) : (
+      <>
       <div className="flex flex-col gap-1.5">
         <Label id="automation-target-label">どの会話で動かすか</Label>
         <div role="radiogroup" aria-labelledby="automation-target-label" className="flex flex-col gap-1.5">
@@ -1106,6 +1235,8 @@ function AutomationForm({
         </div>
         <p className="pl-11 text-xs text-ink-3">切っても、あなたの答えを待つ回・決めることがある回・失敗した回は受信箱に出します。</p>
       </div>
+      </>
+      )}
 
       {error ? (
         <p role="alert" className="text-xs text-stop" data-testid="automation-form-error">

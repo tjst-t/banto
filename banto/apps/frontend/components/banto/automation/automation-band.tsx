@@ -58,7 +58,7 @@ export function AutomationBand({ automation: a, threadId }: { automation: RealAu
           )}
           <span className="min-w-0" data-testid="automation-band-text">
             {waiting ? <span className="text-foreground">前の回が、あなたの答えを待っています。</span> : null}
-            自動化「{a.name}」で動く会話です（{describeSource(a, sources)}・{how}）。
+            {a.mode === "patrol" ? "見回り" : "自動化"}「{a.name}」で動く会話です（{describeSource(a, sources)}・{how}）。
             {a.paused ? "いまは一時停止中です。" : a.nextFireAt ? `次は ${formatWhen(a.nextFireAt, automationTimeZone(a))}。` : null}
           </span>
         </p>

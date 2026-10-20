@@ -19,6 +19,7 @@ import {
   removeRealAutomation,
   runRealAutomation,
   updateRealAutomation,
+  unmuteRealPatrolNote,
   type RealAutomation,
   type RealAutomationEventSource,
   type RealAutomationInput,
@@ -220,6 +221,11 @@ export async function updateAutomation(
   replace(projectId, await updateRealAutomation(projectId, id, changes));
   // 届け先を変えた・再開したら host が専用の Fork を立てることがある——一覧へ足すのは取り直しに任せる
   await refreshAutomations(projectId);
+}
+
+/** 見回りの手帳の「知らせない」を外す（§6.47） */
+export async function unmutePatrolNote(projectId: string, id: string, key: string): Promise<void> {
+  replace(projectId, await unmuteRealPatrolNote(projectId, id, key));
 }
 
 export async function removeAutomation(projectId: string, id: string): Promise<void> {

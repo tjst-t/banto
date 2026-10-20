@@ -437,6 +437,14 @@ export class ClaudeLoginRelay {
   }
 
   /**
+   * **その Project の並びの Claude のアカウントが全部閾値を越えているか**（追加・2026-10-20、アーキ仕様 §4.4「見回り」——見回りの回を
+   * 飛ばすのに使う）。並びが空（banto がアカウントを持っていない）なら false
+   */
+  allAccountsOver(projectId: string): boolean {
+    return this.choose(projectId)?.allOver === true;
+  }
+
+  /**
    * その Project が最後に使ったアカウント（上から順にの Project 設定の観測。起こしてから1度も使っていなければ undefined）。
    * 均すの Project では持たない（隣の Thread のものが出る——`pinnedAccountsOf` を使う）
    */

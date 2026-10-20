@@ -294,6 +294,8 @@ export interface OutgoingQuote {
 }
 export interface RealMessageQuote extends OutgoingQuote {
   thirdParty: boolean;
+  /** 見回り〈名前〉の気づきの引用（§6.47） */
+  patrol?: string;
 }
 
 /** 届いたものの印——送り手・題・何回中継されたか */
@@ -632,7 +634,30 @@ export interface RealInboxNotice {
   createdAt: string;
 }
 
-export type RealInboxItem = RealInboxJudgment | RealInboxReview | RealInboxNotice;
+/**
+ * **見回りの気づき**（追加・2026-10-20、アーキ仕様 §4.4「気づき（受信箱）」・v4-frontend.md §6.47）。外から来た文を読んだ見回りが
+ * `notify` で書いたもの——中身の URL は banto が知っている場所だけリンクにする（`knownPlaceUrl`）
+ */
+export interface RealInboxFinding {
+  kind: "finding";
+  id: string;
+  projectId: string;
+  /** 見回りの Fork */
+  threadId: string;
+  patrol: { id: string; name: string };
+  key: string;
+  title: string;
+  finding: string;
+  evidence?: string;
+  suggestion?: string;
+  urgent: boolean;
+  /** 「やって」の宛先にする Base（host が添える） */
+  baseThreadId?: string;
+  closed?: { how: "acted" | "mission" | "muted" | "dismissed"; threadId?: string; at: string };
+  createdAt: string;
+}
+
+export type RealInboxItem = RealInboxJudgment | RealInboxReview | RealInboxNotice | RealInboxFinding;
 
 export async function createRealProject(
   name: string,
@@ -1795,11 +1820,16 @@ export async function resumeRealNoticeTurn(id: string): Promise<void> {
  * `streamRealTurn` の「ターンは host で続いている」と同じ）。開いている会話には `turn.started` で最新が出る
  * （`latest-state.ts`）。断られたら理由を投げる（別の実行場所へ移している等）
  */
-export async function sendRealThreadMessage(threadId: string, prompt: string): Promise<void> {
+export async function sendRealThreadMessage(
+  threadId: string,
+  prompt: string,
+  /** 見回りの気づきの引用（「やって」「任務にする」、§6.47）。中身は host が受信箱から組む */
+  options: { findingId?: string } = {},
+): Promise<void> {
   const res = await hostFetch(`/api/threads/${threadId}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, ...(options.findingId ? { quotes: [{ finding: options.findingId }] } : {}) }),
   });
   if (!res.ok || !res.body) {
     const reason = ((await res.json().catch(() => null)) as { error?: string } | null)?.error;
@@ -1807,6 +1837,22 @@ export async function sendRealThreadMessage(threadId: string, prompt: string): P
   }
   // 受け付けた（流れが始まった）ところで読むのをやめる
   await res.body.cancel().catch(() => undefined);
+}
+
+/**
+ * **人が任務を始める**（`POST /api/threads/:id/mission`、アーキ仕様 §4.4「始め方」）。受信箱の気づきの「任務にする」が使う。
+ * 人が押しているので聞かない。枠は `until`（ISO）・`minInterval`（分）
+ */
+export async function startRealMission(
+  threadId: string,
+  input: { goal: string; doneWhen: string; maxWakes?: number; until?: string; minInterval?: number },
+): Promise<void> {
+  await request(`/api/threads/${threadId}/mission`, { method: "POST", body: JSON.stringify(input) });
+}
+
+/** 見回りの気づきの「今後知らせない」（`mute`）・「片づけた」（`dismiss`）。手帳にも残る */
+export async function closeRealFinding(id: string, action: "mute" | "dismiss"): Promise<void> {
+  await request(`/api/inbox/${id}/finding`, { method: "POST", body: JSON.stringify({ action }) });
 }
 
 export async function answerRealInboxItem(id: string, answer: unknown): Promise<void> {
@@ -2657,6 +2703,20 @@ export interface RealAutomationFields {
   source: RealAutomationSource;
   target: RealAutomationTarget;
   reviewOnDone: boolean;
+  /** 見回り（§6.47）。無ければふつう。作ったあと変えない */
+  mode?: "patrol";
+  /** 見回りの1日の気づきの上限 */
+  dailyFindingLimit?: number;
+}
+
+/** 見回りの手帳の1行（`key` ごと。新しい順） */
+export interface RealPatrolNote {
+  key: string;
+  title: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  notifiedAt?: string;
+  status: "notified" | "muted" | "dismissed";
 }
 
 export interface RealAutomation extends RealAutomationFields {
@@ -2673,6 +2733,16 @@ export interface RealAutomation extends RealAutomationFields {
   nextFireAt?: string;
   /** Webhook で受けて、まだ届けていないもの（古い順） */
   received?: { receivedId: string; at: string }[];
+  /** 見回りの手帳（見回りだけ） */
+  notebook?: RealPatrolNote[];
+}
+
+/** 見回りの手帳の「知らせない」を外す */
+export async function unmuteRealPatrolNote(projectId: string, id: string, key: string): Promise<RealAutomation> {
+  return request<RealAutomation>(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(id)}/unmute`, {
+    method: "POST",
+    body: JSON.stringify({ key }),
+  });
 }
 
 /** 作る・直すときに渡す欄（Webhook の署名を切るときは `false`） */

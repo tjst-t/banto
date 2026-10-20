@@ -143,9 +143,39 @@ export interface AutomationFields {
   instruction: string;
   source: AutomationSource;
   target: AutomationTarget;
-  /** 完了した回を受信箱に出すか（既定 true）。判断待ち・決めること・失敗した回は、これに依らずいつも出す */
+  /** 完了した回を受信箱に出すか（既定 true）。判断待ち・決めること・失敗した回は、これに依らずいつも出す。見回りはいつも false */
   reviewOnDone: boolean;
+  /**
+   * **見回り**（追加・2026-10-20、アーキ仕様 §4.4「見回り」）。無ければふつうの自動化。作ったあと変えない。見回りの届け先は
+   * 専用の Fork・毎回まっさらに固定し、その Fork は読むだけの回になる
+   */
+  mode?: "patrol";
+  /** 見回りが1日に出せる気づきの上限（見回りだけ。既定 `PATROL_DAILY_LIMIT_DEFAULT`、1日は自動化のタイムゾーンで数える） */
+  dailyFindingLimit?: number;
 }
+
+/** 見回りの手帳の1行の状態。`notified`＝知らせた・`muted`＝今後知らせない・`dismissed`＝片づけた */
+export type PatrolNoteStatus = "notified" | "muted" | "dismissed";
+
+/** **見回りの手帳**の1行（アーキ仕様 §4.4「手帳」）。`key` ごとに1行 */
+export interface PatrolNote {
+  key: string;
+  title: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** 最後に受信箱へ出した時刻（出し直さない7日はここから数える） */
+  notifiedAt?: string;
+  status: PatrolNoteStatus;
+}
+
+/**
+ * 手帳への書き込み。`notified`＝受信箱に出した・`seen`＝同じ key をまた見た（出し直さない）・`muted`／`dismissed`＝人が押した・
+ * `unmuted`＝人が「知らせない」を外した
+ */
+export type PatrolNoteChange = "notified" | "seen" | "muted" | "dismissed" | "unmuted";
+
+/** 手帳は1つの見回りでこれだけ持つ。超えたら最後に見た時刻の古いものから捨てる（「知らせない」は捨てない） */
+export const PATROL_NOTEBOOK_MAX = 500;
 
 export interface Automation extends AutomationFields {
   id: string;
@@ -172,6 +202,8 @@ export interface Automation extends AutomationFields {
   clockFrom: string;
   /** Webhook の受け口の印の SHA-256（hex）。印そのものは作ったときに1回だけ人に見せ、どこにも残さない */
   webhookTokenHash?: string;
+  /** 見回りの手帳（見回りだけ。最後に見た時刻の新しい順） */
+  notebook?: PatrolNote[];
 }
 
 export interface AutomationReadModel {
@@ -188,6 +220,7 @@ export type AutomationEvent =
   | { type: "automation.resumed"; payload: { id: string } }
   | { type: "automation.removed"; payload: { id: string } }
   | { type: "automation.received"; payload: { id: string } & AutomationReceived }
+  | { type: "automation.patrol_noted"; payload: { id: string; key: string; change: PatrolNoteChange; title?: string } }
   | {
       type: "automation.fired";
       payload: { id: string } & AutomationRun & {
@@ -256,6 +289,11 @@ export const automationFold: Fold<AutomationReadModel> = {
         automations.set(current.id, { ...current, received: [...current.received, received] });
         break;
       }
+      case "automation.patrol_noted": {
+        if (!current) return state;
+        automations.set(current.id, { ...current, notebook: notePatrol(current.notebook ?? [], event.payload, raw.ts) });
+        break;
+      }
       case "automation.fired": {
         if (!current) return state;
         const { id: _id, receivedIds, ...run } = event.payload;
@@ -291,3 +329,53 @@ export const automationFold: Fold<AutomationReadModel> = {
     return { automations };
   },
 };
+
+/** 手帳に1つ書く。新しい順に並べ直し、上限を超えたら「知らせない」以外の古いものから捨てる */
+function notePatrol(
+  notebook: readonly PatrolNote[],
+  change: { key: string; change: PatrolNoteChange; title?: string },
+  at: string,
+): PatrolNote[] {
+  const current = notebook.find((n) => n.key === change.key);
+  const rest = notebook.filter((n) => n.key !== change.key);
+  let next: PatrolNote;
+  switch (change.change) {
+    case "notified":
+      next = {
+        key: change.key,
+        title: change.title ?? current?.title ?? change.key,
+        firstSeenAt: current?.firstSeenAt ?? at,
+        lastSeenAt: at,
+        notifiedAt: at,
+        status: "notified",
+      };
+      break;
+    case "seen":
+      if (!current) return [...notebook];
+      next = { ...current, lastSeenAt: at, ...(change.title ? { title: change.title } : {}) };
+      break;
+    case "muted":
+    case "dismissed":
+      if (!current) return [...notebook];
+      next = { ...current, status: change.change };
+      break;
+    case "unmuted":
+      if (!current || current.status !== "muted") return [...notebook];
+      next = { ...current, status: "notified" };
+      break;
+  }
+  const all = [next, ...rest].sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
+  if (all.length <= PATROL_NOTEBOOK_MAX) return all;
+  // 古いものから捨てる（「知らせない」は残す——捨てると、また知らせてしまう）
+  const kept: PatrolNote[] = [];
+  let over = all.length - PATROL_NOTEBOOK_MAX;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const n = all[i]!;
+    if (over > 0 && n.status !== "muted") {
+      over--;
+      continue;
+    }
+    kept.unshift(n);
+  }
+  return kept;
+}

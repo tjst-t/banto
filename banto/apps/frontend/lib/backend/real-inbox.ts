@@ -25,6 +25,7 @@ import {
   listRealInbox,
   getBackendConfig,
   acknowledgeRealNotice,
+  type RealInboxFinding,
   type RealInboxJudgment,
   type RealInboxNotice,
   type RealInboxReview,
@@ -34,6 +35,7 @@ import { asTurnSummary, type TurnSummary } from "@/lib/turn-summary";
 let items: readonly RealInboxJudgment[] = [];
 let notices: readonly RealInboxNotice[] = [];
 let reviews: readonly RealInboxReview[] = [];
+let findings: readonly RealInboxFinding[] = [];
 /** いま画面に開いている Thread（`useViewingThread`）。**購読しない**——Thread の画面を受信箱の変化で
  *  描き直さない（上の「定期ポーリングはしない」と同じ理由） */
 const viewing = new Map<string, number>();
@@ -59,6 +61,13 @@ export function getRealNotices(): readonly RealInboxNotice[] {
 /** 出ているレビュー待ち（ターンが終わった Thread、決定・2026-09-27）。開いて見ている Thread のものは除く */
 export function getRealReviews(): readonly RealInboxReview[] {
   return reviews;
+}
+
+/**
+ * **見回りの気づき**（追加・2026-10-20、v4-frontend.md §6.47）。片づけていないもの。バッジには数えない（§6.41）
+ */
+export function getRealFindings(): readonly RealInboxFinding[] {
+  return findings;
 }
 
 /** レビュー待ちのターンのまとめ（描ける形のときだけ）。決めることがあるかは、これで見る */
@@ -154,10 +163,13 @@ export async function refreshRealInbox(): Promise<void> {
     const reviewsChanged =
       nextReviews.length !== reviews.length ||
       nextReviews.some((r, i) => r.id !== reviews[i]!.id || JSON.stringify(r.turn) !== JSON.stringify(reviews[i]!.turn));
-    if (sameIds(items, next) && !noticesChanged && !reviewsChanged) return;
+    const nextFindings = all.filter((i): i is RealInboxFinding => i.kind === "finding" && !i.closed);
+    const findingsChanged = nextFindings.length !== findings.length || nextFindings.some((f, i) => f.id !== findings[i]!.id);
+    if (sameIds(items, next) && !noticesChanged && !reviewsChanged && !findingsChanged) return;
     items = next;
     notices = nextNotices;
     reviews = nextReviews;
+    findings = nextFindings;
     emit();
   } catch {
     // hostが落ちている・トークンが違う等。**受信箱を空にしない**——直前に

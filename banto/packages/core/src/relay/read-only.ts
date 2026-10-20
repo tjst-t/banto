@@ -29,11 +29,11 @@ export const READ_ONLY_NO_ASK_REFUSAL = "見回りの回では人に聞けない
 export const READ_ONLY_BUILTIN_TOOLS: readonly string[] = ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"];
 
 /**
- * **core の tool で読むだけの回に残すもの**（サーバの名前 → tool の名前）。見回りの `notify` は見回りの段で足す。
+ * **core の tool で読むだけの回に残すもの**（サーバの名前 → tool の名前）。見回りの `notify` は見回りの Fork のターンにだけ在る。
  * `banto-memory` は書く tool しか無いので、読むだけの回にはサーバごと渡さない
  */
 export const READ_ONLY_CORE_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  "banto-thread": ["list_threads", "list_automations", "claude_usage"],
+  "banto-thread": ["list_threads", "list_automations", "claude_usage", "notify"],
 };
 
 /** その会話の制限を引く口（`autoApproveFor` と同じ形）。制限が無ければ undefined */

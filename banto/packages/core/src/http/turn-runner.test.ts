@@ -1009,3 +1009,53 @@ test("ふつうの会話のターンは今までどおり（組み込みも core
     assert.equal(store.getThread(threadId)?.restriction, undefined);
   });
 });
+
+test("見回りの Fork のターンにだけ notify を見せ、聞かずに通す。見回りが無い読むだけの会話には出さない", async () => {
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  await withThread(async ({ deps, threadId, store }) => {
+    const fork = await store.forkThread(threadId, { fresh: true, restriction: "read-only" });
+    const notified: unknown[] = [];
+    const turnStates: unknown[] = [];
+    const patrolFork = { current: fork.id as string | undefined };
+    const patrols = {
+      patrolOf: (id: string) => (id === patrolFork.current ? ({ id: "auto-1" } as never) : undefined),
+      notify: async (_threadId: string, input: unknown, turn: unknown) => {
+        notified.push(input);
+        turnStates.push(turn);
+        return { ok: true, text: "受信箱に出しました" };
+      },
+    };
+    const toolsOf = async () => {
+      let seen: Parameters<typeof runTurn>[0] | undefined;
+      const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+        seen = opts;
+        yield { type: "message" as const, message: initMessage([]) } as never;
+        return { sessionId: "session-1", compactionCount: 0 } as never;
+      }) as unknown as typeof runTurn;
+      await collect(runThreadTurn({ ...deps, runTurn: fake, patrols, readOnlyModuleTools: async () => [] }, { threadId: fork.id, prompt: "見回って", modules: [] }));
+      const servers = seen!.mcpServers as Record<string, { instance?: { connect(t: unknown): Promise<void> } }>;
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await servers["banto-thread"]!.instance!.connect(b);
+      const client = new Client({ name: "t", version: "0" });
+      await client.connect(a);
+      return { client, allowed: [...(seen!.allowedTools ?? [])] };
+    };
+
+    const { client, allowed } = await toolsOf();
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads", "notify"]);
+    assert.ok(allowed.includes("mcp__banto-thread__notify"), "notify を聞かずに通していない");
+    const r = (await client.callTool({ name: "notify", arguments: { key: "k", title: "t", finding: "f" } })) as { content: Array<{ text: string }> };
+    assert.equal(r.content[0]!.text, "受信箱に出しました");
+    assert.deepEqual(notified, [{ key: "k", title: "t", finding: "f" }]);
+    assert.deepEqual(turnStates, [{ notified: 0 }], "ターンの数えを渡していない");
+    await client.close();
+
+    // 見回りを消したあと（読むだけの印は残る）
+    patrolFork.current = undefined;
+    const after = await toolsOf();
+    assert.deepEqual((await after.client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads"]);
+    assert.ok(!after.allowed.includes("mcp__banto-thread__notify"));
+    await after.client.close();
+  });
+});
