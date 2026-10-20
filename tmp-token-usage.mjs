@@ -27,6 +27,9 @@ let images = 0;
 const breakDays = new Map();
 const shortBreaks = new Map();
 let syntheticCount = 0;
+// 最後の本物の要求から今まで空いたまま（戻らなかった）会話：最後の要求の量と、空いた時間
+const now = Date.now();
+const abandoned = { n: 0, gt1h: 0, gt4h: 0, sizeGt1h: 0, sizeGt4h: 0 };
 const modelPairs = new Map(); // 5分以内の書き直しで、前の要求のモデル → このモデル // 5分以内の書き直しの形 → [回数, 値段の比] // 日付（UTC）→ [回数, 値段の比]
 const kinds = new Map(); // 履歴の中身の種類 → 文字数
 const tools = new Map(); // tool の名前 → 結果の文字数
@@ -99,6 +102,11 @@ for (const file of files) {
       const d = breakDays.get(day) ?? [0, 0]; d[0]++; d[1] += c; breakDays.set(day, d);
     }
   });
+  const last = reqs[reqs.length - 1];
+  const lastSize = (last.usage.input_tokens ?? 0) + (last.usage.cache_read_input_tokens ?? 0) + (last.usage.cache_creation_input_tokens ?? 0);
+  const idle = now - last.at;
+  if (Number.isFinite(idle) && idle > 3600e3) { abandoned.gt1h++; abandoned.sizeGt1h += lastSize; if (idle > 4 * 3600e3) { abandoned.gt4h++; abandoned.sizeGt4h += lastSize; } }
+  // 空いたあと戻った回（60分以上）を、会話ごとに数える
   s.cost = cost(s);
   sessions.push(s);
 }
@@ -121,6 +129,7 @@ console.log("5分以内の書き直しの、前の要求のモデル → この�
 for (const [k, [n, c]] of [...modelPairs].sort((a, b) => b[1][1] - a[1][1]).slice(0, 6)) console.log(`  ${k}：${n} 回・${pct(c)}`);
 console.log("書き直しの日ごと（新しい10日）：" + [...breakDays].sort().slice(-10).map(([d, [n, c]]) => `${d.slice(5)} ${n}回 ${pct(c)}`).join("・"));
 console.log(`tool の結果の中の画像：${fmt(images)} 枚（文字数では base64 で大きく見えるが、トークンは1枚おおよそ千〜数千）`);
+console.log(`いま空いたままの会話（最後の要求から）：1時間以上 ${abandoned.gt1h} 本（最後の量の合計 ${fmt(abandoned.sizeGt1h)}）・4時間以上 ${abandoned.gt4h} 本（${fmt(abandoned.sizeGt4h)}）——温め直し・要約が戻らない会話にもかかる分`);
 console.log("送った量の大きさごとの要求（回数・値段の比）：");
 let lo = 0;
 for (const b of buckets) {
