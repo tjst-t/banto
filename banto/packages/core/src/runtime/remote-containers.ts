@@ -8,15 +8,56 @@
 //   - **見せたフォルダに書く・中身を解釈するものは `incus exec <c> --user 1000` で中から**（条件3）。VM のユーザーがしてよいのは
 //     symlink を辿らずに読むことと、まだ見せていないフォルダを作ることだけ
 //
-// 中から banto への道（中継・Claude の中継）・ssh-agent・流れの口・公開はまだ無い（#369）。
+// **道**（#369、v4-security.md §1「道」）はどれも proxy device（転送役は作らない）。VM の側の端は**コンテナに見せていない VM だけの
+// 場所**（`/run/user/<U>/banto/p-<Project>/`）に置き、名前は Module から来た文字列から組み立てない（条件4）。
+//   - 中から banto へ：中の `127.0.0.1:<INSIDE_RELAY_PORT>` → その Project のトンネルのソケット（`t.sock`）→ host の中継の待ち受け
+//   - 鍵の窓口：中の `/run/banto-a-<印>.sock` → VM の `a-<印>.sock`（host の Vault の窓口から `-R` で転送したもの）
 
-import { CONTAINER_USER_NAME, type HostInterfaces, type HostResources, type RunIncus } from "@banto/container";
+import { CONTAINER_USER_NAME, type HostInterfaces, type HostResources, type ProxyRoute, type RunIncus } from "@banto/container";
 import { shq, type SshResult } from "./ssh.js";
 
 /** 中のユーザーの番号（VM の SSH ユーザーをここに対応させる） */
 export const INSIDE_IDS = { uid: 1000, gid: 1000 } as const;
 /** 中のユーザーのホーム */
 export const INSIDE_HOME = `/home/${CONTAINER_USER_NAME}`;
+
+/**
+ * **中から banto へ届く、コンテナの中の口のポート**（決定・2026-10-20、実装者。v4-security.md §1「道」の「決めたポート」）。
+ * コンテナはそれぞれ自分のネットワーク名前空間を持つので、全コンテナで同じ番号でよい（中の 127.0.0.1 にしか出ない——ほかの
+ * コンテナからは届かない）。中のサービスがこの番号で待ち受けるとぶつかるので、よく使われる番号と一時のポートの範囲（32768〜）を避けた
+ */
+export const INSIDE_RELAY_PORT = 29839;
+/** 中から banto への道の装置の名前 */
+export const RELAY_DEVICE = "banto-relay";
+/** 鍵の窓口の装置の名前の頭（窓口ができたときに足し、閉じたら外す） */
+export const AGENT_DEVICE_PREFIX = "banto-a-";
+
+/** VM のユーザーの、コンテナに見せていない場所の既定（ユーザーの systemd の実行時の置き場。linger で VM の起動から在る） */
+export function vmUserRunDir(uid: number): string {
+  return `/run/user/${uid}`;
+}
+
+/**
+ * **Project ごとの VM だけの場所**（`<実行時の置き場>/banto/p-<Project>`。v4-security.md §1 の条件4）。Project の id は core が
+ * 作るもの（UUID）——パスに使える字だけでなければ断る（Module から来た文字列は混ぜない）
+ */
+export function vmProjectRunDir(runDir: string, projectId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(projectId)) throw new Error(`Project の id（${projectId}）から VM の置き場を作れません`);
+  return `${runDir}/banto/p-${projectId}`;
+}
+
+/** 中から banto への道：中の 127.0.0.1 の決めたポートで待ち受け、その Project のトンネルのソケットへ繋ぐ */
+export function relayRoute(tunnelSocket: string): ProxyRoute {
+  return { bind: "instance", listen: `tcp:127.0.0.1:${INSIDE_RELAY_PORT}`, connect: `unix:${tunnelSocket}` };
+}
+
+/**
+ * 鍵の窓口の、中のパス。**`/run` の直下に置く**——forkproxy は待ち受けの親のフォルダを作らず、コンテナを起こし直すと `/run` は
+ * 空になる（`/run/banto/` だと、残った装置がコンテナを起こすときに待ち受けられない）
+ */
+export function agentInsidePath(mark: string): string {
+  return `/run/banto-a-${mark}.sock`;
+}
 
 /** VM で台本を流す口（多重化した接続の上。`stdin` を渡すと台本は `sh -c` で、標準入力はそれに流す） */
 export type VmShell = (script: string, opts?: { stdin?: NodeJS.ReadableStream; timeoutMs?: number }) => Promise<SshResult>;

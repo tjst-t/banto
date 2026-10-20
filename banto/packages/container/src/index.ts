@@ -38,6 +38,8 @@ export {
   DEFAULT_CONTAINER_PROCESSES,
   type ContainerLimits,
   type ProjectContainerSpec,
+  type ProxyRoute,
+  proxyDevice,
   type ContainerTimeouts,
 } from "./project-container.js";
 export { toolsContainerId, dropSudo, missingPackages, freeBytes, installPackages, TOOLS_MIN_FREE_BYTES } from "./tools-container.js";

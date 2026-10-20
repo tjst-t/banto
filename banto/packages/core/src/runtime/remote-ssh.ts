@@ -6,7 +6,8 @@
 // その Project の中継だけを受ける専用の待ち受け）を載せる。接続の表・待ち受け・ソケットの転送・手放す（`release`）は
 // どれも「実行場所＋Project」が鍵——同じ実行場所のほかの Project の接続には触らない。繋ぐときに：
 //   1. 前提を確かめる（`probePrerequisites`。足りなければ名指しして直し方つきで断る。linger・tmux が無いのは注意だけ）
-//   2. 接続を張る（`-M -N -R 0:127.0.0.1:<待ち受け>`。向こうの側のポートは sshd に選ばせる）
+//   2. 接続を張る（`machine` は `-M -N -R 0:127.0.0.1:<待ち受け>`。向こうの側のポートは sshd に選ばせる。`containers` は
+//      トンネルを Project ごとの決まったパスの UNIX ソケットにし、コンテナを用意するときに張る——`ensureTunnel`）
 //   3. banto のコードを照合し、違えば新しい置き場に展開して切り替える（`remote-code.ts`。前の版を1つ残す）。
 //      送るときは縮めて流し（向こうに zstd があれば zstd、無ければ gzip）、送った量を画面へ知らせる（`onCodeTransfer`）
 //
@@ -56,14 +57,21 @@ import {
   ensureBaseImage,
 } from "@banto/container";
 import {
+  AGENT_DEVICE_PREFIX,
   INSIDE_IDS,
+  INSIDE_RELAY_PORT,
+  RELAY_DEVICE,
+  agentInsidePath,
   createOnlyDirScript,
   insideCommand,
   insideShellHomeCommand,
   insideStopUnitCommand,
   vmIncus,
   vmInterfaces,
+  vmProjectRunDir,
   vmResources,
+  vmUserRunDir,
+  relayRoute,
   type VmShell,
 } from "./remote-containers.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
@@ -129,6 +137,11 @@ export interface RemoteSshRuntimeOptions {
    * `<置き場>/agent-binaries/` のうちこれに無いものを消す。渡さなければ片づけない
    */
   agentBinaryDirNames?: () => ReadonlySet<string>;
+  /**
+   * containers：VM のユーザーの、コンテナに見せていない場所（既定は `/run/user/<uid>`。試験だけが差し替える——この機械の
+   * `/run/user` を使わない）
+   */
+  vmRunDir?: (uid: number) => string;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -225,6 +238,17 @@ interface Connection {
   incus?: ProjectContainers;
   /** containers：用意したコンテナ（根・入れ子が変われば用意し直す） */
   container?: { root: string | undefined; nesting: boolean; ready: Promise<string> };
+  /** containers：VM のユーザーの番号（読むのは接続ごとに1回） */
+  vmIds?: Promise<{ uid: number; gid: number }>;
+  /**
+   * containers：コンテナの番号の対応（外＝VM のユーザー・中）。コンテナを作るときの宣言と、あとから足す道（proxy device）が
+   * 同じものを使う——中の番号はここにしか書かない
+   */
+  containerIds?: { uid: number; gid: number; inside: { uid: number; gid: number } };
+  /** containers：逆向きのトンネル（Project ごとの決まったパスの UNIX ソケット。張れたらその VM のパス） */
+  tunnel?: Promise<string>;
+  /** containers：前の接続の鍵の窓口の装置を片づけた（接続ごとに1回——窓口の転送は接続と一緒に消えている） */
+  agentDevicesCleared?: true;
 }
 
 /**
@@ -233,14 +257,21 @@ interface Connection {
  * （`<置き場>/modules/<接続名>/s`）は Project の id を含んで上限を越える（既定の置き場の根で約 115 バイト）
  */
 interface SocketForward {
-  /** `-L`（host で待ち受けて向こうへ——流れの口）か `-R`（向こうで待ち受けて host へ——鍵の窓口） */
+  /**
+   * 何の転送か。鍵の窓口は host の窓口が消えたら外す（`watchAgentSockets`）。トンネルは containers の逆向きのトンネル
+   * （host の側は TCP の待ち受け）
+   */
+  purpose: "agent" | "stream" | "tunnel";
+  /** `-L`（host で待ち受けて向こうへ——流れの口）か `-R`（向こうで待ち受けて host へ——鍵の窓口・トンネル） */
   dir: "L" | "R";
-  /** host の側のパス */
+  /** host の側のパス（トンネルは `127.0.0.1:<待ち受けのポート>`） */
   hostPath: string;
   /** 向こうの側のパス */
   remotePath: string;
   /** `-L` の先を短いパスにするための symlink の先（connect は symlink を辿る）。向こうの Module の待ち受けの本当のパス */
   remoteTarget?: string;
+  /** containers：この転送と一緒に張った proxy device（転送を外すときに外す） */
+  device?: { container: string; name: string };
 }
 
 /** 起動役に最初の1行を渡してから MCP を流す口。閉じたあとに向こうの単位を止める */
@@ -400,7 +431,7 @@ export class RemoteSshRuntime {
     const name = this.opts.remoteNameOf(place.id);
     if (!name) throw new Error(`${place.id} は別のサーバの Project ではありません`);
     const conn = await this.ensureConnection(name, place);
-    if (conn.runtime.mode !== "containers") return this.preparedFrom(conn);
+    if (conn.runtime.mode !== "containers") return this.preparedFrom(conn, this.machineOrigin(conn));
     const container = await this.ensureProjectContainer(conn, place);
     return this.preparedInContainer(conn, container);
   }
@@ -550,14 +581,15 @@ export class RemoteSshRuntime {
           "-o", "ExitOnForwardFailure=yes",
           // **machine のトンネルは向こうの側も TCP**（番号は sshd に選ばせる）。Module は `bantoOrigin` の http で繋ぐ——
           // UNIX ソケットにすると Module の側に繋ぎ方が要る。その実行場所の Project は1つなので、番号の取り違い
-          // （v4-security.md §1、Fable の A3）は起きない。containers では Project ごとの決まったパスのソケットにする
-          ...(listener ? ["-R", `0:127.0.0.1:${listener.port}`] : []),
+          // （v4-security.md §1、Fable の A3）は起きない。containers では Project ごとの決まったパスのソケットにし、
+          // コンテナを用意するときに張る（`ensureTunnel`——張る前に置き場を作り古いソケットを消すので、ここでは張れない）
+          ...(listener && r.mode !== "containers" ? ["-R", `0:127.0.0.1:${listener.port}`] : []),
           "--",
           r.host,
         ],
         { stdio: ["ignore", "ignore", "pipe"], env: sshEnv() },
       );
-      const { remotePort, exited, stderrTail } = await waitMasterReady(master, controlPath, { tunnel: listener !== undefined });
+      const { remotePort, exited, stderrTail } = await waitMasterReady(master, controlPath, { tunnel: listener !== undefined && r.mode !== "containers" });
       const conn: Connection = {
         runtimeName: name,
         ...(projectId !== undefined ? { projectId } : {}),
@@ -623,7 +655,11 @@ export class RemoteSshRuntime {
     this.opts.onConnected?.(name, projectId);
     this.log(
       `[host] 別のサーバ「${name}」${forWhom(projectId)}に繋ぎました（${Math.round(performance.now() - started)}ms・` +
-        (listener ? `向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・` : "先に送るためだけ・") +
+        (!listener
+          ? "先に送るためだけ・"
+          : conn.runtime.mode === "containers"
+            ? `トンネルは用意するときに Project のソケットへ → 中継の待ち受け 127.0.0.1:${listener.port}・`
+            : `向こうの 127.0.0.1:${conn.remotePort} → 中継の待ち受け 127.0.0.1:${listener.port}・`) +
         `コード ${basename(conn.codeDir)}）`,
     );
     return conn;
@@ -944,7 +980,13 @@ export class RemoteSshRuntime {
     const name = `st-${createHash("sha256").update(connName).digest("hex").slice(0, 10)}`;
     const hostPath = this.shortSocketPath(name);
     // 向こうの待ち受けは Module の置き場（長い）。短い symlink を置いて、sshd にはそちらへ繋がせる
-    await this.addForward(conn, { dir: "L", hostPath, remotePath: `${conn.base}/s/${name}`, remoteTarget: `${conn.base}/modules/${connName}/${remoteSocketRel}` });
+    await this.addForward(conn, {
+      purpose: "stream",
+      dir: "L",
+      hostPath,
+      remotePath: `${conn.base}/s/${name}`,
+      remoteTarget: `${conn.base}/modules/${connName}/${remoteSocketRel}`,
+    });
     return hostPath;
   }
 
@@ -956,9 +998,28 @@ export class RemoteSshRuntime {
   private async forwardAgentSocket(conn: Connection, hostPath: string): Promise<string> {
     if (!conn.alive) throw new Error(`別のサーバ「${conn.runtimeName}」に鍵の窓口を見せられません——SSH の接続が閉じています`);
     const remotePath = `${conn.base}/s/a-${createHash("sha256").update(hostPath).digest("hex").slice(0, 12)}`;
-    await this.addForward(conn, { dir: "R", hostPath, remotePath });
+    await this.addForward(conn, { purpose: "agent", dir: "R", hostPath, remotePath });
     this.watchAgentSockets();
     return remotePath;
+  }
+
+  /**
+   * **containers の鍵の窓口**（v4-security.md §1「道」の ssh-agent）：Vault が host に立てた窓口を、VM だけの場所の Project ごとの
+   * ソケットへ `-R` で転送し、proxy device（`bind=instance`）でコンテナの中の短いパスに出す。名前は host のパスから決める
+   * （Module から来た文字列を使わない）。返すのは中のパス（Module に渡す `socketPath`）。host の窓口が消えたら転送と装置を外す
+   */
+  private async forwardAgentIntoContainer(conn: Connection, container: string, hostPath: string): Promise<string> {
+    if (!conn.alive) throw new Error(`別のサーバ「${conn.runtimeName}」に鍵の窓口を見せられません——SSH の接続が閉じています`);
+    const ids = conn.containerIds;
+    if (!ids) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（鍵の窓口を見せられません）`);
+    const mark = createHash("sha256").update(hostPath).digest("hex").slice(0, 12);
+    const vmPath = `${this.vmProjectDir(conn, ids.uid)}/a-${mark}.sock`;
+    const inside = agentInsidePath(mark);
+    const device = { container, name: `${AGENT_DEVICE_PREFIX}${mark}` };
+    await this.addForward(conn, { purpose: "agent", dir: "R", hostPath, remotePath: vmPath, device });
+    await conn.incus!.ensureProxy(container, device.name, { bind: "instance", listen: `unix:${inside}`, connect: `unix:${vmPath}` }, ids);
+    this.watchAgentSockets();
+    return inside;
   }
 
   private liveConnection(projectId: string, what: string): Connection {
@@ -990,14 +1051,15 @@ export class RemoteSshRuntime {
     await this.forwarding.run(`${remoteConnectionKey(conn.runtimeName, conn.projectId)}\0${key}`, async () => {
       if (conn.forwards.has(key)) return;
       // 待ち受ける側に同じパスのファイルが残っていれば先に消す（外した転送の窓口のファイルは残る——sshd の
-      // `StreamLocalBindUnlink` は root の設定なので頼らない）。`-L` の先は向こうの短い symlink
+      // `StreamLocalBindUnlink` は root の設定なので頼らない）。`-L` の先は向こうの短い symlink（machine）か、proxy device が
+      // VM で待ち受けるソケット（containers——Incus が張るので消さない）。置き場は途中のフォルダも VM のユーザーだけのものにする
       const remoteDir = `"$(dirname ${shq(f.remotePath)})"`;
       if (f.dir === "L") rmSync(f.hostPath, { force: true });
       await this.mustRun(
         conn,
         "ソケットの転送の置き場を用意でき",
-        `mkdir -p -- ${remoteDir} && chmod 700 ${remoteDir} && ` +
-          (f.remoteTarget ? `ln -sfn -- ${shq(f.remoteTarget)} ${shq(f.remotePath)}\n` : `rm -f -- ${shq(f.remotePath)}\n`),
+        `umask 077 && mkdir -p -- ${remoteDir} && chmod 700 ${remoteDir}` +
+          (f.remoteTarget ? ` && ln -sfn -- ${shq(f.remoteTarget)} ${shq(f.remotePath)}\n` : f.dir === "R" ? ` && rm -f -- ${shq(f.remotePath)}\n` : "\n"),
       );
       const r = await this.control(conn, "forward", f);
       if (r.code !== 0) throw new SshCommandError(`別のサーバ「${conn.runtimeName}」へのソケットの転送を張れませんでした`, r);
@@ -1015,6 +1077,13 @@ export class RemoteSshRuntime {
     if (r.code !== 0 && conn.alive) this.log(`[host] 別のサーバ「${conn.runtimeName}」のソケットの転送を外せませんでした: ${r.stderr.trim().slice(-300)}`);
     if (f.dir === "R") await this.run(conn, `rm -f -- ${shq(f.remotePath)}\n`, { timeoutMs: 30_000 });
     else rmSync(f.hostPath, { force: true });
+    // containers：一緒に張った proxy device も外す（窓口が閉じたら外す——v4-security.md §1「道」）
+    const { device } = f;
+    if (device && conn.incus) {
+      await conn.incus
+        .removeDevices(device.container, (d) => d === device.name)
+        .catch((err: unknown) => this.log(`[host] 別のサーバ「${conn.runtimeName}」のコンテナ ${device.container} の道 ${device.name} を外せませんでした: ${String(err)}`));
+    }
   }
 
   /** 多重化した接続の親に、転送を張る・外すよう頼む（`-O forward`／`-O cancel`） */
@@ -1041,7 +1110,7 @@ export class RemoteSshRuntime {
       let remaining = 0;
       for (const conn of this.connections.values()) {
         for (const [key, f] of conn.forwards) {
-          if (f.dir !== "R") continue;
+          if (f.purpose !== "agent") continue;
           if (existsSync(f.hostPath)) remaining++;
           else void this.cancelForward(conn, key).catch((err: unknown) => this.log(`[host] 鍵の窓口の転送を外せませんでした: ${String(err)}`));
         }
@@ -1350,7 +1419,13 @@ export class RemoteSshRuntime {
 
   // ── 用意できた箱 ────────────────────────────────────────────────────────
 
-  private preparedFrom(conn: Connection): PreparedPlace {
+  /** machine：中から banto に届く origin（向こうの 127.0.0.1 の、sshd が選んだトンネルの番号） */
+  private machineOrigin(conn: Connection): string {
+    if (conn.remotePort === undefined) throw new Error(`別のサーバ「${conn.runtimeName}」の接続に逆向きのトンネルがありません（先に送るためだけの接続です）`);
+    return `http://127.0.0.1:${conn.remotePort}`;
+  }
+
+  private preparedFrom(conn: Connection, bantoOrigin: string): PreparedPlace {
     const { dataDir, monorepoRoot } = this.opts;
     const nodePath = `${conn.codeDir}/${REMOTE_NODE_REL}`;
     const launcherPath = `${conn.codeDir}/${REMOTE_LAUNCHER_REL}`;
@@ -1368,12 +1443,10 @@ export class RemoteSshRuntime {
       return hostPath;
     };
     const self = this;
-    const { remotePort } = conn;
-    if (remotePort === undefined) throw new Error(`別のサーバ「${conn.runtimeName}」の接続に逆向きのトンネルがありません（先に送るためだけの接続です）`);
     return {
       name: `別のサーバ「${conn.runtimeName}」`,
       nodePath,
-      bantoOrigin: `http://127.0.0.1:${remotePort}`,
+      bantoOrigin,
       pathInside,
       async prepareModuleDirs({ dataDir: moduleDataDir, packageDir }) {
         await self.mustRun(conn, "Module の置き場を作れ", `mkdir -p ${shq(pathInside(moduleDataDir))} && chmod 700 ${shq(pathInside(moduleDataDir))}`);
@@ -1431,8 +1504,9 @@ export class RemoteSshRuntime {
 
   /**
    * **Project のコンテナを用意する**（v4-security.md §1「コンテナの作りと上限」）。無ければ VM の上の土台のイメージから作り、
-   * VM のユーザーの uid/gid を中の 1000 に対応させ、`<置き場>/code` を丸ごと読み取り専用・根をそのまま見せ、NIC を隔てる。
-   * 上限は VM の資源で計算する。名前・札・アドレスは毎回 Incus に聞く（覚えるのは「この接続で用意した」ことだけ）
+   * VM のユーザーの uid/gid を中の番号に対応させ、`<置き場>/code` を丸ごと読み取り専用・根をそのまま見せ、NIC を隔て、
+   * 中から banto への道（proxy device）を張る。上限は VM の資源で計算する。名前・札・アドレスは毎回 Incus に聞く（覚えるのは
+   * 「この接続で用意した」ことだけ）
    */
   private ensureProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
     const cur = conn.container;
@@ -1452,9 +1526,12 @@ export class RemoteSshRuntime {
     const shell = this.vmShell(conn);
     const run = vmIncus(shell);
     conn.incus ??= new ProjectContainers(run, DEFAULT_TIMEOUTS, vmInterfaces(shell));
-    const ids = await this.mustRun(conn, "ユーザーの番号を読め", "id -u\nid -g\n");
-    const [uid, gid] = ids.trim().split(/\s+/).map(Number);
-    if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error(`別のサーバ「${conn.runtimeName}」のユーザーの番号を読めませんでした：${ids.trim()}`);
+    const { uid, gid } = await this.vmIds(conn);
+    // 中の番号はここにしか書かない——あとから足す道（鍵の窓口・流れの口）も、この対応から番号を取る
+    const ids = { uid, gid, inside: INSIDE_IDS };
+    conn.containerIds = ids;
+    // 中から banto への道の先（その Project のトンネルのソケット）。張ってからコンテナを用意する（装置が繋ぐ先）
+    const tunnel = await this.ensureTunnel(conn);
     const image = await this.ensureVmBaseImage(conn, run);
     const { name } = await conn.incus.ensure({
       projectId: place.id,
@@ -1466,13 +1543,63 @@ export class RemoteSshRuntime {
       nesting: place.nesting,
       image,
       owner: this.opts.dataDir,
-      uid: uid!,
-      gid: gid!,
-      inside: INSIDE_IDS,
+      ...ids,
       portIsolation: true,
+      proxies: { [RELAY_DEVICE]: relayRoute(tunnel) },
       limits: defaultContainerLimits(await vmResources(shell)),
     });
+    // 前の接続で張った鍵の窓口の装置を外す（窓口の転送は接続と一緒に消えている。窓口は Vault が開き直したときに張り直す）。
+    // 接続ごとに1回——同じ接続で用意し直す（`forget`）ときに、いま使っている窓口を外さない
+    if (!conn.agentDevicesCleared) {
+      conn.agentDevicesCleared = true;
+      const gone = await conn.incus.removeDevices(name, (d) => d.startsWith(AGENT_DEVICE_PREFIX));
+      if (gone.length > 0) this.log(`[host] 別のサーバ「${conn.runtimeName}」のコンテナ ${name} から、前の接続の鍵の窓口の道を外しました（${gone.join("・")}）`);
+    }
     return name;
+  }
+
+  /** VM のユーザーの番号（接続ごとに1回読む） */
+  private vmIds(conn: Connection): Promise<{ uid: number; gid: number }> {
+    const read = (conn.vmIds ??= (async () => {
+      const out = await this.mustRun(conn, "ユーザーの番号を読め", "id -u\nid -g\n");
+      const [uid, gid] = out.trim().split(/\s+/).map(Number);
+      if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error(`別のサーバ「${conn.runtimeName}」のユーザーの番号を読めませんでした：${out.trim()}`);
+      return { uid: uid!, gid: gid! };
+    })());
+    read.catch(() => {
+      if (conn.vmIds === read) delete conn.vmIds;
+    });
+    return read;
+  }
+
+  /** その接続の Project の、VM だけの場所（コンテナに見せていない） */
+  private vmProjectDir(conn: Connection, uid: number): string {
+    if (conn.projectId === undefined) throw new Error(`別のサーバ「${conn.runtimeName}」の先に送るためだけの接続には Project の置き場がありません`);
+    return vmProjectRunDir((this.opts.vmRunDir ?? vmUserRunDir)(uid), conn.projectId);
+  }
+
+  /**
+   * **containers の逆向きのトンネル**（v4-security.md §1「SSH の接続は Project ごとに1本」）：VM の側は番号ではなく Project ごとの
+   * 決まったパスの UNIX ソケット（`<VM だけの場所>/t.sock`）——`-R 0:…` だと、ある Project の接続が切れている間に同じ番号が
+   * 別の Project に割り当てられ、残っているコンテナから別の Project の待ち受けに届く（Fable の A3）。パスが決まっているので、
+   * 繋ぎ直しても中から banto への道（proxy device）を変えない。張る前に置き場を作り、古いソケットを消す（`addForward`）。
+   * 接続ごとに1回。返すのは VM のソケットのパス
+   */
+  private ensureTunnel(conn: Connection): Promise<string> {
+    const projectId = conn.projectId;
+    const listener = projectId !== undefined ? this.listeners.get(remoteConnectionKey(conn.runtimeName, projectId)) : undefined;
+    if (!listener) return Promise.reject(new Error(`別のサーバ「${conn.runtimeName}」${forWhom(projectId)}の中継の待ち受けがありません（手放されました）`));
+    const tunnel = (conn.tunnel ??= (async () => {
+      const { uid } = await this.vmIds(conn);
+      const socket = `${this.vmProjectDir(conn, uid)}/t.sock`;
+      await this.addForward(conn, { purpose: "tunnel", dir: "R", hostPath: `127.0.0.1:${listener.port}`, remotePath: socket });
+      this.log(`[host] 別のサーバ「${conn.runtimeName}」${forWhom(projectId)}のトンネルを張りました（向こうの ${socket} → 中継の待ち受け 127.0.0.1:${listener.port}）`);
+      return socket;
+    })());
+    tunnel.catch(() => {
+      if (conn.tunnel === tunnel) delete conn.tunnel;
+    });
+    return tunnel;
   }
 
   /** VM の上の土台のイメージ（VM ごとに1つ）。作るあいだは段を画面に出す */
@@ -1510,10 +1637,13 @@ export class RemoteSshRuntime {
   /**
    * **コンテナの中で Module を起こす箱**。パスは machine と同じ（VM のパスのまま、中にも同じパスで見せる）。違うのは：
    * Module の置き場はその Project のコンテナにだけ見せる・Shell のホームは中で展開する・起こすのは
-   * `incus exec <c> --user 1000 -- <起動役>`・単位を止めるのも中で
+   * `incus exec <c> --user <中の番号> -- <起動役>`・単位を止めるのも中で・中から banto へは中の 127.0.0.1 の決めたポート
+   * （proxy device がその Project のトンネルのソケットへ繋ぐ）・鍵の窓口は中の `/run` に出す
    */
   private preparedInContainer(conn: Connection, container: string): PreparedPlace {
-    const base = this.preparedFrom(conn);
+    // 中継と Claude のログインの中継の住所：コンテナの中の 127.0.0.1（VM の 127.0.0.1 は中からは届かない——自分のネットワーク
+    // 名前空間を持つ）
+    const base = this.preparedFrom(conn, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
     const self = this;
     const incus = conn.incus!;
     const nodePath = `${conn.codeDir}/${REMOTE_NODE_REL}`;
@@ -1548,9 +1678,13 @@ export class RemoteSshRuntime {
         mounts.set(moduleDataDir, done);
         return done;
       },
-      // 鍵の窓口（ssh-agent）を中へ見せる道はまだ無い（#369 で proxy device にする）
-      socketPathInside() {
-        return Promise.reject(new Error(`別のサーバ「${conn.runtimeName}」（containers）のコンテナには、鍵の窓口をまだ見せられません`));
+      // 鍵の窓口（ssh-agent）：VM だけの場所へ転送し、proxy device で中の `/run` に出す（host の側の確かめは machine と同じ）
+      socketPathInside(hostPath) {
+        const own = coreSocketDir(self.opts.dataDir);
+        if (!hostPath.startsWith(`${self.opts.dataDir}/`) && !hostPath.startsWith(`${own}/`)) {
+          return Promise.reject(new Error(`鍵の窓口 ${hostPath} は banto の置き場の外です——別のサーバへ転送しません`));
+        }
+        return self.forwardAgentIntoContainer(conn, container, hostPath);
       },
       async prepareShellHome(moduleDataDir, files) {
         await mounts.get(moduleDataDir);

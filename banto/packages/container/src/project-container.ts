@@ -59,8 +59,54 @@ export interface ProjectContainerSpec {
    * コンテナどうしが直に届かないようにする——v4-security.md §1「コンテナどうしのネットワーク」）
    */
   portIsolation?: boolean;
+  /**
+   * **ずっと張っておく proxy device**（追加・2026-10-20、別のサーバの `containers`、v4-security.md §1「道」。装置の名前 → 道）。
+   * 用意するたびに宣言に合わせる（無ければ足し、違えば付け直す）。窓口ができたときだけ足すもの（鍵の窓口）は `ensureProxy`
+   */
+  proxies?: Readonly<Record<string, ProxyRoute>>;
   /** 資源の上限（`defaultContainerLimits()`）。動いているコンテナにもそのまま効く（起こし直さない） */
   limits: ContainerLimits;
+}
+
+/**
+ * **proxy device の道1本**（追加・2026-10-20、v4-security.md §1「道」）。`instance`：中で待ち受けて VM へ繋ぐ（中から banto へ・
+ * 鍵の窓口）。`host`：VM で待ち受けて中へ繋ぐ（流れの口・公開——向きが逆）。`listen`・`connect` は Incus の書き方のまま
+ * （`tcp:127.0.0.1:29839`・`unix:/run/x.sock`）
+ */
+export interface ProxyRoute {
+  bind: "instance" | "host";
+  listen: string;
+  connect: string;
+}
+
+/**
+ * **道から proxy device を組む**（v4-security.md §1 の条件4）。**どの装置にも `security.uid/gid` を付ける**——Incus の中継
+ * （forkproxy）は既定で root として繋ぐ。forkproxy は**繋ぐ側の名前空間で**この番号に落とし、**待ち受ける側の名前空間で** UNIX
+ * ソケットの持ち主（`uid`/`gid`/`mode`）を付ける（Incus の `main_forkproxy.go`——どちらも、その側の user namespace に入ってから）。
+ * なので番号は向きで決まる：`instance` は繋ぐのが VM（外の番号 `uid`/`gid`）・待ち受けるのが中（中の番号）、`host` はその逆。
+ * 中の番号は `insideIds`（決め打ちしない——中の番号を変えたらそのまま追従する）
+ */
+export function proxyDevice(route: ProxyRoute, ids: Pick<ProjectContainerSpec, "uid" | "gid" | "inside">): Device {
+  const outside = { uid: ids.uid, gid: ids.gid };
+  const inside = insideIds(ids);
+  const [connecting, listening] = route.bind === "instance" ? [outside, inside] : [inside, outside];
+  return {
+    type: "proxy",
+    bind: route.bind,
+    listen: route.listen,
+    connect: route.connect,
+    "security.uid": String(connecting.uid),
+    "security.gid": String(connecting.gid),
+    // 待ち受けが UNIX ソケットなら、持ち主を使う側のユーザーにして、ほかには開けない
+    ...(route.listen.startsWith("unix:") ? { uid: String(listening.uid), gid: String(listening.gid), mode: "0600" } : {}),
+  };
+}
+
+/** 装置の表が同じか（キーの順に依らない） */
+function sameDevice(a: Device | undefined, b: Device): boolean {
+  if (!a) return false;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
 }
 
 /**
@@ -457,6 +503,14 @@ export class ProjectContainers {
         toAdd[nic[0]] = { ...nic[1], "security.port_isolation": "true" };
       }
     }
+    // **ずっと張っておく道**（別のサーバの containers——中から banto へ）。違えば外して付け直す（PATCH は装置の中のキーを
+    // 混ぜうるので、古い形のキーを残さない）
+    for (const [device, route] of Object.entries(spec.proxies ?? {})) {
+      const want = proxyDevice(route, spec);
+      if (sameDevice(st.devices[device], want)) continue;
+      if (st.devices[device]) await this.incus(["config", "device", "remove", name, device], `古い道（${device}）を外すの`);
+      toAdd[device] = want;
+    }
     await this.addDevices(name, toAdd, "banto のコードと Project の根をマウントするの");
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
@@ -618,6 +672,35 @@ export class ProjectContainers {
         }
       }
     }
+  }
+
+  /**
+   * **proxy device を1本張る**（追加・2026-10-20、別のサーバの containers。窓口ができたときに足すもの——鍵の窓口・流れの口）。
+   * 同じ形で張ってあれば何もしない。違えば外して付け直す。動いているコンテナにそのまま効く（起こし直さない）
+   */
+  async ensureProxy(name: string, device: string, route: ProxyRoute, ids: Pick<ProjectContainerSpec, "uid" | "gid" | "inside">): Promise<void> {
+    const want = proxyDevice(route, ids);
+    await this.serialize(name, async () => {
+      const st = await this.state(name);
+      if (!st) throw new Error(`コンテナ ${name} がありません`);
+      if (sameDevice(st.devices[device], want)) return;
+      if (st.devices[device]) await this.incus(["config", "device", "remove", name, device], `古い道（${device}）を外すの`);
+      await this.addDevices(name, { [device]: want }, `道（${device}）を張るの`);
+    });
+  }
+
+  /**
+   * **装置を外す**（追加・2026-10-20）。`match` に当たる名前のものを全部（無ければ何もしない）。コンテナが無ければ何もしない。
+   * 返すのは外した装置の名前
+   */
+  async removeDevices(name: string, match: (device: string) => boolean): Promise<string[]> {
+    return this.serialize(name, async () => {
+      const st = await this.state(name);
+      if (!st) return [];
+      const gone = Object.keys(st.devices).filter(match);
+      for (const device of gone) await this.incus(["config", "device", "remove", name, device], `${device} を外すの`);
+      return gone;
+    });
   }
 
   /**
