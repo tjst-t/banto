@@ -10469,7 +10469,7 @@
       "number": 437,
       "kind": "task",
       "title": "Windows のパスで壊れる判定を直す（Repositories の台帳・設定の重なり・root-scope・FileSystem の画面）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [],
       "milestone": null,
@@ -10481,7 +10481,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:09.906Z",
       "closedAt": null,
       "extra": {}
     },
