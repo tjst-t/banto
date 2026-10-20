@@ -141,6 +141,8 @@ export interface RealProject {
   idle?: { days: number; suggestSleep: true };
   /** 新しい Project の始め方の仕事（別のサーバの clone・新しいリポジトリ、§6.49）。そう作ったものだけ */
   start?: RealProjectStart;
+  /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化の実験」の 4.。サイドバーの行に印）。そうでなければ無い */
+  privileged?: true;
   createdAt: string;
 }
 
@@ -960,6 +962,19 @@ export interface RealRemoteRuntime extends RealRuntimeInput {
   usedBy: Array<{ id: string; name: string }>;
   /** 新しい Project で選べない理由（選べるなら無し） */
   unavailableReason?: string;
+  /** 仮想化の実験を許している（containers だけ。v4-security.md §1「`containers` で仮想化の実験」の 1.）。許していなければ無い */
+  virtualization?: boolean;
+}
+
+/**
+ * **実行場所の「仮想化の実験を許す」**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 1.、Backlog 458 番）。
+ * 止めるときに、まだ使っている Project（閉じたもの・眠っているものも）があれば host が名指しして断る
+ */
+export async function setRealRuntimeVirtualization(name: string, allowed: boolean): Promise<{ warnings: string[]; runtime: RealRemoteRuntime }> {
+  return request<{ warnings: string[]; runtime: RealRemoteRuntime }>(`/api/runtimes/${encodeURIComponent(name)}/virtualization`, {
+    method: "PUT",
+    body: JSON.stringify({ allowed }),
+  });
 }
 
 export async function listRealRuntimes(): Promise<RealRemoteRuntime[]> {
@@ -1263,6 +1278,59 @@ export interface RealProjectContainer {
   container: { name: string; status: string } | null;
   /** 資源の上限（2026-10-02）。host がコンテナを使っていなければ null */
   limits: RealContainerLimits | null;
+  /** 仮想化の実験（2026-10-20）。host が扱えなければ null */
+  virtualization: RealProjectVirtualization | null;
+}
+
+/**
+ * **Project ごとの仮想化の実験**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 2.。host の
+ * `ContainersVirtualization.describe`）。`available` はその Project で使えるか（containers の実行場所で、許しているか）
+ */
+export interface RealProjectVirtualization {
+  /** /dev/kvm と /dev/vhost-net を見せる */
+  kvm: boolean;
+  /** 人が足したカーネルモジュールの名前（`vhost_net` は含まない） */
+  modules: string[];
+  /** 2MiB の hugepages の数 */
+  hugepages: number;
+  /** 特権コンテナにする */
+  privileged: boolean;
+  available: boolean;
+  /** 使えない理由 */
+  reason?: string;
+  /** 同じ実行場所の、ほかの特権の Project（閉じたもの・眠っているものも）。許していなくても返る */
+  privilegedOnServer: Array<{ id: string; name: string }>;
+}
+
+/** 「/dev/kvm を見せる」を変える（Backlog 459 番）。`nesting` は「中で Docker を使う」の今の値（host は変えない） */
+export async function setRealProjectKvm(
+  projectId: string,
+  enabled: boolean,
+  modules: readonly string[],
+): Promise<{ warnings: string[]; kvm: boolean; modules: string[]; nesting: boolean }> {
+  return request<{ warnings: string[]; kvm: boolean; modules: string[]; nesting: boolean }>(`/api/projects/${projectId}/container/kvm`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled, modules }),
+  });
+}
+
+/** hugepages の数を変える（Backlog 460 番）。`total` はその実行場所の合計、`allocated` はサーバで確保できた数 */
+export async function setRealProjectHugepages(
+  projectId: string,
+  count: number,
+): Promise<{ warnings: string[]; hugepages: number; total: number; allocated: number }> {
+  return request<{ warnings: string[]; hugepages: number; total: number; allocated: number }>(`/api/projects/${projectId}/container/hugepages`, {
+    method: "PUT",
+    body: JSON.stringify({ count }),
+  });
+}
+
+/** 「特権コンテナにする」を変える（Backlog 461 番）。`confirmName` は人が打った Project の名前（オン・オフとも） */
+export async function setRealProjectPrivileged(projectId: string, enabled: boolean, confirmName: string): Promise<{ privileged: boolean }> {
+  return request<{ privileged: boolean }>(`/api/projects/${projectId}/container/privileged`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled, confirmName }),
+  });
 }
 
 /** 資源の上限の数（メモリ MiB・CPU コア数・プロセス数） */

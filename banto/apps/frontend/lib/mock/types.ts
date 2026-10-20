@@ -37,6 +37,8 @@ export interface MockProject {
   partlyAwake?: RealPartlyAwake[];
   /** しばらく開いていないので眠らせるか聞く（追加・2026-10-16、§6.43）。写しの元は host の時計 */
   idle?: { days: number; suggestSleep: true };
+  /** 特権コンテナにした（追加・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 4.）。写しの元は host */
+  privileged?: true;
 }
 
 
