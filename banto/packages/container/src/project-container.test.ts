@@ -517,3 +517,24 @@ test("中から host に届くアドレスは、差し替えた読み手（VM �
   const c = new ProjectContainers(run, undefined, async () => ({ incusbr0: ["10.9.9.1"] }));
   assert.equal(await c.hostAddress("banto-x"), "10.9.9.1");
 });
+
+test("付け直しを頼まれたら、同じ形で付いていても外して付け直す（元のフォルダを差し替えたとき）", async () => {
+  const calls: string[][] = [];
+  const devices: Record<string, Record<string, string>> = { "m-pkg": { type: "disk", source: "/p", path: "/p", readonly: "true" } };
+  const run: RunIncus = async (args) => {
+    calls.push(args);
+    if (args[0] === "project") return { code: 0, stdout: "p\n", stderr: "" };
+    const patch = patchedDevices(args);
+    if (patch) Object.assign(devices, patch);
+    else if (args[0] === "config" && args[2] === "remove") delete devices[args[4]!];
+    else if (args[0] === "query") return { code: 0, stdout: JSON.stringify({ status: "Running", config: {}, devices }), stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const c = new ProjectContainers(run);
+  await c.ensureDisk("banto-x", "m-pkg", "/p", { readonly: true });
+  assert.ok(!calls.some((a) => a[0] === "config" || patchedDevices(a)), "同じ形なのに付け直した");
+  await c.ensureDisk("banto-x", "m-pkg", "/p", { readonly: true, remount: true });
+  const changes = calls.filter((a) => a[0] === "config" || patchedDevices(a)).map((a) => (patchedDevices(a) ? "add" : a.slice(0, 5).join(" ")));
+  assert.deepEqual(changes, ["config device remove banto-x m-pkg", "add"]);
+  assert.deepEqual(devices["m-pkg"], { type: "disk", source: "/p", path: "/p", readonly: "true" });
+});

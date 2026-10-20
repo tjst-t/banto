@@ -268,6 +268,8 @@ interface DiskRequest {
   device: string;
   source: string;
   readonly: boolean;
+  /** 同じ形で付いていても外して付け直す（元のフォルダを差し替えた——付いたままだと中は古い inode を見続ける） */
+  remount: boolean;
   resolve(): void;
   reject(err: unknown): void;
 }
@@ -550,7 +552,7 @@ export class ProjectContainers {
    * それぞれが自分の置き場を頼むので、以前は「読む＋足す」（約 0.1 秒）が Module の数だけ直列に並んでいた。
    * 書き換えを1本ずつ通す決まり（`serialize`）の順番待ちのあいだに来た頼みを束ね、読む1回・足す1回で済ませる
    */
-  async ensureDisk(name: string, device: string, source: string, opts: { readonly?: boolean } = {}): Promise<void> {
+  async ensureDisk(name: string, device: string, source: string, opts: { readonly?: boolean; remount?: boolean } = {}): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let batch = this.pendingDisks.get(name);
       if (!batch) {
@@ -563,7 +565,7 @@ export class ProjectContainers {
           await this.applyDisks(name, fresh);
         });
       }
-      batch.push({ device, source, readonly: Boolean(opts.readonly), resolve, reject });
+      batch.push({ device, source, readonly: Boolean(opts.readonly), remount: Boolean(opts.remount), resolve, reject });
     });
   }
 
@@ -583,7 +585,7 @@ export class ProjectContainers {
     for (const r of batch) {
       const cur = st.devices[r.device];
       const ro = String(r.readonly);
-      if (cur && cur["source"] === r.source && cur["path"] === r.source && (cur["readonly"] ?? "false") === ro) {
+      if (!r.remount && cur && cur["source"] === r.source && cur["path"] === r.source && (cur["readonly"] ?? "false") === ro) {
         r.resolve();
         continue;
       }
