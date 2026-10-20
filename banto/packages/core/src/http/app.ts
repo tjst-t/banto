@@ -53,7 +53,7 @@ import type { ContainersVirtualization } from "../runtime/containers-virt.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { InboxItem } from "../inbox/types.js";
-import type { MessageQuote, ProjectWokeCause, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
+import type { MessageQuote, ProjectState, ProjectWokeCause, ThreadClosedBy, ThreadKind, ThreadState } from "../project-thread/types.js";
 import { CanvasQuoteRejectedError, parseCanvasQuotes, parseFindingQuoteIds } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { rateLimitContinuedOf, rateLimitWaitOf } from "../project-thread/rate-limit-wait.js";
@@ -104,6 +104,7 @@ import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js
 import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-only.js";
 import { listPatrolTools, readOnlyModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
+import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { buildSystemPromptParts } from "../runner/system-prompt.js";
 import { splitMemory } from "../project-thread/memory-split.js";
@@ -2089,7 +2090,15 @@ export function createApp(deps: AppDeps) {
         }
       }
       if (url.pathname === "/api/projects" && req.method === "POST") {
-        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown; start?: unknown; parent?: unknown; folder?: unknown };
+        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown; start?: unknown; parent?: unknown; folder?: unknown; settings?: unknown };
+        // **作るときに一緒に書くスイッチ**（決定・2026-10-20、v4-frontend.md §6.51）。何も作る前に確かめ、作るのと同じ処理の中で書く
+        const settings = parseNewProjectSettings(body.settings);
+        if ("error" in settings) return json(res, 400, { error: settings.error });
+        if (hasSettingsToWrite(settings) && !deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+        const withSettings = async (project: ProjectState): Promise<ProjectState> => {
+          if (deps.runtimeConfig) await applyNewProjectSettings(deps.runtimeConfig, project.id, settings);
+          return project;
+        };
         // **どこで動かすか**（決定・2026-10-08、v4-security.md §1）。無いか `host-container` ならこの機械のコンテナ。
         // `remote:<名前>` なら登録した別のサーバで、根は向こうで正規化する。作ったあとは変えない
         const remote = typeof body.runtime === "string" ? remoteNameOf(body.runtime) : undefined;
@@ -2114,6 +2123,8 @@ export function createApp(deps: AppDeps) {
               folder,
               name: body.name,
               start: parseStartRequest(body.start),
+              // git を始める前に書く（始め方の仕事が走っている間に人が最初のターンを送れる）
+              onCreated: withSettings,
             });
             return json(res, 201, project);
           } catch (err) {
@@ -2126,10 +2137,10 @@ export function createApp(deps: AppDeps) {
           const project = remote
             ? await (deps.remoteRuntimes
                 ? deps.remoteRuntimes.createProjectOn(remote, String(body.root ?? ""), (root, runtime) =>
-                    deps.projectThread.createProject(body.name, root, { runtime }),
+                    deps.projectThread.createProject(body.name, root, { runtime }).then(withSettings),
                   )
                 : Promise.reject(new RemoteRuntimeError(501, "この banto は別のサーバを扱えません")))
-            : await deps.projectThread.createProject(body.name, body.root);
+            : await withSettings(await deps.projectThread.createProject(body.name, body.root));
           json(res, 201, project);
         } catch (err) {
           if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message });
@@ -4081,6 +4092,22 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, TURN_SUMMARY_KEY);
         }
         json(res, 200, { enabled: turnSummaryEnabled(projectId) });
+        return;
+      }
+
+      // **空いた会話を冷める前に要約する**（決定・2026-10-20、ユーザー。アーキ仕様 §3.1「切り替え」）。Project にだけ置ける、
+      // 値が無ければオン。オンは上書きを外す（値を持たない＝オン）
+      const idleCompactionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/idle-compaction$/);
+      if (idleCompactionMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = idleCompactionMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+          await setIdleCompaction(deps.runtimeConfig, projectId, body.enabled);
+        }
+        json(res, 200, { enabled: isIdleCompactionEnabled(deps.runtimeConfig, projectId) });
         return;
       }
 

@@ -129,11 +129,36 @@ export async function expectProjectOpen(
   });
 }
 
+/** 新しい Project の画面の「この Project の AI」の3つ（v4-frontend.md §6.51） */
+export interface NewProjectAi {
+  turnSummary: boolean;
+  autoApproveAll: boolean;
+  idleCompaction: boolean;
+}
+
+/**
+ * **試験の既定は、スイッチが入る前の既定**（追加・2026-10-20、§6.51）。画面の初めの位置はどれもオンだが、それで作ると
+ * 承認のカード・まとめの有無を前提にした試験の意味が黙って変わる。画面の初めの位置で作るのを見る試験だけが、それを渡す
+ */
+export const LEGACY_PROJECT_AI: NewProjectAi = { turnSummary: false, autoApproveAll: false, idleCompaction: true };
+
+/** 新しい Project の画面のスイッチを、渡した値に合わせる（押したあと、その値になったことまで見る） */
+export async function setNewProjectAi(scope: Page | ReturnType<Page["getByRole"]>, ai: NewProjectAi): Promise<void> {
+  for (const key of ["turnSummary", "autoApproveAll", "idleCompaction"] as const) {
+    const toggle = scope.getByTestId(`new-project-ai-${key}`);
+    await expect(toggle, `「この Project の AI」の ${key} のスイッチが無い`).toBeVisible({ timeout: 15_000 });
+    const want = String(ai[key]);
+    if ((await toggle.getAttribute("aria-checked")) !== want) await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", want);
+  }
+}
+
 /** Project を1つ作り、その Base Thread が開くまで待つ（どの spec も同じ手順を踏む） */
 export async function createProject(
   page: Page,
   projectName: string,
   projectRoot: string,
+  ai: NewProjectAi = LEGACY_PROJECT_AI,
 ): Promise<void> {
   await openNav(page);
   await clickNewProject(page);
@@ -146,6 +171,7 @@ export async function createProject(
 
   await nameInput.fill(projectName);
   await pathInput.fill(projectRoot);
+  await setNewProjectAi(page, ai);
 
   // **打ったものが残っているか、その場で見る**（追加・2026-09-12）。
   //

@@ -167,7 +167,17 @@ export class ProjectStarter {
    * **作る**（仕様の 2.）。置く場所に名前のフォルダを作り、そこを根に Project を作り、始め方の仕事を始めて返す。
    * URL の断りは何も作る前に
    */
-  async create(input: { runtime: string; parent: string | undefined; folder: string; name: string; start: StartRequest }): Promise<ProjectState> {
+  async create(input: {
+    runtime: string;
+    parent: string | undefined;
+    folder: string;
+    name: string;
+    start: StartRequest;
+    /**
+     * 作った直後・始め方の仕事を始める前に呼ぶ（作るときに一緒に書く設定、v4-frontend.md §6.51）。失敗したら始めずに断る
+     */
+    onCreated?: (project: ProjectState) => Promise<unknown>;
+  }): Promise<ProjectState> {
     const mode = this.deps.remote.modeOf(input.runtime);
     if (!mode) throw new ProjectStartError(400, `実行場所「${input.runtime}」はありません`);
     if (input.start.kind === "clone") cloneUrlOf(input.start, this.deps.github, mode);
@@ -182,6 +192,7 @@ export class ProjectStarter {
       });
       throw err;
     }
+    await input.onCreated?.(project);
     await this.begin(project.id, input.start);
     return this.deps.projectThread.getProject(project.id) ?? project;
   }

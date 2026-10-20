@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../test-base.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, installInfisical, openApp, openNav, openProjectSettings, clickNewProject } from "../helpers.js";
+import { createProject, installInfisical, openApp, openNav, openProjectSettings, clickNewProject, setNewProjectAi, LEGACY_PROJECT_AI } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -320,6 +320,7 @@ test("新しい Project：「選ぶ」の画面で新しいフォルダをその
   await picker.getByRole("button", { name: "ここにする" }).click();
   await expect(dialog.getByLabel("Root パス")).toHaveValue(join(base, "新しい作業"));
   await dialog.getByLabel("Project 名").fill("新しいフォルダの spec");
+  await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
   await dialog.getByTestId("new-project-submit").click();
   await expect(page).toHaveURL(/\/p\/[^/?]+/, { timeout: 60_000 });
 });

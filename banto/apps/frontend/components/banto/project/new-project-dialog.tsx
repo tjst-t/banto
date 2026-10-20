@@ -67,6 +67,7 @@ import {
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import type { PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
+import { NEW_PROJECT_AI_DEFAULTS, NewProjectAiSwitches } from "@/components/banto/project/project-ai-switches";
 import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
 import type { MockProjectOverrides } from "@/lib/mock/types";
 
@@ -193,6 +194,8 @@ export function NewProjectDialog({
   const [basePath, setBasePath] = useState(initialBasePath);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);
+  // 「この Project の AI」（§6.51）。初めはどれもオン——作るときに host へ送る
+  const [aiSettings, setAiSettings] = useState(NEW_PROJECT_AI_DEFAULTS);
 
   function patch(next: Partial<Overrides>) {
     setOverrides((prev) => ({ ...prev, ...next }));
@@ -204,6 +207,7 @@ export function NewProjectDialog({
     setBasePath("");
     setShowAdvanced(false);
     setOverrides(EMPTY_OVERRIDES);
+    setAiSettings(NEW_PROJECT_AI_DEFAULTS);
     setMethod("folder");
     setPrepared(null);
     setCloneUrl("");
@@ -257,6 +261,7 @@ export function NewProjectDialog({
         // 始め方のタブでは置く場所（空なら向こうの home）
         basePath: remoteStart ? basePath.trim() : root,
         overrides,
+        settings: aiSettings,
         ...(remoteName ? { runtime } : {}),
         ...(remoteStart
           ? {
@@ -659,6 +664,8 @@ export function NewProjectDialog({
                 </CascadeRow>
               </div>
             ) : null}
+            {/* **「作成する」の上**（§6.51）。どの始め方でも同じ。既にある Project を開くときは作らないので出さない */}
+            {showProjectStep && !existing ? <NewProjectAiSwitches value={aiSettings} onChange={setAiSettings} /> : null}
           </div>
 
           {error ? <p className="px-1 text-xs text-destructive">{error}</p> : null}

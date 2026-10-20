@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, DATA_DIR } from "../config.js";
-import { openApp, openNav, clickNewProject } from "../helpers.js";
+import { openApp, openNav, clickNewProject, setNewProjectAi, LEGACY_PROJECT_AI } from "../helpers.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { RUNTIME_KEYS_GROUP, withSshHost, type SshHost } from "../ssh-host.js";
@@ -330,6 +330,7 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await picker.getByRole("button", { name: "ここにする" }).click();
       await expect(dialog.getByLabel(/Root パス/)).toHaveValue(`/home/${host.user}/work/alpha`);
       await dialog.getByLabel("Project 名").fill(projectName);
+      await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
       await dialog.getByTestId("new-project-submit").click();
       await expect(page).toHaveURL(/\/p\/[^/?]+/, { timeout: 60_000 });
       const projectId = new URL(page.url()).pathname.split("/")[2]!;

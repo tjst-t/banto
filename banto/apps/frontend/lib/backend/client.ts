@@ -672,15 +672,25 @@ export async function createRealProject(
   runtime?: string,
   /** **始め方**（別のサーバだけ、v4-frontend.md §6.49）。`root` は置く場所、`folder` はその中に作るフォルダの名前 */
   start?: { start: RealProjectStartRequest; folder: string },
+  /** **作るときに一緒に書くスイッチ**（v4-frontend.md §6.51）。host が作るのと同じ処理の中で書く */
+  settings?: RealNewProjectSettings,
 ): Promise<RealProject> {
   return request<RealProject>("/api/projects", {
     method: "POST",
-    body: JSON.stringify(
-      start
+    body: JSON.stringify({
+      ...(start
         ? { name, runtime, start: start.start, parent: root, folder: start.folder }
-        : { name, root, ...(runtime ? { runtime } : {}) },
-    ),
+        : { name, root, ...(runtime ? { runtime } : {}) }),
+      ...(settings ? { settings } : {}),
+    }),
   });
+}
+
+/** 新しい Project の画面の「この Project の AI」の3つ（host の `NewProjectSettings` と同じ形） */
+export interface RealNewProjectSettings {
+  turnSummary?: boolean;
+  autoApproveAll?: boolean;
+  idleCompaction?: boolean;
 }
 
 /** 新しい Project の始め方（別のサーバの clone・新しいリポジトリ、§6.49） */
@@ -1621,6 +1631,22 @@ export async function fetchRealTurnSummary(projectId: string): Promise<boolean> 
 export async function setRealTurnSummary(projectId: string, enabled: boolean): Promise<boolean> {
   return (
     await request<{ enabled: boolean }>(`/api/projects/${projectId}/turn-summary`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    })
+  ).enabled;
+}
+
+/**
+ * **空いた会話を冷める前に要約する**（決定・2026-10-20、ユーザー。アーキ仕様 §3.1）。Project にだけ置ける、値が無ければオン
+ */
+export async function fetchRealIdleCompaction(projectId: string): Promise<boolean> {
+  return (await request<{ enabled: boolean }>(`/api/projects/${projectId}/idle-compaction`)).enabled;
+}
+
+export async function setRealIdleCompaction(projectId: string, enabled: boolean): Promise<boolean> {
+  return (
+    await request<{ enabled: boolean }>(`/api/projects/${projectId}/idle-compaction`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     })
