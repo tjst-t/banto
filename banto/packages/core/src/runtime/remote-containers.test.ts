@@ -161,6 +161,14 @@ if (cmd === "exec") {
   const argv = rest.slice(dash + 1);
   const user = opts.includes("--user") ? opts[opts.indexOf("--user") + 1] : undefined;
   if (argv[1] === "--version") out(process.version + "\n");
+  // 中から見たフォルダの inode：そのパスに付いている装置の、付けたときのもの（bind mount と同じ）。付いていなければ無い
+  if (argv[0] === "stat") {
+    const path = argv[argv.length - 1];
+    const dev = Object.entries(st.instances[name].devices).find(([, d]) => d.type === "disk" && d.path === path);
+    const ino = dev && st.mounted ? st.mounted[name + "/" + dev[0]] : undefined;
+    if (ino === undefined) die("stat: cannot statx '" + path + "': No such file or directory");
+    out(ino + "\n");
+  }
   // 中の root で流すもの（ユーザーを作る・仕事の組）はこの機械で走らせない
   if (user === undefined) out("1\n");
   // 中のユーザーで流すもの：この機械で本当に走らせる（見せたフォルダに書けたかを見る）
@@ -326,16 +334,19 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     writeFileSync(join(pkgHost, "server.js"), "v1\n");
     const pkgVm = `${base}/module-packages/ext-a`;
     const modExt = join(dataDir, "modules", "ext-a-p1");
-    const pkgDevice = () =>
-      Object.entries(state().instances["banto-p1"]!.devices).find(([, d]) => d["source"] === pkgVm);
-    const mountedIsCurrent = () => {
-      const [dev] = pkgDevice()!;
-      return state().mounted[`banto-p1/${dev}`] === statSync(pkgVm).ino;
+    const modExtB = join(dataDir, "modules", "ext-a-p2");
+    const pkgDevice = (c = "banto-p1") => Object.entries(state().instances[c]!.devices).find(([, d]) => d["source"] === pkgVm);
+    const mountedIsCurrent = (c = "banto-p1") => {
+      const [dev] = pkgDevice(c)!;
+      return state().mounted[`${c}/${dev}`] === statSync(pkgVm).ino;
     };
     await a.prepareModuleDirs({ dataDir: modExt, packageDir: pkgHost });
     assert.equal(readFileSync(join(pkgVm, "server.js"), "utf8"), "v1\n");
     assert.deepEqual(pkgDevice()?.[1], { type: "disk", source: pkgVm, path: pkgVm, readonly: "true" });
     assert.ok(mountedIsCurrent());
+    // 同じ VM のもう1つの Project も同じ配布物を使う（置き場は Module 名だけで決まり、共有）
+    await b.prepareModuleDirs({ dataDir: modExtB, packageDir: pkgHost });
+    assert.ok(mountedIsCurrent("banto-p2"));
     // 同じ版：付け直さない
     writeFileSync(incusLog, "");
     await a.prepareModuleDirs({ dataDir: modExt, packageDir: pkgHost });
@@ -348,6 +359,15 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.notEqual(statSync(pkgVm).ino, inoBefore, "試験の前提：フォルダごと差し替わっていない");
     assert.ok(mountedIsCurrent(), "差し替えたあと、コンテナは消した古いフォルダを見ている（付け直していない）");
     assert.equal(pkgDevice()?.[1]["readonly"], "true");
+    // もう1つの Project：この接続は置き換えていない（VM のフォルダはもう新しい版）が、コンテナは消された古いフォルダを
+    // 見ている——次に用意するときに付け直す
+    assert.ok(!mountedIsCurrent("banto-p2"), "試験の前提：p2 のコンテナが古いフォルダを見ていない");
+    await b.prepareModuleDirs({ dataDir: modExtB, packageDir: pkgHost });
+    assert.ok(mountedIsCurrent("banto-p2"), "ほかの Project が差し替えたあと、このコンテナは消した古いフォルダを見ている（付け直していない）");
+    // 付け直したあとは、もう付け直さない
+    writeFileSync(incusLog, "");
+    await b.prepareModuleDirs({ dataDir: modExtB, packageDir: pkgHost });
+    assert.ok(!readFileSync(incusLog, "utf8").includes("remove"), "今のフォルダを見ているのに付け直した");
 
     // 2回目の用意では作り直さない
     writeFileSync(incusLog, "");
