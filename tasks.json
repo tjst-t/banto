@@ -10226,7 +10226,7 @@
       "number": 423,
       "kind": "task",
       "title": "見回り：自動化の mode patrol・notify と手帳・受信箱の気づき",
-      "status": "ready",
+      "status": "done",
       "parent": "missions-patrols",
       "dependsOn": [
         "read-only-runs",
@@ -10237,12 +10237,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §4.4「見回り」・§2.4 の 4.、v4-frontend.md §6.47・§6.41。\n- 自動化の mode: \"patrol\"（作ったあと変えない）。専用の Fork を毎回まっさらに固定し、立てる・立て直すときに読むだけの印を刻む。まとめ・banto.turn-decisions・まとめの prompt と Stop hook を付けない。完了した回は出さない。Claude のアカウントが全部閾値越えなら飛ばす\n- notify（1回5件・1日10件、自動化のタイムゾーン）と手帳（automation.patrol_noted、7日は出し直さない、500件、知らせない）\n- 受信箱の「気づき」（並びは返ってきた会話の次、急ぎは先頭、バッジに数えない、外から来た文を読んだ印、URL の決まり）。「やって」「任務にする」（既存の quotes に出所「見回り〈名前〉」で乗せる）・「今後知らせない」・「片づけた」\n- 自動化の画面の種類「見回り」と手帳、見回りの Fork の帯",
       "doneWhen": "偽のモデルの E2E で、見回りの回が notify で気づきを出し、同じ key は出し直さず、その回で読むだけでない tool が断られ、受信箱の「やって」で新しい Fork に引用つきで届き、「任務にする」で任務が始まることを確かめる。見回りを消したあとその Fork に打っても読むだけで動くことを確かめる",
-      "resolution": null,
+      "resolution": "GitHub の main 977f3dae・054e8e14。#424 の上の版で core 単体 1204件・repositories 127件・E2E patrol・read-only-runs・repositories-github-read・mission・inbox-page 通過。patrol.spec は並べて流したとき4回中1回落ち（#467 に積んだ）。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T07:20:42.767Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T15:49:20.279Z",
+      "closedAt": "2026-10-20T15:49:20.279Z",
       "extra": {}
     },
     {
