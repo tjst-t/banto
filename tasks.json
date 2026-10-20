@@ -11372,7 +11372,7 @@
       "number": 473,
       "kind": "task",
       "title": "空いた会話のキャッシュ：冷める前の要約（idle compaction）と画面",
-      "status": "in-progress",
+      "status": "done",
       "parent": "idle-cache",
       "dependsOn": [
         "idle-cache-keepalive"
@@ -11382,12 +11382,12 @@
       "labels": [],
       "body": "仕様はローカルの main の docs/notes/2026-10-20-idle-cache-spec.md（正本 v4-architecture.md §3.1 の写し）の「冷める前の要約（host）」と「段0」の 6.・7.。温め直しは #472 で入った（claude-login/keep-alive.ts、relay.keepAlive.cacheOf(threadId) で最後に当たった時刻・止まった理由が読める。実装の細部は docs/notes/2026-10-20-idle-cache-keepalive-impl.md）。\n\n- 要約を起こす方法は段0で決まった：その会話を resume して prompt に `/compact` を渡す。同じセッション id の要求1つで直前のキャッシュに当たり、SDK は compact_boundary（trigger \"manual\"）を出し、assistant の発言は返らない（要約は synthetic の user 発言として入る）。\n- 最後の要求の開始から 225分前後、**200分の温め直しが当たっていた（直前の本物の要求か温め直しが60分以内に当たった）ときだけ**走らせる。温め直しが止まった会話（abandoned）は要約しない。\n- 新しい cause `idle-compaction` のターン：受信箱に出さない（成功・失敗・切れたどれでも）、眠った Project を起こさない、自動スリープの「人の操作」に数えない、サイドバーの並びと未読を動かさない、Fork の予約と自動化のレビューに影響しない。起こし直しで切れても続けない（記録を締めるだけ）。失敗はログだけ。\n- 裏の仕事を待っている会話（deliversLater の札が awaiting）も対象にしてよい（段0 7.）。要約中に届いたものは deliveries に留まり終わったら起きる。人が要約中に送ったら終わるまで待たせる。\n- thread.compacted に理由 `idle` を持たせ、会話に「4時間空いたので、続きの費用を抑えるために要約しました」の印を出す（fold から）。\n- 画面と口：Thread の読みモデルに `idleCompactionAt`（予定時刻・無ければ null）、/api/events で変わったら知らせる。5分前に会話へ「まもなく要約します」の帯、入力欄の最初の1打鍵・送信・会話の中の押す操作（スクロール除く）で `POST /api/threads/:id/idle-compaction/cancel`（要約をやめ、温め直しは続ける）。要約中は「要約しています」。右上の文脈のメーターに温め直しの回数と量（中継のメモリ、起こし直しで消える）。v4-frontend.md に帯の節を書く（ローカルの main に v4-frontend.md の §6.51 が無ければ、末尾に §6.52 として足してよい）。",
       "doneWhen": "E2E（偶の上流・時計を速めた試験）で、4時間空いた会話が要約され会話に印が出て受信箱に出ないこと、帯で取りやめられること、温め直しが外れた会話は要約しないことを確かめる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/idle-cache-compaction）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T14:17:56.576Z",
-      "updatedAt": "2026-10-20T20:08:03.179Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:47:25.945Z",
+      "closedAt": "2026-10-20T20:47:25.945Z",
       "extra": {}
     },
     {
