@@ -750,3 +750,19 @@ test("取ってくる向きは大きさを見張る：置き場が上限を越�
     assert.deepEqual(readdirSync(join(w.home, ".data", "branch-sync")), []);
   });
 });
+
+test("前の回が残した使い捨ての置き場は、起こしたときに消す（レビュー L5）", async () => {
+  await withWorld(async (w) => {
+    await addAccount(w, "alice", TOKEN);
+    const left = join(w.home, ".data", "branch-sync", "w-crashed");
+    mkdirSync(join(left, "repo.git"), { recursive: true });
+    writeFileSync(join(left, "branch.bundle"), "x");
+    const { far, sync, project } = await farClone(w);
+    await sync.leftoversCleared;
+    assert.equal(existsSync(left), false, "前の回の置き場が残っている");
+    // そのあと運ぶものは今までどおり
+    commitOnBranch(far.dir, "backlog", "{}\n");
+    const r = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(r.handled && r.ok, true, JSON.stringify(r));
+  });
+});
