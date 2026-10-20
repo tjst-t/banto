@@ -82,7 +82,7 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
   const thread = getThread(threadId);
   const isReal = thread?.real === true;
   // **いま使っている Claude のアカウントと使用量**（§6.46）。ターンが終わって使った量の記録が増えたら取り直す
-  const claudeAccount = useCurrentClaudeAccount(isReal ? thread?.projectId : undefined, thread?.realUsage?.length ?? 0);
+  const claudeAccount = useCurrentClaudeAccount(isReal ? thread?.projectId : undefined, threadId, thread?.realUsage?.length ?? 0);
   const usage = {
     ...rawUsage,
     categories: rawUsage.categories.map((c) => withSkillItems(c, threadSkills)),

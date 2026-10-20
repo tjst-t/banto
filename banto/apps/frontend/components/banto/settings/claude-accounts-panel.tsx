@@ -21,19 +21,21 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   fetchClaudeAccounts,
   refreshClaudeAccountUsage,
   removeClaudeAccount,
   renameClaudeAccount,
   updateClaudeAccountSettings,
+  type ClaudeAccountMode,
   type ClaudeAccountView,
   type ClaudeAccountsState,
 } from "@/lib/backend/client";
 import { describeFailure, reportFailure } from "@/lib/report-failure";
 import { navigateUrl } from "@/lib/url-nav";
 import { ClaudeAccountLoginDialog } from "@/components/banto/settings/claude-account-login-dialog";
-import { AccountOrderEditor, IconButton, UsageMeter, accountPlan, percent } from "@/components/banto/settings/claude-accounts-shared";
+import { AccountOrderEditor, IconButton, MODE_CHOICES, UsageMeter, accountPlan, percent } from "@/components/banto/settings/claude-accounts-shared";
 
 /** 閾値を動かしてから保存するまで（指を離すたびに保存しない） */
 const THRESHOLD_SAVE_DELAY_MS = 400;
@@ -119,6 +121,21 @@ export function ClaudeAccountsPanel() {
     }
   }
 
+  async function saveMode(mode: ClaudeAccountMode) {
+    if (!state || saving || state.mode === mode) return;
+    const before = state;
+    setSaving(true);
+    setState({ ...state, mode });
+    try {
+      setState(await updateClaudeAccountSettings({ mode }));
+    } catch (err) {
+      setState(before);
+      reportFailure("使い方を保存できませんでした", err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveThresholds(next: { fiveHour: number; sevenDay: number }) {
     try {
       const saved = await updateClaudeAccountSettings({ thresholds: next });
@@ -156,14 +173,17 @@ export function ClaudeAccountsPanel() {
   }
   if (!state) return <p className="text-xs text-ink-3">読み込み中…</p>;
 
+  const balance = state.mode === "balance";
   const removingFrom = removing ? state.projectOrders.filter((p) => p.order.includes(removing.id)) : [];
   return (
     <div data-testid="claude-accounts-panel" className="flex w-full max-w-3xl flex-col gap-8">
       <header className="flex flex-col gap-1">
         <h1 className="text-lg font-semibold text-foreground">Claude のアカウント</h1>
-        <p className="text-sm text-ink-2">
+        {/* 呼び名（並び）は変えず、説明文だけ使い方で変える（§6.46「使い方」） */}
+        <p data-testid="claude-accounts-lead" className="text-sm text-ink-2">
           会話と、コンテナの中の Claude（サブエージェント・Factory
-          など）が使うアカウントです。使用量が閾値を越えると、並びの次のアカウントに切り替えます。
+          など）が使うアカウントです。
+          {balance ? "会話ごとに余裕のあるアカウントを選び、閾値を越えたら移ります。" : "使用量が閾値を越えると、並びの次のアカウントに切り替えます。"}
         </p>
       </header>
 
@@ -215,6 +235,35 @@ export function ClaudeAccountsPanel() {
       </section>
 
       <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-semibold text-foreground">使い方</h2>
+        <div role="radiogroup" className="grid gap-2 sm:grid-cols-2">
+          {MODE_CHOICES.map(([id, title, note]) => (
+            <label
+              key={id}
+              data-testid={`claude-accounts-mode-${id}`}
+              className={cn(
+                "flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3",
+                state.mode === id ? "border-[var(--banto-accent)] bg-surface-2/50" : "border-border",
+              )}
+            >
+              <input
+                type="radio"
+                name="claude-accounts-mode"
+                checked={state.mode === id}
+                disabled={saving}
+                onChange={() => void saveMode(id)}
+                className="mt-1 accent-[var(--banto-accent)]"
+              />
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm text-foreground">{title}</span>
+                <span className="text-xs text-ink-3">{note}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-foreground">切り替える閾値</h2>
         <p className="text-xs text-ink-2">
           どちらかを越えたアカウントは使わず、並びの次へ移ります。リセットされたら元のアカウントに戻ります。
@@ -224,7 +273,11 @@ export function ClaudeAccountsPanel() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-foreground">既定の並び</h2>
-        <p className="text-xs text-ink-2">Project で並びを決めていなければ、この順で使います。上ほど先に使います。</p>
+        <p data-testid="claude-accounts-default-order-note" className="text-xs text-ink-2">
+          {balance
+            ? "Project で並びを決めていなければ、この中から、新しい会話ごとに余裕のあるものを選びます。同じ余裕なら上を先に使います。"
+            : "Project で並びを決めていなければ、この順で使います。上ほど先に使います。"}
+        </p>
         <AccountOrderEditor
           testId="claude-accounts-default-order"
           order={state.defaultOrder}
@@ -318,6 +371,7 @@ function AccountRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(a.label);
   const plan = accountPlan(a, state);
+  const usedByLabel = state.mode === "balance" ? "直近1時間に使った Project" : "いま使っている Project";
   const hostLoggedOut = a.kind === "host" && state.hostLogin && !state.hostLogin.loggedIn ? state.hostLogin.reason : undefined;
 
   async function commit() {
@@ -377,9 +431,10 @@ function AccountRow({
         </span>
         <span data-testid="claude-account-used-by" className="text-xs text-ink-3">
           {a.kind === "host" ? "人の claude コマンドと共有しています。" : ""}
+          {/* 均すは固定が最後の要求から1時間生きるので「直近1時間」（v4-security.md §2「均す」の 9.） */}
           {a.usedBy.length > 0
-            ? `いま使っている Project：${a.usedBy.map((p) => p.name).join("、")}`
-            : "いま使っている Project はありません"}
+            ? `${usedByLabel}：${a.usedBy.map((p) => p.name).join("、")}`
+            : `${usedByLabel}はありません`}
         </span>
         {hostLoggedOut ? <span className="text-xs text-stop">{hostLoggedOut}</span> : null}
         {failure ? (

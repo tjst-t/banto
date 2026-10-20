@@ -1392,12 +1392,17 @@ export interface ClaudeAccountView {
   rateLimitTier?: string;
   addedAt: string;
   usage?: { fiveHour?: ClaudeUsageWindow; sevenDay?: ClaudeUsageWindow; status?: string; statusResetsAt?: string; readAt: string };
-  /** いまこのアカウントを使っている Project（中継が起こしてから覚えたもの） */
+  /** いまこのアカウントを使っている Project（上から順には中継が起こしてから覚えたもの、均すは直近1時間の固定） */
   usedBy: Array<{ projectId: string; name: string }>;
 }
 
+/** 使い方：`balance`＝均す（新しい会話ごとに余裕のあるものを選ぶ、既定）・`ordered`＝上から順に（v4-security.md §2「均す」） */
+export type ClaudeAccountMode = "balance" | "ordered";
+
 export interface ClaudeAccountsState {
   accounts: ClaudeAccountView[];
+  /** banto 全体の使い方 */
+  mode: ClaudeAccountMode;
   defaultOrder: string[];
   /** 0〜1 */
   thresholds: { fiveHour: number; sevenDay: number };
@@ -1419,8 +1424,9 @@ export async function refreshClaudeAccountUsage(): Promise<ClaudeAccountsState &
   return request("/api/claude-accounts/usage", { method: "POST" });
 }
 
-/** 既定の並び・閾値（0〜1）。渡したものだけ変える */
+/** 既定の並び・閾値（0〜1）・使い方。渡したものだけ変える */
 export async function updateClaudeAccountSettings(patch: {
+  mode?: ClaudeAccountMode;
   defaultOrder?: string[];
   thresholds?: { fiveHour: number; sevenDay: number };
 }): Promise<ClaudeAccountsState> {
@@ -1484,11 +1490,16 @@ export interface ClaudeAccountSwitchView {
   reason: { kind: "threshold"; window: "5h" | "7d"; utilization: number } | { kind: "rejected" | "recovered" | "order" | "unavailable" };
 }
 
-/** Project の並び（`order: null`＝既定のまま）と観測 */
+/** Project の並び（`order: null`＝既定のまま）・使い方（`mode: null`＝banto 全体と同じ）と観測 */
 export interface ProjectClaudeAccounts {
   order: string[] | null;
   effectiveOrder: string[];
+  mode: ClaudeAccountMode | null;
+  effectiveMode: ClaudeAccountMode;
+  /** 上から順に：最後に返事をしたアカウント */
   currentAccount?: string;
+  /** 均す：生きている固定先（並びの順） */
+  pinnedAccounts?: string[];
   recentSwitches?: ClaudeAccountSwitchView[];
 }
 
@@ -1496,8 +1507,17 @@ export async function fetchProjectClaudeAccounts(projectId: string): Promise<Pro
   return request<ProjectClaudeAccounts>(`/api/projects/${projectId}/claude-accounts`);
 }
 
-export async function setProjectClaudeAccounts(projectId: string, order: string[] | null): Promise<ProjectClaudeAccounts> {
-  return request<ProjectClaudeAccounts>(`/api/projects/${projectId}/claude-accounts`, { method: "PUT", body: JSON.stringify({ order }) });
+/** 渡したものだけ変える（`null`＝既定の並び・banto 全体の使い方に戻す） */
+export async function setProjectClaudeAccounts(
+  projectId: string,
+  patch: { order?: string[] | null; mode?: ClaudeAccountMode | null },
+): Promise<ProjectClaudeAccounts> {
+  return request<ProjectClaudeAccounts>(`/api/projects/${projectId}/claude-accounts`, { method: "PUT", body: JSON.stringify(patch) });
+}
+
+/** 均すときのその会話の生きている固定先（v4-security.md §2「均す」の 9.）。まだ固定が無ければ `accountId` が無い */
+export async function fetchThreadClaudeAccount(threadId: string): Promise<{ accountId?: string }> {
+  return request<{ accountId?: string }>(`/api/threads/${encodeURIComponent(threadId)}/claude-account`);
 }
 
 export async function updateRealProjectSettings(

@@ -5,7 +5,7 @@
 import type { ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { ClaudeAccountView, ClaudeAccountsState, ClaudeUsageWindow } from "@/lib/backend/client";
+import type { ClaudeAccountMode, ClaudeAccountView, ClaudeAccountsState, ClaudeUsageWindow } from "@/lib/backend/client";
 import { cn } from "@/lib/utils";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -40,6 +40,14 @@ export function accountPlan(a: ClaudeAccountView, state: Pick<ClaudeAccountsStat
 }
 
 export const percent = (u: number) => Math.round(u * 100);
+
+/** 使い方の呼び名と説明（v4-frontend.md §6.46「使い方」）。並び順は画面に出す順 */
+export const MODE_CHOICES: ReadonlyArray<readonly [ClaudeAccountMode, string, string]> = [
+  ["balance", "均す", "新しい会話ごとに、並びの中で余裕のあるアカウントを選ぶ（既定）"],
+  ["ordered", "上から順に", "並びの先頭から、閾値まで使う"],
+];
+
+export const modeName = (mode: ClaudeAccountMode) => MODE_CHOICES.find(([m]) => m === mode)?.[1] ?? mode;
 
 /** 「5時間 41%、週 —」——Project の並びの行の1行 */
 export function usageLine(a: ClaudeAccountView): string {

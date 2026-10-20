@@ -1763,7 +1763,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
        Thread の `lastTurn.rateLimit.continueAt`（と `continuationCancelled`）で読める
      - 余白（リセットの1分後）は E2E だけが `BANTO_TEST_RATE_LIMIT_MARGIN_MS` で縮める
 
-#### 均す——閾値の下で使用率をそろえる（決定・2026-10-20、ユーザー。Fable のレビュー（2026-10-20）を反映。core は実装・2026-10-20、Backlog #417。画面は #418）
+#### 均す——閾値の下で使用率をそろえる（決定・2026-10-20、ユーザー。Fable のレビュー（2026-10-20）を反映。core は実装・2026-10-20、Backlog #417。画面は実装・2026-10-20、Backlog #418）
 
 **何をするか**：いまの選び方（並びの先頭から、閾値を越えていない最初のもの＝「上から順に」）に加えて、**使用率がそろうように
 アカウントを散らす「均す」**を足し、**既定を「均す」**にする。「上から順に」は banto 全体と Project ごとの設定で選べる。
@@ -1845,8 +1845,9 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
     台帳に使用率が無いアカウントも「古い」に数える
   - 偽の Runner（`relayRequests`）も本物と同じく `x-claude-code-session-id` を付ける。E2E は `claude-accounts-balance.spec.ts`。
     「上から順に」を見る既存の spec（`claude-accounts-switch`・`-settings`・`-thread-ui`）は最初に `mode: "ordered"` にする
-  - 画面（使い方の2択・右上のメーターを固定先から出す・「直近1時間に使った Project」）はまだ（#418）——右上のメーターは今も
-    `currentAccount ?? 並びの先頭` で、均すでは固定先と食い違いうる
+  - 画面（使い方の2択・右上のメーターを固定先から出す・「直近1時間に使った Project」）は実装・2026-10-20、Backlog #418
+    （`claude-accounts-panel.tsx`・`project-claude-accounts-panel.tsx`・`claude-account-usage.tsx`）。E2E は
+    `claude-accounts-balance.spec.ts` の2つ目の試験
 - **承知していること**：(a) 「上から順に」から「均す」に変えた直後は、生きているセッションが全部選び直しになりキャッシュを
   1回失う（稀なので受け入れる）。(b) 均すと全部のアカウントの5時間の窓が同じころ始まり同じころリセットされるので、「全部越え」が
   揃って起きやすい（総量は同じ）
