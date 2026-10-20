@@ -1049,6 +1049,82 @@ test("呼び出し元の Project を引けるのは、banto 本体で動く同�
   }
 });
 
+test("別のサーバの Project の git に届くのは、repositories 役割の同梱の banto 全体の Module だけ——Project は host の台帳が決める", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const seen: string[] = [];
+  const { url, close } = await startTestServer(registry, {
+    moduleCalls,
+    projectGit: {
+      origin: async (projectId) => {
+        seen.push(`origin ${projectId}`);
+        return { kind: "repo", urls: ["https://github.com/a/b.git"], redirects: [] };
+      },
+      bundle: async (projectId, branch) => {
+        seen.push(`bundle ${projectId} ${branch}`);
+        return branch === "backlog" ? Buffer.from([0, 1, 2, 255]) : undefined;
+      },
+      unbundle: async (projectId, branch, bundle) => {
+        seen.push(`unbundle ${projectId} ${branch} ${bundle.toString("hex")}`);
+      },
+      track: async (projectId, branch, commit) => {
+        seen.push(`track ${projectId} ${branch} ${commit}`);
+      },
+    },
+  });
+  const raw = { satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "repositories", meta: bundledMeta(raw, "repositories") }),
+    otherRole: registry.issueToken({ moduleName: "vault", meta: bundledMeta({ ...raw, satisfies: ["vault"] }, "vault") }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil") }),
+    inContainer: registry.issueToken({ moduleName: "x", meta: bundledMeta(raw, "x"), inContainer: true, projectId: "pA" }),
+  };
+  const call = async (token: string, name: string, args: Record<string, unknown>, callId?: string) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(textOf(await c.callTool({ name, arguments: args, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) }))) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  try {
+    // 何も処理していない——どの Project か決められない（Module は Project を選べない——引数に projectId を渡しても効かない）
+    await assert.rejects(() => call(tokens.bundled, "relayProjectGitOrigin", { projectId: "pA" }), /決められません/);
+    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pB");
+    assert.deepEqual(await call(tokens.bundled, "relayProjectGitOrigin", { projectId: "pA" }, turn.id), {
+      kind: "repo",
+      urls: ["https://github.com/a/b.git"],
+      redirects: [],
+    });
+    assert.deepEqual(await call(tokens.bundled, "relayProjectGitBundle", { branch: "backlog" }, turn.id), { bundle: "AAEC/w==" });
+    assert.deepEqual(await call(tokens.bundled, "relayProjectGitBundle", { branch: "nothing" }, turn.id), { absent: true });
+    assert.deepEqual(await call(tokens.bundled, "relayProjectGitUnbundle", { branch: "backlog", bundle: "AAEC/w==" }, turn.id), { ok: true });
+    assert.deepEqual(await call(tokens.bundled, "relayProjectGitTrack", { branch: "backlog", commit: "a".repeat(40) }, turn.id), { ok: true });
+    assert.deepEqual(seen, ["origin pB", "bundle pB backlog", "bundle pB nothing", "unbundle pB backlog 000102ff", `track pB backlog ${"a".repeat(40)}`]);
+    // 大きすぎる bundle は受けない
+    await assert.rejects(
+      () => call(tokens.bundled, "relayProjectGitUnbundle", { branch: "backlog", bundle: "A".repeat(9 * 1024 * 1024) }, turn.id),
+      /大きすぎます/,
+    );
+    turn.end();
+    // ほかの役割・第三者のコード・コンテナの中は届かない
+    for (const [token, module, why] of [
+      [tokens.otherRole, "vault", /repositories 役割/],
+      [tokens.thirdParty, "evil", /banto 自身のコード/],
+      [tokens.inContainer, "x", /banto 本体で動く/],
+    ] as const) {
+      const c = moduleCalls.beginCall(module, "t1", "turn", "pA");
+      for (const name of ["relayProjectGitOrigin", "relayProjectGitBundle", "relayProjectGitUnbundle", "relayProjectGitTrack"]) {
+        await assert.rejects(() => call(token, name, { branch: "backlog", bundle: "AA==", commit: "a".repeat(40) }, c.id), why, `${module} ${name}`);
+      }
+      c.end();
+    }
+    assert.equal(seen.length, 5, "断ったのに向こうに届いた");
+  } finally {
+    close();
+  }
+});
+
 test("受信箱に知らせを出せるのは、banto 本体で動く同梱の banto 全体の Module だけ——出所は問わず、空・長すぎは断る", async () => {
   const registry = new RelayRegistry();
   const raised: Array<{ module: string; key: string; title: string; detail: string }> = [];

@@ -59,6 +59,7 @@ import { HostContainerRuntime } from "./runtime/host-container.js";
 import { RemoteRuntimeStore } from "./runtime/remote-store.js";
 import { RemoteRuntimes, isRemoteUnreachable, remoteNameOf, runtimeIdOf } from "./runtime/remote-runtimes.js";
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
+import { RemoteProjectGit } from "./runtime/remote-git.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
 import { ProjectStarter, type ShellRun } from "./runtime/project-start.js";
@@ -2777,10 +2778,25 @@ async function main(): Promise<void> {
     releaseProjectPort: (projectId, port) => runtime.releasePublishedPort(projectId, port),
     // **Project の一覧**（§2.4 Repositories——どの Project がそのフォルダを根にしているか）。引ける相手と場面は
     // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
+    // 別のサーバの新しい Project を core の「clone」のタブで作り終えたものには、clone した URL と選んだアカウントを添える
+    // （Repositories が、その Project のブランチを送るアカウントを決めるのに使う——v4-modules.md §2.4「別のサーバの Project」）
     listProjects: () =>
-      projectThread
-        .listProjects()
-        .map((p) => ({ id: p.id, name: p.name, root: p.root, status: p.status, runtime: p.runtime ?? "host-container" })),
+      projectThread.listProjects().map((p) => ({
+        id: p.id,
+        name: p.name,
+        root: p.root,
+        status: p.status,
+        runtime: p.runtime ?? "host-container",
+        ...(p.start?.kind === "clone" && p.start.status === "done" && p.start.url
+          ? { clonedFrom: { url: p.start.url, ...(p.start.account ? { account: p.start.account } : {}) } }
+          : {}),
+      })),
+    // **別のサーバの Project の git と、1本のブランチの中身をやり取りする**（§2.4「別のサーバの Project」、Backlog #466）。
+    // 向こうの git は Project の中のユーザーで動かす（`runInProject`）。この機械の Project は断る（Repositories が根を直接読む）
+    projectGit: new RemoteProjectGit({
+      remoteRootOf: (projectId) => (remoteSsh.handles(projectId) ? projectThread.getProject(projectId)?.root : undefined),
+      run: (projectId, argv, o) => remoteSsh.runInProject(projectId, argv, o),
+    }),
     // **受信箱に知らせる**（§2.4 Repositories——ログインの更新に失敗したとき）。出せる相手は中継が絞る
     // （`mayRaiseNotice`）。鍵は Module ごとに分ける——別の Module の知らせを潰さない
     raiseNotice: async (caller, input) => {
