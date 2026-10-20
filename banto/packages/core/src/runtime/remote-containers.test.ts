@@ -228,6 +228,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   const servers: Server[] = [];
   /** 本物の `connect` は待ち受けを作ってから繋ぐ——偽の接続は、最後に待ち受けを作った Project のものにする */
   let connecting: string | undefined;
+  /** 閉じた Project（core の記録の代わり） */
+  const closed = new Set<string>();
   const conn = () => {
     const master = spawn("sleep", ["60"], { stdio: "ignore" });
     masters.push(master);
@@ -266,6 +268,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     log: () => undefined,
     shellHomeSource: join(root, "nohome"),
     vmRunDir: () => runDir,
+    projectClosed: (id) => closed.has(id),
     lookupIPv4: async () => "192.168.1.20",
   });
   const state = () =>
@@ -552,6 +555,16 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     await rt.releasePublishedPort("p1");
     assert.ok(!Object.keys(state().instances["banto-p1"]!.devices).some((d) => d.startsWith("banto-pub-")), "閉じたのに公開の道が残っている");
     assert.ok(state().instances["banto-p1"]!.devices["banto-relay"], "公開でない道まで外した");
+    // 閉じた Project の公開（レビュー H1）：確かに届かないと返し（公開の実装は Caddy の道を 503 にする——繋がずに）、外したばかりの
+    // 番号はほかの Project にすぐは渡さない——閉じた p1 の公開の URL（p1 の認証の設定）が、同じ番号を受けた p2 のサービスへ向かない
+    closed.add("p1");
+    writeFileSync(incusLog, "");
+    assert.match(((await rt.address("p1", 4000)) as { unavailable: string }).unavailable, /閉じています/);
+    assert.match(((await rt.address("p1", 3000)) as { unavailable: string }).unavailable, /閉じています/);
+    assert.equal(readFileSync(incusLog, "utf8"), "", "閉じた Project の公開を確かめるのに VM に聞きに行った");
+    await rt.prepare({ id: "p2", root: rootB, nesting: false });
+    const pubB2 = (await rt.address("p2", 5000)) as { port: number };
+    assert.ok(![vmPortA, pubA2.port].includes(pubB2.port), `外したばかりの番号（${vmPortA}・${pubA2.port}）をすぐにほかの Project に渡した：${pubB2.port}`);
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");

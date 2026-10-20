@@ -579,6 +579,7 @@ async function main(): Promise<void> {
     monorepoRoot,
     runtimes: remoteRuntimes,
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
+    projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
     createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },
