@@ -87,6 +87,20 @@ export interface ContainerVirtualization {
    * （設定の無い Project は 0）——付けないと制限が無く、サーバ全体の確保から取れる（測った4つの 2.）
    */
   hugepagesBytes: number;
+  /**
+   * **特権コンテナ**（`security.privileged=true`。#461）。起こし直さないと効かない——用意するときに違えば止めて書いて起こす。
+   * 特権のコンテナには idmap が無いので、中の番号は先に U に付け替えておく（#457）
+   */
+  privileged: boolean;
+}
+
+/** 特権の Incus の設定の名前 */
+export const PRIVILEGED_KEY = "security.privileged";
+
+/** 特権の設定が、望むものと違うか（`null`＝許していない実行場所なら、付いていれば外す） */
+function privilegeDiffers(config: Record<string, string>, v: ContainerVirtualization | null | undefined): boolean {
+  if (v === undefined) return false;
+  return (config[PRIVILEGED_KEY] === "true") !== (v?.privileged === true);
 }
 
 /** hugepages の上限の Incus の設定の名前 */
@@ -606,7 +620,9 @@ export class ProjectContainers {
       const status = insideStatus(st.config, given);
       // 付け替えの途中で止まった——Module・Service を起こす前に付け替え直す（何度流しても同じ）。まだ付け替えていないコンテナが
       // 止まっている（眠らせた・止めたまま banto が新しくなった）なら、起こす前のここが「止まっている間」——付け替えてから起こす
-      if (status === "partial" || (status === "legacy" && st.status !== "Running")) {
+      // 特権に切り替えるときも、止めるこの機会に付け替える（特権には idmap が無く、中の 1000 は VM の 1000 になる）
+      const toPrivileged = given.virtualization?.privileged === true && privilegeDiffers(st.config, given.virtualization);
+      if (status === "partial" || (status === "legacy" && (st.status !== "Running" || toPrivileged))) {
         await this.migrateInsideNow(name, given);
         st = await this.state(name);
         if (!st) throw new Error(`コンテナ ${name} が付け替えのあとに見つかりません`);
@@ -685,6 +701,14 @@ export class ProjectContainers {
         : "banto のコードと Project の根をマウントするの",
     );
     if (spec.virtualization !== undefined) await this.applyVirtualizationNow(name, st, spec.virtualization);
+    // 特権（#461）：違えば止めて書く（起こすのは下）。入れ子と同じく起こし直さないと効かない
+    if (privilegeDiffers(st.config, spec.virtualization)) {
+      if (st.status === "Running") {
+        await this.stop(name);
+        st = { ...st, status: "Stopped" };
+      }
+      await this.writePrivileged(name, spec.virtualization?.privileged === true);
+    }
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
       // AppArmor のプロファイルは起動のときに作られる——動いているなら起こし直さないと効かない
@@ -1087,6 +1111,31 @@ export class ProjectContainers {
    * 止める。`migrateInside` を渡すと、止めたあと（もともと止まっていても）中の番号がまだ前のものなら1回だけ付け替える
    * （`migrateInsideNow`。付け替えたあとも止まったまま）
    */
+  /**
+   * **特権を切り替える**（#461、人が押した）：止めて、（特権にするなら中の番号を先に付け替えて——#457）、`security.privileged` を
+   * 書いて、動いていたなら起こす。無ければ何もしない（次に作るとき `ensure` が付ける）。同じなら何もしない。切り替えたら true
+   */
+  async setPrivileged(name: string, privileged: boolean, ids: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">): Promise<boolean> {
+    return this.serialize(name, async () => {
+      const st = await this.state(name);
+      if (!st || (st.config[PRIVILEGED_KEY] === "true") === privileged) return false;
+      const wasRunning = st.status === "Running";
+      await this.stop(name);
+      if (privileged && ids.legacyInside) await this.migrateInsideNow(name, ids);
+      await this.writePrivileged(name, privileged);
+      if (wasRunning) {
+        await this.incus(["start", name], `コンテナ ${name} を起こすの`);
+        await this.waitReady(name);
+      }
+      return true;
+    });
+  }
+
+  private async writePrivileged(name: string, privileged: boolean): Promise<void> {
+    if (privileged) await this.incus(["config", "set", name, `${PRIVILEGED_KEY}=true`], "特権コンテナにするの");
+    else await this.incus(["config", "unset", name, PRIVILEGED_KEY], "特権コンテナをやめるの");
+  }
+
   async stopAndMigrate(name: string, migrateInside: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">): Promise<void> {
     await this.serialize(name, async () => {
       await this.stop(name);
