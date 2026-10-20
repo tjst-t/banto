@@ -89,11 +89,14 @@ test("オンの Project では tool・中継・Project をまたぐメッセー�
   const toggle = page.getByTestId("project-auto-approve");
   await expect(toggle).toBeVisible({ timeout: 30_000 });
   await expect(toggle).toHaveAttribute("aria-checked", "false");
-  await expect(page.getByTestId("project-auto-approve-description")).toContainText(
-    "Vault の秘密の取り出し・公開も含めて、この Project の AI が頼んだものは人に聞かずに通ります",
+  await expect(page.getByTestId("project-auto-approve-description")).toHaveText(
+    "この Project の AI が頼むものは、Vault の秘密の取り出し・公開も含めて人に聞かずに通す",
   );
+  await expect(page.getByTestId("project-auto-approve-caution")).toHaveCount(0);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", "true");
+  // オンのときは警告色で注意を出す（§6.51、新しい Project の画面と同じ文）
+  await expect(page.getByTestId("project-auto-approve-caution")).toContainText("オンの間は承認のカードで止まりません");
   // 真実は host（画面の表示だけで確かめない）
   await expect
     .poll(async () => ((await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/auto-approve`, { headers })).json()) as { enabled: boolean }).enabled)

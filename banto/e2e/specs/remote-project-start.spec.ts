@@ -10,7 +10,7 @@
 import { test, expect, type Locator, type Page } from "../test-base.js";
 import { randomBytes } from "node:crypto";
 import { AUTH_TOKEN, CORE_BASE_URL } from "../config.js";
-import { clickNewProject, openApp, openNav } from "../helpers.js";
+import { clickNewProject, openApp, openNav, setNewProjectAi, LEGACY_PROJECT_AI } from "../helpers.js";
 import { withSshHost, type SshHost } from "../ssh-host.js";
 
 test.describe.configure({ mode: "serial" });
@@ -132,6 +132,7 @@ test("別のサーバで「新しいリポジトリ」「clone」から Project 
       await dialog.getByTestId("new-project-folder").fill("fresh");
       // Project 名は打つまでフォルダの名前
       await expect(dialog.getByLabel("Project 名")).toHaveValue("fresh");
+      await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
       await dialog.getByTestId("new-project-submit").click();
       const initId = await createdProjectId(page, opened);
       const band = page.getByTestId("project-start-banner");
@@ -154,6 +155,7 @@ test("別のサーバで「新しいリポジトリ」「clone」から Project 
       await expect(dialog.getByTestId("new-project-folder")).toHaveValue("hello");
       await expect(dialog.getByTestId("new-project-clone-account")).toHaveCount(0);
       await chooseParent(page, dialog, host);
+      await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
       await dialog.getByTestId("new-project-submit").click();
       const cloneId = await createdProjectId(page, initId);
       await expect.poll(() => startStatus(cloneId), { timeout: 600_000 }).toBe("done");
@@ -170,6 +172,7 @@ test("別のサーバで「新しいリポジトリ」「clone」から Project 
       await dialog.getByTestId("new-project-clone-url").fill(missing);
       await expect(dialog.getByTestId("new-project-folder")).toHaveValue("later");
       await chooseParent(page, dialog, host);
+      await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
       await dialog.getByTestId("new-project-submit").click();
       const failId = await createdProjectId(page, cloneId);
       await expect(band).toHaveAttribute("data-state", "failed", { timeout: 300_000 });

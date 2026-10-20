@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTH_TOKEN, CORE_BASE_URL, CORE_BROWSER_URL, DATA_DIR, GITHUB_LOGIN_FIXTURE_FILE } from "../config.js";
-import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, openToolCards, waitForProjectModule, clickNewProject } from "../helpers.js";
+import { createProject, expectProjectOpen, fakeTurn, openApp, openNav, openToolCards, waitForProjectModule, clickNewProject, setNewProjectAi, LEGACY_PROJECT_AI } from "../helpers.js";
 import {
   E2E_GITHUB_CLIENT_ID,
   E2E_GITHUB_DEVICE_LOGIN,
@@ -717,6 +717,7 @@ test("URL から clone・新しいリポジトリ：偽の GitHub から本物�
   await expect(dialog.getByTestId("new-project-requested-by")).toContainText("「repositories」の画面から頼まれて開きました");
   await expect(dialog.locator("#new-project-path")).toHaveValue(`${repoHome}/${fresh}`);
   expect(existsSync(join(repoHome, fresh, ".git")), "作ったフォルダに .git が無い").toBe(true);
+  await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
   await dialog.getByRole("button", { name: "作成する" }).click();
   await expectProjectOpen(page, fresh, "作った Project が開かない");
 
@@ -968,6 +969,7 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   expect(askedScope).toContain(`${repoHome}/${cloned}`);
   await page.unroute("**/api/config/root-scope**", wideForPrepared);
   await expect(dialog.getByTestId("new-project-submit")).toHaveText("作成する");
+  await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
   await dialog.getByTestId("new-project-submit").click();
   await expectProjectOpen(page, cloned, "用意したフォルダで作った Project が開かない");
 
@@ -1007,6 +1009,7 @@ test("段階4：core の新しい Project の画面に Repositories が名乗っ
   );
   expect(existsSync(join(repoHome, created, ".git")), "作ったフォルダに .git が無い").toBe(true);
   await dialog.getByLabel("Project 名").fill(`${created} の Project`);
+  await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
   await dialog.getByTestId("new-project-submit").click();
   await expectProjectOpen(page, `${created} の Project`);
 
@@ -1220,6 +1223,7 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
     const blob = plumb(["hash-object", "-w", "--stdin"], sample);
     const tree = plumb(["mktree"], `100644 blob ${blob}\ttasks.json\n`);
     plumb(["update-ref", "refs/heads/backlog", plumb(["commit-tree", tree, "-m", "e2e: 一覧"])]);
+    await setNewProjectAi(dialog, LEGACY_PROJECT_AI);
     await dialog.getByRole("button", { name: "作成する" }).click();
     await expectProjectOpen(page, name, "clone したフォルダの Project が開かない");
     await waitForProjectModule(page, name, "backlog");

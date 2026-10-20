@@ -113,6 +113,40 @@ test("作る順番：フォルダ → Project → 仕事（waking→running→do
   );
 });
 
+test("作るときに一緒に書く設定（onCreated）は、Project を作った直後・仕事を始める前に呼ぶ。断ったら仕事を始めない", async () => {
+  await withStarter(async ({ store, starter, calls }) => {
+    const project = await starter.create({
+      runtime: "vm",
+      parent: "~",
+      folder: "s",
+      name: "S",
+      start: { kind: "init" },
+      onCreated: async (p) => {
+        calls.push(`settings:${p.root}:${store.getProject(p.id)?.start === undefined}`);
+      },
+    });
+    await settled(store, project.id);
+    assert.deepEqual(calls.slice(0, 4), ["mkdir:vm:~:s", "project:vm:/home/r/s", "settings:/home/r/s:true", "wake:waking"]);
+  });
+  await withStarter(async ({ store, starter, calls }) => {
+    await assert.rejects(
+      starter.create({
+        runtime: "vm",
+        parent: "~",
+        folder: "t",
+        name: "T",
+        start: { kind: "init" },
+        onCreated: async () => {
+          throw new Error("書けません");
+        },
+      }),
+      /書けません/,
+    );
+    assert.ok(!calls.some((c) => c.startsWith("wake:")));
+    assert.equal(store.listProjects()[0]?.start, undefined);
+  });
+});
+
 test("既定のブランチ名が無ければ main", async () => {
   await withStarter(async ({ store, starter, commands }) => {
     const project = await starter.create({ runtime: "vm", parent: undefined, folder: "a", name: "A", start: { kind: "init" } });

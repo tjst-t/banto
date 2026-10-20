@@ -2291,6 +2291,88 @@ test("ターンの終わりのまとめのスイッチは Project ごとで、�
   });
 });
 
+// **新しい Project の画面の3つのスイッチ**（決定・2026-10-20、ユーザー。v4-frontend.md §6.51）——作るのと同じ処理の中で書く
+test("POST /api/projects の settings は作るときに Configuration へ書き、渡されなかった鍵は書かない", async () => {
+  await withApp(async (base, token, dir, { runtimeConfig }) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const create = (body: unknown) => fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify(body) });
+    const enabled = async (id: string, what: string) =>
+      ((await (await fetch(`${base}/api/projects/${id}/${what}`, { headers })).json()) as { enabled: boolean }).enabled;
+    const keys = ["thread.turnSummary", "approvals.autoApproveAll", "thread.idleCompaction"];
+    const layer = (id: string) => keys.map((k) => runtimeConfig.layerValue(k, id));
+
+    // 全部オン：まとめと自動で許可は値を書き、空いた会話の要約は値が無い（無い＝オン）
+    const on = await (await create({ name: "on", root: dir, settings: { turnSummary: true, autoApproveAll: true, idleCompaction: true } })).json();
+    assert.deepEqual(layer(on.id), [true, true, undefined]);
+    assert.deepEqual([await enabled(on.id, "turn-summary"), await enabled(on.id, "auto-approve"), await enabled(on.id, "idle-compaction")], [true, true, true]);
+
+    // 全部オフ：空いた会話の要約だけ false を書く
+    const off = await (await create({ name: "off", root: dir, settings: { turnSummary: false, autoApproveAll: false, idleCompaction: false } })).json();
+    assert.deepEqual(layer(off.id), [undefined, undefined, false]);
+    assert.deepEqual([await enabled(off.id, "turn-summary"), await enabled(off.id, "auto-approve"), await enabled(off.id, "idle-compaction")], [false, false, false]);
+
+    // 一部だけ：渡したものだけ
+    const some = await (await create({ name: "some", root: dir, settings: { autoApproveAll: true } })).json();
+    assert.deepEqual(layer(some.id), [undefined, true, undefined]);
+
+    // 渡さない：今までどおり（何も書かない）
+    const none = await (await create({ name: "none", root: dir })).json();
+    assert.deepEqual(layer(none.id), [undefined, undefined, undefined]);
+    assert.deepEqual([await enabled(none.id, "turn-summary"), await enabled(none.id, "auto-approve"), await enabled(none.id, "idle-compaction")], [false, false, true]);
+  });
+});
+
+test("POST /api/projects の settings が壊れていれば、何も作らずに 400 で断る", async () => {
+  await withApp(async (base, token, dir, { projectThread }) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    for (const settings of [{ turnSummary: "yes" }, { autoApproveAll: 1 }, { idleCompaction: null }, { other: true }, [true], "on"]) {
+      const res = await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir, settings }) });
+      assert.equal(res.status, 400, JSON.stringify(settings));
+    }
+    assert.equal(projectThread.listProjects().length, 0);
+  });
+});
+
+test("別のサーバの始め方（start）でも、settings を作る処理の中で（仕事を始める前に）書く", async () => {
+  const seen: string[] = [];
+  let projectThreadRef: ProjectThreadStore | undefined;
+  let configRef: RuntimeConfigStore | undefined;
+  await withApp(
+    async (base, token, _dir, { projectThread, runtimeConfig }) => {
+      projectThreadRef = projectThread;
+      configRef = runtimeConfig;
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const res = await fetch(`${base}/api/projects`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: "r", runtime: "remote:vm", parent: "~", folder: "r", start: { kind: "init" }, settings: { autoApproveAll: true, idleCompaction: false } }),
+      });
+      assert.equal(res.status, 201);
+      const project = (await res.json()) as { id: string };
+      assert.deepEqual(seen, ["created", `begin:true:false`]);
+      assert.equal(runtimeConfig.layerValue("approvals.autoApproveAll", project.id), true);
+      assert.equal(runtimeConfig.layerValue("thread.idleCompaction", project.id), false);
+      assert.equal(runtimeConfig.layerValue("thread.turnSummary", project.id), undefined);
+    },
+    {
+      projectStart: {
+        create: async (input) => {
+          const project = await projectThreadRef!.createProject(input.name, "/home/r/r", { runtime: `remote:${input.runtime}` });
+          seen.push("created");
+          await input.onCreated?.(project);
+          // 仕事を始める時点で、もう書けているか
+          seen.push(`begin:${configRef!.layerValue("approvals.autoApproveAll", project.id)}:${configRef!.layerValue("thread.idleCompaction", project.id)}`);
+          return project;
+        },
+        retry: async () => {
+          throw new Error("使わない");
+        },
+        pending: () => [],
+      },
+    },
+  );
+});
+
 // **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
 test("AI への指示は Project ごとに読み書きでき、空で保存すると消え、上限を超えたら断る", async () => {
   await withApp(async (base, token, dir) => {

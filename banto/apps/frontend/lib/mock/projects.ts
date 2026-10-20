@@ -1,5 +1,5 @@
 import type { MockProject, MockProjectOverrides } from "./types";
-import type { RealProjectStartRequest } from "../backend/client";
+import type { RealNewProjectSettings, RealProjectStartRequest } from "../backend/client";
 import { noteProjectStart } from "../backend/project-starts";
 import { notifyMockStoreChange } from "./store-events";
 import { getThread, registerRealFork, registerRealThread } from "./threads";
@@ -243,6 +243,8 @@ export interface NewProjectInput {
    * `folder` を作って根にする
    */
   start?: { start: RealProjectStartRequest; folder: string };
+  /** 「この Project の AI」の3つのスイッチ（v4-frontend.md §6.51）。host が作るのと同じ処理の中で書く */
+  settings?: RealNewProjectSettings;
 }
 
 /**
@@ -311,7 +313,7 @@ export async function sleepProject(projectId: string): Promise<void> {
  * 実bantoホストにProjectとBase Threadを作る（決定・2026-09-03）。
  */
 export async function createRealProject(input: NewProjectInput): Promise<MockProject> {
-  const realProject = await createRealProjectOnHost(input.name, input.basePath, input.runtime, input.start);
+  const realProject = await createRealProjectOnHost(input.name, input.basePath, input.runtime, input.start, input.settings);
   // 帯は作った応答の記録から先に出す（知らせの流れより先に画面が移る）
   noteProjectStart(realProject.id, realProject.start);
   const realThread = await createRealBaseThread(realProject.id);

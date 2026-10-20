@@ -38,8 +38,7 @@ import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-claude-login-section";
 import { ProjectInstructionSection } from "@/components/banto/settings/project-instruction-section";
 import { ProjectMessageSendersSection } from "@/components/banto/settings/project-message-senders-section";
-import { ProjectAutoApproveSection } from "@/components/banto/settings/project-auto-approve-section";
-import { ProjectTurnSummarySection } from "@/components/banto/settings/project-turn-summary-section";
+import { ProjectAiSection } from "@/components/banto/settings/project-ai-section";
 
 export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -175,8 +174,8 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
 
       <ProjectMessageSendersSection projectId={projectId} />
 
-      <ProjectAutoApproveSection projectId={projectId} />
-      <ProjectTurnSummarySection projectId={projectId} />
+      {/* 並びと文は新しい Project の画面とそろえる（§6.51） */}
+      <ProjectAiSection projectId={projectId} />
 
       {/* **危険な操作は、いちばん下**（決定・2026-09-11、ユーザー要望） */}
       <h2 className="mt-8 mb-2 text-sm font-semibold text-foreground">危険な操作</h2>
