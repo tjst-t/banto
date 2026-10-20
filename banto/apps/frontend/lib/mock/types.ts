@@ -2,6 +2,7 @@
 // Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
 // 次段（Step 3 以降）で ProjectId 以下に足していく。
 import type { ReadonlyJSONObject } from "assistant-stream/utils";
+import type { FormField } from "@/lib/form-fields";
 import type { RealAccountSwitch, RealJudgmentCard, RealMessageImage, RealMessageOrigin, RealMessageQuote, RealPartlyAwake } from "@/lib/backend/client";
 import type { RealTurnSummary } from "@/lib/turn-summary";
 
@@ -194,6 +195,11 @@ export interface MockElicitationForm {
   mode: "form";
   enumOptions: readonly string[];
   allowFreeText: boolean;
+  /**
+   * **答えに添える数の欄**（追加・2026-10-20、v4-frontend.md §6.47——任務を始めるカードの枠）。許すボタン（最初の選択肢）を
+   * 押すと値を一緒に送る
+   */
+  fields?: readonly FormField[];
 }
 
 /** Elicitation の mode:"url"（鍵・トークン等の機微情報はこちら。フォームで聞かない） */

@@ -1,6 +1,15 @@
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
-import type { InboxReadModel, JudgmentItem, JudgmentSource, NoticeClaudeAccounts, NoticeRuntimeKey, ReviewAutomation, ReviewJudge } from "./types.js";
+import type {
+  InboxReadModel,
+  JudgmentItem,
+  JudgmentSource,
+  NoticeClaudeAccounts,
+  NoticeRuntimeKey,
+  ReviewAutomation,
+  ReviewJudge,
+  ReviewMission,
+} from "./types.js";
 
 export type InboxEvent =
   | {
@@ -30,9 +39,12 @@ export type InboxEvent =
         summary: string;
         automation?: Omit<ReviewAutomation, "raisedSeq">;
         carriedJudge?: ReviewJudge;
+        mission?: ReviewMission;
       };
     }
   | { type: "inbox.review_acknowledged"; payload: { id: string } }
+  // 開いているカードに任務の結末を添えた（時計の刻みで期限を過ぎて止めた、追加・2026-10-20、アーキ仕様 §4.4「受信箱」）
+  | { type: "inbox.review_mission_set"; payload: { id: string; summary: string; mission: ReviewMission } }
   | { type: "inbox.review_judged"; payload: { id: string; judge: ReviewJudge } }
   | {
       type: "inbox.notice_raised";
@@ -102,6 +114,7 @@ export const inboxFold: Fold<InboxReadModel> = {
           summary: event.payload.summary,
           ...(event.payload.automation ? { automation: { ...event.payload.automation, raisedSeq: raw.seq } } : {}),
           ...(event.payload.carriedJudge ? { carriedJudge: event.payload.carriedJudge } : {}),
+          ...(event.payload.mission ? { mission: event.payload.mission } : {}),
           acknowledged: false,
           createdAt: raw.ts,
         });
@@ -111,6 +124,13 @@ export const inboxFold: Fold<InboxReadModel> = {
         const existing = items.get(event.payload.id);
         if (existing && existing.kind === "review") {
           items.set(existing.id, { ...existing, acknowledged: true });
+        }
+        return { items };
+      }
+      case "inbox.review_mission_set": {
+        const existing = items.get(event.payload.id);
+        if (existing && existing.kind === "review") {
+          items.set(existing.id, { ...existing, summary: event.payload.summary, mission: event.payload.mission });
         }
         return { items };
       }

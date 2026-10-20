@@ -20,6 +20,8 @@ import type { ActivityReport } from "./activity.js";
 import { createApp, rateLimitStopOf, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 import { ProjectSleep } from "../runtime/project-sleep.js";
 import type { ProjectWokeCause } from "../project-thread/types.js";
+import { Missions } from "../mission/missions.js";
+import { ThreadDeliveries } from "../delivery/thread-deliveries.js";
 
 interface TestDeps {
   inbox: InboxStore;
@@ -2821,4 +2823,51 @@ test("上限で止まった帯の印（rateLimitStop）は記録から導く—�
   // 畳んだターン（fold は rateLimit を残す）
   assert.equal(of({ ...base, rateLimit: { continueAt: "2026-10-18T01:00:00.000Z" }, abandonedBy: "cleared" }), undefined);
   assert.equal(of({ ...base, rateLimit: {}, continuesReason: "rate_limit", attempt: 6, abandonedBy: "thread_closed" }), undefined);
+});
+
+test("任務の口：人が始める（聞かない）・見る・枠を延ばす・今すぐ起こす・止める。決まりに合わなければ 400、今できなければ 409", async () => {
+  let missions: Missions | undefined;
+  const turns = new ThreadTurns();
+  // 試験の構成：Missions は withApp の中の台帳で作るので、口には後から結ぶ
+  const lazy = new Proxy({} as Missions, {
+    get: (_t, key) => {
+      const v = (missions as unknown as Record<string | symbol, unknown>)[key];
+      return typeof v === "function" ? v.bind(missions) : v;
+    },
+  });
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const deliveries = new ThreadDeliveries({ projectThread: deps.projectThread, turns, notify: async () => {} });
+      missions = new Missions({ projectThread: deps.projectThread, inbox: deps.inbox, pendingApprovals: deps.pendingApprovals, deliveries, turns });
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("demo", _dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const url = `${base}/api/threads/${thread.id}/mission`;
+
+      assert.deepEqual(await (await fetch(url, { headers })).json(), { mission: null });
+      assert.equal((await fetch(url, { method: "POST", headers, body: JSON.stringify({ goal: "", doneWhen: "x" }) })).status, 400);
+      const started = await fetch(url, { method: "POST", headers, body: JSON.stringify({ goal: "PR の CI を通す", doneWhen: "緑", maxWakes: 1 }) });
+      assert.equal(started.status, 201);
+      assert.equal(((await started.json()) as { mission: { startedBy: string } }).mission.startedBy, "human");
+      assert.equal(deps.inbox.listOpen().length, 0, "人が始めたのに聞いた");
+      assert.equal((await fetch(url, { method: "POST", headers, body: JSON.stringify({ goal: "2つ目", doneWhen: "x" }) })).status, 409);
+
+      // 今すぐ起こす（回数に数える）→ 上限を使い切ったので次は 409
+      const woke = await fetch(`${url}/wake`, { method: "POST", headers });
+      assert.equal(woke.status, 200);
+      assert.equal(((await woke.json()) as { mission: { wakes: number } }).mission.wakes, 1);
+      assert.equal(deps.projectThread.getThread(thread.id)!.deliveries?.[0]?.kind, "mission");
+      assert.equal((await fetch(`${url}/wake`, { method: "POST", headers })).status, 409);
+
+      // 枠を延ばす（範囲外は 400）・止める
+      assert.equal((await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ maxWakes: 1000 }) })).status, 400);
+      const patched = await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ maxWakes: 3 }) });
+      assert.equal(patched.status, 200);
+      assert.equal(((await patched.json()) as { mission: { frame: { maxWakes: number } } }).mission.frame.maxWakes, 3);
+      const stopped = await fetch(url, { method: "PATCH", headers, body: JSON.stringify({ stop: true }) });
+      assert.equal(((await stopped.json()) as { mission: { status: string } }).mission.status, "stopped");
+      assert.equal((await fetch(`${base}/api/threads/nope/mission`, { headers })).status, 404);
+    },
+    { missions: lazy, threadTurns: turns },
+  );
 });

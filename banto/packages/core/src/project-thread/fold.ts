@@ -30,6 +30,12 @@ import type {
   TurnRecord,
   ClaudeAccountSwitchReasonRecord,
   ClaudeAccountSwitchRecord,
+  MissionFrame,
+  MissionFollowup,
+  MissionState,
+  MissionStatus,
+  MissionWakeCause,
+  MissionWakeResult,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -155,6 +161,8 @@ export type ProjectThreadEvent =
         kind?: DeliveryAuthor;
         /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
         automation?: { id: string; runId: string };
+        /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
+        mission?: { id: string; wake: number };
         /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
         external?: ExternalContent[];
       };
@@ -217,6 +225,27 @@ export type ProjectThreadEvent =
     }
   // **上限の待ちを消した**（「待つのをやめる」・止めるボタン）。閉じた Fork・Clear は `abandonedBy` で消える
   | { type: "turn.continuation_cancelled"; payload: { threadId: string; turnId: string; by: ContinuationCancelledBy } }
+  // **任務**（追加・2026-10-20、アーキ仕様 §4.4「置き場」）。任務は会話の持ち物——ここで `ThreadState.mission` に畳む。
+  // 会話を閉じた・Project を閉じたら、出来事を書かずに `stopped` に畳む（閉じた記録が真実、規則3）
+  | {
+      type: "mission.started";
+      payload: { threadId: string; missionId: string; goal: string; doneWhen: string; frame: MissionFrame; by: "ai" | "human" };
+    }
+  // 枠を変えた（人が延ばした）。人に返っていた任務（枠を使い切った・止まっている）は動いている任務に戻す
+  | { type: "mission.updated"; payload: { threadId: string; missionId: string; frame: MissionFrame; reactivate?: true } }
+  // 予約を置いた（AI の `schedule_followup`・待っていた出来事が来て banto が置き直した）。`followup: null` は予約を捨てる
+  | { type: "mission.followup_set"; payload: { threadId: string; missionId: string; followup: MissionFollowup | null } }
+  // 任務の予約で起こした（数えるのはここ）。予約はここで使い切る
+  | {
+      type: "mission.woke";
+      payload: { threadId: string; missionId: string; wake: number; cause: MissionWakeCause; scheduledFor?: string };
+    }
+  // その回のターンが終わった結果
+  | { type: "mission.wake_settled"; payload: { threadId: string; missionId: string; wake: number; result: MissionWakeResult } }
+  | {
+      type: "mission.finished";
+      payload: { threadId: string; missionId: string; status: Exclude<MissionStatus, "active">; result?: string };
+    }
   // **Claude のアカウントを切り替えた**（追加・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 6.）。
   // `threadId` は本体の要求の `x-banto-thread-id`（その Project の Thread のときだけ）。コンテナからの要求では無い
   | {
@@ -391,6 +420,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           if (t.projectId === event.payload.id) {
             abandonLastTurn(t, "project_closed");
             dropContinuations(t);
+            if (t.mission?.status === "active") t.mission = finishedMission(t.mission, "stopped", raw, "Project が閉じられました");
           }
         }
         return next;
@@ -611,6 +641,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           dropContinuations(t);
           next.threads.set(t.id, {
             ...t,
+            ...(t.mission?.status === "active" ? { mission: finishedMission(t.mission, "stopped", raw, "会話が閉じられました") } : {}),
             status: "closed",
             ...(event.payload.by ? { closedBy: event.payload.by } : {}),
             ...(event.payload.reason ? { closedReason: event.payload.reason } : {}),
@@ -967,11 +998,94 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         }
         return next;
       }
+      case "mission.started": {
+        const t = next.threads.get(event.payload.threadId);
+        if (!t) return next;
+        const p = event.payload;
+        next.threads.set(t.id, {
+          ...t,
+          mission: {
+            id: p.missionId,
+            goal: p.goal,
+            doneWhen: p.doneWhen,
+            frame: p.frame,
+            startedBy: p.by,
+            startedAt: raw.ts,
+            status: "active",
+            wakes: 0,
+            history: [],
+          },
+        });
+        return next;
+      }
+      case "mission.updated": {
+        const t = next.threads.get(event.payload.threadId);
+        const m = t?.mission;
+        if (!t || !m || m.id !== event.payload.missionId) return next;
+        const reopen = event.payload.reactivate === true && m.status !== "active";
+        const { result: _r, finishedAt: _f, finishedSeq: _s, ...rest } = m;
+        next.threads.set(t.id, { ...t, mission: reopen ? { ...rest, frame: event.payload.frame, status: "active" } : { ...m, frame: event.payload.frame } });
+        return next;
+      }
+      case "mission.followup_set": {
+        const t = next.threads.get(event.payload.threadId);
+        const m = t?.mission;
+        if (!t || !m || m.id !== event.payload.missionId || m.status !== "active") return next;
+        const { followup: _old, ...rest } = m;
+        next.threads.set(t.id, { ...t, mission: event.payload.followup ? { ...rest, followup: event.payload.followup } : rest });
+        return next;
+      }
+      case "mission.woke": {
+        const t = next.threads.get(event.payload.threadId);
+        const m = t?.mission;
+        if (!t || !m || m.id !== event.payload.missionId) return next;
+        const p = event.payload;
+        const { followup: _used, ...rest } = m;
+        next.threads.set(t.id, {
+          ...t,
+          mission: {
+            ...rest,
+            wakes: Math.max(m.wakes, p.wake),
+            lastWakeAt: raw.ts,
+            history: [
+              { wake: p.wake, at: raw.ts, cause: p.cause, ...(p.scheduledFor ? { scheduledFor: p.scheduledFor } : {}) },
+              ...m.history,
+            ].slice(0, MISSION_HISTORY_KEPT),
+          },
+        });
+        return next;
+      }
+      case "mission.wake_settled": {
+        const t = next.threads.get(event.payload.threadId);
+        const m = t?.mission;
+        if (!t || !m || m.id !== event.payload.missionId) return next;
+        next.threads.set(t.id, {
+          ...t,
+          mission: { ...m, history: m.history.map((h) => (h.wake === event.payload.wake ? { ...h, result: event.payload.result } : h)) },
+        });
+        return next;
+      }
+      case "mission.finished": {
+        const t = next.threads.get(event.payload.threadId);
+        const m = t?.mission;
+        if (!t || !m || m.id !== event.payload.missionId || m.status !== "active") return next;
+        next.threads.set(t.id, { ...t, mission: finishedMission(m, event.payload.status, raw, event.payload.result) });
+        return next;
+      }
       default:
         return state;
     }
   },
 };
+
+/** 起きた記録を持つ数（アーキ仕様 §4.4「置き場」） */
+export const MISSION_HISTORY_KEPT = 50;
+
+/** 任務を人に返した形にする（予約は捨てる） */
+function finishedMission(m: MissionState, status: Exclude<MissionStatus, "active">, raw: StoredEvent, result?: string): MissionState {
+  const { followup: _drop, ...rest } = m;
+  return { ...rest, status, finishedAt: raw.ts, finishedSeq: raw.seq, ...(result ? { result } : {}) };
+}
 
 /**
  * **待ち行列の切れたターンの続きを捨てる**（追加・2026-10-05、アーキ仕様 §2.5）。人が会話を畳んだ（Clear・閉じた）

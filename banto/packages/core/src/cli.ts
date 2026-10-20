@@ -113,6 +113,7 @@ import { RateLimitContinuations } from "./delivery/rate-limit-continuation.js";
 import { rateLimitWaitOf } from "./project-thread/rate-limit-wait.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
+import { Missions, planMissionReview } from "./mission/missions.js";
 import { NON_WORK_TOOLS, isTurnSummaryEnabled } from "./http/turn-summary.js";
 import { DISCONNECT_WHY, ModuleNotUpYetError, RESUME_ASK_TIMEOUT_MS, RestartRecovery } from "./delivery/restart-recovery.js";
 import { AppEventBus, announceProjectsChanged, backgroundItemsOf, type RuntimeUnreachableView } from "./http/app-events.js";
@@ -281,6 +282,8 @@ async function main(): Promise<void> {
         }
       }),
   });
+  /** **任務**（アーキ仕様 §4.4。下で作る——届ける口が要る）。出来事を待っている予約も「待たれている Module」に数える */
+  let missions: Missions | undefined;
   /**
    * **その Project で出来事を待たれている Module**（アーキ仕様 §4.3 段2・§2.2、Backlog #346・#357）。対象は Project ごとの宣言のうち
    * 出来事を名乗っているもの。「起こしておく」とスリープの例外（止めない Module）が、この1つを引く。宣言が読めなければ投げる
@@ -294,7 +297,7 @@ async function main(): Promise<void> {
         return false;
       }
     });
-    return awaitingAutomations(automations.listAll(), projectId, declarations.map((d) => d.name));
+    return awaitingAutomations(automations.listAll(), projectId, declarations.map((d) => d.name), missions?.awaitedEvents(projectId));
   }
   // **登録した別のサーバ**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」）
   const remoteRuntimeStore = new RemoteRuntimeStore(bootstrap.dataDir, eventLog);
@@ -720,11 +723,48 @@ async function main(): Promise<void> {
   automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
   // **サイドバーの Project の一覧**（アーキ仕様 §2.2）は一覧が変わったら取り直す——携帯とパソコンでそろえる
   announceProjectsChanged(projectThread, appEvents);
+  // **任務**（アーキ仕様 §4.4）。始めるときのカード・予約・時計で起こす・出来事の待ち・ターンの終わり
+  const missionsService = new Missions({
+    projectThread,
+    inbox,
+    pendingApprovals,
+    publishJudgment: (threadId, judgment) =>
+      turnEvents.publish(threadId, {
+        type: "judgment",
+        judgmentId: judgment.id,
+        kind: "approval",
+        serverName: judgment.serverName,
+        toolInput: judgment.toolInput,
+        message: judgment.message,
+        choices: judgment.choices,
+        requestedSchema: judgment.requestedSchema,
+      }),
+    deliveries,
+    turns: threadTurns,
+    events: automations,
+    // 自動化の専用の Fork（判断役の Fork も）には付けない（§4.4「1つの会話に…」）
+    // 読むだけの会話（見回りの Fork）にも付けない（§4.4「読むだけの回が…任務…を立てることはできない」）
+    refuseThread: (thread) =>
+      thread.restriction === "read-only"
+        ? "読むだけの会話には任務を付けられません。"
+        : automations.list(thread.projectId).some((a) => a.target.kind === "dedicated" && a.target.threadId === thread.id)
+          ? "自動化の専用の Fork には任務を付けられません。"
+          : undefined,
+    // 出来事を待つ予約を置いたら、その出どころを起こしておく（§4.3 段2の「起こしておく」に乗せる）
+    onFollowupSet: (projectId) => keepAwaitedModulesAwake(projectId),
+    // E2E だけが縮める（15分を待たずに2回目を見る）
+    ...(process.env.BANTO_TEST_MISSION_MIN_INTERVAL_MINUTES !== undefined
+      ? { minIntervalFloorMinutes: Number(process.env.BANTO_TEST_MISSION_MIN_INTERVAL_MINUTES) }
+      : {}),
+  });
+  missions = missionsService;
   // **時刻のきっかけ**（アーキ仕様 §4.3「時計」）。1分ごとの刻み1本。刻み始めるのは待ち受けて `resumeAll` したあと
   const automationClock = new AutomationClock({
     automations,
     projectThread,
     runner: automationRunner,
+    // 任務の予約も同じ刻みで見る（§4.4「起こし方」）
+    missions: missionsService,
     // 間隔は E2E だけ縮める（BANTO_AUTOMATION_CLOCK_INTERVAL_MS）
     ...(Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) > 0 ? { intervalMs: Number(process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS) } : {}),
   });
@@ -762,6 +802,8 @@ async function main(): Promise<void> {
       }),
     declaredEvents: projectModuleEvents,
     projectClosed: (projectId) => projectThread.getProject(projectId)?.status === "closed",
+    // 任務の予約の出来事も同じ照合で引く（§4.4）
+    missions: missionsService,
   });
   // **banto.turn-decisions と判断役**（アーキ仕様 §4.3）。ターンが終わったら決めることを出来事に出し、判断役の答え
   // （`answer_decision`）を溜めて元の会話へ届ける
@@ -804,30 +846,40 @@ async function main(): Promise<void> {
         .acknowledgeReviewsFor(change.threadId)
         .catch((err: unknown) => console.warn("[host] レビュー待ちを「見た」にできませんでした:", err));
     } else if (change.type === "ended") {
-      // **その Thread に裏の仕事も、まだ渡していない届いたものも残っていなければ出す**（改訂・2026-10-15、アーキ仕様 §2.4
-      // 「受信箱は『あなたの番になったもの』だけ」）。残っていれば、結果が届いて AI がまとめ終えた最後のターンで出る。
-      // 途中で切れた・失敗したターンは残りがあっても出す（`reviewDueAfterTurn`）
-      const thread = projectThread.getThread(change.threadId);
-      if (!reviewDueAfterTurn(thread)) return;
-      // **自動化の回**（アーキ仕様 §4.3「受信箱」）：「出さない」を選んだ自動化の何も無く完了した回は出さない。決めること・
-      // 判断待ち・失敗の回は、後の何も無い回で置き換えない
-      const plan = thread
-        ? planAutomationReview(thread, {
-            automation: (id) => automations.get(id),
-            hasLiveJudgment: inbox.listJudgmentsForThread(change.threadId).some((j) => j.liveness === "live"),
-          })
-        : ({ kind: "plain" } as const);
-      if (plan.kind === "skip") return;
-      const summary = turnEndSummary(thread);
-      void (plan.kind === "automation"
-        ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation })
-        : inbox.raiseReview({ threadId: change.threadId, summary })
-      )
-        .catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err))
+      void (async () => {
+        // **任務の確かめを先に**（アーキ仕様 §4.4「終わり方」「受信箱」）：その回の結果・期限・予約も終わりも無ければ「止まって
+        // います」——人に返ったら、このターンのカードに結末を添える
+        await missionsService
+          .turnEnded(change.threadId)
+          .catch((err: unknown) => console.warn(`[host] ${change.threadId} の任務をターンの終わりに確かめられませんでした:`, err));
+        // **その Thread に裏の仕事も、まだ渡していない届いたものも残っていなければ出す**（改訂・2026-10-15、アーキ仕様 §2.4
+        // 「受信箱は『あなたの番になったもの』だけ」）。残っていれば、結果が届いて AI がまとめ終えた最後のターンで出る。
+        // 途中で切れた・失敗したターンは残りがあっても出す（`reviewDueAfterTurn`）
+        const thread = projectThread.getThread(change.threadId);
+        if (!reviewDueAfterTurn(thread)) return;
+        const hasLiveJudgment = inbox.listJudgmentsForThread(change.threadId).some((j) => j.liveness === "live");
+        // **任務の回**（§4.4「受信箱」）：任務の予約で起きた回が何も無く終わったら出さない。人に返ったら結末を添える
+        const missionPlan = thread ? planMissionReview(thread, hasLiveJudgment) : ({ kind: "plain" } as const);
+        if (missionPlan.kind === "skip") return;
+        // **自動化の回**（アーキ仕様 §4.3「受信箱」）：「出さない」を選んだ自動化の何も無く完了した回は出さない。決めること・
+        // 判断待ち・失敗の回は、後の何も無い回で置き換えない
+        const plan = thread
+          ? planAutomationReview(thread, { automation: (id) => automations.get(id), hasLiveJudgment })
+          : ({ kind: "plain" } as const);
+        if (plan.kind === "skip") return;
+        const summary = turnEndSummary(thread);
+        await (missionPlan.kind === "mission"
+          ? inbox.raiseReview({ threadId: change.threadId, summary, mission: missionPlan.mission })
+          : plan.kind === "automation"
+            ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation })
+            : inbox.raiseReview({ threadId: change.threadId, summary })
+        ).catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
         // **決めることがあれば banto.turn-decisions**（アーキ仕様 §4.3）——レビュー待ちと同じ条件で、カードを出したあと
         // （判断役の答えはそのカードに添える）。決めることのある回は「出さない」でも出るので、上の skip には当たらない
-        .then(() => turnDecisions.emitIfDecided(change.threadId, change.hop))
-        .catch((err: unknown) => console.warn(`[host] ${change.threadId} の決めることを出来事に出せませんでした:`, err));
+        await turnDecisions
+          .emitIfDecided(change.threadId, change.hop)
+          .catch((err: unknown) => console.warn(`[host] ${change.threadId} の決めることを出来事に出せませんでした:`, err));
+      })();
     }
   });
   inbox.onChange(() => appEvents.publish({ type: "inbox.changed" }));
@@ -3173,6 +3225,7 @@ async function main(): Promise<void> {
     automations,
     automationRunner,
     turnDecisions,
+    missions: missionsService,
     automationWebhooks,
     listSecretAliases: (projectId) => secretAliasesFor(projectId),
     ...(bootstrap.publicUrl ? { webhookBaseUrl: bootstrap.publicUrl } : {}),

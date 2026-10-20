@@ -33,6 +33,11 @@ export interface AutomationClockDeps {
   deferMs?: number;
   /** 刻みの間隔。渡さなければ毎分 0 秒の少しあと（試験だけ縮める） */
   intervalMs?: number;
+  /**
+   * **任務の予約**（追加・2026-10-20、アーキ仕様 §4.4「起こし方」——時計は自動化の1分の刻みを使う）。刻みごとに、自動化の
+   * あとで1回見る
+   */
+  missions?: { tick(): Promise<unknown> };
   log?: (message: string) => void;
 }
 
@@ -89,6 +94,12 @@ export class AutomationClock {
   }
 
   private async step(): Promise<void> {
+    await this.stepAutomations();
+    // 自動化の回が失敗しても任務は見る（それぞれの例外はそれぞれの中で書き残す）
+    await this.deps.missions?.tick();
+  }
+
+  private async stepAutomations(): Promise<void> {
     const now = this.now();
     const catchUp = !this.caughtUp;
     this.caughtUp = true;

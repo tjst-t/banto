@@ -16,6 +16,12 @@ import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
+import {
+  FINISH_MISSION_TOOL_NAME,
+  SCHEDULE_FOLLOWUP_TOOL_NAME,
+  START_MISSION_TOOL_NAME,
+  type Missions,
+} from "../mission/missions.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
@@ -258,9 +264,12 @@ export function createForkMcpServer(
    * 組む——人にカードを出す tool（`create_automation` 等）・Fork を立てる tool は、その回には存在しない
    */
   readOnly = false,
+  /** **任務**（§4.4）。渡されなければ tool は見せたまま断る（構成で tool の一覧を変えない、§3）。読むだけの回には出さない */
+  missions?: Pick<Missions, "start" | "scheduleFollowup" | "finish" | "reportTurnProblem">,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
+  const noMissions = { content: [{ type: "text" as const, text: "この banto では任務を扱えません。" }], isError: true };
   const automationReply = (r: { ok: boolean; text: string }) => ({
     content: [{ type: "text" as const, text: r.text }],
     ...(r.ok ? {} : { isError: true }),
@@ -270,7 +279,7 @@ export function createForkMcpServer(
       ...(turnSummary
         ? [
             tool(REPORT_TURN_TOOL_NAME, REPORT_TURN_DESCRIPTION, reportTurnShape, async (args) => {
-              const problem = validateTurnSummary(args);
+              const problem = validateTurnSummary(args) ?? missions?.reportTurnProblem(threadId, args.decisions.length);
               if (problem) return { content: [{ type: "text" as const, text: problem }], isError: true };
               const entry: TurnSummaryEntry = { summary: args, at: (turnSummary.now?.() ?? new Date()).toISOString() };
               // **2回呼ばれたら最後の1回**（画面も記録も後ろのものを出す）
@@ -426,12 +435,67 @@ export function createForkMcpServer(
           automations ? automationReply(await automations.remove(threadId, id, signalOf(extra))) : noAutomations,
       ),
       tool(
+        START_MISSION_TOOL_NAME,
+        [
+          "この会話に任務（目標・終わりの条件・枠）を付ける。任務を持つ会話では、あなたは枠の中で自分を「あとでもう一度」起こせる（schedule_followup）——人が見ていない間も、CI が通るまで直す・残りの仕事を最後まで見る、のような終わりのある仕事を続けられる。",
+          "人が見ていない時間に繰り返し動くので、**始める前に必ず会話のカードで人に聞く**（承認モードに依らない）。人は枠を変えてから答えられる。人が断ったら始めない。",
+          "1つの会話に動いている任務は1つまで。枠：起きる回数の上限（既定 20、最大 100）・期限（既定 3日、最長 14日）・最短の間隔（既定 15分、15分より短くはできない）。",
+        ].join(""),
+        {
+          goal: z.string().describe("目標（何を達成するか。あとで起きた自分が読んで分かるように具体的に）"),
+          doneWhen: z.string().describe("終わりの条件（何を確かめたら finish_mission で終えるか）"),
+          maxWakes: z.number().int().optional().describe("起きる回数の上限（1〜100、既定 20）"),
+          until: z.string().optional().describe("期限（ISO 8601 の時刻。始めてから 14日まで、既定 3日後）"),
+          minInterval: z.number().int().optional().describe("最短の間隔（分。15 以上、既定 15）——前に任務で起きた時刻からの間"),
+        },
+        async (args, extra) => {
+          if (!missions) return noMissions;
+          return automationReply(await missions.start(threadId, args, signalOf(extra)));
+        },
+      ),
+      tool(
+        SCHEDULE_FOLLOWUP_TOOL_NAME,
+        [
+          "任務を持つ会話で、次に自分を起こす予約をする。at（時刻）・after（何分後）・event（待つ出来事）のどれか1つと、note（次に起きたら何を確かめるか）を渡す。",
+          "枠の中なら人に聞かずに通る。枠の外（回数を使い切った・期限より後・前に起きた時刻から最短の間隔より短い）は断られる——枠を延ばせるのは人だけなので、そのときは report_turn の decisions で人に聞く。",
+          "予約は1つだけで、新しく予約すると前の予約は置き換わる。予約したらこのターンは終えてよい。任務を続ける間、予約も finish_mission も無いままターンは終えられない。",
+          "event は自動化と同じ出来事（<出どころ>.<名前>、この Project の Module の出来事と banto の出来事）。来なければ待つ上限（既定は任務の期限）で「来ませんでした」として起こす。",
+        ].join(""),
+        {
+          at: z.string().optional().describe("起こす時刻（ISO 8601）"),
+          after: z.number().optional().describe("今から何分後に起こすか"),
+          event: z
+            .object({
+              name: z.string().describe("待つ出来事の名前（例 service.crashed・banto.turn-decisions）。名乗っていない名前なら、待てる出来事の一覧つきで断られる"),
+              where: z
+                .record(z.string(), z.union([automationEventValueShape, z.array(automationEventValueShape)]))
+                .optional()
+                .describe("条件：属性の名前ごとに、等しい値か値の配列（どれか）"),
+              until: z.string().optional().describe("待つ上限（ISO 8601。既定と最長は任務の期限）"),
+            })
+            .optional()
+            .describe("待つ出来事"),
+          note: z.string().describe("次に起きたら何を確かめるか。起きたときにそのまま渡される"),
+        },
+        async (args) => (missions ? automationReply(await missions.scheduleFollowup(threadId, args)) : noMissions),
+      ),
+      tool(
+        FINISH_MISSION_TOOL_NAME,
+        "この会話の任務を終える。終わりの条件を満たした（done）か、続けても達成できないと分かった（gave-up）とき。人の承認は要らない。受信箱に結末が出る。",
+        {
+          status: z.enum(["done", "gave-up"]).describe("done＝終わりの条件を満たした／gave-up＝あきらめた"),
+          result: z.string().describe("結果（何を確かめ、どうなったか。あきらめたなら理由）。受信箱のカードに出る"),
+        },
+        async (args) => (missions ? automationReply(await missions.finish(threadId, args)) : noMissions),
+      ),
+      tool(
         ANSWER_DECISION_TOOL_NAME,
         [
           "判断役として、別の会話の AI がターンのまとめで人に聞いた「決めること」に答える。答えられるのは、このターンに届いた出来事 banto.turn-decisions の会話（属性 thread）とターン（属性 turnId）だけ。",
           "問いごとに1回呼ぶ。答えは、元の AI が出した選択肢の番号（choice、1 から）か、人に任せる（defer: true）のどちらか——自由な文は送れない。",
           "全部の問いに選択肢で答えが揃ったら、まとめて1回で元の会話に届き、元の会話の AI がそれで続ける。1問でも人に任せたら全部人に回り、何も届かない。",
           "元の会話がもう進んでいたら（人が答えた・次のターンが始まった）断られる。迷ったら人に任せる。",
+          "任務の枠（起きる回数・期限・間隔）を延ばすかの問いは、いつも人に任せる（defer: true）——枠を延ばせるのは人だけ。",
         ].join(""),
         {
           thread: z.string().describe("出来事の属性 thread（元の会話の id）"),

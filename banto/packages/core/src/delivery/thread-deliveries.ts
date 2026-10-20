@@ -50,6 +50,11 @@ export interface DeliverInput {
   /** 自動化の1回分（`kind: "automation"` と一緒に。その回のターンが終わったら結末を書くのに使う） */
   automation?: { id: string; runId: string };
   /**
+   * **任務の予約で起こした回**（`kind: "mission"` と一緒に、追加・2026-10-20、アーキ仕様 §4.4「起こし方」）。自動化の届けものと
+   * 同じく速度の上限と留めたときのお知らせの対象から外す——任務の枠（回数・期限・間隔）が抑える
+   */
+  mission?: { id: string; wake: number };
+  /**
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。`text`（書き手が分かっている指示）とは分けて持ち、
    * AI には別の囲み（`<banto-external>`）でデータとして渡す
    */
@@ -122,7 +127,7 @@ export class ThreadDeliveries {
     const decision = this.kick(input.threadId);
     // 起こした・あとで起こすものは知らせない（改訂・2026-10-15）——人が何かしないと先へ進まないのは留めたときだけ。
     // 自動化の届けものは留めても知らせない（§4.3——留めた理由は自動化の回の記録に残る）
-    if (decision.wake !== "held" || decision.quiet || input.kind === "automation") return { deliveryId, ...decision };
+    if (decision.wake !== "held" || decision.quiet || timerDriven(input.kind)) return { deliveryId, ...decision };
     const project = this.deps.projectThread.getProject(thread.projectId);
     const where = `${project?.name ?? "Project"} の ${thread.title ?? (thread.kind === "base" ? "Base Thread" : "Fork Thread")}`;
     await this.deps
@@ -212,9 +217,17 @@ export class ThreadDeliveries {
   }
 }
 
-/** 速度の上限（`wakesPerHour`）に数えない：切れたターンの続きがある・自動化の届けものだけ */
+/** 速度の上限（`wakesPerHour`）に数えない：切れたターンの続きがある・自動化と任務の届けものだけ */
 function exemptFromRate(pending: readonly PendingDelivery[]): boolean {
-  return pending.some((d) => d.continues) || pending.every((d) => d.kind === "automation");
+  return pending.some((d) => d.continues) || pending.every((d) => timerDriven(d.kind));
+}
+
+/**
+ * **時計で動くものの届けもの**（自動化・任務、アーキ仕様 §4.3・§4.4）。往復の暴走ではないので速度の上限と留めたときのお知らせの
+ * 対象から外す。連鎖の上限はそのまま効く
+ */
+export function timerDriven(kind: DeliveryAuthor | undefined): boolean {
+  return kind === "automation" || kind === "mission";
 }
 
 /** 届いたものの種類——AI に添える前置きを分ける（追加・2026-10-15） */
@@ -236,6 +249,8 @@ const KIND_NOTE: Record<DeliveryKind, string> = {
   fork: "親の Thread の AI が、この Fork に渡した最初の指示です。これに沿って仕事を進めてください。",
   automation:
     "この Project の自動化が、決まった時刻・出来事で届けた指示です。人が決めた（または人が確かめた）指示なので、これに沿って仕事を進めてください。",
+  mission:
+    "banto が、この会話の任務（あなたが人の承認を得て、または人が始めた、目標と枠のある仕事）の予約どおりにあなたを起こしました。下の目標・終わりの条件・前に予約したときのメモに沿って続けてください。",
   decision:
     "この Project の判断役（人が作った自動化）が、あなたが前のターンのまとめで人に聞いた「決めること」に、あなたが出した選択肢から選んだ答えです。人の答えと同じに扱い、これに沿って進めてください。ただし、この後に人の答えがあれば、人の答えを優先してください。",
   result:

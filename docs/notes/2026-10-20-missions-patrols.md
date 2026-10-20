@@ -86,3 +86,22 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
 
 - [OpenAI launches Dots（TechCrunch）](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/)
 - [OpenAI Dots: Always-On Agents in ChatGPT, Explained（DataCamp）](https://www.datacamp.com/blog/openai-dots)
+
+## 実装（2026-10-20、Backlog #421 任務）
+
+- 仕様に書いていなかったので決めたこと（仕様 §4.4 に書いた）：
+  - 起きた回の結果は `mission.woke` と別の出来事 `mission.wake_settled` にした。数えるのは起こした時点（`mission.woke`）で、結果は
+    ターンが終わるまで分からない——同じ出来事を2回書いて「2回目は結果だけ」と読む形は、fold が数え間違える余地を残すのでやめた
+  - 出来事が来た予約は、banto が `mission.followup_set` で「来たもの＋起こす時刻」を添えて置き直す。最短の間隔の待ちを host の
+    メモリに持つと、待っている間に起き直したら来た出来事が消えるため
+  - 会話・Project を閉じたら、出来事を書かずに fold が任務を `stopped` に畳む（`thread.closed`・`project.closed` が真実）
+  - 時計の刻みで期限を過ぎて止めるのは、ターンが走っていないときだけ。走っていればそのターンの終わり（`turnEnded`）で止める
+    ——結末はそのターンのカードに添わる
+  - 期限切れの「ターンの外のカード」は、開いているカードがあればそれに結末を添える（`inbox.review_mission_set`）
+- 「止まっています」にするのは、最後まで行った（completed）ターンだけ。人が止めた・失敗したターンでは動いたまま残す（失敗のカードは
+  今どおり出る。期限が来れば時計が止める）
+- 受信箱の「開いている画面では出さない」は任務の結末のカードにも効く——人が Base を開いたまま任務が終わると、画面がそのカードを
+  「見た」にする（E2E では設定の画面に移ってから起こして確かめた）
+- E2E で 15 分を待たないために、`BANTO_TEST_MISSION_MIN_INTERVAL_MINUTES`（最短の間隔の下限）を足した。E2E だけが 0 にする
+- 偽の Runner への指示は予約のメモの中に入れ子にする。`fake-runner.ts` は最後の印を読むので、外側の指示の中の印は `\u005b` で書く
+  （`e2e/specs/mission.spec.ts` の `nestedTurn`）

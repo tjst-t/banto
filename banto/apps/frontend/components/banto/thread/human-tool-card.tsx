@@ -130,12 +130,13 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
       {isPending ? (
         <ElicitationFormView
           elicitation={args.elicitation}
-          onAnswered={async (value) => {
+          onAnswered={async (value, values) => {
             // 実banto hostのThreadなら、答えを/api/inbox/:id/answer経由で送る
             // ——これが実際にcanUseToolのPromiseを解決する（lib/backend/adapter.ts）。
+            // 欄の値（任務の枠、§6.47）は許可に添える
             let sentToHost: boolean;
             try {
-              sentToHost = await sendRealAnswer(props.toolCallId, value);
+              sentToHost = await sendRealAnswer(props.toolCallId, value, values);
             } catch (err) {
               // 押したのに何も起きない、を作らない（規則2）
               setSendError(

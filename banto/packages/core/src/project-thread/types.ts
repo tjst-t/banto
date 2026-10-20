@@ -137,6 +137,11 @@ export interface MessageOrigin {
    */
   automation?: { id: string; runId: string };
   /**
+   * **任務の予約で起こしたもの**（追加・2026-10-20、アーキ仕様 §4.4「起こし方」）。`wake` は何回目か（1 から）。その回のターンが
+   * 終わったら結果を `mission.wake_settled` に書く
+   */
+  mission?: { id: string; wake: number };
+  /**
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添える、Webhook で受けた本文。
    * 指示（人が決めたもの）とは分けて持ち、AI には別の囲みでデータとして渡す——中の指示には従わせない
    */
@@ -185,9 +190,10 @@ export interface PendingDelivery extends MessageOrigin {
 /**
  * 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`）。`automation`＝自動化の指示（人が作った、
  * または人が確かめた——アーキ仕様 §4.3。追加・2026-10-15）。`decision`＝判断役が、元の AI が出した選択肢から選んだ答え
- * （人の答えと同じに従ってよい。ただし後に人の答えがあれば人を優先——§4.3「banto.turn-decisions と判断役」、追加・2026-10-16）
+ * （人の答えと同じに従ってよい。ただし後に人の答えがあれば人を優先——§4.3「banto.turn-decisions と判断役」、追加・2026-10-16）。
+ * `mission`＝任務の予約どおりに banto が起こした知らせ（目標・枠・前の予約のメモ。§4.4、追加・2026-10-20）
  */
-export type DeliveryAuthor = "banto" | "fork" | "automation" | "decision";
+export type DeliveryAuthor = "banto" | "fork" | "automation" | "decision" | "mission";
 
 /**
  * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が
@@ -626,7 +632,98 @@ export interface ThreadState {
   accountSwitches?: ClaudeAccountSwitchRecord[];
   /** 最新の1件だけ（2026-10-04 から。履歴は Event Store の usage.recorded） */
   usage: UsageEntry[];
+  /**
+   * **今の任務**（追加・2026-10-20、アーキ仕様 §4.4「任務」）。終わった任務も、次の任務を始めるまで残す（結末を読む）。
+   * 1度も始めていなければ無い
+   */
+  mission?: MissionState;
   createdAt: string;
+}
+
+/** 任務の枠（アーキ仕様 §4.4「枠」） */
+export interface MissionFrame {
+  /** 起きる回数の上限（任務の予約で起こした回だけ数える） */
+  maxWakes: number;
+  /** 期限（ISO） */
+  until: string;
+  /** 最短の間隔（分）——前に任務で起こした時刻からの間 */
+  minIntervalMinutes: number;
+}
+
+/** 待つ出来事（§4.3 段2の名前と条件）。`until` までに来なければ「来ませんでした」で起こす */
+export interface MissionEventWait {
+  name: string;
+  where?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  /** 出来事の題（名乗りから）。届ける文と画面に出す */
+  title?: string;
+  until: string;
+}
+
+/** 来た出来事（届ける文に外から来たものとして添える） */
+export interface MissionReceivedEvent {
+  at: string;
+  name: string;
+  title: string;
+  eventId: string;
+  occurredAt: string;
+  fields: Record<string, string | number | boolean>;
+  text?: string;
+  truncatedFrom?: number;
+}
+
+/**
+ * **次の予約**（`schedule_followup`）。1つだけ——新しく予約したら置き換わる。`at` か `event` のどちらか。出来事が来たら
+ * banto が `at`（来た時刻か、前に起こした時刻＋最短の間隔の遅いほう）と `received` を付けて置き直す
+ */
+export interface MissionFollowup {
+  note: string;
+  setAt: string;
+  at?: string;
+  event?: MissionEventWait;
+  received?: MissionReceivedEvent;
+}
+
+/** 起きたきっかけ。`time`＝予約の時刻・`event`＝待っていた出来事・`event-timeout`＝出来事が来ないまま待つ上限・`human`＝人の「今すぐ起こす」 */
+export type MissionWakeCause = "time" | "event" | "event-timeout" | "human";
+
+/** 起きた回の結果（ターンが終わってから書く） */
+export type MissionWakeResult = "done" | "decisions" | "waiting" | "failed";
+
+export interface MissionWakeRecord {
+  wake: number;
+  at: string;
+  cause: MissionWakeCause;
+  /** 時刻を過ぎてから起こした（banto が止まっていた・会話が空いていなかった）なら、予約の時刻 */
+  scheduledFor?: string;
+  result?: MissionWakeResult;
+}
+
+/**
+ * 任務の状態。`active` 以外は人に返っている：`done`・`gave-up`＝AI が終えた、`exhausted`＝枠を使い切った（回数・期限）、
+ * `stalled`＝予約も終わりも無いままターンが終わった、`stopped`＝人が止めた・会話や Project を閉じた
+ */
+export type MissionStatus = "active" | "done" | "gave-up" | "exhausted" | "stalled" | "stopped";
+
+export interface MissionState {
+  id: string;
+  goal: string;
+  doneWhen: string;
+  frame: MissionFrame;
+  startedBy: "ai" | "human";
+  startedAt: string;
+  status: MissionStatus;
+  /** 任務の予約で起こした回数（起こした時点で数える） */
+  wakes: number;
+  /** 前に任務で起こした時刻（最短の間隔の起点） */
+  lastWakeAt?: string;
+  followup?: MissionFollowup;
+  /** 起きた記録（新しい順、直近 50 件） */
+  history: MissionWakeRecord[];
+  /** 終わった・止めたときの結果の文（AI の `result`・止めた理由） */
+  result?: string;
+  finishedAt?: string;
+  /** 終わりを書いた出来事の seq（受信箱がどのターンで人に返ったかを見る） */
+  finishedSeq?: number;
 }
 
 /** ターンを始めたもの：人の発言（届いたものも一緒に積んだときを含む）か、届いたものだけで起こしたか */

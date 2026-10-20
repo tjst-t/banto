@@ -2,7 +2,18 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, NoticeClaudeAccounts, NoticeItem, NoticeRuntimeKey, ReviewAutomation, ReviewItem, ReviewJudge } from "./types.js";
+import type {
+  InboxItem,
+  JudgmentItem,
+  JudgmentSource,
+  NoticeClaudeAccounts,
+  NoticeItem,
+  NoticeRuntimeKey,
+  ReviewAutomation,
+  ReviewItem,
+  ReviewJudge,
+  ReviewMission,
+} from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -135,10 +146,22 @@ export class InboxStore {
    * 「Base/Fork Thread 自身の完了」）。**1つの Thread に未確認は1件まで**：前のものは「見た」にして、新しいもの
    * だけを残す（同じ Thread の古い終わりを積み上げない）
    */
-  async raiseReview(input: { threadId: string; summary: string }): Promise<ReviewItem> {
+  async raiseReview(input: { threadId: string; summary: string; mission?: ReviewMission }): Promise<ReviewItem> {
     const replaced = this.openReviewsFor(input.threadId);
     await this.acknowledgeReviewsFor(input.threadId);
     return this.appendReview({ ...input, ...carryJudge(replaced) });
+  }
+
+  /**
+   * **ターンの外で任務が人に返った**（時計の刻みで期限を過ぎて止めた、追加・2026-10-20、アーキ仕様 §4.4「受信箱」）。その会話に
+   * 未確認のカードがあればそれに結末を添えて更新し、無ければ出す（1つの Thread に未確認は1件まで、は今のまま）
+   */
+  async raiseMissionOutcome(input: { threadId: string; summary: string; mission: ReviewMission }): Promise<ReviewItem> {
+    const open = this.openReviewsFor(input.threadId);
+    const latest = open.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (!latest) return this.appendReview(input);
+    this.apply(await this.log.append("inbox.review_mission_set", { id: latest.id, summary: input.summary, mission: input.mission }));
+    return this.get(latest.id) as ReviewItem;
   }
 
   /**
@@ -179,6 +202,7 @@ export class InboxStore {
     summary: string;
     automation?: Omit<ReviewAutomation, "raisedSeq">;
     carriedJudge?: ReviewJudge;
+    mission?: ReviewMission;
   }): Promise<ReviewItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.review_raised", { id, ...input });

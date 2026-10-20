@@ -173,6 +173,17 @@ export interface AutomationEventsDeps {
   now?: () => Date;
   log?: (message: string) => void;
   limits?: { pendingMax?: number };
+  /**
+   * **任務の予約の出来事**（追加・2026-10-20、アーキ仕様 §4.4「予約」）。自動化と同じ照合に乗せる——宣言と照合して重複を落とした
+   * 出来事を渡す。置き直した数を返す
+   */
+  missions?: {
+    receiveEvent(
+      projectId: string,
+      declared: EventDeclaration,
+      event: { eventId: string; occurredAt: string; fields: Record<string, EventFieldValue>; text?: string; truncatedFrom?: number },
+    ): Promise<number>;
+  };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -288,17 +299,7 @@ export class AutomationEvents {
     /** core が直に渡す起こしたターン（banto 自身の出来事）。無ければ `callId` から引く */
     direct?: Omit<EventCallOrigin, "callId" | "at">,
   ): Promise<number> {
-    const waiting = this.deps.automations
-      .list(from.projectId)
-      .filter((a) => a.source.kind === "event" && a.source.event === declared.name && !a.paused && eventMatchesWhere(a.source.where, event.fields));
-    if (waiting.length === 0 || this.deps.projectClosed(from.projectId)) return 0;
-
-    // **始まりの印**：引けたらホップ＋1・起こした Thread・起こした自動化の回。印は申告なので、別の Project の呼び出しは引かない
-    const origin = direct ?? (event.callId ? this.deps.ledger.callOrigin(event.callId) : undefined);
-    const causedBy = origin && origin.projectId === from.projectId ? origin : undefined;
-    const hop = causedBy ? causedBy.hop + 1 : 0;
-
-    const now = this.now();
+    if (this.deps.projectClosed(from.projectId)) return 0;
     let text = event.text;
     let truncatedFrom: number | undefined;
     if (text !== undefined) {
@@ -308,6 +309,31 @@ export class AutomationEvents {
         text = bytes.subarray(0, EVENT_TEXT_MAX_BYTES).toString("utf8");
       }
     }
+    // **任務の待ち**も同じ照合で引く（§4.4）。ホップは任務の届けもので 0 から（任務の枠が回数を抑える）
+    if (this.deps.missions) {
+      try {
+        await this.deps.missions.receiveEvent(from.projectId, declared, {
+          eventId: event.eventId,
+          occurredAt: event.occurredAt,
+          fields: event.fields,
+          ...(text !== undefined ? { text } : {}),
+          ...(truncatedFrom !== undefined ? { truncatedFrom } : {}),
+        });
+      } catch (err) {
+        this.log(`[host] 出来事 ${declared.name}（${event.eventId}）を任務の予約に渡せませんでした: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const waiting = this.deps.automations
+      .list(from.projectId)
+      .filter((a) => a.source.kind === "event" && a.source.event === declared.name && !a.paused && eventMatchesWhere(a.source.where, event.fields));
+    if (waiting.length === 0) return 0;
+
+    // **始まりの印**：引けたらホップ＋1・起こした Thread・起こした自動化の回。印は申告なので、別の Project の呼び出しは引かない
+    const origin = direct ?? (event.callId ? this.deps.ledger.callOrigin(event.callId) : undefined);
+    const causedBy = origin && origin.projectId === from.projectId ? origin : undefined;
+    const hop = causedBy ? causedBy.hop + 1 : 0;
+
+    const now = this.now();
     const subject = declared.subject !== undefined ? String(event.fields[declared.subject] ?? "") : "";
     const pendingMax = this.deps.limits?.pendingMax ?? EVENT_PENDING_MAX;
 

@@ -207,6 +207,15 @@ export class AutomationStore {
 
   /** 出来事の名前が、その Project の Module に名乗られているか・条件が名乗りの属性に合うか */
   private checkEventSource(projectId: string, source: Extract<AutomationSource, { kind: "event" }>): void {
+    this.checkEventWait(projectId, source.event, source.where);
+  }
+
+  /**
+   * **待つ出来事が名乗られているか・条件が名乗りに合うか**。合えばその名乗りを返し、合わなければ `AutomationInputError`（AI が
+   * 読んで直せる文——待てる出来事の一覧つき）。自動化の出来事のきっかけと、任務の予約の出来事（アーキ仕様 §4.4）が同じ決まりで使う
+   */
+  checkEventWait(projectId: string, event: string, where: EventWhere | undefined): EventDeclaration {
+    const source = { event, where };
     // banto 自身の出来事（`banto.*`）は core が名乗る——Module の宣言からは引かない
     const core = bantoEventDeclaration(source.event);
     if (!core && !this.eventCatalog) throw new AutomationInputError("この banto は出来事のきっかけを受けられません");
@@ -220,6 +229,7 @@ export class AutomationStore {
     }
     const problem = eventWhereProblem(declared, source.where);
     if (problem) throw new AutomationInputError(problem);
+    return declared;
   }
 
   private mustGet(id: string): Automation {
