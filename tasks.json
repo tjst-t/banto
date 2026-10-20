@@ -10513,7 +10513,7 @@
       "number": 439,
       "kind": "task",
       "title": "子孫ごと止める共通の口を module-contract に置き、kill(-pid) を置き換える（Linux はプロセスグループ、Windows は Job Object）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-measure-process"
@@ -10527,7 +10527,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:21.466Z",
       "closedAt": null,
       "extra": {}
     },
