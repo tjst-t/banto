@@ -11171,7 +11171,7 @@
       "number": 462,
       "kind": "task",
       "title": "仮想化の設定の画面（実行場所の「許す」と Project の3つ、警告の文言）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "containers-virtualization",
       "dependsOn": [
         "runtime-allow-virtualization",
@@ -11184,7 +11184,7 @@
       "labels": [],
       "body": "仕様の 1.・2.・4.。実行場所の設定の「仮想化の実験を許す」、Project の設定「一般」の実行場所の下の3つ（許していない・containers でないなら出さない）、警告と確かめ、移す・閉じるときの選択。",
       "doneWhen": "E2E（偽の実行場所）で3つを押せ、許していない実行場所では出ず、特権で Project 名の入力が要る。",
-      "resolution": null,
+      "resolution": "GitHub の main c7415ca5。実行場所の行の「仮想化の実験を許す」、Project の設定「一般」の「仮想化の実験」の節（/dev/kvm・hugepages・特権。特権は名前が一致するまで押せない）、サイドバーの特権の印（GET /api/projects に privileged）。E2E containers-virtualization-ui（host の返事を差し替え）で完了条件を確かめた。作っていない：畳んだレールの印、移す・閉じるときの選択（移す側の作業）。本物の実行場所での通しはストーリー #456 の完了条件で。",
       "refs": [],
       "threads": [
         {
@@ -11193,8 +11193,8 @@
         }
       ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T12:09:39.263Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T12:23:06.424Z",
+      "closedAt": "2026-10-20T12:23:06.424Z",
       "extra": {}
     },
     {
