@@ -145,7 +145,7 @@ export interface MessageOrigin {
    * **任務の予約で起こしたもの**（追加・2026-10-20、アーキ仕様 §4.4「起こし方」）。`wake` は何回目か（1 から）。その回のターンが
    * 終わったら結果を `mission.wake_settled` に書く
    */
-  mission?: { id: string; wake: number };
+  mission?: MissionWakeOrigin;
   /**
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添える、Webhook で受けた本文。
    * 指示（人が決めたもの）とは分けて持ち、AI には別の囲みでデータとして渡す——中の指示には従わせない
@@ -643,6 +643,17 @@ export interface ThreadState {
    */
   mission?: MissionState;
   createdAt: string;
+}
+
+/**
+ * **任務の予約で起こした回の印**（発言の `origin.mission`）。`maxWakes`・`note` は会話の薄い1行（「任務で起きました（3/20 回目）
+ * ——前の予約：〈note〉」、v4-frontend.md §6.47）に出す分で、起こした時点の値（追加・2026-10-20、Backlog #422。前の記録には無い）
+ */
+export interface MissionWakeOrigin {
+  id: string;
+  wake: number;
+  maxWakes?: number;
+  note?: string;
 }
 
 /** 任務の枠（アーキ仕様 §4.4「枠」） */

@@ -260,7 +260,8 @@ test("時刻が来たら任務の届けもの（kind mission・ホップ 0・何
     const delivered = thread.deliveries![0]!;
     assert.equal(delivered.kind, "mission");
     assert.equal(delivered.hop, 0);
-    assert.deepEqual(delivered.mission, { id: thread.mission!.id, wake: 1 });
+    // 会話の薄い1行に出す分（上限と前の予約のメモ、v4-frontend.md §6.47）
+    assert.deepEqual(delivered.mission, { id: thread.mission!.id, wake: 1, maxWakes: 5, note: "CI を見る" });
     assert.match(delivered.title, /任務「CI を通す」（1\/5 回目）/);
     assert.match(delivered.text, /目標：CI を通す/);
     assert.match(delivered.text, /終わりの条件：main の CI が緑/);
@@ -295,7 +296,7 @@ test("任務の回が何も無く終わったら受信箱に出さない。予�
     // 1回目：中で次を予約して終わる——出さない
     await runTurn(ctx, { during: async () => void (await ctx.missions.scheduleFollowup(ctx.baseId, { after: 20, note: "2" })) });
     const after1 = ctx.store.getThread(ctx.baseId)!;
-    assert.deepEqual(missionWakeOfLastTurn(after1), { id: after1.mission!.id, wake: 1 });
+    assert.deepEqual(missionWakeOfLastTurn(after1), { id: after1.mission!.id, wake: 1, maxWakes: 2, note: "1" });
     assert.equal(after1.mission!.history[0]!.result, "done");
     assert.equal(planMissionReview(after1, false).kind, "skip");
     assert.equal(after1.mission!.status, "active");
@@ -426,5 +427,32 @@ test("人が始める・枠を延ばす（使い切った任務は動いてい�
     await ctx.missions.startByHuman(ctx.baseId, { goal: "2つ目", doneWhen: "x" });
     await ctx.store.closeThread(ctx.baseId, { by: "human" });
     assert.equal(ctx.store.getThread(ctx.baseId)!.mission!.status, "stopped");
+  });
+});
+
+test("画面の口：止まっている・枠を使い切った任務も人が止められる。始められない理由を返す。任務が変わるたびに知らせる", async () => {
+  await setup(async (ctx) => {
+    const changed: string[] = [];
+    ctx.store.onMissionChanged((threadId) => changed.push(threadId));
+    assert.equal(ctx.missions.startRefusal(ctx.baseId), undefined);
+    await ctx.missions.startByHuman(ctx.baseId, { goal: "見る", doneWhen: "済んだ", maxWakes: 3 });
+    assert.match(ctx.missions.startRefusal(ctx.baseId) ?? "", /動いている任務があります/);
+    assert.equal(changed.length, 1, "始めたのに知らせない");
+    await ctx.missions.wakeNow(ctx.baseId);
+    await runTurn(ctx);
+    assert.equal(ctx.store.getThread(ctx.baseId)!.mission!.status, "stalled");
+    assert.ok(changed.length >= 3, "起きた・止まったのに知らせない");
+    // 止まっている任務を「終える」
+    const stopped = await ctx.missions.patch(ctx.baseId, { stop: true });
+    assert.equal(stopped.status, "stopped");
+    assert.equal(stopped.result, "人が止めました");
+    await assert.rejects(() => ctx.missions.patch(ctx.baseId, { stop: true }), /もう終わっています/);
+    assert.equal(ctx.missions.startRefusal(ctx.baseId), undefined, "止めた任務の会話で始められない");
+    // 会話を閉じて止まったときも知らせる
+    await ctx.missions.startByHuman(ctx.baseId, { goal: "2つ目", doneWhen: "x" });
+    const before = changed.length;
+    await ctx.store.closeThread(ctx.baseId, { by: "human" });
+    assert.equal(changed.length, before + 1, "閉じて止まったのに知らせない");
+    assert.match(ctx.missions.startRefusal(ctx.baseId) ?? "", /閉じられています/);
   });
 });

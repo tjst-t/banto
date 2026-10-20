@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ProjectThreadStore } from "../project-thread/store.js";
-import type { DeliveryAuthor, ExternalContent, MessageSender, PendingDelivery, TurnContinuation } from "../project-thread/types.js";
+import type { DeliveryAuthor, ExternalContent, MessageSender, MissionWakeOrigin, PendingDelivery, TurnContinuation } from "../project-thread/types.js";
 import type { ThreadTurns } from "./thread-turns.js";
 
 /** 仮置きの値（2026-09-25）——困ったら変える。根拠は `docs/notes/2026-09-25-thread-delivery.md` */
@@ -53,7 +53,7 @@ export interface DeliverInput {
    * **任務の予約で起こした回**（`kind: "mission"` と一緒に、追加・2026-10-20、アーキ仕様 §4.4「起こし方」）。自動化の届けものと
    * 同じく速度の上限と留めたときのお知らせの対象から外す——任務の枠（回数・期限・間隔）が抑える
    */
-  mission?: { id: string; wake: number };
+  mission?: MissionWakeOrigin;
   /**
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。`text`（書き手が分かっている指示）とは分けて持ち、
    * AI には別の囲み（`<banto-external>`）でデータとして渡す
