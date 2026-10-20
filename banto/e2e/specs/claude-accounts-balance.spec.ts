@@ -9,13 +9,19 @@
 //   3. 閾値越えで移る：host が 97% と返したら、その会話の次の要求から B。切り替えはその会話に1件
 //   4. 切り替えの1行は選び直しでは出ない：最初の選び（2つ目の会話が B を選んだ）では1行も出ない
 //   5. 口：その会話の固定先（`GET /api/threads/:id/claude-account`）・Project の使い方と固定先・設定の「いま使っている Project」
+//
+// 2つ目の試験は画面（Backlog #418 `balance-ui`、v4-frontend.md §6.46「使い方」「右上の文脈のメーター」）：
+//   6. 使い方の2択の保存（banto 全体・Project）と、説明文の切り替わり（上の一言・既定の並び・Project の上の一言）
+//   7. 均すとき、2つの会話の右上のメーターがそれぞれの固定先を出す。まだ固定の無い会話には何も足さない
+//   8. 設定の「直近1時間に使った Project」
 import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FRONTEND_BASE_URL } from "../config.js";
 import { withOwnHost, type OwnHost } from "../own-host.js";
-import { startFakeAnthropic } from "../fake-anthropic.js";
+import { startFakeAnthropic, type FakeAnthropic } from "../fake-anthropic.js";
+import { openApp, openProjectSettings } from "../helpers.js";
 import { writeLoginLink } from "../../packages/core/dist/auth/login-links.js";
 
 test.describe.configure({ mode: "serial" });
@@ -76,6 +82,33 @@ async function sendTurn(host: OwnHost, threadId: string, prompt: string): Promis
 
 const secondsFromNow = (s: number) => Math.floor(Date.now() / 1000) + s;
 
+/** 本物の CLI を偽の API に当てる環境（会話の本体は中継を通る。偽の API は中継の上流・取り直しの口・プロフィールの口・使用率の口） */
+function realCliEnv(fakeApi: FakeAnthropic, securestorage: string) {
+  return {
+    unsetEnv: OUTER_CLAUDE_ENV,
+    env: {
+      BANTO_FAKE_RUNNER: "",
+      BANTO_CLAUDE_RELAY_UPSTREAM: fakeApi.url,
+      BANTO_CLAUDE_RELAY_TOKEN_URL: `${fakeApi.url}/v1/oauth/token`,
+      BANTO_CLAUDE_PROFILE_URL: `${fakeApi.url}/api/oauth/profile`,
+      BANTO_CLAUDE_USAGE_URL: `${fakeApi.url}/api/oauth/usage`,
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: securestorage,
+      DISABLE_TELEMETRY: "1",
+      DISABLE_AUTOUPDATER: "1",
+    },
+  };
+}
+
+/** アカウント B を足す（画面と同じ口）。B の id を返す */
+async function addAccountB(page: Page, own: OwnHost, fakeApi: FakeAnthropic): Promise<string> {
+  fakeApi.addLogin("code-b", { accessToken: "tok-b", email: "b@example.com" });
+  const started = await human<{ loginId: string; url: string }>(page, own, "POST", "/api/claude-accounts/login");
+  const state = new URL(started.body.url).searchParams.get("state");
+  const finished = await human<{ account: { id: string } }>(page, own, "POST", `/api/claude-accounts/login/${started.body.loginId}`, { pasted: `code-b#${state}` });
+  expect(finished.status, JSON.stringify(finished.body)).toBe(200);
+  return finished.body.account.id;
+}
+
 test("均す：2つの会話が別のアカウントに固定され、同じ会話は同じアカウント、閾値越えで移る。最初の選びは切り替えの1行にならない", async ({ page }) => {
   const fakeApi = await startFakeAnthropic();
   const securestorage = mkdtempSync(join(tmpdir(), "banto-e2e-balance-cred-"));
@@ -85,12 +118,7 @@ test("均す：2つの会話が別のアカウントに固定され、同じ会�
       async (own) => {
         await login(page, own);
         // ---- アカウント B を足す（画面と同じ口） ----------------------------------------------------------------
-        fakeApi.addLogin("code-b", { accessToken: "tok-b", email: "b@example.com" });
-        const started = await human<{ loginId: string; url: string }>(page, own, "POST", "/api/claude-accounts/login");
-        const state = new URL(started.body.url).searchParams.get("state");
-        const finished = await human<{ account: { id: string } }>(page, own, "POST", `/api/claude-accounts/login/${started.body.loginId}`, { pasted: `code-b#${state}` });
-        expect(finished.status, JSON.stringify(finished.body)).toBe(200);
-        const bId = finished.body.account.id;
+        const bId = await addAccountB(page, own, fakeApi);
         const nameOf = (id: string) => (id === bId ? "b" : id);
         const tokenName: Record<string, string> = { [HOST_TOKEN]: "host", "tok-b": "b" };
         // 既定は均す
@@ -173,20 +201,148 @@ test("均す：2つの会話が別のアカウントに固定され、同じ会�
         // 上流には Thread の印を流さない
         expect(fakeApi.requests.filter((r) => r.threadHeader !== null)).toEqual([]);
       },
-      {
-        // **本物の CLI を偽の API に当てる**（会話の本体は中継を通る。偽の API は中継の上流・取り直しの口・プロフィールの口・使用率の口）
-        unsetEnv: OUTER_CLAUDE_ENV,
-        env: {
-          BANTO_FAKE_RUNNER: "",
-          BANTO_CLAUDE_RELAY_UPSTREAM: fakeApi.url,
-          BANTO_CLAUDE_RELAY_TOKEN_URL: `${fakeApi.url}/v1/oauth/token`,
-          BANTO_CLAUDE_PROFILE_URL: `${fakeApi.url}/api/oauth/profile`,
-          BANTO_CLAUDE_USAGE_URL: `${fakeApi.url}/api/oauth/usage`,
-          CLAUDE_SECURESTORAGE_CONFIG_DIR: securestorage,
-          DISABLE_TELEMETRY: "1",
-          DISABLE_AUTOUPDATER: "1",
-        },
+      realCliEnv(fakeApi, securestorage),
+    );
+  } finally {
+    await fakeApi.close();
+    rmSync(securestorage, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const PROJECT_UI = "E2E 均すの画面";
+
+/** 設定の左の一覧の「Claude のアカウント」——banto 全体が先、Project の層が後（同じ名前が2つ並ぶ） */
+async function openSection(page: Page, layer: "global" | "project"): Promise<void> {
+  await openProjectSettings(page);
+  const buttons = page.getByRole("button", { name: "Claude のアカウント", exact: true });
+  await expect(buttons).toHaveCount(2);
+  await (layer === "global" ? buttons.first() : buttons.last()).click();
+  await expect(page.getByTestId(layer === "global" ? "claude-accounts-panel" : "project-claude-accounts-panel")).toBeVisible({ timeout: 20_000 });
+}
+
+test("画面：使い方の2択の保存（banto 全体・Project）と説明文の切り替わり・右上のメーターはその会話の固定先・直近1時間に使った Project", async ({ page }) => {
+  const fakeApi = await startFakeAnthropic();
+  const securestorage = mkdtempSync(join(tmpdir(), "banto-e2e-balance-ui-cred-"));
+  const root = mkdtempSync(join(tmpdir(), "banto-e2e-balance-ui-root-"));
+  try {
+    await withOwnHost(
+      async (own) => {
+        await login(page, own);
+        const bId = await addAccountB(page, own, fakeApi);
+        const project = await api<{ id: string }>(own, "/api/projects", { method: "POST", body: { name: PROJECT_UI, root } });
+        expect(project.status, JSON.stringify(project.body)).toBe(201);
+        const projectId = project.body.id;
+        const base = (await api<{ id: string }>(own, `/api/projects/${projectId}/threads`, { method: "POST" })).body.id;
+        // 2つ目の会話は、まっさらな Fork（親の固定を継がない——会話を引き継がないので）
+        const fork = await api<{ id: string }>(own, `/api/threads/${base}/fork`, { method: "POST", body: { fresh: true, title: "二つ目" } });
+        expect(fork.status, JSON.stringify(fork.body)).toBe(201);
+        const forkId = fork.body.id;
+
+        // ---- 7. 2つの会話をそれぞれ host と B に固定する（host 20%・B 25% で base が host、host 50% になってから Fork が B） ----
+        fakeApi.setLimit(HOST_TOKEN, { fiveHour: { utilization: 0.2, resetsAt: secondsFromNow(4 * 3600) } });
+        fakeApi.setLimit("tok-b", { fiveHour: { utilization: 0.25, resetsAt: secondsFromNow(4 * 3600) } });
+        await sendTurn(own, base, "base の1回目");
+        fakeApi.setLimit(HOST_TOKEN, { fiveHour: { utilization: 0.5, resetsAt: secondsFromNow(4 * 3600) } });
+        await sendTurn(own, base, "base の2回目"); // host が 50% と分かる
+        const pinnedOf = async (threadId: string) => (await api<{ accountId?: string }>(own, `/api/threads/${threadId}/claude-account`)).body.accountId;
+        expect(await pinnedOf(base)).toBe("host");
+        expect(await pinnedOf(forkId), "まだ送っていない Fork に固定先がある").toBeUndefined();
+
+        await openApp(page, own.url);
+        const meter = page.getByRole("button", { name: /^文脈使用量/ }).first();
+        const chip = page.getByTestId("claude-account-chip");
+        // まだ固定の無い会話（Fork）には何も足さない——隣の会話の host を出さない
+        await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${forkId}`);
+        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(meter).toBeVisible();
+        await page.waitForTimeout(1_500); // 最初の取り直し（時計の 0ms）が済むのを待ってから「無い」を見る
+        await expect(chip).toHaveCount(0);
+
+        await sendTurn(own, forkId, "Fork の1回目");
+        expect(await pinnedOf(forkId), "host が 50% なのに Fork が B（25%）に固定されていない").toBe(bId);
+
+        // base の画面：host（~/.claude・5時間 50%・週 —）
+        await page.goto(`/p/${projectId}?bantoHost=${own.url}`);
+        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(chip.getByTestId("claude-account-chip-name")).toHaveText("~/.claude", { timeout: 15_000 });
+        await expect(chip.getByTestId("claude-account-chip-usage")).toHaveText("50%/—");
+        await chip.click();
+        await expect(page.getByTestId("claude-account-section")).toContainText("このマシンの Claude Code のログイン");
+        await page.keyboard.press("Escape");
+        // Fork の画面：B（b・5時間 25%・週 —）
+        await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${forkId}`);
+        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
+        await expect(chip.getByTestId("claude-account-chip-name")).toHaveText("b", { timeout: 15_000 });
+        await expect(chip.getByTestId("claude-account-chip-usage")).toHaveText("25%/—");
+        await chip.click();
+        await expect(page.getByTestId("claude-account-section")).toContainText("b@example.com");
+        await page.keyboard.press("Escape");
+
+        // ---- 6. banto 全体の使い方：既定は均す、説明文も均すの文 --------------------------------------------------
+        await openSection(page, "global");
+        const panel = page.getByTestId("claude-accounts-panel");
+        const lead = panel.getByTestId("claude-accounts-lead");
+        const orderNote = panel.getByTestId("claude-accounts-default-order-note");
+        await expect(panel.getByTestId("claude-accounts-mode-balance").getByRole("radio")).toBeChecked();
+        await expect(panel.getByTestId("claude-accounts-mode-ordered").getByRole("radio")).not.toBeChecked();
+        await expect(panel.getByTestId("claude-accounts-mode-balance")).toHaveText("均す新しい会話ごとに、並びの中で余裕のあるアカウントを選ぶ（既定）");
+        await expect(panel.getByTestId("claude-accounts-mode-ordered")).toHaveText("上から順に並びの先頭から、閾値まで使う");
+        await expect(lead).toContainText("会話ごとに余裕のあるアカウントを選び、閾値を越えたら移ります。");
+        await expect(lead).not.toContainText("並びの次のアカウントに切り替えます");
+        await expect(orderNote).toHaveText(
+          "Project で並びを決めていなければ、この中から、新しい会話ごとに余裕のあるものを選びます。同じ余裕なら上を先に使います。",
+        );
+        // ---- 8. 直近1時間に使った Project（両方のアカウントの下に同じ Project） ----------------------------------------
+        const usedBy = (id: string) => panel.locator(`[data-testid="claude-account-row"][data-account-id="${id}"]`).getByTestId("claude-account-used-by");
+        await expect(usedBy("host")).toHaveText(`人の claude コマンドと共有しています。直近1時間に使った Project：${PROJECT_UI}`);
+        await expect(usedBy(bId)).toHaveText(`直近1時間に使った Project：${PROJECT_UI}`);
+
+        // 上から順にへ：保存され、説明文が上から順にの文に変わる
+        await panel.getByTestId("claude-accounts-mode-ordered").click();
+        await expect(panel.getByTestId("claude-accounts-mode-ordered").getByRole("radio")).toBeChecked();
+        await expect.poll(async () => (await human<{ mode: string }>(page, own, "GET", "/api/claude-accounts")).body.mode).toBe("ordered");
+        await expect(lead).toContainText("使用量が閾値を越えると、並びの次のアカウントに切り替えます。");
+        await expect(lead).not.toContainText("会話ごとに余裕のあるアカウントを選び");
+        await expect(orderNote).toHaveText("Project で並びを決めていなければ、この順で使います。上ほど先に使います。");
+        // 開き直しても上から順に（host の台帳から描く）
+        await page.reload();
+        await expect(page.getByTestId("claude-accounts-mode-ordered").getByRole("radio")).toBeChecked({ timeout: 20_000 });
+        await expect(page.getByTestId("claude-accounts-lead")).toContainText("並びの次のアカウントに切り替えます");
+        // 均すへ戻す
+        await page.getByTestId("claude-accounts-mode-balance").click();
+        await expect.poll(async () => (await human<{ mode: string }>(page, own, "GET", "/api/claude-accounts")).body.mode).toBe("balance");
+        await expect(page.getByTestId("claude-accounts-lead")).toContainText("会話ごとに余裕のあるアカウントを選び");
+
+        // ---- 6. Project の使い方：banto 全体と同じ（いまは均す）／均す／上から順に --------------------------------------
+        await openSection(page, "project");
+        const pp = page.getByTestId("project-claude-accounts-panel");
+        const projectView = async () => (await human<{ mode: string | null; effectiveMode: string }>(page, own, "GET", `/api/projects/${projectId}/claude-accounts`)).body;
+        const inherit = pp.getByTestId("project-claude-accounts-use-inherit");
+        await expect(inherit).toHaveText("banto 全体と同じ（いまは均す）");
+        await expect(inherit.getByRole("radio")).toBeChecked();
+        await expect(pp.getByTestId("project-claude-accounts-use-balance")).toHaveText("均す");
+        await expect(pp.getByTestId("project-claude-accounts-use-ordered")).toHaveText("上から順に");
+        await expect(pp.locator("header")).toContainText("新しい会話ごとに、閾値の下で余裕のあるものを選びます。");
+        // 均すの Project は、直近1時間の固定先を出す（並びは既定のまま——1行で）
+        await expect(pp.getByTestId("project-claude-accounts-current-line")).toHaveText("直近1時間に使ったアカウント：このマシンの Claude Code のログイン、b@example.com");
+
+        await pp.getByTestId("project-claude-accounts-use-ordered").click();
+        await expect(pp.getByTestId("project-claude-accounts-use-ordered").getByRole("radio")).toBeChecked();
+        await expect.poll(projectView).toMatchObject({ mode: "ordered", effectiveMode: "ordered" });
+        await expect(pp.locator("header")).toContainText("上から順に、閾値の下のものを使います。");
+        // banto 全体はそのまま均す
+        expect((await human<{ mode: string }>(page, own, "GET", "/api/claude-accounts")).body.mode).toBe("balance");
+
+        await pp.getByTestId("project-claude-accounts-use-balance").click();
+        await expect.poll(projectView).toMatchObject({ mode: "balance", effectiveMode: "balance" });
+        await expect(pp.locator("header")).toContainText("新しい会話ごとに、閾値の下で余裕のあるものを選びます。");
+
+        await inherit.click();
+        await expect(inherit.getByRole("radio")).toBeChecked();
+        await expect.poll(projectView).toMatchObject({ mode: null, effectiveMode: "balance" });
       },
+      realCliEnv(fakeApi, securestorage),
     );
   } finally {
     await fakeApi.close();

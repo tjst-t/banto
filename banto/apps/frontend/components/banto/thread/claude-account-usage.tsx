@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   fetchClaudeAccounts,
   fetchProjectClaudeAccounts,
+  fetchThreadClaudeAccount,
   type ClaudeAccountView,
   type ClaudeAccountsState,
 } from "@/lib/backend/client";
@@ -25,23 +26,29 @@ export interface CurrentClaudeAccount {
 const REFRESH_MS = 60_000;
 
 /**
- * その Project がいま使っているアカウント。中継がまだ1回も送っていなければ、並びの先頭（次に使うもの）。
+ * その会話がいま使っているアカウント。均すときはその会話の生きている固定先（まだ無ければ undefined——隣の会話の
+ * アカウントを出さない、v4-security.md §2「均す」の 9.）。上から順にのときは Project が最後に使ったもので、
+ * 中継がまだ1回も送っていなければ並びの先頭（次に使うもの）。
  * 読めない（この banto に口が無い・人のセッションでない）ときは undefined で、メーターには何も足さない
  */
-export function useCurrentClaudeAccount(projectId: string | undefined, refreshKey: number): CurrentClaudeAccount | undefined {
+export function useCurrentClaudeAccount(
+  projectId: string | undefined,
+  threadId: string,
+  refreshKey: number,
+): CurrentClaudeAccount | undefined {
   const [state, setState] = useState<CurrentClaudeAccount | undefined>(undefined);
   const load = useCallback(async () => {
     if (!projectId) return;
     try {
       const [all, mine] = await Promise.all([fetchClaudeAccounts(), fetchProjectClaudeAccounts(projectId)]);
-      const id = mine.currentAccount ?? mine.effectiveOrder[0];
+      const id = mine.effectiveMode === "balance" ? (await fetchThreadClaudeAccount(threadId)).accountId : (mine.currentAccount ?? mine.effectiveOrder[0]);
       const account = all.accounts.find((a) => a.id === id);
       setState(account ? { account, thresholds: all.thresholds, readAt: Date.now() } : undefined);
     } catch {
       // 口が無い・読めないときは出さない（会話の画面の邪魔をしない）
       setState(undefined);
     }
-  }, [projectId]);
+  }, [projectId, threadId]);
   useEffect(() => {
     // 最初の1回も時計から呼ぶ（effect の中で直に setState に繋がる呼び出しをしない）
     const first = setTimeout(() => void load(), 0);

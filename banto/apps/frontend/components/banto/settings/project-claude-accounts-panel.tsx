@@ -10,12 +10,13 @@ import {
   fetchClaudeAccounts,
   fetchProjectClaudeAccounts,
   setProjectClaudeAccounts,
+  type ClaudeAccountMode,
   type ClaudeAccountSwitchView,
   type ClaudeAccountsState,
   type ProjectClaudeAccounts,
 } from "@/lib/backend/client";
 import { describeFailure, reportFailure } from "@/lib/report-failure";
-import { AccountOrderEditor, accountPlan, percent, usageLine } from "@/components/banto/settings/claude-accounts-shared";
+import { AccountOrderEditor, MODE_CHOICES, accountPlan, modeName, percent, usageLine } from "@/components/banto/settings/claude-accounts-shared";
 import { cn } from "@/lib/utils";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -71,10 +72,25 @@ export function ProjectClaudeAccountsPanel({ projectId }: { projectId: string })
     setSaving(true);
     setProject({ ...project, order, ...(order ? { effectiveOrder: order } : {}) });
     try {
-      setProject(await setProjectClaudeAccounts(projectId, order));
+      setProject(await setProjectClaudeAccounts(projectId, { order }));
     } catch (err) {
       setProject(before);
       reportFailure("この Project の並びを保存できませんでした", err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveMode(mode: ClaudeAccountMode | null) {
+    if (!project || saving || project.mode === mode) return;
+    const before = project;
+    setSaving(true);
+    setProject({ ...project, mode });
+    try {
+      setProject(await setProjectClaudeAccounts(projectId, { mode }));
+    } catch (err) {
+      setProject(before);
+      reportFailure("この Project の使い方を保存できませんでした", err);
     } finally {
       setSaving(false);
     }
@@ -92,6 +108,9 @@ export function ProjectClaudeAccountsPanel({ projectId }: { projectId: string })
   const byId = new Map(accounts.accounts.map((a) => [a.id, a]));
   const label = (id: string) => byId.get(id)?.label ?? id;
   const mode = project.order ? "own" : "default";
+  const balance = project.effectiveMode === "balance";
+  // いま使っているもの：上から順には最後に返事をしたもの、均すは直近1時間の固定先（会話ごとに違いうる）
+  const inUse = new Set(balance ? (project.pinnedAccounts ?? []) : project.currentAccount ? [project.currentAccount] : []);
   const plans = new Set(project.effectiveOrder.map((id) => byId.get(id)).flatMap((a) => (a ? [accountPlan(a, accounts) ?? "不明"] : [])));
   const now = new Date();
   const switches = [...(project.recentSwitches ?? [])].reverse();
@@ -101,9 +120,42 @@ export function ProjectClaudeAccountsPanel({ projectId }: { projectId: string })
       <header className="flex flex-col gap-1">
         <h1 className="text-lg font-semibold text-foreground">Claude のアカウント</h1>
         <p className="text-xs text-ink-3">
-          この Project の会話とコンテナの中の Claude が使うアカウントの並び。上から順に、閾値の下のものを使います。
+          {balance
+            ? "この Project の会話とコンテナの中の Claude が使うアカウントの並び。新しい会話ごとに、閾値の下で余裕のあるものを選びます。"
+            : "この Project の会話とコンテナの中の Claude が使うアカウントの並び。上から順に、閾値の下のものを使います。"}
         </p>
       </header>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="text-sm font-semibold text-foreground">使い方</h2>
+        <div role="radiogroup" className="flex flex-wrap gap-2">
+          {(
+            [
+              [null, `banto 全体と同じ（いまは${modeName(accounts.mode)}）`],
+              ...MODE_CHOICES.map(([m, title]) => [m, title] as const),
+            ] as const
+          ).map(([id, title]) => (
+            <label
+              key={id ?? "inherit"}
+              data-testid={`project-claude-accounts-use-${id ?? "inherit"}`}
+              className={cn(
+                "flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm text-foreground",
+                project.mode === id ? "border-[var(--banto-accent)] bg-surface-2/50" : "border-border",
+              )}
+            >
+              <input
+                type="radio"
+                name={`claude-accounts-use-${projectId}`}
+                checked={project.mode === id}
+                disabled={saving}
+                onChange={() => void saveMode(id)}
+                className="accent-[var(--banto-accent)]"
+              />
+              {title}
+            </label>
+          ))}
+        </div>
+      </section>
 
       <div role="radiogroup" className="flex flex-col gap-2">
         {(
@@ -151,17 +203,17 @@ export function ProjectClaudeAccountsPanel({ projectId }: { projectId: string })
             onChange={(next) => void save(next)}
             renderDetail={usageLine}
             renderBadge={(a) =>
-              a.id === project.currentAccount ? (
+              inUse.has(a.id) ? (
                 <span data-testid="project-claude-accounts-current" className="shrink-0 rounded bg-ok-soft px-1.5 py-0.5 text-xs text-ok">
-                  いま使っています
+                  {balance ? "直近1時間に使いました" : "いま使っています"}
                 </span>
               ) : null
             }
           />
         </section>
-      ) : project.currentAccount ? (
+      ) : inUse.size > 0 ? (
         <p data-testid="project-claude-accounts-current-line" className="text-xs text-ink-2">
-          いま使っているアカウント：{label(project.currentAccount)}
+          {balance ? "直近1時間に使ったアカウント" : "いま使っているアカウント"}：{[...inUse].map(label).join("、")}
         </p>
       ) : null}
 
