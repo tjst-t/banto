@@ -11489,7 +11489,7 @@
       "number": 477,
       "kind": "bug",
       "title": "Factory のマージの段が、ときどき「この Project に backlog の Module がありません」で止まる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -11503,7 +11503,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T15:04:07.442Z",
-      "updatedAt": "2026-10-20T15:04:07.442Z",
+      "updatedAt": "2026-10-20T15:16:27.883Z",
       "closedAt": null,
       "extra": {}
     },
