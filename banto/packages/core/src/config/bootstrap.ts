@@ -55,6 +55,11 @@ export interface BootstrapConfig {
    * `sidebar-idle-sleep.spec.ts`。`POST /api/test-only/idle-check`）。14日待てない試験が「14日たった」を作る。**本番の config には書かない**
    */
   testOnlyIdleCheck?: boolean;
+  /**
+   * **試験だけ：読むだけの印を付けた会話を立てる口**（追加・2026-10-20、アーキ仕様 §4.4。`POST /api/test-only/read-only-thread`）。
+   * 見回りがまだ無いので、読むだけの回を試験が作る。**本番の config には書かない**
+   */
+  testOnlyReadOnlyThreads?: boolean;
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -147,6 +152,12 @@ function parseTestOnlyIdleCheck(value: unknown): boolean {
   return value;
 }
 
+function parseTestOnlyReadOnlyThreads(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error("config.json の testOnlyReadOnlyThreads は true か false です（試験だけの項目）");
+  return value;
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
@@ -169,6 +180,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       releaseDir: raw.releaseDir ?? defaultReleaseDir(),
       ...(raw.testOnlySelfUpdate !== undefined ? { testOnlySelfUpdate: parseTestOnlySelfUpdate(raw.testOnlySelfUpdate) } : {}),
       ...(parseTestOnlyIdleCheck(raw.testOnlyIdleCheck) ? { testOnlyIdleCheck: true } : {}),
+      ...(parseTestOnlyReadOnlyThreads(raw.testOnlyReadOnlyThreads) ? { testOnlyReadOnlyThreads: true } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

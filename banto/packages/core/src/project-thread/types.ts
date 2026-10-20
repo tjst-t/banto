@@ -1,6 +1,7 @@
 // docs/specs/v4-architecture.md §2.2 Project / Thread（Memoryを含む）の型。
 // Thread は「Memory ＋ それ以降のメッセージ」——Memoryはこの定義の一部。
 
+import type { ThreadRestriction } from "@banto/module-contract";
 import type { BackgroundWork } from "../delivery/reply-handles.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -523,6 +524,12 @@ export interface ThreadState {
    *  自分のsession idを受け取った時点で true になる。 */
   ownsSession: boolean;
   status: "active" | "closed";
+  /**
+   * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」）。立てたとき（`thread.created`）に刻み、**外す口は無い**
+   * ——外の文を読んだ文脈が、ふつうの会話に戻らない。この会話のターンは、どの起こし方でも読むだけの tool しか使えない。
+   * 印の付いた会話から分けた Fork も同じ印を持つ。ふつうの会話は持たない
+   */
+  restriction?: ThreadRestriction;
   /**
    * **誰が閉じたか・なぜか**（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。閉じている間だけ持つ
    * ——開き直したら外す。これより前に閉じた記録は持たない

@@ -919,3 +919,92 @@ test("自動の要約が起きたターンの次のターンで、途中で足�
     assert.doesNotMatch(seen[2]!.prompt, /人へは日本語で書く/, "同じ差分を添え直している");
   });
 });
+
+// **読むだけの回**（決定・2026-10-20、アーキ仕様 §4.4）。印は会話に刻んだもの（`thread.created`）だけを見る。
+// 守りの 1.（組み込みは資源の3つ）・2.（core のサーバは読むだけの tool で組む、Memory は渡さない）・4.（PreToolUse）と、
+// 「人に聞かない」（承認は判断待ちを出さずに断る——自動で許可がオンでも。Elicitation も断る）
+test("読むだけの会話のターンは、組み込みを資源の3つにし、core のサーバを読むだけの tool で組み、PreToolUse で断り、承認を人に聞かずに断る", async () => {
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  await withThread(async ({ deps, threadId, store }) => {
+    const fork = await store.forkThread(threadId, { fresh: true, restriction: "read-only" });
+    assert.equal(fork.restriction, "read-only");
+    let seen: Parameters<typeof runTurn>[0] | undefined;
+    const resolved: unknown[] = [];
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      seen = opts;
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      const pending = { toolCallId: "call-1", toolName: "mcp__filesystem__readFile", input: {}, resolve: (r: unknown) => resolved.push(r) };
+      yield { type: "approval_requested" as const, pending } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+
+    const events = await collect(
+      runThreadTurn(
+        {
+          ...deps,
+          runTurn: fake,
+          autoApproveAll: () => true,
+          turnSummaryEnabled: () => true,
+          readOnlyModuleTools: async () => ["mcp__filesystem__readFile"],
+        },
+        { threadId: fork.id, prompt: "見回って", modules: [] },
+      ),
+    );
+    assert.ok(seen, "Runner が呼ばれていない");
+    assert.deepEqual([...(seen.builtinTools ?? [])], ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]);
+    assert.equal(seen.declineElicitations, true);
+    // 聞かずに通すのは、使えるもの（読むだけのもの）だけ
+    assert.deepEqual(
+      [...(seen.allowedTools ?? [])].sort(),
+      [
+        "ListMcpResourcesTool",
+        "ReadMcpResourceDirTool",
+        "ReadMcpResourceTool",
+        "mcp__banto-thread__list_automations",
+        "mcp__banto-thread__list_threads",
+        "mcp__filesystem__readFile",
+      ],
+    );
+    const hook = seen.onPreToolUse!;
+    for (const ok of ["mcp__filesystem__readFile", "mcp__banto-thread__list_threads", "ReadMcpResourceTool"]) assert.equal(hook({ toolName: ok }), undefined, ok);
+    for (const ng of ["mcp__shell__runCommand", "WebFetch", "mcp__banto-thread__create_automation", "mcp__banto-thread__report_turn", "mcp__filesystem__writeFile"]) {
+      assert.match(hook({ toolName: ng }) ?? "", /見回りの回では使えません/, ng);
+    }
+    // core のサーバ：Memory は渡さず、banto-thread は読むだけの tool だけ
+    const servers = seen.mcpServers as Record<string, { instance?: { connect(t: unknown): Promise<void> } }>;
+    assert.equal(servers["banto-memory"], undefined, "読むだけの回に Memory の tool を渡している");
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await servers["banto-thread"]!.instance!.connect(b);
+    const client = new Client({ name: "t", version: "0" });
+    await client.connect(a);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads"]);
+    await client.close();
+    // 承認は人に聞かずに断る——判断待ちを出さない（自動で許可がオンでも）
+    assert.equal(events.some((e) => e.type === "judgment"), false, "読むだけの回で判断待ちを出した");
+    assert.equal(resolved.length, 1);
+    assert.equal((resolved[0] as { behavior: string }).behavior, "deny");
+    assert.equal(deps.inbox.listOpen().length, 0, "受信箱に判断待ちを積んだ");
+  });
+});
+
+test("ふつうの会話のターンは今までどおり（組み込みも core の tool も置き換えない）。読むだけの会話から分けた Fork は読むだけ", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    let seen: Parameters<typeof runTurn>[0] | undefined;
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      seen = opts;
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "やって", modules: [] }));
+    assert.equal(seen?.builtinTools, undefined);
+    assert.equal(seen?.onPreToolUse, undefined);
+    assert.equal(seen?.declineElicitations, undefined);
+    assert.ok((seen?.mcpServers as Record<string, unknown>)["banto-memory"]);
+
+    const readOnly = await store.forkThread(threadId, { fresh: true, restriction: "read-only" });
+    const child = await store.forkThread(readOnly.id);
+    assert.equal(child.restriction, "read-only", "読むだけの会話から分けた Fork がふつうの会話になった");
+    assert.equal(store.getThread(threadId)?.restriction, undefined);
+  });
+});

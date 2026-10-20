@@ -29,6 +29,7 @@ import {
   REPLY_TO_META_KEY,
   THREAD_META_KEY,
   AUTO_APPROVE_META_KEY,
+  RESTRICTION_META_KEY,
   deliversLater,
   fillCardText,
   stripBantoMeta,
@@ -72,6 +73,7 @@ function backgroundWorkOf(
   };
 }
 import { makeResourceVisibilityResolver } from "./visibility.js";
+import { READ_ONLY_REFUSAL, mayCallInReadOnly, mayReadResourcesInReadOnly, type RestrictionFor } from "./read-only.js";
 import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
 import { RESTARTING_REFUSAL, type ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
@@ -120,6 +122,14 @@ export interface AgentProxyOptions {
    * 呼び出しに `dev.banto/autoApprove` を刻む（呼び出しのたびに引く）。渡されなければ刻まない
    */
   autoApproveFor?(projectId: string, threadId?: string): boolean;
+  /**
+   * **その会話の制限**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」の守りの 3.）。呼び出しのたびに引く。`"read-only"` なら、
+   * 読むだけでない tool の `tools/call` と、許していない Module の `resources/read` を人に聞かずに断り、`tools/list`・資源の一覧も
+   * 絞って返す。渡されなければ制限しない
+   */
+  restrictionFor?: RestrictionFor;
+  /** **人が「見回りで使ってよい」と許したもの**（Project の `patrol.allowedTools`）。渡されなければ何も許していない */
+  patrolAllowedTools?(projectId: string): string[];
   /**
    * **AI のターンから Module の tool を呼ぶ直前**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「始まりの印を持ち越す」）。
    * 呼び出しの印（`dev.banto/callId`）と、どの Thread のターンかを渡す——host は出来事を名乗る Module への呼び出しだけを
@@ -201,7 +211,28 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
    * （ここで組む `_meta` は host が作り直したもので、Runner が添えた `_meta` は Module に流さない）
    */
   function autoApproveStamp(): Record<string, unknown> {
+    // 読むだけの回では刻まない——人に聞かずに断る回で、Module に「聞かずに許可してよい」と伝えない（§4.4）
+    if (readOnly()) return {};
     return opts.projectId && opts.autoApproveFor?.(opts.projectId, opts.threadId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
+  }
+
+  /**
+   * **この接続のターンは読むだけの回か**（§4.4）。呼び出しのたびに引く——会話の印は外せないが、引くのは host の台帳だけにする
+   * （接続を張ったときの値を覚えない）
+   */
+  function readOnly(): boolean {
+    return opts.restrictionFor?.(opts.projectId, opts.threadId) === "read-only";
+  }
+  const moduleName = conn.declaredName ?? conn.name;
+  const bundled = conn.meta.origin === "bundled";
+  const allowedForPatrol = (): string[] => (opts.projectId ? (opts.patrolAllowedTools?.(opts.projectId) ?? []) : []);
+  const mayCall = (tool: { name: string; _meta?: Record<string, unknown> }) =>
+    mayCallInReadOnly({ moduleName, bundled, tool, allowed: allowedForPatrol() });
+  const mayReadResources = () => mayReadResourcesInReadOnly({ moduleName, bundled, allowed: allowedForPatrol() });
+
+  /** 読むだけの回からの呼び出しだと、宛先に刻む（Browser はブラウザを起こさない・FileSystem は変換役へ中継しない） */
+  function restrictionStamp(): Record<string, unknown> {
+    return readOnly() ? { [RESTRICTION_META_KEY]: "read-only" } : {};
   }
 
   /** 台帳が振った呼び出しの印（`CALL_ID_META_KEY`）。台帳が無ければ渡さない */
@@ -211,7 +242,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const real = await conn.client.listTools();
-    const visible = real.tools.filter((t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent");
+    const agentTools = real.tools.filter((t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent");
+    // 読むだけの回は、使えるものだけを見せる（AI が無駄に試さないように。断るのは呼び出しのほう）
+    const visible = readOnly() ? agentTools.filter((t) => mayCall(t as { name: string; _meta?: Record<string, unknown> })) : agentTools;
     opts.onRelay?.({ direction: "list", name: "tools/list", allowed: true });
     return { tools: visible.map((t) => stripBantoMeta(t as Tool & { _meta?: Record<string, unknown> })) };
   });
@@ -234,6 +267,12 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     if (opts.moduleCalls?.isStopping()) {
       opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
       return { isError: true, content: [{ type: "text" as const, text: RESTARTING_REFUSAL }] };
+    }
+    // **読むだけの回は、読むだけの tool だけ**（追加・2026-10-20、アーキ仕様 §4.4 の守りの 3.）。人に聞かずに断る——判断待ちは出さない。
+    // 投げずに結果で返すのは、AI が文を読めるように
+    if (readOnly() && !mayCall(target as { name: string; _meta?: Record<string, unknown> })) {
+      opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
+      return { isError: true, content: [{ type: "text" as const, text: READ_ONLY_REFUSAL }] };
     }
 
     const progressToken = extra._meta?.progressToken;
@@ -336,6 +375,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
             ...callerStamp(),
             ...threadStamp(),
             ...autoApproveStamp(),
+            ...restrictionStamp(),
             ...callIdStamp(endCall?.id),
             ...(replyTo ? { [REPLY_TO_META_KEY]: replyTo } : {}),
           },
@@ -376,6 +416,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    // 読むだけの回で読めない Module の資源は、一覧にも出さない
+    if (readOnly() && !mayReadResources()) return { resources: [] };
     const real = await conn.client.listResources().catch(() => ({ resources: [] }));
     const visible = real.resources.filter(
       (r) => visibilityOf(r as { _meta?: Record<string, unknown> }) === "agent",
@@ -384,6 +426,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   });
 
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+    if (readOnly() && !mayReadResources()) return { resourceTemplates: [] };
     const real = await conn.client.listResourceTemplates().catch(() => ({ resourceTemplates: [] }));
     const visible = real.resourceTemplates.filter(
       (t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent",
@@ -402,6 +445,11 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     if (!allowed) {
       throw new Error(`resource "${request.params.uri}" は読めません（visibility=${visibility}）`);
     }
+    // **読むだけの回は、同梱の Module と人が「資源を読む」を許した Module の資源だけ**（§4.4）
+    if (readOnly() && !mayReadResources()) {
+      opts.onRelay?.({ direction: "read", name: request.params.uri, allowed: false });
+      throw new Error(`resource "${request.params.uri}" は${READ_ONLY_REFUSAL}`);
+    }
     // **読み取りの最中も、この Module はこのターンの仕事をしている**
     // （追加・2026-09-12）。tool 呼び出しには前からこれが有ったが、resource の
     // 読み取りには無かった——**中で他 Module を呼ぶ resource**（横断した一覧を
@@ -419,7 +467,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     try {
       const result = await conn.client.readResource({
         uri: request.params.uri,
-        _meta: { ...callerStamp(), ...callIdStamp(endCall?.id) },
+        _meta: { ...callerStamp(), ...restrictionStamp(), ...callIdStamp(endCall?.id) },
       });
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {

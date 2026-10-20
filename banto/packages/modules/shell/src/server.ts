@@ -19,6 +19,7 @@ import {
   RESULT_LOCATION_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
   VISIBILITY_META_KEY,
+  EFFECT_META_KEY,
   callerModuleOf,
   isHostResumeCall,
   parseResumeQuestion,
@@ -59,7 +60,8 @@ const BACKGROUND_TOOLS = [
       "commandId・label（付けた呼び名）・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
       "cancelled：cancelCommand で止めた／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
     inputSchema: { type: "object", properties: {} },
-    _meta: { [VISIBILITY_META_KEY]: "agent" },
+    // **読むだけ**（アーキ仕様 §4.4）——流したコマンドの記録を読むだけで、止めも流しもしない
+    _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
   },
   {
     // **止められるのは流した Thread からだけ**——同じ Project の別の Thread（Fork）が、id を知っただけで止められない

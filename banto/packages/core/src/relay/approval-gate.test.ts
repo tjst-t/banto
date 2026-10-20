@@ -27,6 +27,9 @@ import { AUTO_APPROVED_ANSWER_TEXT, AUTO_APPROVED_REASON } from "../inbox/auto-a
 const THREAD = "thread-1";
 const PROJECT = "project-1";
 
+/** 宛先が受け取った呼び出しの `_meta`（読むだけの回の刻印を見る） */
+const seenTargetMeta: Array<{ name: string; meta?: Record<string, unknown> }> = [];
+
 async function fakeVaultClient(auditArgs?: string[], tools?: unknown[]): Promise<Client> {
   const server = new McpServer({ name: "fake-vault", version: "0.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -39,6 +42,7 @@ async function fakeVaultClient(auditArgs?: string[], tools?: unknown[]): Promise
     ]) as never,
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    seenTargetMeta.push({ name: request.params.name, meta: request.params._meta as Record<string, unknown> | undefined });
     if (request.params.name === "explodes") throw new Error("宛先の Module が失敗しました");
     return { content: [{ type: "text", text: "SECRET-VALUE" }] };
   });
@@ -58,6 +62,10 @@ async function setup(
     /** 宛先の tool の一覧を差し替える・宛先を同梱にする（まとめて呼ぶ口の試験） */
     vaultTools?: unknown[];
     vaultBundled?: boolean;
+    /** 会話 THREAD を読むだけの回にする（アーキ仕様 §4.4） */
+    readOnly?: boolean;
+    /** 人が「見回りで使ってよい」と許したもの */
+    patrolAllowed?: string[];
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
@@ -98,6 +106,15 @@ async function setup(
 
   const endpoint = new HostRelayEndpoint({
     registry,
+    // 読むだけの回の試験だけ、どの会話の呼び出しかを host の台帳から引かせる（ほかの試験の形は変えない）
+    ...(opts.readOnly
+      ? {
+          moduleCalls,
+          restrictionFor: (_p: string | undefined, t: string | undefined) => (t === THREAD ? ("read-only" as const) : undefined),
+          patrolAllowedTools: () => opts.patrolAllowed ?? [],
+          ...(opts.autoApprove ? { autoApproveFor: () => opts.autoApprove!.on } : {}),
+        }
+      : {}),
     // 進捗の間隔は試験用に短くする（本番は10秒）
     approvalProgressIntervalMs: 30,
     gate: createRelayApprovalGate({
@@ -965,5 +982,98 @@ test("まとめて呼ぶ口：重なる2つのまとめた呼び出しで、同�
     endCall();
   } finally {
     await t.close();
+  }
+});
+
+
+// **読むだけの回の中継**（決定・2026-10-20、アーキ仕様 §4.4）。呼び元の呼び出しが読むだけの会話のターンから始まったなら、
+// host が宛先の tool の印を見て、読むだけのものでなければ断る。承認が要るものは人に聞かずに断る（自動で許可がオンでも）
+const readTools = () => [
+  { name: "resolveAlias", inputSchema: { type: "object", properties: {} } },
+  { name: "listAliases", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/effect": "read" } },
+];
+
+test("読むだけの回の中継：読むだけでない宛先は、判断待ちを出さずに断る（自動で許可がオンでも）", async () => {
+  const t = await setup({ readOnly: true, vaultBundled: true, vaultTools: readTools(), autoApprove: { on: true } });
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    const before = seenTargetMeta.length;
+    await assert.rejects(
+      () => t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } }),
+      /見回りの回では使えません/,
+    );
+    endCall();
+    assert.equal(t.inbox.listOpen().length, 0, "読むだけの回で判断待ちを出した");
+    assert.equal(t.cards.length, 0);
+    assert.equal(seenTargetMeta.length, before, "断ったはずの宛先が呼ばれた");
+    const calls = (await t.events()).filter((e) => e.type === "relay.call_recorded");
+    assert.equal((calls.at(-1)?.payload as { allowed?: boolean }).allowed, false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("読むだけの回の中継：読むだけの宛先でも、まだ許していなければ聞かずに断る。許してあれば通し、宛先に読むだけの回だと刻む", async () => {
+  const t = await setup({ readOnly: true, vaultBundled: true, vaultTools: readTools(), autoApprove: { on: true } });
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    await assert.rejects(
+      () => t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "listAliases", arguments: {} } }),
+      /人に聞けないため/,
+    );
+    assert.equal(t.inbox.listOpen().length, 0, "読むだけの回で判断待ちを出した");
+    assert.equal(t.cards.length, 0, "自動で許可のカードも出さない");
+    assert.equal((await t.events()).filter((e) => e.type === "relay.grant_created").length, 0);
+
+    await t.grants.grant({ projectId: PROJECT, callerModule: "shell", targetModule: "vault", kind: "tool", name: "listAliases" });
+    const before = seenTargetMeta.length;
+    const ok = await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "listAliases", arguments: {} } });
+    assert.equal((ok.content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    const meta = seenTargetMeta.slice(before).at(-1)?.meta;
+    assert.equal(meta?.["dev.banto/restriction"], "read-only", "宛先に読むだけの回だと刻んでいない");
+    assert.equal(meta?.["dev.banto/autoApprove"], undefined, "読むだけの回に「自動で許可」を刻んだ");
+    endCall();
+  } finally {
+    await t.close();
+  }
+});
+
+test("読むだけの回の中継：第三者の宛先は名乗っても通さず、人が許した tool だけ通す。ふつうの会話は今までどおり", async () => {
+  const thirdParty = await setup({ readOnly: true, vaultTools: readTools() });
+  try {
+    const endCall = thirdParty.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    await assert.rejects(
+      () => thirdParty.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "listAliases", arguments: {} } }),
+      /見回りの回では使えません/,
+    );
+    endCall();
+  } finally {
+    await thirdParty.close();
+  }
+
+  const allowed = await setup({ readOnly: true, vaultTools: readTools(), patrolAllowed: ["vault/resolveAlias"] });
+  try {
+    const endCall = allowed.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    // 許したので印の確かめは通る。承認はまだなので、聞かずに断る
+    await assert.rejects(
+      () => allowed.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } }),
+      /人に聞けないため/,
+    );
+    endCall();
+  } finally {
+    await allowed.close();
+  }
+
+  const normal = await setup({ vaultTools: readTools() });
+  const seen = new Set<string>();
+  try {
+    const endCall = normal.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    const call = normal.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } });
+    const judgment = await waitForJudgment(normal.inbox, seen);
+    normal.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    assert.equal(((await call).content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    endCall();
+  } finally {
+    await normal.close();
   }
 });

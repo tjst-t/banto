@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { basename, sep } from "node:path";
 import { realpathSync } from "node:fs";
-import { VISIBILITY_META_KEY, callIdOf, threadOf, type EmittedEvent } from "@banto/module-contract";
+import { EFFECT_META_KEY, VISIBILITY_META_KEY, callIdOf, threadOf, type EmittedEvent } from "@banto/module-contract";
 import {
   BacklogError,
   KINDS,
@@ -91,6 +91,15 @@ function agentTool(name: string, description: string, inputSchema: Record<string
   return { name, description, inputSchema: { type: "object", ...inputSchema }, _meta: { [VISIBILITY_META_KEY]: "agent" } };
 }
 
+/**
+ * **読むだけの tool**（追加・2026-10-20、アーキ仕様 §4.4「土台：読むだけの印」）。一覧を読むだけ——読むときに自分の置き場の写し
+ * （一覧のブランチの ref）を追いつかせることはあるが、それは読むだけの定義に含めない（§4.4 の 1.）
+ */
+function readAgentTool(name: string, description: string, inputSchema: Record<string, unknown>) {
+  const t = agentTool(name, description, inputSchema);
+  return { ...t, _meta: { ...t._meta, [EFFECT_META_KEY]: "read" } };
+}
+
 function adminTool(name: string, description: string, inputSchema: Record<string, unknown>) {
   return { name, description, inputSchema: { type: "object", ...inputSchema }, _meta: { [VISIBILITY_META_KEY]: "admin" } };
 }
@@ -122,7 +131,7 @@ const MOVE_SCHEMA = {
 };
 
 export const TOOLS = [
-  agentTool("listItems", "仕事の一覧（並び順＝優先順）。既定は閉じていないもの。actionable: true で今すぐ着手できるもの（ready で依存が全部 done）だけ", {
+  readAgentTool("listItems", "仕事の一覧（並び順＝優先順）。既定は閉じていないもの。actionable: true で今すぐ着手できるもの（ready で依存が全部 done）だけ", {
     properties: {
       kind: KIND,
       status: { type: "array", items: STATUS, description: "指定すると閉じたものも絞れる" },
@@ -132,7 +141,7 @@ export const TOOLS = [
       actionable: { type: "boolean" },
     },
   }),
-  agentTool("getItem", "1件の中身を全部（本文・完了条件・依存・子）", { properties: { id: REF }, required: ["id"] }),
+  readAgentTool("getItem", "1件の中身を全部（本文・完了条件・依存・子）", { properties: { id: REF }, required: ["id"] }),
   agentTool("createItem", "1件足す（story・task・bug）。親・依存も付けられる", CREATE_SCHEMA),
   agentTool("updateItem", "欄を変える。状態を進める・閉じる（dropped は resolution 必須）・依存を張り替える（dependsOn は全体を渡す）", UPDATE_SCHEMA),
   agentTool("splitStory", "ストーリーの下に複数のタスクを1回で作る。waitsFor で同じ回のタスク間の依存", SPLIT_SCHEMA),

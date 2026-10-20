@@ -31,6 +31,7 @@ import {
   REPLY_TO_USES,
   RESUME_AFTER_RESTART_TOOL,
   VISIBILITY_META_KEY,
+  EFFECT_META_KEY,
   callIdOf,
   isHostResumeCall,
   type EmittedEvent,
@@ -377,7 +378,8 @@ export function createFactoryServer(deps: FactoryServerDeps) {
         name: "listFactoryRuns",
         description: "Factory の実行の一覧と、1件ずつのいまの段・止まっている理由・かかっている時間。runId を渡すとその実行だけ",
         inputSchema: { type: "object", properties: { runId: { type: "string" } } },
-        _meta: { [VISIBILITY_META_KEY]: "agent" },
+        // **読むだけ**（アーキ仕様 §4.4）——台帳を読んで並べるだけ
+        _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
       },
       {
         name: "answerFactory",

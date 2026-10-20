@@ -97,6 +97,8 @@ import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { reviewTurnOf } from "../inbox/review-turn.js";
 import { unseenRunsOf } from "../inbox/automation-review.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
+import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-only.js";
+import { listPatrolTools, readOnlyModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
@@ -130,7 +132,7 @@ import {
   setModuleEnabled,
   setProjectModuleSelection,
 } from "../modules/declaration.js";
-import { ModuleMetaError } from "@banto/module-contract";
+import { ModuleMetaError, PATROL_ALLOWED_TOOLS_KEY } from "@banto/module-contract";
 import { McpServersError, fromMcpServers, toMcpServers } from "../modules/mcp-servers.js";
 import { describeRootScope } from "../modules/root-scope.js";
 import { createDirectory, folderNameProblem, listDirectories } from "./directories.js";
@@ -299,7 +301,14 @@ export interface AppDeps {
   resolveModuleClientsForProject?(
     projectId: string,
   ): Promise<
-    Array<{ name: string; client: ModuleClientLike; connName?: string; scope?: "instance" | "project" }>
+    Array<{
+      name: string;
+      client: ModuleClientLike;
+      connName?: string;
+      scope?: "instance" | "project";
+      /** 目録と同じコードか（読むだけの印を信じてよいか、アーキ仕様 §4.4）。無ければ第三者として扱う */
+      bundled?: boolean;
+    }>
   >;
   /** banto 全体（instance）で1本の Module（決定・2026-09-07、ユーザー指摘）。
    *  その設定は Project ごとではなく、全体の設定画面に出す。 */
@@ -351,6 +360,11 @@ export interface AppDeps {
    * **試験だけ：時計を好きな時刻で1回回す**（config.json の `testOnlyIdleCheck`）。無ければ `POST /api/test-only/idle-check` は 404
    */
   testOnlyIdleCheck?: boolean;
+  /**
+   * **試験だけ：読むだけの印を付けた会話を立てる口**（追加・2026-10-20、アーキ仕様 §4.4。`POST /api/test-only/read-only-thread`）。
+   * 見回りがまだ無いので、読むだけの回を試験が作る。無ければ 404。**本番の config には書かない**
+   */
+  testOnlyReadOnlyThreads?: boolean;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
   /**
@@ -1330,6 +1344,8 @@ function toThreadSummary(thread: ThreadState) {
     /** 誰が閉じたか・理由（追加・2026-10-08）。閉じた Fork の一覧に「AI が閉じました：（理由）」と出す */
     closedBy: thread.closedBy,
     closedReason: thread.closedReason,
+    /** 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4）。印の無い会話には無い */
+    restriction: thread.restriction,
     permissionMode: thread.permissionMode,
     model: thread.model,
     effort: thread.effort,
@@ -1402,6 +1418,9 @@ export function createApp(deps: AppDeps) {
     automations: deps.automations,
     projectThread: deps.projectThread,
   });
+  // **読むだけの回で使ってよい Module の tool**（追加・2026-10-20、アーキ仕様 §4.4 の守りの 4.）。読むだけの会話のターンを始めるときに引く
+  const readOnlyModuleTools = async (projectId: string): Promise<string[]> =>
+    readOnlyModuleToolNames((await deps.resolveModuleClientsForProject?.(projectId)) ?? [], patrolAllowedTools(deps.runtimeConfig, projectId));
   // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
   const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
   const projectInstruction = (projectId: string) => projectInstructionOf(deps.runtimeConfig, projectId);
@@ -1691,7 +1710,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -1906,6 +1925,20 @@ export function createApp(deps: AppDeps) {
         }
         await deps.projectIdle.check({ now, only: body.projectIds });
         return json(res, 200, { ok: true });
+      }
+
+      // **試験だけ：読むだけの印を付けた会話を立てる**（アーキ仕様 §4.4。見回りがまだ無いので、読むだけの回を試験が作る）。
+      // 名指しの会話から、会話を引き継がない Fork を読むだけの印つきで立てる
+      if (url.pathname === "/api/test-only/read-only-thread" && req.method === "POST") {
+        if (!deps.testOnlyReadOnlyThreads) return json(res, 404, { error: "not found" });
+        const body = (await readJsonBody(req)) as { threadId?: unknown; title?: unknown };
+        if (typeof body?.threadId !== "string") return json(res, 400, { error: "threadId を渡してください" });
+        const created = await deps.projectThread.forkThread(body.threadId, {
+          fresh: true,
+          restriction: "read-only",
+          ...(typeof body.title === "string" && body.title !== "" ? { title: body.title } : {}),
+        });
+        return json(res, 200, { id: created.id, restriction: created.restriction });
       }
 
       // **いま動いているもの**（決定・2026-09-28、ユーザー「再起動の頃合いを計りたい」）。
@@ -3804,6 +3837,27 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_ALL_KEY);
         }
         json(res, 200, { enabled: autoApproveAll(projectId) });
+        return;
+      }
+
+      // **見回りで使ってよい tool**（決定・2026-10-20、アーキ仕様 §4.4、v4-frontend.md §6.47「Project の設定」）。Project にだけ置ける。
+      // GET は Module の今の tool から一覧を導く（同梱は banto が確かめた読むだけの tool、第三者は人が許すかを決める tool）。
+      // PUT は許す一覧そのものを置き換える。空にしたら上書きを外す（値を持たない＝何も許していない。真実を1つにする）
+      const patrolToolsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/patrol-tools$/);
+      if (patrolToolsMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = patrolToolsMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { allowed?: unknown };
+          const allowed = validatePatrolAllowed(body?.allowed);
+          if ("error" in allowed) return json(res, 400, { error: allowed.error });
+          if (allowed.length === 0) await deps.runtimeConfig.unsetProjectOverride(projectId, PATROL_ALLOWED_TOOLS_KEY);
+          else await deps.runtimeConfig.setProjectOverride(projectId, PATROL_ALLOWED_TOOLS_KEY, serializePatrolAllowedTools(allowed));
+        }
+        const allowed = patrolAllowedTools(deps.runtimeConfig, projectId);
+        const modules = await listPatrolTools((await deps.resolveModuleClientsForProject?.(projectId)) ?? [], allowed);
+        json(res, 200, { allowed, modules });
         return;
       }
 

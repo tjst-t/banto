@@ -19,6 +19,7 @@ import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { RelayCallDescriptor, RelayGrantStore } from "./grants.js";
 import { grantKey } from "./grants-fold.js";
 import type { ModuleCallTracker } from "./module-calls.js";
+import { READ_ONLY_NO_ASK_REFUSAL } from "./read-only.js";
 import { AUTO_APPROVED_ANSWER_TEXT, AUTO_APPROVED_REASON, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 
 export interface RelayApprovalRequest extends RelayCallDescriptor {
@@ -36,6 +37,11 @@ export interface RelayApprovalRequest extends RelayCallDescriptor {
    * ——1件ごとに鍵を作り、まだ許していないものだけを1枚のカードで聞き、許可は1件ずつ覚える。無ければ鍵は1つ（`scope` を見る）
    */
   batch?: { name: string; size: number; scopes?: Record<string, string>[] };
+  /**
+   * **人に聞かない**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回では人に聞かない」）。まだ許していなければ、判断待ちを
+   * 出さずに断る——「承認をすべて自動で許可する」がオンでも。人が見ていない回で判断待ちを積まないため
+   */
+  noAsk?: boolean;
 }
 
 export interface RelayApprovalDecision {
@@ -322,6 +328,7 @@ export function createRelayApprovalGate(deps: RelayApprovalGateDeps): RelayAppro
       const all = descriptorsOf(req);
       const ungranted = () => all.filter((d) => !deps.grants.isGranted(d));
       if (ungranted().length === 0) return { allowed: true, reason: "この Project で承認済み" };
+      if (req.noAsk) return { allowed: false, reason: READ_ONLY_NO_ASK_REFUSAL };
       // Project のための呼び出しだけ（banto 全体の呼び出しは、どの Project のスイッチも効かせない）
       // 呼び出しの会話も渡す——判断役の会話には効かせない（§4.3）
       if (req.projectId !== undefined && mayAutoApprove(req.projectId, req)) return autoApprove(req, ungranted());

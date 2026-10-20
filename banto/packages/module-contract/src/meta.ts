@@ -286,6 +286,52 @@ export function autoApproveOf(meta: Record<string, unknown> | undefined): boolea
 }
 
 /**
+ * **その tool は読むだけ**の名乗り（追加・2026-10-20、アーキ仕様 §4.4「土台：読むだけの印」）。値は `"read"` だけ。
+ *
+ * 読むだけ＝(1) 環境（ファイル・プロセス・Service・外のサービスの状態・banto の台帳）を変えない (2) 外へ問い合わせる相手は
+ * Module が決めた相手だけで、AI の引数で宛先や自由な検索語を選べない (3) 秘密の値を返さない、の3つを全部満たすもの。
+ *
+ * **host がこれを信じるのは、目録と同じコードの同梱の Module だけ**（`origin: "bundled"`）。第三者の名乗りと MCP の
+ * `readOnlyHint` は根拠にしない——人が Project の設定で1つずつ許したもの（`patrol.allowedTools`）だけが読むだけの回で使える。
+ * **無指定は「読むだけではない」**（fail closed）
+ */
+export const EFFECT_META_KEY = `${VENDOR_PREFIX}/effect`;
+
+/** その tool が「読むだけ」と名乗っているか。**`"read"` 以外は名乗っていない**（信じてよいかは呼ぶ側が宛先の出所で決める） */
+export function declaresReadEffect(x: { _meta?: Record<string, unknown> }): boolean {
+  return x._meta?.[EFFECT_META_KEY] === "read";
+}
+
+/**
+ * **この呼び出しは読むだけの回から来た**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」）。host だけが刻む——AI の代理接続から
+ * 読むだけの回の Module の tool を呼ぶときと、その処理の中で Module が中継で呼ぶ先に。値は `"read-only"`。
+ *
+ * 読むだけの印を付けた tool のうち、ふだんは副作用を伴う道を持つもの（Browser はブラウザを起こす・FileSystem の `readDocument`
+ * は変換役へ中継する）は、これが立っていたらその道を通らない。**刻印が無ければ今までどおり**——推測で埋めない
+ */
+export const RESTRICTION_META_KEY = `${VENDOR_PREFIX}/restriction`;
+
+/** 会話の制限。いまは読むだけの回だけ */
+export type ThreadRestriction = "read-only";
+
+/** 読むだけの回からの呼び出しだと host が刻んだか */
+export function isReadOnlyCall(meta: Record<string, unknown> | undefined): boolean {
+  return meta?.[RESTRICTION_META_KEY] === "read-only";
+}
+
+/**
+ * **人が「見回りで使ってよい」と許した第三者の tool の書き方**（追加・2026-10-20、アーキ仕様 §4.4）。Configuration の Project の鍵
+ * `patrol.allowedTools` に、`<Module の識別子>/<tool 名>` と `<Module の識別子>/resources`（資源を読む）を並べる
+ */
+export const PATROL_ALLOWED_TOOLS_KEY = "patrol.allowedTools";
+export const PATROL_RESOURCES_ENTRY = "resources";
+
+/** `patrol.allowedTools` の1項目 */
+export function patrolAllowedEntry(moduleName: string, toolName: string): string {
+  return `${moduleName}/${toolName}`;
+}
+
+/**
  * **中継が、いまどの Project のための呼び出しとして扱っているか**（追加・2026-09-28）。`relayListTargets` の返事の
  * `_meta` に host が載せる。宛先の一覧に Project の Module が出ないとき、「その Project に無い」のか「どの Project の
  * ための呼び出しか決められなかった」のかを、呼び出し元が取り違えないため（規則2——「無い」と「決められない」を混ぜない）

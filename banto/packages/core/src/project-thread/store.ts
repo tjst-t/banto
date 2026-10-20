@@ -491,10 +491,15 @@ export class ProjectThreadStore {
   async forkThread(
     parentThreadId: ThreadId,
     /** `fresh`：会話を引き継がず、まっさらな会話で始める（追加・2026-10-01、§4.2——Project だけを宛先にしたメッセージ） */
-    options: { resumePoint?: string; fromSeq?: number; title?: string; fresh?: boolean } = {},
+    /**
+     * `restriction`：読むだけの回として立てる（追加・2026-10-20、アーキ仕様 §4.4）。**読むだけの会話から分けた Fork は、
+     * 渡さなくても読むだけ**——外の文を読んだ文脈を、分けるだけでふつうの会話に戻さない
+     */
+    options: { resumePoint?: string; fromSeq?: number; title?: string; fresh?: boolean; restriction?: "read-only" } = {},
   ): Promise<ThreadState> {
     const parent = this.getThread(parentThreadId);
     if (!parent) throw new NotFoundError(`thread ${parentThreadId} not found`);
+    const restriction = options.restriction ?? parent.restriction;
     const resumePoint = options.fresh
       ? undefined
       : (options.resumePoint ??
@@ -511,6 +516,7 @@ export class ProjectThreadStore {
       forkedFromSeq: options.fromSeq,
       ...(options.title ? { title: options.title } : {}),
       ...(options.fresh ? { fresh: true } : {}),
+      ...(restriction ? { restriction } : {}),
     });
     this.projection.applyOne(event);
     return this.mustGetThread(id);

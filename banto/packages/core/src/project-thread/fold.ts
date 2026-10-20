@@ -82,6 +82,8 @@ export type ProjectThreadEvent =
         /** **会話を引き継がない Fork**（追加・2026-10-01、アーキ仕様 §4.2）。Project だけを宛先にしたメッセージで立つ。
          *  親の会話も resume-point も持たず、まっさらな会話で始まる（Base を Clear した状態） */
         fresh?: boolean;
+        /** **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。刻んだら外さない。無ければふつうの会話 */
+        restriction?: "read-only";
       };
     }
   // **承認なしでメッセージを受け取ってよい Project の一覧**（追加・2026-10-01、アーキ仕様 §4.2）。一覧そのものを置き換える
@@ -521,6 +523,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           parentThreadId: event.payload.parentThreadId,
           forkedFromSeq: event.payload.forkedFromSeq,
           ...(event.payload.title ? { title: event.payload.title } : {}),
+          ...(event.payload.restriction === "read-only" ? { restriction: "read-only" as const } : {}),
           createdSeq: raw.seq,
           resumePoint: event.payload.resumePoint,
           resumePoints: [],

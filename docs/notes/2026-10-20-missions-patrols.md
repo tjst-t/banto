@@ -65,6 +65,23 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
 
 - 「やって」の引用は既存の `quotes` に乗せる・判断役は枠を延ばす問いを人に任せ、カードに「枠を延ばす」・立て直した見回りの Fork にも印
 
+## 土台（#420）を実装して決めたこと・残したこと（2026-10-20）
+
+- **読むだけの回の承認**：仕様は「承認が要る呼び出しは聞かずに断る」としていたが、そのままだと承認モードが「毎回聞く」の会話から立てた
+  読むだけの回では、読むだけの tool まで判断待ち→断りになり、何も読めない。使える tool（4か所の守りが通すもの）は SDK の
+  `allowedTools` で聞かずに通すことにした（仕様 §4.4 に1行足した）。それ以外が `canUseTool` に来たら人に聞かずに断る
+- **守りの置き場**：判定は `core/src/relay/read-only.ts` の1か所。PreToolUse の Module の tool の一覧は、ターンを始めるときに Module の
+  今の tool から引く（引けない Module の tool は通さない）。中継は呼び元の呼び出しの会話を host の台帳（`threadFor`）で引き、候補が
+  複数ならどれかが読むだけなら読むだけ
+- **試験**：見回りがまだ無いので、試験だけの口（config.json の `testOnlyReadOnlyThreads`・`POST /api/test-only/read-only-thread`）で
+  読むだけの印を付けた会話を立てる。偽の Runner は SDK の `tools`（基底の集合）と PreToolUse を真似るようにした
+- **URL の決まりで、まだ繋がっていないところ**（人に上げる、規則8）：「その Project のリポジトリの GitHub の場所」は判定の関数
+  （`apps/frontend/lib/turn-summary.ts` の `knownPlaceUrl`）が受けられるが、画面がそのリポジトリを知る道がまだ無い（Repositories の
+  読むだけの tool、#424 で台帳と Project の結びつきを引く口を作るときに繋ぐ）。いまは banto の画面のこの Project の中（`/p/<id>…`）だけを
+  リンクにし、GitHub は文字のまま（安全側）。「Project の root の中のファイル」は画面に URL の形が無いので、文字のまま。また読むだけの回は
+  `report_turn` を出さないので、まとめの票は今は出ない——決まりが効くのは見回りの段の「気づき」の画面から
+- **Browser**：`touch()`（使われなければ止める時計の数え直し）は読むだけの回でも呼ぶ。ブラウザは起こさない
+
 ## 参考
 
 - [OpenAI launches Dots（TechCrunch）](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/)

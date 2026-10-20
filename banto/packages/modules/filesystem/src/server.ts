@@ -11,7 +11,7 @@ import {
   ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY, UI_BY_EXTENSION_META_KEY } from "@banto/module-contract";
+import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY, UI_BY_EXTENSION_META_KEY, EFFECT_META_KEY, isReadOnlyCall } from "@banto/module-contract";
 import { homedir } from "node:os";
 import { realpathSync } from "node:fs";
 import { basename, join, sep } from "node:path";
@@ -26,8 +26,22 @@ import { RelayConverter } from "./relay-converter.js";
 import { parsePages, readDocument } from "./read-document.js";
 
 function tool(name: string, description: string, inputSchema: unknown) {
-  return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: "agent" } };
+  return { name, description, inputSchema, _meta: { [VISIBILITY_META_KEY]: "agent" } as Record<string, unknown> };
 }
+
+/**
+ * **読むだけの tool**（追加・2026-10-20、アーキ仕様 §4.4「土台：読むだけの印」）。ルートの中のファイルを読むだけで、書かず・外へ
+ * 問い合わせず・秘密の置き場（Vault）の値を返さない。`readDocument` は PDF の文字だけ（下で読むだけの回の呼び出しを絞る）
+ */
+function readTool(t: { name: string; description: string; inputSchema: unknown; _meta: Record<string, unknown> }) {
+  return { ...t, _meta: { ...t._meta, [EFFECT_META_KEY]: "read" } };
+}
+
+/**
+ * 読むだけの回で `readDocument` が断る文。PDF 以外（docx・pptx・xlsx 等）と `asImage` は、変換役 documents への中継と変換の置き場
+ * への書き込みを伴う
+ */
+export const READ_ONLY_DOCUMENT_REFUSAL = "この形式は見回りでは読めません（見回りの回で読めるのは PDF の文字だけです）";
 
 /** 変換の形（無ければ拡張子から決まる既定） */
 function convertTargetArg(v: unknown, absPath: string): ConvertTarget {
@@ -52,10 +66,10 @@ export function createFileSystemServer(deps: {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      tool("readFile", "読み取り（PDF・Office の文書の中身は readDocument で読む）", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+      readTool(tool("readFile", "読み取り（PDF・Office の文書の中身は readDocument で読む）", { type: "object", properties: { path: { type: "string" } }, required: ["path"] })),
       // **PDF・Office をページごとの文字・ページの絵で読む**（v4-modules.md §2.2「PDF・Office…」の「AI の側」）。readFile では
       // base64 が返るだけで読めない（readFile の形は変えない）。変換は人の画面と同じ変換役・同じ置き場
-      tool(
+      readTool(tool(
         "readDocument",
         "PDF・Office の文書（docx・pptx・xlsx・doc・ppt・xls・odt・odp・ods など）をページごとの文字で読む（表はシートごとの CSV）。" +
           "asImage: true ならページの絵を返す。1回 20 ページ・200,000 字・絵は合計 10MB まで",
@@ -71,7 +85,7 @@ export function createFileSystemServer(deps: {
           },
           required: ["path"],
         },
-      ),
+      )),
       tool("writeFile", "新規作成／全体上書き", { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }),
       // **結果は差分として画面にも出る**（v4-modules.md §2.2「editFile の結果は
       // 行単位差分で inline カードに埋め込む」）。返すのは unified diff で、
@@ -116,7 +130,7 @@ export function createFileSystemServer(deps: {
           },
           required: ["path"],
         }),
-        _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: BROWSER_APP_URI } },
+        _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read", ui: { resourceUri: BROWSER_APP_URI } },
       },
       // **人にファイルを見せる**（決定・2026-09-23、ユーザー）。readFile に画面を付けると、
       // AI がファイルを読むたびに会話にカードが出る（AI の読む口は readFile だけ）ので、
@@ -154,11 +168,11 @@ export function createFileSystemServer(deps: {
           },
         },
       },
-      tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] }),
+      readTool(tool("searchFiles", "名前検索", { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"] })),
       tool("createDirectory", "mkdir -p 相当", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
       tool("moveFile", "移動・リネーム", { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] }),
       tool("deleteFile", "削除", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
-      tool("getFileInfo", "サイズ・更新時刻・種別", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+      readTool(tool("getFileInfo", "サイズ・更新時刻・種別", { type: "object", properties: { path: { type: "string" } }, required: ["path"] })),
       // **この Module 自身の設定**。設定 Canvas から呼ぶもので、AI には見せない
       // （§2.1 の3段——人の管理操作は admin）
       // **ファイルブラウザが使う、人の操作だけの口**（v4-modules.md §2.2「launcher が
@@ -294,6 +308,10 @@ export function createFileSystemServer(deps: {
       }
       case "readDocument": {
         const file = ops.fileInRoot(root, String(args.path));
+        // **読むだけの回は PDF の文字だけ**（§4.4）——ほかの形式と絵は変換役への中継と置き場への書き込みを伴う
+        if (isReadOnlyCall(request.params._meta) && (args.asImage === true || extensionOf(file.abs) !== "pdf")) {
+          return { isError: true, content: [{ type: "text", text: READ_ONLY_DOCUMENT_REFUSAL }] };
+        }
         const blocks = await readDocument(file.abs, file.rel, { pages: parsePages(args.pages), asImage: args.asImage === true }, deps.conversions);
         return { content: blocks };
       }
