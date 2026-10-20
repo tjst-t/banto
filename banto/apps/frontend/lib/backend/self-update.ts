@@ -62,6 +62,8 @@ export interface UpdateWaiting {
 /** `update.mjs` が書く進み具合 */
 export interface UpdateRunState {
   id: string;
+  /** 更新か、前の版に戻すか。2026-10-19 より前の `update.mjs` は書かない（更新） */
+  kind?: "update" | "rollback";
   phase: UpdatePhase;
   mode?: "wait" | "now";
   from: string | null;
@@ -96,6 +98,30 @@ export interface PrebuiltAvailability {
   checkedAt: string | null;
 }
 
+/** 戻す先の一覧の1件（この機械で動いた版） */
+export interface RollbackTarget {
+  commit: string;
+  /** `repo.git` に object が無ければ null */
+  subject: string | null;
+  committedAt: string | null;
+  /** 最後に起きた時刻。分からなければ null */
+  lastStartedAt: string | null;
+  /** この機械にフォルダがある（すぐ戻せる） */
+  local: boolean;
+  /** 今の版の祖先か */
+  ancestor: boolean;
+}
+
+/** 戻す前の確かめの小窓の中身。行き先の中身が手元に無ければ null（戻すときに取ってくる） */
+export interface RollbackPreview {
+  commit: string;
+  ancestor: boolean;
+  /** 戻すと抜けるコミット（新しい順） */
+  leaving: UpdateCommit[] | null;
+  /** 戻すと入るコミット（祖先でないときだけ中身がある） */
+  entering: UpdateCommit[] | null;
+}
+
 export interface UpdateStatus {
   ready: boolean;
   reasons: string[];
@@ -112,6 +138,8 @@ export interface UpdateStatus {
         prebuilt?: PrebuiltAvailability;
       })
     | null;
+  /** 戻す先の一覧（今の版を除いた新しい 10 件）。この口を持たない古い host には無い */
+  rollbackTargets?: RollbackTarget[];
   state: UpdateRunState | null;
   running: boolean;
   /** 途中の段のまま unit が止まっている回（`update.mjs` が落ちた・止められた） */
@@ -175,6 +203,16 @@ export function checkForUpdate(): Promise<UpdateStatus> {
 /** 更新を頼む。`commit` は画面に見せた最新（人が読んだ一覧と違うものは host が断る）。step-up が要る */
 export function requestUpdate(commit: string, mode: "wait" | "now"): Promise<{ ok: true; id: string }> {
   return call<{ ok: true; id: string }>("/api/admin/update", { method: "POST", body: { commit, mode } });
+}
+
+/** 前の版に戻すのを頼む。`commit` は戻す先の一覧にある版（無ければ host が断る）。step-up が要る */
+export function requestRollback(commit: string, mode: "wait" | "now"): Promise<{ ok: true; id: string }> {
+  return call<{ ok: true; id: string }>("/api/admin/update/rollback", { method: "POST", body: { commit, mode } });
+}
+
+/** 戻す前の確かめの小窓に出す、抜ける・入るコミット */
+export function fetchRollbackPreview(commit: string): Promise<RollbackPreview> {
+  return call<RollbackPreview>(`/api/admin/update/rollback?commit=${encodeURIComponent(commit)}`);
 }
 
 /** 更新をやめる（`cancel` の印）。`update.mjs` は取ってくる・組み立てる・待つの間に受ける */

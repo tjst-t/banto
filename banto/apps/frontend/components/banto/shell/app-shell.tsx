@@ -156,7 +156,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
       <RequestedNewProjectDialog />
       {/* Module の画面から頼まれた「Project を閉じる」（Repositories の「このマシンから削除」）——どの面からでも開く */}
       <RequestedCloseProjectsDialog />
-      {/* banto を更新したあと、開いたままの画面に「新しい版の画面があります」を出す（2026-10-05） */}
+      {/* banto を更新した・前の版に戻したあと、開いたままの画面に「別の版の画面があります」を出す（2026-10-05、文は 2026-10-19） */}
       <NewBuildBanner />
       <CommandPalette
         projectId={projectId}

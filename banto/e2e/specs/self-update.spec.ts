@@ -16,7 +16,7 @@ import { test, expect } from "../test-base.js";
 import type { Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
@@ -42,6 +42,10 @@ const GITHUB = join(SELF_UPDATE_DIR, "github");
 const REPO = join(RELEASE_DIR, "repo.git");
 const UPDATE_DIR = join(DATA_DIR, "update");
 const UPDATE_SCRIPT = fileURLToPath(new URL("../../scripts/update.mjs", import.meta.url));
+/** 写し：core `self-update.ts` の SELF_UPDATE_SOURCE（戻す先に出すのは、この口を持つ版だけ） */
+const SELF_UPDATE_SOURCE = "banto/packages/core/src/self-update/self-update.ts";
+/** 写し：`scripts/update.mjs` の BUILT_MARKS（揃っていれば、一度動いた版のフォルダをそのまま使う） */
+const BUILT_MARKS = ["banto/node_modules", "banto/packages/core/dist", "banto/apps/frontend/.next"];
 const short = (c: string) => c.slice(0, 7);
 
 function git(cwd: string, ...args: string[]): string {
@@ -63,6 +67,9 @@ function prepareReleaseDir(): string {
   mkdirSync(join(GITHUB, "banto"), { recursive: true });
   git(SELF_UPDATE_DIR, "init", "-q", "-b", "release", GITHUB);
   writeFileSync(join(GITHUB, "banto", "README"), "v1\n");
+  // `GET /api/admin/update` を持つ版の印（host は木にこのファイルがある版だけを戻す先に出す）
+  mkdirSync(join(GITHUB, dirname(SELF_UPDATE_SOURCE)), { recursive: true });
+  writeFileSync(join(GITHUB, SELF_UPDATE_SOURCE), "// self-update\n");
   git(GITHUB, "add", ".");
   git(GITHUB, "commit", "-q", "-m", "最初の版");
   const first = git(GITHUB, "rev-parse", "HEAD");
@@ -665,6 +672,115 @@ test("新しいコミットの面でも右上の「もう一度確かめる」�
 });
 
 
+test("本物の update.mjs：前の版に戻す——一覧（この機械で動いた版）・小窓の抜けるコミット→戻す→戻したあとの一覧→最新へ更新", async ({
+  page,
+}) => {
+  writeFileSync(join(SELF_UPDATE_DIR, "on-start"), "run\n");
+  writeFileSync(join(SELF_UPDATE_DIR, "build-command"), "echo '組み立てました'");
+  const updated = newCommits[0]!;
+  const notLocal = newCommits[3]!;
+  const release = git(REPO, "rev-parse", "refs/remotes/origin/release");
+  const releaseSubject = git(REPO, "log", "-1", "--format=%s", release);
+  // 動いた版の記録（host は起動の途中で書くが、E2E の host は起こし直さないのでここで置く）。最初の版は一度動いたフォルダが
+  // 機械にあり組み立てた印も揃っている。notLocal は機械に無い
+  const startedFirst = ago(60);
+  writeFileSync(
+    join(UPDATE_DIR, "history.json"),
+    JSON.stringify({
+      versions: [
+        { commit: updated.commit, firstStartedAt: ago(5), lastStartedAt: ago(5) },
+        { commit: first, firstStartedAt: ago(90), lastStartedAt: startedFirst },
+        { commit: notLocal.commit, firstStartedAt: ago(120), lastStartedAt: ago(120) },
+      ],
+    }),
+  );
+  for (const mark of BUILT_MARKS) mkdirSync(join(RELEASE_DIR, "versions", first.slice(0, 12), mark), { recursive: true });
+
+  await openUpdate(page);
+  await expect(page.getByTestId("update-current")).toContainText(short(updated.commit));
+  const section = page.getByTestId("rollback-section");
+  await expect(section).toContainText("前の版に戻す");
+  const rows = section.getByTestId("rollback-target");
+  // 今の版は出ない。最後に起きた新しい順
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveAttribute("data-commit", first);
+  await expect(rows.nth(0)).toContainText("最初の版");
+  await expect(rows.nth(0)).toContainText(short(first));
+  const startedAt = new Date(startedFirst);
+  await expect(rows.nth(0).getByTestId("rollback-target-started")).toHaveText(
+    `· 最後に起きた日時 ${startedAt.getMonth() + 1}月${startedAt.getDate()}日 ${startedAt.getHours()}:${String(startedAt.getMinutes()).padStart(2, "0")}`,
+  );
+  await expect(rows.nth(0).getByTestId("rollback-target-where")).toHaveText("この機械にあります（すぐ戻せます）");
+  await expect(rows.nth(1)).toHaveAttribute("data-commit", notLocal.commit);
+  await expect(rows.nth(1)).toContainText(notLocal.subject);
+  await expect(rows.nth(1).getByTestId("rollback-target-where")).toContainText("GitHub から取ってくるか、この機械で組み立てます");
+
+  // 小窓：戻すと抜けるコミット（最初の版..今の版、新しい順）と注意
+  await rows.nth(0).getByTestId("rollback-open").click();
+  const dialog = page.getByTestId("rollback-dialog");
+  await expect(dialog).toContainText(`版 ${short(first)} に戻しますか？`);
+  await expect(dialog).toContainText(`今の版 ${short(updated.commit)} から戻します`);
+  await expect(dialog.getByTestId("rollback-leaving-count")).toHaveText(`戻すと抜けるコミット ${newCommits.length} 件`);
+  const leaving = dialog.getByTestId("rollback-leaving").locator("li");
+  await expect(leaving).toHaveCount(newCommits.length);
+  for (let i = 0; i < newCommits.length; i++) {
+    await expect(leaving.nth(i)).toContainText(newCommits[i]!.subject);
+    await expect(leaving.nth(i)).toContainText(short(newCommits[i]!.commit));
+  }
+  // 祖先なので入るものは無い
+  await expect(dialog.getByTestId("rollback-not-ancestor")).toHaveCount(0);
+  await expect(dialog.getByTestId("rollback-entering")).toHaveCount(0);
+  const notes = dialog.getByTestId("rollback-notes");
+  await expect(notes).toContainText("データは戻りません。新しい版で書いたものは古い版では効かないことがあります。");
+  await expect(notes).toContainText("戻した版が起きなければ、自動で今の版に戻ります。");
+  await expect(notes).toContainText("この画面（前の版に戻す）を持たないかもしれません");
+  await expect(dialog.getByTestId("rollback-now")).toHaveText("すぐ戻す");
+  await expect(dialog.getByTestId("rollback-wait")).toHaveText("呼び出しを待って戻す");
+  await dialog.getByTestId("rollback-wait").click();
+
+  // 本物の update.mjs が戻す（そのまま使うので組み立てない）。終わったら「版 … に戻しました」
+  const done = page.getByTestId("update-done");
+  await expect(done).toHaveText(`版 ${short(first)} に戻しました`, { timeout: 90_000 });
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId("update-reconnecting")).toHaveCount(0);
+  await expect(page.getByTestId("update-current")).toContainText("最初の版");
+  await expect(page.getByTestId("update-current")).toContainText(short(first));
+  const state = JSON.parse(readFileSync(join(UPDATE_DIR, "state.json"), "utf8")) as { id: string; kind: string; phase: string; result: string };
+  expect(state).toMatchObject({ kind: "rollback", phase: "done", result: `版 ${first.slice(0, 12)} に戻しました` });
+  const log = readFileSync(join(UPDATE_DIR, `${state.id}.log`), "utf8");
+  expect(log, "組み立て直した（一度動いた版のフォルダをそのまま使っていない）").toContain("そのまま使います");
+  expect(log).not.toContain("組み立てました");
+  expect(readdirSync(join(RELEASE_DIR, "versions")).sort()).toEqual([first.slice(0, 12), updated.commit.slice(0, 12)].sort());
+
+  // 戻したあとの一覧：今の版（最初の版）は抜け、戻す前の版が機械にある版として出る
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveAttribute("data-commit", updated.commit);
+  await expect(rows.nth(0)).toContainText(updated.subject);
+  await expect(rows.nth(0).getByTestId("rollback-target-where")).toHaveText("この機械にあります（すぐ戻せます）");
+  await expect(rows.nth(1)).toHaveAttribute("data-commit", notLocal.commit);
+  // 最新への更新は今のまま（今の版が release の祖先なので早送り）
+  await expect(page.getByTestId("update-available")).toContainText(`新しいコミットが ${newCommits.length + 2} 件あります`);
+  await expect(page.getByTestId("update-available")).toContainText(`最新の版 ${short(release)}`);
+
+  // 最新へ更新
+  await page.getByTestId("update-wait").click();
+  await expect(done).toHaveText(`版 ${short(release)} になりました`, { timeout: 90_000 });
+  await expect(page.getByTestId("update-current")).toContainText(releaseSubject);
+  await expect(page.getByTestId("update-latest")).toContainText("最新です");
+  await expect(page.getByTestId("update-available")).toHaveCount(0);
+  await expect(page.getByTestId("update-failed")).toHaveCount(0);
+  // 記録にある版は全部戻す先に出る（今の版は記録に無い——E2E の host は起き直さないので書かない）
+  await expect(rows).toHaveCount(3);
+  for (const [i, commit] of [updated.commit, first, notLocal.commit].entries()) {
+    await expect(rows.nth(i)).toHaveAttribute("data-commit", commit);
+  }
+  await expect(rows.nth(1).getByTestId("rollback-target-where")).toHaveText("この機械にあります（すぐ戻せます）");
+  // 残すのは3つ（今の版・前の版・記録の新しいもの）
+  expect(readdirSync(join(RELEASE_DIR, "versions")).sort()).toEqual(
+    [first.slice(0, 12), updated.commit.slice(0, 12), release.slice(0, 12)].sort(),
+  );
+});
+
 // ───────────── 組み立て済みの版（アーキ仕様 §2.5「組み立て済みのものを使う」・v4-frontend.md §6.34「組み立て済みの有無」） ─────────────
 //
 // 偽の GitHub を立て、core（「もう一度確かめる」で聞く）と本物の update.mjs（取ってきて重ねる）の両方をそこへ向ける
@@ -718,9 +834,10 @@ test("組み立て済みの有無を、確かめた結果の1行で出す（組�
     await openUpdate(page);
     const line = page.getByTestId("update-prebuilt");
 
-    // GitHub で組み立て中
+    // GitHub で組み立て中。前の試験（前の版に戻す→最新へ更新）で最新になっているので、最初は「最新です」の面の「確かめる」
     fakeGithub.runs = [{ run_number: 1, status: "in_progress", conclusion: null, html_url: "https://github.com/e2e/banto/actions/runs/7" }];
-    await page.getByTestId("update-recheck").click();
+    await expect(page.getByTestId("update-latest")).toContainText("最新です");
+    await page.getByTestId("update-check").click();
     await expect(page.getByTestId("update-available")).toContainText("組み立て済みの版");
     await expect(line).toHaveAttribute("data-status", "building");
     await expect(line).toContainText("GitHub で組み立て中です");
