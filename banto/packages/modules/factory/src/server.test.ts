@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CALL_ID_META_KEY, REPLY_TO_META_KEY, RESUME_AFTER_RESTART_TOOL, THREAD_META_KEY, type EmittedEvent } from "@banto/module-contract";
 import type { Factory, RelayResult } from "./engine.js";
-import { createFactoryServer } from "./server.js";
+import { createFactoryServer, execCommand } from "./server.js";
 import { writeSettings, type FactorySettings } from "./settings.js";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -543,5 +543,21 @@ test("人の画面から流した（頼んだ会話が無い）ものは request
     assert.equal(second.factory.get(runId)!.items[0]!.status, "stopped");
   } finally {
     await h.cleanup();
+  }
+});
+
+// #478 のレビュー：Factory の名乗りは Factory が直に起こす git にだけ付ける。Project のコマンド（/bin/sh）の中のコミットは、
+// 人が回したときと同じく、その repo の設定の名になる
+test("Project のコマンド（/bin/sh）の中で作るコミットには Factory の名乗りを付けない", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "factory-ident-"));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["config", "user.name", "人"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "h@h"], { cwd: repo });
+    const r = await execCommand(["/bin/sh", "-c", `git commit -q --allow-empty -m x && git log -1 --format="%an <%ae> / %cn <%ce>"`], { cwd: repo });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.out.trim(), "人 <h@h> / 人 <h@h>");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
   }
 });
