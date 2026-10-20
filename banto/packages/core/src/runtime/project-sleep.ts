@@ -30,12 +30,14 @@ import { reviewAttentionOf } from "../inbox/automation-review.js";
 import type { AwaitedModule } from "../automation/keep-awake.js";
 import type { RunningItem } from "./project-move.js";
 import { remoteNameOf } from "./remote-runtimes.js";
-import { suspendsServicesToSleep } from "./runtime-kind.js";
+import { suspendsServicesToSleep, type RemoteModeOf } from "./runtime-kind.js";
 
 export interface ProjectSleepDeps {
   projectThread: ProjectThreadStore;
   /** host が知っている動いているもの（別の実行場所へ移すときと同じ一覧——ターン・返事待ちの札・Module の呼び出し） */
   hostActivity(projectId: string): RunningItem[];
+  /** 別のサーバの登録の動かし方（`containers` はコンテナを止めれば中の Service も止まる——Service を別に止めない） */
+  remoteModeOf: RemoteModeOf;
   /** Service の Module の管理操作で Service を止めて自動起動から外す（向こうの起こし直し・残したコンテナで勝手に起きないように） */
   suspendServices(projectId: string): Promise<string[]>;
   /**
@@ -130,10 +132,11 @@ export class ProjectSleep {
         throw new ProjectSleepError(409, `動いているものがあるので眠らせられません：${reasons.join("／")}`, "busy", reasons);
       }
       // **待たれている Module は残す**。Service を止めて自動起動から外すのは、Service の Module が待たれていないとき——
-      // 別のサーバでは必ず（向こうの起こし直しで勝手に起きないように）、この機械ではコンテナを残すとき（止まる道が要る）。
+      // 別のサーバ（machine）では必ず（向こうの起こし直しで勝手に起きないように）、この機械と別のサーバのコンテナ
+      // （containers）ではコンテナを残すとき（止まる道が要る）。
       // コンテナごと止めるなら中の Service も一緒に止まる。止められなければ眠らせない（止まったことにしない）
       const keep = this.keepOf(projectId);
-      if (!this.servicesKept(projectId, keep) && (suspendsServicesToSleep(project.runtime) || keep.length > 0)) {
+      if (!this.servicesKept(projectId, keep) && (suspendsServicesToSleep(project.runtime, this.deps.remoteModeOf) || keep.length > 0)) {
         try {
           await this.deps.suspendServices(projectId);
         } catch (err) {

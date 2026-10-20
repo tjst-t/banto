@@ -2492,6 +2492,7 @@ function sleepHarness(turns: ThreadTurns) {
   const bind = (projectThread: ProjectThreadStore) =>
     (real = new ProjectSleep({
       projectThread,
+      remoteModeOf: () => undefined,
       // 移すときと同じ一覧の代わりに、走っているターンだけ
       hostActivity: (id) =>
         turns

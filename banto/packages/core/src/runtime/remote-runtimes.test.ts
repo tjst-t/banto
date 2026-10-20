@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore, RemoteProjectError } from "../project-thread/store.js";
-import { rootIsOnThisMachine, runtimeKindOf } from "./runtime-kind.js";
+import { rootIsOnThisMachine, runtimeKindOf, suspendsServicesToClose, suspendsServicesToSleep, usesHostContainer } from "./runtime-kind.js";
 import { RemoteRuntimeStore } from "./remote-store.js";
 import { RemoteRuntimeError, RemoteRuntimes, parseHostKey, parseRuntimeInput, remoteNameOf } from "./remote-runtimes.js";
 import { fingerprintOf, type RuntimeCheck } from "./ssh.js";
@@ -171,7 +171,7 @@ test("別のサーバの Project：根はこの機械で正規化しない・あ
     const p = await projects.createProject("pve", "/nonexistent/on/this/host", { runtime: "remote:lab" });
     assert.equal(p.root, "/nonexistent/on/this/host");
     assert.equal(p.runtime, "remote:lab");
-    assert.equal(runtimeKindOf(p.runtime), "remote-machine");
+    assert.equal(runtimeKindOf(p.runtime, () => "machine"), "remote-machine");
     assert.equal(rootIsOnThisMachine(p.runtime), false);
     assert.equal(projects.getProject(p.id)!.root, "/nonexistent/on/this/host");
     await assert.rejects(projects.setProjectRoot(p.id, "/tmp"), RemoteProjectError);
@@ -255,4 +255,21 @@ test("同じ host 鍵＋ユーザーに machine と containers を並べられ�
     // 同じ動かし方なら並べるのは断らない
     await assert.rejects(runtimes.check({ ...INPUT, name: "lab2" }, KEY), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 502);
   });
+});
+
+test("実行場所の種類：containers の登録の Project は remote-containers——眠らせる・閉じるときに Service を別に止めない（コンテナを止める）", () => {
+  const modeOf = (name: string) => ({ lab: "machine" as const, box: "containers" as const })[name];
+  assert.equal(runtimeKindOf(undefined, modeOf), "host-container");
+  assert.equal(runtimeKindOf("host-container", modeOf), "host-container");
+  assert.equal(runtimeKindOf("remote:lab", modeOf), "remote-machine");
+  assert.equal(runtimeKindOf("remote:box", modeOf), "remote-containers");
+  // 登録が無い名前は前の2択どおり machine として扱う
+  assert.equal(runtimeKindOf("remote:gone", modeOf), "remote-machine");
+  assert.equal(suspendsServicesToSleep("remote:lab", modeOf), true);
+  assert.equal(suspendsServicesToSleep("remote:box", modeOf), false);
+  assert.equal(suspendsServicesToClose("remote:lab", modeOf), true);
+  assert.equal(suspendsServicesToClose("remote:box", modeOf), false);
+  // 根は向こう・この機械のコンテナではない（machine と同じ）
+  assert.equal(rootIsOnThisMachine("remote:box"), false);
+  assert.equal(usesHostContainer("remote:box"), false);
 });

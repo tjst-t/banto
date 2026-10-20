@@ -53,6 +53,7 @@ import { remoteAddress, type LookupIPv4 } from "./remote-address.js";
 import {
   DEFAULT_TIMEOUTS,
   ProjectContainers,
+  containerNameFor,
   defaultContainerLimits,
   ensureBaseImage,
 } from "@banto/container";
@@ -77,7 +78,7 @@ import {
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
 import type { RemoteRuntimes } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
-import type { PlaceAddress, PreparedPlace, RuntimePlace, RuntimeProcess } from "./runtime.js";
+import { RuntimeStopError, type PlaceAddress, type PreparedPlace, type RuntimePlace, type RuntimeProcess } from "./runtime.js";
 import {
   SshCommandError,
   SshConnectionClosedError,
@@ -459,12 +460,22 @@ export class RemoteSshRuntime {
 
   /**
    * 手放す：**その Project の**接続を閉じ、待ち受けも閉じる（Module は呼び元が先に落としている。向こうの機械は止めない）。
-   * 同じ実行場所のほかの Project の接続には触らない
+   * 同じ実行場所のほかの Project の接続には触らない。**containers で `stop` なら、先にその Project のコンテナを止める**
+   * （眠らせる・閉じる——この機械のコンテナと同じ。v4-security.md §1「他の仕組みとの関係」）。止められなければ、接続は閉じた
+   * うえで `RuntimeStopError`（呼び元が受信箱で言う）
    */
-  async release(placeId: string): Promise<void> {
+  async release(placeId: string, opts: { stop?: boolean } = {}): Promise<void> {
     const name = this.opts.remoteNameOf(placeId);
     if (!name) return;
     const key = remoteConnectionKey(name, placeId);
+    let stopError: RuntimeStopError | undefined;
+    if (opts.stop && this.modeOf(name, key) === "containers") {
+      try {
+        await this.stopProjectContainer(name, placeId);
+      } catch (err) {
+        stopError = new RuntimeStopError(`別のサーバ「${name}」のコンテナ ${containerNameFor(placeId)}`, err instanceof Error ? err.message : String(err));
+      }
+    }
     // 繋いでいる途中の接続（まだ表に入っていない）に「手放された」と分かるようにする——待ち受けはここで閉じるので、
     // そのまま表に入ると閉じた待ち受けへのトンネルを張った接続が残る
     this.releases.set(key, (this.releases.get(key) ?? 0) + 1);
@@ -474,6 +485,29 @@ export class RemoteSshRuntime {
       await closeConnection(conn);
     }
     this.closeListener(key);
+    if (stopError) throw stopError;
+  }
+
+  /** 実行場所の動かし方（張っている接続があればその登録、無ければ今の登録） */
+  private modeOf(name: string, key: string): RemoteRuntime["mode"] | undefined {
+    return this.connections.get(key)?.runtime.mode ?? this.opts.runtimes.get(name)?.mode;
+  }
+
+  /**
+   * **containers：その Project のコンテナを止める**（穏やかに止め、上限を過ぎたら強制停止——`ProjectContainers.stop`）。接続が
+   * 無ければ止めるために繋ぐ（接続を閉じてもコンテナと中の Service は動いたまま——banto を起こし直したあと等）。無いコンテナ・
+   * 止まっているコンテナには何もしない
+   */
+  private async stopProjectContainer(name: string, projectId: string): Promise<void> {
+    const key = remoteConnectionKey(name, projectId);
+    const live = this.connections.get(key);
+    const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
+    const shell = this.vmShell(conn);
+    conn.incus ??= new ProjectContainers(vmIncus(shell), DEFAULT_TIMEOUTS, vmInterfaces(shell));
+    await conn.incus.stop(containerNameFor(projectId));
+    // 次に使うときは、止まったコンテナを起こすところから確かめ直す
+    delete conn.container;
+    this.log(`[host] 別のサーバ「${name}」の Project ${projectId} のコンテナを止めました`);
   }
 
   /** 実行場所を外したとき：先に送るために張った接続が残っていれば閉じる（用意している途中・送っている途中でも止める） */

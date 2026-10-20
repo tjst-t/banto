@@ -3006,6 +3006,7 @@ async function main(): Promise<void> {
   };
   projectSleep = new ProjectSleep({
     projectThread,
+    remoteModeOf: (name) => remoteRuntimes.get(name)?.mode,
     hostActivity,
     // コンテナを残すとき（待たれている Module がある）は、別のサーバでなくても Service の Module の管理操作で止める
     suspendServices: suspendProjectServices,
