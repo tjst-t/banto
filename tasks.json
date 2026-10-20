@@ -9913,7 +9913,7 @@
       "number": 411,
       "kind": "task",
       "title": "update.mjs：戻す（kind rollback・--rollback）・一度動いた版をそのまま使う・3つ残す・起きなかった版を記録から抜く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "update-rollback",
       "dependsOn": [
         "rollback-history"
@@ -9923,12 +9923,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.5「前の版に戻す」の「機械に残す版は3つ」「戻し方」。request.json の kind（無し＝更新、rollback＝戻す、それ以外は断る）、--rollback は --from-request・--commit・--first と併用不可。戻すときは早送りと release から辿れるかを見ず history.json にあることを確かめる（読めなければ断る）、機械にあれば fetch しない、無ければ fetch して object が無ければ断る。一度動いた版のフォルダ（HEAD 一致・記録にある・印 banto/node_modules・banto/packages/core/dist・banto/apps/frontend/.next）はそのまま使い、building に入れず、空きも見ない。更新（早送り）でも同じ。片づけは current の実体＋記録の新しい2つ＋previous を残す。段5で起きなかった版は、戻す前の版の確かめのあとで記録から抜く（failed/verify でも）。state.json に kind、--dry-run に見込み。",
       "doneWhen": "update.test.mjs で仕様の「試験」の一覧（記録にある版をそのまま使う・無い版は断る・機械に無い版は組み立て済み／その場で・早送りでない／release から辿れない行き先を通す・fetch できなくても戻せる・そのまま使う途中の cancel／失敗でフォルダが残る・印が欠けたら作り直す・空きを見ない・kind が未知なら断る・片づけで3つ残す・起きなかった版が抜ける・コンテナが使っている動いた版を使う）が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/rollback-updater）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-19T22:57:13.582Z",
-      "updatedAt": "2026-10-19T23:44:58.295Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T00:03:49.043Z",
+      "closedAt": "2026-10-20T00:03:49.043Z",
       "extra": {}
     },
     {
