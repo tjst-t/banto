@@ -599,6 +599,7 @@ async function main(): Promise<void> {
     runtimes: remoteRuntimes,
     remoteNameOf: (projectId) => remoteNameOf(projectThread.getProject(projectId)?.runtime),
     containerVirtualization: (runtimeName, projectId) => containersVirtualization.containerSpecOf(runtimeName, projectId),
+    hugepagesReservedBytes: (runtimeName) => containersVirtualization.hugepagesReservedBytes(runtimeName),
     createRelayListener: (runtimeName, forProject) =>
       createRelayListener({
         relayEndpoint: { handleRequest: (req, res, body, accepts) => relayEndpoint.handleRequest(req, res, body, accepts) },

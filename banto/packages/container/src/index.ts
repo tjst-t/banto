@@ -40,6 +40,8 @@ export {
   type ProjectContainerSpec,
   type ContainerTimeouts,
   KVM_DEVICES,
+  HUGEPAGES_LIMIT_KEY,
+  hugepagesLimitValue,
   virtualizationDeviceChanges,
   type ContainerVirtualization,
 } from "./project-container.js";

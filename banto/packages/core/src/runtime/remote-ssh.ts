@@ -135,6 +135,11 @@ export interface RemoteSshRuntimeOptions {
    * 実行場所が許していなければ null（付いていれば外す）。渡さなければ付けない
    */
   containerVirtualization?: (runtimeName: string, projectId: string) => ContainerVirtualization | null;
+  /**
+   * **その実行場所で確保した hugepages の合計（バイト）**。メモリの cgroup に数えないので、コンテナのメモリの上限の計算から引く
+   * （渡さなければ 0）
+   */
+  hugepagesReservedBytes?: (runtimeName: string) => number;
 }
 
 /** コードを送っている途中の1件（縮める前のバイト数） */
@@ -1478,10 +1483,17 @@ export class RemoteSshRuntime {
       gid: gid!,
       inside: INSIDE_IDS,
       portIsolation: true,
-      limits: defaultContainerLimits(await vmResources(shell)),
+      limits: await this.containerLimitsOn(conn.runtimeName, shell),
       ...(virtualization !== undefined ? { virtualization } : {}),
     });
     return name;
+  }
+
+  /** VM の資源で計算した上限（hugepages の合計はメモリから引く——hugepages はメモリの cgroup に数えない） */
+  private async containerLimitsOn(runtimeName: string, shell: VmShell) {
+    const vm = await vmResources(shell);
+    const reserved = this.opts.hugepagesReservedBytes?.(runtimeName) ?? 0;
+    return defaultContainerLimits({ ...vm, memoryBytes: vm.memoryBytes - reserved });
   }
 
   /** VM の上の土台のイメージ（VM ごとに1つ）。作るあいだは段を画面に出す */

@@ -1034,7 +1034,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458・#459。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458・#459・#460。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
 **同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
@@ -1121,6 +1121,17 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      - hugepages はメモリの cgroup に数えないので、コンテナのメモリの上限の計算から、その実行場所で確保した合計を引く——合計が
        変わると、同じ実行場所の動いている全 Project のメモリの上限を引き直す（sudo は要らない。変えた Project 以外の上限も動く）
      - 2ソケットのサーバでは NUMA のノードに分けて確保される（1つの VM がノードの持ち分を越えると足りない。注記だけ）
+     - **実装済み（2026-10-20、Backlog #460）**：Project の設定の `container.hugepages2M`（数、0 は書かない）。口は
+       `PUT /api/projects/<id>/container/hugepages`（`{ count }`。画面は #462）。合計はその実行場所の全 Project（閉じたもの・眠っている
+       もの・移してくる途中のものも）の和。断る：数が整数でない（400）・許していない（409）・既定の hugepages の大きさが 2MiB でない・
+       合計×2MiB が `MemTotal` の半分を越える（`code: "hugepages-too-many"`）・減らすときにその Project の動いているコンテナの
+       `hugetlb.2MB.current`（中の cgroup）が 0 でない（`code: "hugepages-in-use"`。読めなければ断る）。通れば（減らすときは先に
+       上限を下げてから）`sudo -n sysctl -w vm.nr_hugepages=<合計>` → `tee` で sysctl.d に書く（0 なら `rm -f`）→ `HugePages_Total` を
+       読み、足りなければ `warnings` で「確保できたのは N 個」→ 設定に書く → 上限を `<N×2>MiB`。合計が変わったら、同じ実行場所の
+       動いているコンテナのメモリの上限を `MemTotal − 合計` から既定の決め方で引き直す（`applyLimits`）。コンテナを用意するときも
+       同じく合計を引く（`RemoteSshRuntimeOptions.hugepagesReservedBytes`）。「許す」をオンにしたとき、その実行場所の今ある
+       全コンテナに上限 0 を書き、オフで外す。**閉じるときの「外す／持ったまま」・再開で確保し直す・繋ぐたびの確保の確かめは
+       まだ**（#462 と残り）
    - **「特権コンテナにする」（足りないときの逃げ道）**：`security.privileged=true`。起こし直しが要る（「止めて特権で起こし直します」）。
      画面は強い警告を出し、Project 名を打たせる（下の「警告」）。上の2つで足りない実験が出たとき用
 3. **中の番号**（V4。未測定・実装の前に測る）：今のコンテナは `raw.idmap` で VM の SSH ユーザー U を中の 1000 に対応させ、見せたフォルダ

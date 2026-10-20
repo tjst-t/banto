@@ -72,6 +72,19 @@ export interface ProjectContainerSpec {
 export interface ContainerVirtualization {
   /** `/dev/kvm` と `/dev/vhost-net` を unix-char で見せる（`mode=0666`。path は固定の2つ） */
   kvm: boolean;
+  /**
+   * 2MiB の hugepages の上限（バイト。`limits.hugepages.2MB`——hugetlb の cgroup）。**許した実行場所の全コンテナに書く**
+   * （設定の無い Project は 0）——付けないと制限が無く、サーバ全体の確保から取れる（測った4つの 2.）
+   */
+  hugepagesBytes: number;
+}
+
+/** hugepages の上限の Incus の設定の名前 */
+export const HUGEPAGES_LIMIT_KEY = "limits.hugepages.2MB";
+
+/** バイト → `limits.hugepages.2MB` の値（MiB で書く。0 は "0"） */
+export function hugepagesLimitValue(bytes: number): string {
+  return bytes > 0 ? `${Math.floor(bytes / 1024 ** 2)}MiB` : "0";
 }
 
 /**
@@ -752,6 +765,12 @@ export class ProjectContainers {
     const { add, remove } = virtualizationDeviceChanges(st.devices, v);
     for (const device of remove) await this.incus(["config", "device", "remove", name, device], `${device} の装置を外すの`);
     await this.addDevices(name, add, "/dev/kvm を見せるの");
+    const hugepages = st.config[HUGEPAGES_LIMIT_KEY];
+    if (v && hugepages !== hugepagesLimitValue(v.hugepagesBytes)) {
+      await this.incus(["config", "set", name, `${HUGEPAGES_LIMIT_KEY}=${hugepagesLimitValue(v.hugepagesBytes)}`], "hugepages の上限を付けるの");
+    } else if (!v && hugepages !== undefined) {
+      await this.incus(["config", "unset", name, HUGEPAGES_LIMIT_KEY], "hugepages の上限を外すの");
+    }
   }
 
   /**

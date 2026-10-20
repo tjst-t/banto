@@ -4484,6 +4484,21 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
       }
+      // **hugepages（2MiB の数）**（決定・2026-10-20、同 2.）。人の画面からだけ。合計がサーバのメモリの半分を越える・使っているのに
+      // 減らす、は断る。確保できた数を返し、足りなければ `warnings` で言う
+      const containerHugepagesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/hugepages$/);
+      if (containerHugepagesMatch && req.method === "PUT") {
+        const projectId = containerHugepagesMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        const body = (await readJsonBody(req)) as { count?: unknown };
+        try {
+          return json(res, 200, await deps.containersVirtualization.setHugepages(projectId, body.count));
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          throw err;
+        }
+      }
       if (containerMatch && req.method === "PUT") {
         const projectId = containerMatch[1]!;
         if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
