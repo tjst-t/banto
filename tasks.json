@@ -10583,7 +10583,7 @@
       "number": 442,
       "kind": "task",
       "title": "core の待ち受けを 127.0.0.1 にし、Host ヘッダの確かめ・起動時の合言葉からのセッション・畳む口を足す",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [],
       "milestone": null,
@@ -10595,7 +10595,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:36.915Z",
       "closedAt": null,
       "extra": {}
     },
