@@ -10304,6 +10304,33 @@
       "updatedAt": "2026-10-20T08:27:21.622Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "desktop-0-measure",
+      "number": 428,
+      "kind": "story",
+      "title": "デスクトップ版（Windows）段0：仕様の下書きを確定し、Windows の実機で前提を実測する",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "desktop"
+      ],
+      "body": "ユーザーの決定（2026-10-20）：仕事で使うため、banto を本体ごと Windows の PC で動く Electron のデスクトップアプリにする。コンテナでの分離はしない。Claude へは個人のログイン。\n\n仕様の下書きは `docs/specs/v4-desktop.md`（ブランチ fork/desktop-windows、レビュー前）。段0では、下書きのレビューと未決（§10）を片づけ、作る前に Windows の実機で前提（§9）を確かめる。\n\n試験の場（Windows の実機・GitHub Actions の Windows のランナー）はまだ決まっていない——§10。",
+      "doneWhen": "v4-desktop.md が「下書き」でなくなり（レビューの指摘を反映し、§10 の未決に答えがある）、§9 の7項目それぞれの結果が docs/notes に書いてある",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-desktop.md",
+        "docs/notes/2026-10-20-desktop-windows.md",
+        "branch:fork/desktop-windows"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T08:56:22.936Z",
+      "updatedAt": "2026-10-20T08:56:22.936Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
