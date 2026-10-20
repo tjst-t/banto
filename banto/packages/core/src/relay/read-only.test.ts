@@ -24,6 +24,7 @@ import {
   READ_ONLY_REFUSAL,
   mayCallInReadOnly,
   mayReadResourcesInReadOnly,
+  mayRelayOwnCredentialInReadOnly,
   parsePatrolAllowedTools,
   readOnlyHookAllows,
   serializePatrolAllowedTools,
@@ -45,6 +46,24 @@ test("同梱の Module が読むだけと名乗った tool だけが通る。第
   assert.equal(mayReadResourcesInReadOnly({ moduleName: "vault", bundled: true, allowed: [] }), true);
   assert.equal(mayReadResourcesInReadOnly({ moduleName: "third", bundled: false, allowed: ["third/peek"] }), false);
   assert.equal(mayReadResourcesInReadOnly({ moduleName: "third", bundled: false, allowed: ["third/resources"] }), true);
+});
+
+test("読むだけの回の中継で緩めるのは、banto 本体で動く同梱の banto 全体の Module が同梱の Vault から自分の資格情報を引く・書き戻すときだけ", () => {
+  const caller = { bundled: true, inContainer: false, projectScoped: false };
+  const vault = { bundled: true, roles: ["vault"] };
+  const resolve = { name: "resolveAlias", callerOwned: false };
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller, target: vault, tool: resolve }), true);
+  // 回った組の書き戻し（持ち主のものだけを書き換える口）
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller, target: vault, tool: { name: "putSecret", callerOwned: true } }), true);
+  // ほかの口（人が預けた秘密を作る・消す等）は緩めない
+  for (const name of ["createAlias", "deleteAlias", "putSecret", "startSshAgent"]) {
+    assert.equal(mayRelayOwnCredentialInReadOnly({ caller, target: vault, tool: { name, callerOwned: false } }), false, name);
+  }
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller: { ...caller, inContainer: true }, target: vault, tool: resolve }), false);
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller: { ...caller, projectScoped: true }, target: vault, tool: resolve }), false);
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller: { ...caller, bundled: false }, target: vault, tool: resolve }), false);
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller, target: { ...vault, bundled: false }, tool: resolve }), false);
+  assert.equal(mayRelayOwnCredentialInReadOnly({ caller, target: { bundled: true, roles: ["vault-directory"] }, tool: resolve }), false);
 });
 
 test("PreToolUse の最後の網：組み込みは資源の3つ、core は list_threads・list_automations、Module は引いた一覧だけ", () => {

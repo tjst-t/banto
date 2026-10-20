@@ -206,6 +206,24 @@ function tooLarge(branch: string, bytes: number): string {
   return `${branch} が大きすぎて、別のサーバとの間で運べません（${mb(bytes)}。上限は ${mb(PROJECT_GIT_BUNDLE_MAX_BYTES)}）`;
 }
 
+/**
+ * 呼び出し元の Project の根から、台帳の行を決める。**根の一番上**（根がリポジトリの下のフォルダでも、worktree でも、
+ * ref は本体と同じ——本体の行で引く）。引き受けないなら理由。読むだけの GitHub の tool（`github-read.ts`）も同じ決め方で引く
+ */
+export async function ledgerEntryFor(store: LedgerStore, project: ProjectSummary): Promise<{ path: string; account?: string; github?: GithubLocation } | { reason: string }> {
+  const root = project.root.length > 1 ? project.root.replace(/\/+$/, "") : project.root;
+  const facts = await readFolder(root);
+  let top: string;
+  if (facts.kind === "repo") top = facts.path;
+  else if (facts.kind === "inside") top = facts.top;
+  else if (facts.kind === "worktree") top = facts.main;
+  else return { reason: "この Project の根は git のリポジトリではありません" };
+  top = await realpath(top).catch(() => top);
+  const entry = (await store.entries()).find((e) => e.path === top);
+  if (!entry) return { reason: "このリポジトリは Repositories の一覧にありません" };
+  return { path: top, ...(entry.account ? { account: entry.account } : {}), ...(entry.github ? { github: entry.github } : {}) };
+}
+
 export class BranchSync {
   /**
    * **前の回が残した使い捨ての置き場を消す**（レビュー L5）——途中で落ちると `branch-sync/w-*` が残る。この Module を起こすたびに
@@ -217,24 +235,6 @@ export class BranchSync {
     this.leftoversCleared = rm(join(deps.dataDir, "branch-sync"), { recursive: true, force: true }).catch((err: unknown) => {
       console.error(`[repositories] 前の回の使い捨ての置き場を消せませんでした：${(err as Error).message}`);
     });
-  }
-
-  /**
-   * 呼び出し元の Project の根から、台帳の行を決める。**根の一番上**（根がリポジトリの下のフォルダでも、worktree でも、
-   * ref は本体と同じ——本体の行で引く）。引き受けないなら理由
-   */
-  private async entryFor(project: ProjectSummary): Promise<{ path: string; account?: string } | { reason: string }> {
-    const root = project.root.length > 1 ? project.root.replace(/\/+$/, "") : project.root;
-    const facts = await readFolder(root);
-    let top: string;
-    if (facts.kind === "repo") top = facts.path;
-    else if (facts.kind === "inside") top = facts.top;
-    else if (facts.kind === "worktree") top = facts.main;
-    else return { reason: "この Project の根は git のリポジトリではありません" };
-    top = await realpath(top).catch(() => top);
-    const entry = (await this.deps.store.entries()).find((e) => e.path === top);
-    if (!entry) return { reason: "このリポジトリは Repositories の一覧にありません" };
-    return { path: top, ...(entry.account ? { account: entry.account } : {}) };
   }
 
   /**
@@ -251,7 +251,7 @@ export class BranchSync {
     if (!isSafeBranchName(branch)) throw new Error(`ブランチ名として受け付けられない形です：${JSON.stringify(branch.slice(0, 80))}`);
     // **別のサーバの Project**——根は向こうのパスで、この機械の同じ文字列のフォルダは別物。core の口で中身だけを運ぶ
     if (isRemote(project)) return this.syncRemote(direction, branch, project, callId, claimed);
-    const entry = await this.entryFor(project);
+    const entry = await ledgerEntryFor(this.deps.store, project);
     if ("reason" in entry) return { handled: false, reason: entry.reason };
 
     // **送り先・取ってくる先を変える設定があれば、どちらもしない**（トークンを別の場所へ渡しうる——公開と同じ線）。

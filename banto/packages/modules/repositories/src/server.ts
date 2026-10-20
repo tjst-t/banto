@@ -7,14 +7,16 @@
 // 台帳の「扱うアカウント」。段階3：clone・新しいリポジトリ。段階4：アカウントを後から選ぶ・このマシンから削除・
 // 新しい Project の画面のタブ。段階5：GitHub に公開（`publish.ts`）。
 //
-// **AI 向けの道具は持たない**（段階1、判断・2026-10-01）。台帳はこのマシンのフォルダの場所で、Project の
-// コンテナの中の AI からは届かない場所を指す——渡しても AI が次の一手に使えない。道具の説明で文脈を取られる
-// だけになる（§2.4 が GitHub 公式の MCP を繋がないのと同じ理由）。AI が「新しい開発を始めて」と頼む道具は
-// §2.4 の「まだ決めていないこと」にある。
+// **AI 向けの道具は、読むだけの GitHub の tool だけ**（段階1は持たない判断・2026-10-01、読むだけの tool を足した・2026-10-20、
+// Backlog #424）。台帳はこのマシンのフォルダの場所で、Project のコンテナの中の AI からは届かない場所を指す——台帳の管理を
+// 渡しても AI が次の一手に使えない。足したのは見回り（アーキ仕様 §4.4）が外の出来事を見るための、**呼んだ Project の
+// リポジトリの Issue・PR・CI を読むだけ**の tool（`github-read.ts`。可視性 `agent`・`dev.banto/effect: "read"`）。
+// AI が「新しい開発を始めて」と頼む道具は §2.4 の「まだ決めていないこと」にある。
 //
 // 道具はどれも**人の画面からだけ**（可視性 `admin`、呼び出しの刻印 `{admin: true}` でも確かめる）。例外は
 // **ブランチを送る・取ってくる口**（`push_branch`・`fetch_branch`、可視性 `module`、追加・2026-10-04）——Backlog が
-// 中継で呼ぶ。リポジトリは呼び出し元の Project の根で決まり（host に聞く）、引数で選べるのはブランチ名だけ。
+// 中継で呼ぶ。リポジトリは呼び出し元の Project の根で決まり（host に聞く）、引数で選べるのはブランチ名だけ。読むだけの
+// GitHub の tool も同じ決め方で、引数で選べるのは状態・番号・件数だけ。
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -27,6 +29,7 @@ import {
 import {
   AUDIT_ARGS_META_KEY,
   CANVAS_META_KEY,
+  EFFECT_META_KEY,
   MODULE_META_KEY,
   PRESENTS_OWNED_SECRET_META_KEY,
   PROJECT_GIT_META_KEY,
@@ -44,6 +47,7 @@ import { deleteRepository, inspectDelete } from "./delete.js";
 import { Cloner } from "./clone.js";
 import { Publisher } from "./publish.js";
 import { GITHUB_COM, type GithubApi, type GithubEndpoints } from "./github.js";
+import { GITHUB_READ_TOOLS, GithubRead, isGithubReadTool } from "./github-read.js";
 import { LedgerStore } from "./ledger.js";
 import type { NoticeSink, ProjectsSource } from "./relay-client.js";
 import type { VaultAccess } from "./vault.js";
@@ -117,6 +121,16 @@ function branchTool(name: string, description: string) {
     _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch", "repository", "account"], [PROJECT_GIT_META_KEY]: true },
   };
 }
+
+/**
+ * 読むだけの GitHub の tool（AI に見せる）。決めた欄の外は受けない（`additionalProperties: false`——Module の中でも断る）
+ */
+const githubReadTools = GITHUB_READ_TOOLS.map((t) => ({
+  name: t.name,
+  description: t.description,
+  inputSchema: { type: "object", properties: t.properties, required: [...t.required], additionalProperties: false },
+  _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
+}));
 
 function json(value: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value as Record<string, unknown> };
@@ -205,6 +219,20 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
     ...(deps.projectGit ? { projectGit: deps.projectGit } : {}),
   });
+  const githubRead = new GithubRead({ store, accounts, github: deps.github });
+  /**
+   * **呼び出し元の Project**（ブランチを送る口・読むだけの GitHub の tool）。Project のための呼び出しだけ（AI のターンでも
+   * 人の画面でも）。どの Project かは host に聞き、刻印と照らす
+   */
+  const callerProject = async (name: string, meta: Record<string, unknown> | undefined) => {
+    const caller = callerOf(meta);
+    const stamped = caller && "project" in caller ? caller.project : caller && "admin" in caller ? caller.forProject : undefined;
+    if (!stamped) throw new Error(`${name} は Project のための呼び出しからだけ呼べます`);
+    if (!deps.projects.callerProject) throw new Error("この Repositories は呼び出し元の Project を引く口を持っていません");
+    const project = await deps.projects.callerProject(callIdOf(meta));
+    if (project.id !== stamped) throw new Error(`呼び出しの刻印の Project（${stamped}）と、host の台帳の Project（${project.id}）が違います`);
+    return project;
+  };
   const lookupProjects = async (meta: Record<string, unknown> | undefined): Promise<ProjectsLookup> => {
     try {
       return { ok: true, projects: await deps.projects.listProjects(callIdOf(meta)) };
@@ -314,6 +342,8 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         inputSchema: { type: "object", properties: {} },
         _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true, [PROJECT_GIT_META_KEY]: true },
       },
+      // ── 読むだけの GitHub の tool（2026-10-20、Backlog #424）。**AI に見せる**（可視性 agent）。リポジトリは呼んだ Project の根 ──
+      ...githubReadTools,
       // ── Vault が、持ち主でない呼び元に GitHub のログインを渡す前に呼ぶ口（2026-10-18、Backlog #405。§2.4）。**中継からだけ**
       // （可視性 module）。host は役割 vault の同梱の Module からの中継を、依存を見ず人に聞かずに通す——確かめはここでする ──
       {
@@ -353,12 +383,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         return { content: [{ type: "text", text: token }] };
       }
       if (name === "push_branch" || name === "fetch_branch" || name === "branch_target") {
-        // **Project のための呼び出しだけ**（AI のターンでも人の画面でも）。どの Project かは host に聞き、刻印と照らす
-        const stamped = caller && "project" in caller ? caller.project : caller && "admin" in caller ? caller.forProject : undefined;
-        if (!stamped) throw new Error(`${name} は Project のための呼び出しからだけ呼べます`);
-        if (!deps.projects.callerProject) throw new Error("この Repositories は呼び出し元の Project を引く口を持っていません");
-        const project = await deps.projects.callerProject(callIdOf(meta));
-        if (project.id !== stamped) throw new Error(`呼び出しの刻印の Project（${stamped}）と、host の台帳の Project（${project.id}）が違います`);
+        const project = await callerProject(name, meta);
         // **処理している間は進み具合を送る**（レビュー M3）——別のサーバの Project では bundle を遅い線で運ぶ。頼んだ側
         // （Backlog → host の中継）は宛先の進み具合で待ちを数え直すので、送らないと 60 秒で切れ、Backlog が自分の git へ落ちる
         // （こちらは送り続けている）。中の仕事にはそれぞれ上限がある（core の口は1回 5 分・git は何も言わないまま 5 分で切る）
@@ -379,6 +404,10 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         } finally {
           stopBeats();
         }
+      }
+      if (isGithubReadTool(name)) {
+        const project = await callerProject(name, meta);
+        return json(await githubRead.call(name, args, project, callIdOf(meta)));
       }
       if (!caller || !("admin" in caller)) throw new Error(`${name} は人の操作からだけ呼べます`);
       switch (name) {

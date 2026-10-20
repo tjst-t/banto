@@ -69,9 +69,61 @@ export interface FakeGithub {
   dropAfterCreate: boolean;
   /** 作ったリポジトリ（`owner/name`。試験が見る） */
   created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>;
+  /**
+   * リポジトリ（`owner/name` の小文字）の Issue・PR・GitHub Actions の実行（読むだけの tool の試験）。番号は Issue と PR で
+   * 共通（GitHub と同じ——Issue の一覧の口は PR も返す）
+   */
+  issues: Map<string, FakeIssue[]>;
+  pulls: Map<string, FakePull[]>;
+  runs: Map<string, FakeRun[]>;
+  /** 読むだけの口（Issue・PR・CI）に来た要求（パスとクエリ。誰として読んだか——鍵なしは undefined） */
+  apiReads: Array<{ path: string; query: string; login?: string }>;
+  /** そのリポジトリに Issue・PR・CI の実行を足す */
+  addContent(content: FakeRepoContent): void;
   /** リポジトリを作る（1コミット入り） */
   addRepo(owner: string, name: string, opts?: { private?: boolean; readers?: string[]; writers?: string[]; files?: Record<string, string>; redirectTo?: string }): void;
   close(): Promise<void>;
+}
+
+export interface FakeComment {
+  user: string;
+  body: string;
+}
+
+export interface FakeIssue {
+  number: number;
+  title: string;
+  body?: string;
+  state?: "open" | "closed";
+  user?: string;
+  labels?: string[];
+  comments?: FakeComment[];
+}
+
+export interface FakePull extends FakeIssue {
+  head: string;
+  base?: string;
+  headSha: string;
+  draft?: boolean;
+}
+
+export interface FakeRun {
+  id: number;
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion?: "success" | "failure" | "cancelled";
+  headSha: string;
+  branch: string;
+  event?: string;
+  jobs?: Array<{ name: string; status: string; conclusion?: string; steps?: Array<{ name: string; status: string; conclusion?: string }> }>;
+}
+
+/** E2E が `/__fake/state` で足すもの（`repo` は `owner/name`） */
+export interface FakeRepoContent {
+  repo: string;
+  issues?: FakeIssue[];
+  pulls?: FakePull[];
+  runs?: FakeRun[];
 }
 
 export interface FakeOrg {
@@ -112,7 +164,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
   let seq = 0;
   const gitRoot = opts.gitRoot ?? mkdtempSync(join(tmpdir(), "banto-fake-github-git-"));
   const repos = new Map<string, RepoOpts>();
-  const state: Omit<FakeGithub, "endpoints" | "close" | "addRepo"> = {
+  const state: Omit<FakeGithub, "endpoints" | "close" | "addRepo" | "addContent"> = {
     repos,
     gitRoot,
     gitRequests: [],
@@ -136,6 +188,10 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
     forcePublic: false,
     dropAfterCreate: false,
     created: [],
+    issues: new Map(),
+    pulls: new Map(),
+    runs: new Map(),
+    apiReads: [],
   };
   const polls = new Map<string, number>();
   const issue = (login: string) => {
@@ -230,9 +286,12 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             if (reject.on) state.rejectPush.add(reject.repo.toLowerCase());
             else state.rejectPush.delete(reject.repo.toLowerCase());
           }
+          const content = (patch as { addContent?: FakeRepoContent }).addContent;
+          if (content) addContent(content);
           // 作ったリポジトリも返す（E2E が、頼んだ公開範囲・持ち主で作られたかを見る）
           // 出したアクセストークンの数も返す——最後に出したものは `ghu_fake_access_<issued>`（E2E が、AI に届いたのが最新か見る）
-          return send(200, { refreshCalls: state.refreshCalls, created: state.created, issued: seq });
+          // 読むだけの口に来た要求も返す（E2E が、ほかのリポジトリを読みに行っていないかを見る）
+          return send(200, { refreshCalls: state.refreshCalls, created: state.created, issued: seq, apiReads: state.apiReads });
         }
         // ── git（smart HTTP）。GitHub と同じく、資格情報が無ければ 401、見えなければ 404 ──
         const gitPath = url.pathname.match(/^\/([^/]+)\/([^/]+?)\.git(\/.*)$/);
@@ -319,6 +378,21 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
             res.end(all.subarray(split + 4));
           });
           return;
+        }
+        // ── 読むだけの口（Issue・PR・CI）。公開のものは鍵なしでも読める（本物と同じ）。見えなければ 404 ──
+        const read = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/(issues|pulls|actions\/runs)(?:\/(\d+))?(\/comments|\/jobs)?$/);
+        if (read && req.method === "GET") {
+          const [, owner, name, kind, id, sub] = read;
+          const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+          const who = token ? state.users.get(token) : undefined;
+          if (token && !who) return send(401, { message: "Bad credentials" });
+          state.apiReads.push({ path: url.pathname, query: url.search, ...(who ? { login: who } : {}) });
+          const key = `${owner}/${name}`.toLowerCase();
+          const repo = repos.get(key);
+          if (!repo || (repo.private && !(who && repo.readers.some((r) => r.toLowerCase() === who.toLowerCase())))) {
+            return send(404, { message: "Not Found" });
+          }
+          return send(...readRepo(owner!, name!, key, kind!, id, sub, url.searchParams));
         }
         if (url.pathname.startsWith("/repos/") && req.method === "GET") {
           const [, , owner, name] = url.pathname.split("/");
@@ -434,6 +508,96 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
       })();
     });
   };
+  const at = "2026-10-20T00:00:00Z";
+  const userOf = (login = "someone") => ({ login });
+  const issueJson = (owner: string, name: string, i: FakeIssue, pull?: FakePull) => ({
+    number: i.number,
+    title: i.title,
+    body: i.body ?? "",
+    state: i.state ?? "open",
+    user: userOf(i.user),
+    labels: (i.labels ?? []).map((l) => ({ name: l })),
+    comments: (i.comments ?? []).length,
+    created_at: at,
+    updated_at: at,
+    closed_at: i.state === "closed" ? at : null,
+    html_url: `https://github.com/${owner}/${name}/${pull ? "pull" : "issues"}/${i.number}`,
+    ...(pull ? { pull_request: { url: `https://api.github.com/repos/${owner}/${name}/pulls/${i.number}` } } : {}),
+  });
+  const pullJson = (owner: string, name: string, p: FakePull) => ({
+    ...issueJson(owner, name, p, p),
+    pull_request: undefined,
+    draft: p.draft === true,
+    merged_at: null,
+    mergeable: true,
+    head: { ref: p.head, sha: p.headSha },
+    base: { ref: p.base ?? "main" },
+  });
+  const runJson = (owner: string, name: string, r: FakeRun) => ({
+    id: r.id,
+    name: r.name,
+    display_title: r.name,
+    event: r.event ?? "push",
+    status: r.status,
+    conclusion: r.conclusion ?? null,
+    head_branch: r.branch,
+    head_sha: r.headSha,
+    run_number: r.id,
+    run_attempt: 1,
+    created_at: at,
+    updated_at: at,
+    html_url: `https://github.com/${owner}/${name}/actions/runs/${r.id}`,
+  });
+  const byState = (state: string | null) => (i: FakeIssue) => state === "all" || (i.state ?? "open") === (state ?? "open");
+  /** 読むだけの口の返事（状態番号と中身） */
+  function readRepo(owner: string, name: string, key: string, kind: string, id: string | undefined, sub: string | undefined, q: URLSearchParams): [number, unknown] {
+    const perPage = Number(q.get("per_page") ?? 30);
+    const issues = state.issues.get(key) ?? [];
+    const pulls = state.pulls.get(key) ?? [];
+    const runs = state.runs.get(key) ?? [];
+    const comments = (i: FakeIssue) => (i.comments ?? []).map((c) => ({ user: userOf(c.user), body: c.body, created_at: at }));
+    if (kind === "issues" && !id) {
+      const all = [...issues.map((i) => issueJson(owner, name, i)), ...pulls.map((p) => issueJson(owner, name, p, p))];
+      return [200, all.filter((i) => q.get("state") === "all" || i.state === (q.get("state") ?? "open")).slice(0, perPage)];
+    }
+    if (kind === "issues" && id) {
+      const n = Number(id);
+      const issue = issues.find((i) => i.number === n);
+      const pull = pulls.find((p) => p.number === n);
+      if (!issue && !pull) return [404, { message: "Not Found" }];
+      if (sub === "/comments") return [200, comments((issue ?? pull)!)];
+      return sub ? [404, { message: "Not Found" }] : [200, issue ? issueJson(owner, name, issue) : issueJson(owner, name, pull!, pull)];
+    }
+    if (kind === "pulls" && !id) return [200, pulls.filter(byState(q.get("state"))).slice(0, perPage).map((p) => pullJson(owner, name, p))];
+    if (kind === "pulls" && id && !sub) {
+      const pull = pulls.find((p) => p.number === Number(id));
+      return pull ? [200, pullJson(owner, name, pull)] : [404, { message: "Not Found" }];
+    }
+    if (kind === "actions/runs" && !id) {
+      const status = q.get("status");
+      const sha = q.get("head_sha");
+      const picked = runs
+        .filter((r) => !status || r.status === status || r.conclusion === status)
+        .filter((r) => !sha || r.headSha === sha);
+      return [200, { total_count: picked.length, workflow_runs: picked.slice(0, perPage).map((r) => runJson(owner, name, r)) }];
+    }
+    if (kind === "actions/runs" && id) {
+      const run = runs.find((r) => r.id === Number(id));
+      if (!run) return [404, { message: "Not Found" }];
+      if (sub === "/jobs") {
+        const jobs = (run.jobs ?? []).map((j) => ({ ...j, conclusion: j.conclusion ?? null, started_at: at, completed_at: at, steps: (j.steps ?? []).map((st) => ({ ...st, conclusion: st.conclusion ?? null })) }));
+        return [200, { total_count: jobs.length, jobs }];
+      }
+      return sub ? [404, { message: "Not Found" }] : [200, runJson(owner, name, run)];
+    }
+    return [404, { message: "Not Found" }];
+  }
+  function addContent(c: FakeRepoContent): void {
+    const key = c.repo.toLowerCase();
+    if (c.issues) state.issues.set(key, [...(state.issues.get(key) ?? []), ...c.issues]);
+    if (c.pulls) state.pulls.set(key, [...(state.pulls.get(key) ?? []), ...c.pulls]);
+    if (c.runs) state.runs.set(key, [...(state.runs.get(key) ?? []), ...c.runs]);
+  }
   const server: Server = opts.tls ? createHttpsServer(opts.tls, handler) : createServer(handler);
   function addRepo(owner: string, name: string, o: { private?: boolean; readers?: string[]; writers?: string[]; files?: Record<string, string>; redirectTo?: string } = {}): void {
     const bare = join(gitRoot, owner, `${name}.git`);
@@ -462,6 +626,7 @@ export async function startFakeGithub(opts: { gitRoot?: string; tls?: { key: str
   return Object.assign(state, {
     endpoints: { web: base, api: base },
     addRepo,
+    addContent,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   });
 }

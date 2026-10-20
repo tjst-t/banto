@@ -80,6 +80,35 @@ export function mayCallInReadOnly(input: {
   return input.allowed.includes(patrolAllowedEntry(input.moduleName, input.tool.name));
 }
 
+/** Vault の役割の、値を引く口（窓口を通さず金庫に直接——Repositories の `RelayVault.resolve` と同じ） */
+const VAULT_RESOLVE_TOOL = "resolveAlias";
+
+/**
+ * **読むだけの回の中で、同梱の banto 全体の Module が自分の資格情報を使う中継**（追加・2026-10-20、Backlog #424）。
+ *
+ * Repositories の読むだけの GitHub の tool は、台帳のアカウントのトークンで GitHub を読む。トークンは Vault にあり、引く
+ * `resolveAlias` は値を返すので読むだけの印を持たない——このままでは読むだけの回で非公開のリポジトリを読めない。
+ * 読むだけの3つの条件のうち (3)「秘密の値を返さない」が守るのは **AI に返らないこと**で、呼び元の Module のコードの中で
+ * 見出しに使うだけなら、AI には返らない（呼び元の tool の返事が読むだけの印の下にある）。ログインの取り直しで回った組を
+ * 書き戻すのは、Module が自分の資格情報を使える形に保つ仕事で、環境を変えるものに数えない（`callerOwned` の口だけ）。
+ *
+ * 緩めるのは次を全部満たすときだけ：
+ * - **呼び元は同梱で、banto 本体で動く banto 全体の Module**——コンテナの中の Module は AI が合言葉を読めて、その Module の名で
+ *   値を引ける（`callerOwned` と同じ線）
+ * - **宛先は同梱の Vault**（役割 `vault`）で、口は値を引く `resolveAlias` か、呼び元が持ち主のものだけを書き換える口
+ *
+ * 承認は今までどおり効く——まだ許していない値は、読むだけの回では人に聞かずに断る（初回はふつうの会話で許す）
+ */
+export function mayRelayOwnCredentialInReadOnly(input: {
+  caller: { bundled: boolean; inContainer: boolean; projectScoped: boolean };
+  target: { bundled: boolean; roles: readonly string[] };
+  tool: { name: string; callerOwned: boolean };
+}): boolean {
+  if (!input.caller.bundled || input.caller.inContainer || input.caller.projectScoped) return false;
+  if (!input.target.bundled || !input.target.roles.includes("vault")) return false;
+  return input.tool.name === VAULT_RESOLVE_TOOL || input.tool.callerOwned;
+}
+
 /** **読むだけの回でその Module の資源を読んでよいか**。同梱の Module と、人が「資源を読む」を許した Module だけ */
 export function mayReadResourcesInReadOnly(input: { moduleName: string; bundled: boolean; allowed: readonly string[] }): boolean {
   return input.bundled || input.allowed.includes(patrolAllowedEntry(input.moduleName, PATROL_RESOURCES_ENTRY));

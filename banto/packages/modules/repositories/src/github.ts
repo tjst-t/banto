@@ -6,6 +6,8 @@
 //   デバイスフローで得たものは client secret 無しで更新できる（GitHub の文書「Refreshing user access tokens」）
 // - **`GET /user`**：資格情報が誰のものかを確かめる（PAT でも）
 // - **公開**（段階5）：行き先にできる持ち主（自分・属する Organization）とそこに作れそうか、空のリポジトリを作る
+// - **読むだけ**（2026-10-20、Backlog #424）：1つのリポジトリの下の決まった場所（Issue・PR・CI）を GET で読む。どの場所を
+//   読むかは `github-read.ts` が決め、ここは HTTP の話し方と断りの読み方だけ
 //
 // **秘密を文言に入れない**——失敗の理由は GitHub の `error`・`error_description`・状態番号だけで作る。
 
@@ -79,6 +81,11 @@ export interface GithubApi {
    * トークンからは、その App のものだけが見える
    */
   appInstallations(token: string, app?: AppIdentity): Promise<AppInstallations>;
+  /**
+   * **1つのリポジトリの下を GET で読む**（読むだけの tool、`github-read.ts`）。`path` は `/repos/<owner>/<name>` の後ろ
+   * （`/issues` 等）。トークンが無ければ鍵なしで読む（公開のものだけ見える）。見えなければ `not-found` で投げる
+   */
+  repoGet(token: string | undefined, owner: string, name: string, path: string, query?: Record<string, string>): Promise<unknown>;
   /** 空のリポジトリを作る（README 等は作らない）。`org` があれば Organization に（段階5） */
   createRepo(token: string, input: { org?: string; name: string; private: boolean; description?: string }): Promise<CreatedRepo>;
 }
@@ -482,6 +489,39 @@ export function httpGithub(endpoints: GithubEndpoints = GITHUB_COM, now: () => n
       }
       if (res.status === 404) throw new GithubError(`${where}が見つかりません（Organization に入っていないか、App が入っていません）`, "not-found");
       throw new GithubError(`GitHub がリポジトリを作りませんでした（HTTP ${res.status}${message ? `：${message}` : ""}）`, String(res.status));
+    },
+
+    async repoGet(token, owner, name, path, query) {
+      const url = new URL(`${api}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}${path}`);
+      for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          headers: {
+            accept: "application/vnd.github+json",
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+            "x-github-api-version": "2022-11-28",
+            "user-agent": "banto",
+          },
+          // 宛先はこの API だけ——リダイレクトの先へは行かない（`Location` が別の相手を指しうる）
+          redirect: "error",
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GithubError(`GitHub に繋がりませんでした（${(err as Error).message}）`, "network");
+      }
+      const body = (await res.json().catch(() => undefined)) as { message?: unknown } | undefined;
+      if (res.status === 404) throw new GithubError(`github.com/${owner}/${name} に見つかりません`, "not-found");
+      if (res.status === 401) throw new GithubError("GitHub がこの資格情報を受け付けませんでした（401）", "401");
+      if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
+        throw new GithubError("GitHub の回数制限に当たりました。しばらく待ってからもう一度読んでください", "rate-limited");
+      }
+      if (!res.ok) {
+        const why = typeof body?.message === "string" ? `：${body.message}` : "";
+        throw new GithubError(`GitHub が答えませんでした（HTTP ${res.status}${why}）`, String(res.status));
+      }
+      if (body === undefined) throw new GithubError("GitHub の返事が読めませんでした", "malformed");
+      return body;
     },
 
     async repoExists(token, owner, name) {

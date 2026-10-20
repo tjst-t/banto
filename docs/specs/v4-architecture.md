@@ -3924,10 +3924,17 @@ Dots は1体のエージェントが「見る」と「やる」を同じ権限�
   - **付けない**：Service の `listServices`・`readServiceLogs`（読むたびに登録と systemd を突き合わせ、`systemctl enable/start` を
     打ちうる）、Publish の `listPublished`（Caddy の経路を書き直しうる）——突き合わせを切った読むだけの道を Module に足すまでは
     付けない。Shell の `runCommand` は何でもできるので付けない
-- 外の出来事（GitHub の Issue・PR・CI）を見回るには、読むだけの道具が要る。今は Shell の `gh` しか無いので、Repositories に読むだけの
-  GitHub の tool を足す——見回りの段の作業に含める。Repositories は banto 全体の Module で今は AI に見せる tool が無いので、AI に
-  見せる（`agent`）tool として足し、**対象は呼んだ Project の root のリポジトリ（台帳で Project と結びついたもの）だけ**、引数は決まった
+- 外の出来事（GitHub の Issue・PR・CI）を見回るには、読むだけの道具が要る。Shell の `gh` は読むだけの回で使えないので、Repositories に
+  読むだけの GitHub の tool を足した（実装・2026-10-20、Backlog #424。v4-modules.md §2.4「読むだけの GitHub の tool」）。AI に
+  見せる（`agent`）tool で、**対象は呼んだ Project の root のリポジトリ（台帳で Project と結びついたもの）だけ**、引数は決まった
   欄（状態・番号・件数）だけで、自由な検索語・URL は受けない。宛先はそのリポジトリの GitHub の API だけ
+  - **資格情報**：台帳のアカウントのトークンは Vault にあり、引く `resolveAlias` は値を返すので読むだけではない。下の「読むだけの回の
+    中継」の例外として、**banto 本体で動く同梱の banto 全体の Module が、同梱の Vault から `resolveAlias` で値を引く・持ち主のものだけを
+    書き換える口（`callerOwned`）で回った組を書き戻す**中継は、読むだけの回でも宛先の印で断らない。読むだけの条件 3（秘密を返さない）
+    が守るのは AI に返らないことで、値は呼び元の Module の中で使うだけ（呼び元の tool の返事は読むだけの印の下にある）。書き戻しは
+    Module が自分の資格情報を使える形に保つ仕事で、条件 1 の「環境を変える」に数えない。コンテナの中の Module（AI が合言葉を読める）・
+    Project の Module・第三者の Module・第三者の Vault には緩めない。**承認は今までどおり効く**——まだ許していない値は聞かずに断るので、
+    初回はふつうの会話で許す（banto 全体の Module の承認は Project を持たない）
 
 **読むだけの回**（`restriction: "read-only"`）：
 
