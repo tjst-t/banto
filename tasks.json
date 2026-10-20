@@ -10518,15 +10518,15 @@
       "labels": [
         "desktop"
       ],
-      "body": "v4-desktop.md §8 の段1。Windows の PC にインストーラで入れ、Claude に個人のログインで入り、Project を作って AI が Shell（Git Bash）と FileSystem でファイルを直し、コミットできるところまで。\n\nService・通知・トレイ・アプリの更新は段2、Terminal・Browser・Documents・別のサーバは段3。",
-      "doneWhen": "Windows の実機で、インストーラから入れ、Claude にログインし、Project を作り、AI が Shell と FileSystem でファイルを直してコミットできる。GitHub Actions の Windows のランナーで、会話・承認・Shell・FileSystem の E2E が通る",
+      "body": "v4-desktop.md §8 の段1。レビュー（2026-10-20）で 1a（本体が Windows で起きる・Edge で開く）・1b（コマンドとサブエージェント）・1c（Electron と zip）に分けた。着手の前に §10 の「段1より前に決める」（Shell を毎回承認にするか・外から足した Module を許すか）を人が決める。",
+      "doneWhen": "v4-desktop.md §8 の 1a・1b・1c の完了条件（開発用の VM：Defender 有効・管理者なし・日本語のユーザー名で、各 spec を 5 回中 5 回、強制終了のあと孫のプロセス 0 個、Event Store が壊れない）がすべて満たされている",
       "resolution": null,
       "refs": [
         "docs/specs/v4-desktop.md"
       ],
       "threads": [],
       "createdAt": "2026-10-20T08:56:28.219Z",
-      "updatedAt": "2026-10-20T08:56:28.219Z",
+      "updatedAt": "2026-10-20T10:47:01.924Z",
       "closedAt": null,
       "extra": {}
     },
