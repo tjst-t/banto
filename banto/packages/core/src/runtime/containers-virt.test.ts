@@ -101,6 +101,9 @@ function accessOf(vm: FakeVm): VmAccess {
         return ok(`MemTotal:       ${vm.memTotalKiB} kB\nHugePages_Total:    ${Math.min(vm.nrHugepages, vm.hugepagesCap)}\nHugepagesize:       2048 kB\n`);
       }
       if (cmd === "nproc") return ok("8\n");
+      // VM の側の、そのコンテナの cgroup（区画 user-1001 の lxc.payload.<区画>_<名前>）
+      const cg = cmd === "cat" ? /^\/sys\/fs\/cgroup\/lxc\.payload\.user-1001_([a-z0-9-]+)\/hugetlb\.2MB\.current$/.exec(rest[0] ?? "") : null;
+      if (cg) return vm.containers.has(cg[1]!) && vm.hugetlbCurrent.get(cg[1]!) !== -1 ? ok(`${vm.hugetlbCurrent.get(cg[1]!) ?? 0}\n`) : fail("cat: No such file or directory");
       if (cmd === "incus") {
         vm.incusCalls.push(rest);
         if (rest[0] === "query" && rest[1] === "/1.0/projects/user-1001") return ok(JSON.stringify({ config: vm.project }));
@@ -124,7 +127,8 @@ function incusAsUser(vm: FakeVm, args: string[]): IncusResult {
     }
     return ok(JSON.stringify(c));
   }
-  if (args[0] === "exec" && args.at(-1) === "/sys/fs/cgroup/hugetlb.2MB.current") return ok(`${vm.hugetlbCurrent.get(args[1]!) ?? 0}\n`);
+  // 中から読もうとしたら、中の root が差し替えた値（いつも 0）を返す——VM の cgroup から読まなければ「使っていない」に見える
+  if (args[0] === "exec" && args.at(-1) === "/sys/fs/cgroup/hugetlb.2MB.current") return ok("0\n");
   if (args[0] === "config" && (args[1] === "set" || args[1] === "unset")) {
     const c = vm.containers.get(args[2]!);
     if (!c) return fail("Error: Instance not found");
@@ -479,4 +483,18 @@ test("hugepages：確保できた数が足りなければ、その数を言う�
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0]!, /64 個頼みましたが、確保できたのは 40 個/);
   assert.equal(h.settings.get("p-aaa")!.hugepages, 64);
+});
+
+test("hugepages：使っているかは VM の側のコンテナの cgroup から読み（中の値は信じない）、動いているのに読めなければ減らさない", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", runningContainer());
+  await h.virt.setHugepages("p-aaa", 32);
+  h.vm.hugetlbCurrent.set("banto-p-aaa", 4 * 2 * 1024 ** 2);
+  await assert.rejects(h.virt.setHugepages("p-aaa", 0), /使っています（4 個）/);
+  assert.ok(!h.vm.incusCalls.some((a) => a[0] === "exec" && a.some((x) => x.includes("hugetlb"))), "コンテナの中から読んだ");
+  h.vm.hugetlbCurrent.set("banto-p-aaa", -1);
+  h.vm.sudoCalls.length = 0;
+  await assert.rejects(h.virt.setHugepages("p-aaa", 0), /lxc\.payload\.user-1001_banto-p-aaa\/hugetlb\.2MB\.current.*読めませんでした|読めませんでした（\/sys\/fs\/cgroup\/lxc\.payload\.user-1001_banto-p-aaa/);
+  assert.deepEqual(h.vm.sudoCalls, []);
+  assert.equal(h.settings.get("p-aaa")!.hugepages, 32);
 });

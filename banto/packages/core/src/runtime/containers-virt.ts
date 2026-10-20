@@ -12,6 +12,7 @@ import { runRootCommand, AutoFixError, type RanCommand, type RootCommand } from 
 import { allowUnixCharCommand, projectNameOf, unsetUnixCharCommand, UNIX_CHAR_KEY, type VmAccess } from "./containers-host.js";
 import { containerNameFor, DEFAULT_TIMEOUTS, effectiveInsideIds, defaultContainerLimits, ProjectContainers, type ContainerVirtualization } from "@banto/container";
 import { LEGACY_INSIDE_IDS } from "./remote-containers.js";
+import { containerCgroupPath } from "../resources.js";
 import { remoteNameOf, RemoteRuntimeError, runtimeIdOf } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 
@@ -138,17 +139,19 @@ async function readMeminfo(vm: VmAccess): Promise<NonNullable<ReturnType<typeof 
 }
 
 /**
- * **そのコンテナが使っている hugepages（バイト）**：中の cgroup の `hugetlb.2MB.current`（cgroup 名前空間でコンテナの枠が根に
- * 見える）。無い・動いていなければ 0。動いているのに読めなければ断る（使っていないと決めつけない——規則2）
+ * **そのコンテナが使っている hugepages（バイト）**：VM の側の、そのコンテナの cgroup の `hugetlb.2MB.current`
+ * （`lxc.payload.user-<uid>_<名前>`——資源の画面の読み取りと同じ場所）。**コンテナの中からは読まない**——中の root は中の
+ * `/sys/fs/cgroup` の見え方を差し替えられる。無い・動いていなければ 0。動いているのに読めなければ断る（使っていないと
+ * 決めつけない——規則2）
  */
 async function hugepagesInUse(incus: ProjectContainers, vm: VmAccess, container: string): Promise<number> {
   if ((await incus.state(container))?.status !== "Running") return 0;
-  const r = await vm.run(["incus", "exec", container, "--", "cat", "/sys/fs/cgroup/hugetlb.2MB.current"]);
-  const n = Number(r.stdout.trim());
+  const file = `${containerCgroupPath(projectNameOf(vm.uid), container)}/hugetlb.2MB.current`;
+  const r = await vm.run(["cat", file]);
   if (r.code !== 0 || !/^\d+$/.test(r.stdout.trim())) {
-    throw new RemoteRuntimeError(502, `コンテナが hugepages を使っているか読めませんでした：${r.stderr.trim() || r.stdout.trim() || `終了コード ${r.code}`}`);
+    throw new RemoteRuntimeError(502, `コンテナが hugepages を使っているか読めませんでした（${file}）：${r.stderr.trim() || r.stdout.trim() || `終了コード ${r.code}`}`);
   }
-  return n;
+  return Number(r.stdout.trim());
 }
 
 /** VM のユーザーとして Incus を呼ぶ（仮想化の実験の装置を付け外す） */
