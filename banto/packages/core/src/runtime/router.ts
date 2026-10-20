@@ -47,8 +47,12 @@ export class RuntimeRouter implements Runtime {
     return this.remote.handles(placeId) ? this.remote.release(placeId, opts) : this.host.release(placeId, opts);
   }
 
-  async address(projectId: string): Promise<PlaceAddress> {
-    return this.remote.handles(projectId) ? this.remote.address(projectId) : this.host.address(projectId);
+  async address(projectId: string, port?: number): Promise<PlaceAddress> {
+    return this.remote.handles(projectId) ? this.remote.address(projectId, port) : this.host.address(projectId);
+  }
+
+  async releasePublishedPort(projectId: string, port?: number): Promise<void> {
+    if (this.remote.handles(projectId)) await this.remote.releasePublishedPort(projectId, port);
   }
 
   /** 別のサーバからの要求は専用の待ち受け（`relay-listener.ts`）にしか来ない——core の口では「違う」 */

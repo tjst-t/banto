@@ -36,9 +36,16 @@ export interface PublisherDeps {
   caddyFor(settings: CaddySettings): CaddyAdmin;
   /**
    * host からその Project のコンテナに届くアドレス（host の中継 `relayProjectAddress`）。
-   * **確かに届かない**（止まっている・無い・他人のもの）なら `{unavailable}` を返し、**確かめられない**（一時の失敗）なら投げる
+   * **確かに届かない**（止まっている・無い・他人のもの）なら `{unavailable}` を返し、**確かめられない**（一時の失敗）なら投げる。
+   * `port`（サービスのポート）を渡すと、host がそのポートに届く道を用意し、別の番号で届くならその番号を `port` で返す
+   * （別のサーバの Project ごとのコンテナ——VM のポートからコンテナの中へ。追加・2026-10-20）
    */
-  resolveAddress(projectId: string): Promise<AddressLookup>;
+  resolveAddress(projectId: string, port?: number): Promise<AddressLookup>;
+  /**
+   * 公開をやめたとき、`resolveAddress(projectId, port)` が用意させた道を外させる（host の中継 `relayProjectPortRelease`。
+   * 追加・2026-10-20）。無ければ何もしない
+   */
+  releasePort?(projectId: string, port: number): Promise<void>;
   /** host からそのアドレスとポートに TCP で届くか */
   probe(address: string, port: number): Promise<boolean>;
   /** この Module の置き場——ルートの印の持ち主になる */
@@ -53,7 +60,7 @@ export interface PublisherDeps {
  * `exposedOnLan`：Project が別のサーバで動き、そのアドレスは LAN に直に出ている（`docs/specs/v4-security.md` §1
  * 「Project の実行場所——別のサーバ」）——向こうで `0.0.0.0` に待ち受けたものは、この公開の認証を通らずに LAN から届く
  */
-export type AddressLookup = { address: string; exposedOnLan?: true } | { unavailable: string };
+export type AddressLookup = { address: string; port?: number; exposedOnLan?: true } | { unavailable: string };
 
 /** 承認の前の見積もり。`exposedOnLan` は承認画面で「向こうのサービスは LAN から直に届く」と出すため */
 export interface PublishPlan {
@@ -161,20 +168,24 @@ export class CaddyPublisher {
       // 127.0.0.1 だけで待っているものはコンテナの外（Caddy）から届かない
       let found: AddressLookup;
       try {
-        found = await this.deps.resolveAddress(t.projectId);
+        found = await this.deps.resolveAddress(t.projectId, t.port);
       } catch (err) {
         throw new PublishError(`公開先のアドレスを確かめられません（しばらくしてからもう一度）：${errText(err)}`);
       }
       if (!("address" in found)) throw new PublishError(`公開先に届きません：${found.unavailable}`);
-      const address = found.address;
-      if (!(await this.deps.probe(address, t.port))) {
+      const upstream = { address: found.address, port: found.port ?? t.port };
+      if (!(await this.deps.probe(upstream.address, upstream.port))) {
         throw new PublishError(
-          found.exposedOnLan
-            ? `host から別のサーバの ${address}:${t.port} に届きません。別のサーバが host と同じ LAN にあり、サービスが 0.0.0.0` +
-                "（すべてのアドレス）で待ち受けていて、向こうのファイアウォールがそのポートを通しているか確かめてください" +
-                "——127.0.0.1（localhost）だけで待っていると向こうの外から届きません（Vite なら --host）"
-            : `host から ${address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
-                "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
+          found.port !== undefined
+            ? // 別のサーバの Project ごとのコンテナ：VM のポートからコンテナの中の 127.0.0.1 へ繋いでいる（中では 127.0.0.1 で待ち受けてよい）
+              `host から別のサーバの ${upstream.address}:${upstream.port}（コンテナの中の ${t.port} へ繋ぐ口）に届きません。別のサーバが host と同じ LAN にあり、` +
+                `向こうのファイアウォールがそのポートを通しているか、サービスがコンテナの中で ${t.port} を待ち受けているか確かめてください`
+            : found.exposedOnLan
+              ? `host から別のサーバの ${upstream.address}:${t.port} に届きません。別のサーバが host と同じ LAN にあり、サービスが 0.0.0.0` +
+                  "（すべてのアドレス）で待ち受けていて、向こうのファイアウォールがそのポートを通しているか確かめてください" +
+                  "——127.0.0.1（localhost）だけで待っていると向こうの外から届きません（Vite なら --host）"
+              : `host から ${upstream.address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
+                  "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
         );
       }
 
@@ -192,7 +203,7 @@ export class CaddyPublisher {
       };
       const id = routeIdFor(this.prefix, t);
       // **前に差し込む**——Caddyfile の `*.<ドメイン>` のようなまとめたルートより後ろに置くと、そちらが先に当たる
-      await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, address, this.deps.bantoUpstream));
+      await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, upstream, this.deps.bantoUpstream));
       try {
         await this.deps.store.setRoutes([...records, rec]);
       } catch (err) {
@@ -215,12 +226,19 @@ export class CaddyPublisher {
       if (!rec) return { removed: false };
       await this.deps.store.setRoutes(records.filter((r) => r !== rec));
       const s = await this.deps.store.settings();
+      const notes: string[] = [];
       try {
         await deleteRoute(this.deps.caddyFor(s), routeIdFor(this.prefix, t));
       } catch (err) {
-        return { removed: true, url: urlOf(rec.hostname), note: `Caddy のルートはまだ消せていません（届いたら消します）：${errText(err)}` };
+        notes.push(`Caddy のルートはまだ消せていません（届いたら消します）：${errText(err)}`);
       }
-      return { removed: true, url: urlOf(rec.hostname) };
+      // host が用意した道（別のサーバの Project ごとのコンテナの、VM のポート）を外させる。外せなくても公開はやめている——黙らない
+      try {
+        await this.deps.releasePort?.(t.projectId, t.port);
+      } catch (err) {
+        notes.push(`公開先の道（別のサーバのポート）はまだ外せていません：${errText(err)}`);
+      }
+      return { removed: true, url: urlOf(rec.hostname), ...(notes.length > 0 ? { note: notes.join("／") } : {}) };
     });
   }
 
@@ -268,13 +286,14 @@ export class CaddyPublisher {
       return records.map((r) => status(r, "caddy-unreachable", errText(err)));
     }
 
-    // Project ごとに1回だけ引く（同じ Project に公開が複数あっても）。確かめられなかったら `unknown`
+    // 公開（Project とサービスのポート）ごとに1回だけ引く。確かめられなかったら `unknown`
     const addresses = new Map<string, Promise<AddressLookup | { unknown: string }>>();
-    const addressOf = (projectId: string) => {
-      let p = addresses.get(projectId);
+    const addressOf = (projectId: string, port: number) => {
+      const key = `${projectId}:${port}`;
+      let p = addresses.get(key);
       if (!p) {
-        p = this.deps.resolveAddress(projectId).catch((err: unknown) => ({ unknown: errText(err) }));
-        addresses.set(projectId, p);
+        p = this.deps.resolveAddress(projectId, port).catch((err: unknown) => ({ unknown: errText(err) }));
+        addresses.set(key, p);
       }
       return p;
     };
@@ -284,7 +303,7 @@ export class CaddyPublisher {
     for (const rec of records) {
       const id = routeIdFor(this.prefix, rec);
       wanted.add(id);
-      const found = await addressOf(rec.projectId);
+      const found = await addressOf(rec.projectId, rec.port);
       const current = routes.find((r) => r["@id"] === id);
       // **確かめられないときは、今の道に触らない**——一時の失敗で 503 に書き換えると、Incus が一瞬答えないだけで全部の
       // 公開が止まる。前のアドレスのまま残すのは、確かめられるまでの間だけ（次の突き合わせで直る）
@@ -292,8 +311,8 @@ export class CaddyPublisher {
         out.push(status(rec, "address-unknown", `公開先のアドレスを確かめられません（道はそのまま）：${found.unknown}`));
         continue;
       }
-      const address = "address" in found ? found.address : undefined;
-      const desired = buildRoute(id, rec, address, this.deps.bantoUpstream);
+      const upstream = "address" in found ? { address: found.address, port: found.port ?? rec.port } : undefined;
+      const desired = buildRoute(id, rec, upstream, this.deps.bantoUpstream);
       try {
         if (!current) await caddy.put(`${routesPath(server)}/0`, desired);
         else if (!sameJson(current, desired)) await caddy.patch(`/id/${id}`, desired);
@@ -301,15 +320,15 @@ export class CaddyPublisher {
         out.push(status(rec, "caddy-unreachable", errText(err)));
         continue;
       }
-      if (!address) {
+      if (!upstream) {
         out.push(status(rec, "project-stopped", "unavailable" in found ? found.unavailable : undefined));
         continue;
       }
-      const reachable = await this.deps.probe(address, rec.port);
+      const reachable = await this.deps.probe(upstream.address, upstream.port);
       out.push(
         reachable
           ? status(rec, "active")
-          : status(rec, "not-listening", `host から ${address}:${rec.port} に届きません（止まっている・127.0.0.1 だけで待っている）`),
+          : status(rec, "not-listening", `host から ${upstream.address}:${upstream.port} に届きません（止まっている・127.0.0.1 だけで待っている）`),
       );
     }
     // マスターに無い自分のルート（やめたのに Caddy に届かなかった等）を片付ける。**他人の印には触らない**

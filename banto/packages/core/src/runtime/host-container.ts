@@ -294,6 +294,9 @@ export class HostContainerRuntime implements Runtime {
 
   // **この banto が作ったものだけ**。確かに届かない（止まっている・無い・他人のもの）は値で返し、
   // 分からない（Incus が答えない）は投げる
+  /** この機械のコンテナは道を張らない（ブリッジのアドレスにサービスのポートのまま届く） */
+  async releasePublishedPort(): Promise<void> {}
+
   async address(projectId: string): Promise<PlaceAddress> {
     try {
       return { address: await this.containers.containerAddress(containerNameFor(projectId), this.opts.dataDir) };

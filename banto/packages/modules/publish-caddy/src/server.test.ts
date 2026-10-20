@@ -33,6 +33,10 @@ interface Ctx {
   listening: Set<string>;
   /** 別のサーバで動く Project（アドレスが LAN に直に出ている） */
   onLan: Set<string>;
+  /** 別のサーバの Project ごとのコンテナ：サービスのポート → host が用意した VM のポート（Project ごと） */
+  mapped: Map<string, Map<number, number>>;
+  /** host に外させた道（`<Project>:<ポート>`） */
+  released: string[];
   publisher: CaddyPublisher;
   call(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
@@ -47,14 +51,20 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
   const listening = new Set<string>(["10.61.162.23:3000", "10.61.162.40:3000"]);
   const flaky = new Set<string>();
   const onLan = new Set<string>();
+  const mapped = new Map<string, Map<number, number>>();
+  const released: string[] = [];
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
-    resolveAddress: async (projectId) => {
+    resolveAddress: async (projectId, port) => {
       if (flaky.has(projectId)) throw new Error(`コンテナ banto-${projectId.slice(0, 8)} の状態を読めませんでした：時間切れ`);
       const a = addresses.get(projectId);
       if (!a) return { unavailable: `コンテナ banto-${projectId.slice(0, 8)} は動いていません（Stopped）` };
-      return onLan.has(projectId) ? { address: a, exposedOnLan: true } : { address: a };
+      const vmPort = port !== undefined ? mapped.get(projectId)?.get(port) : undefined;
+      return { address: a, ...(vmPort !== undefined ? { port: vmPort } : {}), ...(onLan.has(projectId) ? { exposedOnLan: true as const } : {}) };
+    },
+    releasePort: async (projectId, port) => {
+      released.push(`${projectId}:${port}`);
     },
     probe: async (address, port) => listening.has(`${address}:${port}`),
     owner: dir,
@@ -70,7 +80,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
     return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
   };
   try {
-    await fn({ client, caddy, dir, addresses, flaky, listening, onLan, publisher, call });
+    await fn({ client, caddy, dir, addresses, flaky, listening, onLan, mapped, released, publisher, call });
   } finally {
     await client.close();
     await caddy.stop();
@@ -475,5 +485,33 @@ test("別のサーバの宛先が確かに引けない（登録が無い・名�
     const plan = JSON.parse((await call("planPublish", { projectId: P2, service: "web", port: 3000 })).text);
     assert.equal(plan.exposedOnLan, undefined);
     assert.deepEqual(caddy.writes(), []);
+  });
+});
+
+test("別のサーバの Project ごとのコンテナ：サービスのポートを渡し、host が返した VM のポートへ繋ぐ。やめたら host に道を外させる", async () => {
+  await withCaddy(async ({ call, caddy, addresses, listening, onLan, mapped, released }) => {
+    onLan.add(P2);
+    addresses.set(P2, "192.168.10.50");
+    mapped.set(P2, new Map([[3000, 20002]]));
+    listening.clear();
+    // VM のポートに届かない——その番号とコンテナの中のポートを添えて断る
+    const refused = await call("publishRoute", publishArgs({ projectId: P2 }));
+    assert.ok(refused.isError);
+    assert.match(refused.text, /192\.168\.10\.50:20002（コンテナの中の 3000 へ繋ぐ口）に届きません/);
+    assert.deepEqual(caddy.writes(), []);
+    // 届けば、Caddy から VM のポートへ（サービスのポートではない）
+    listening.add("192.168.10.50:20002");
+    const ok = await call("publishRoute", publishArgs({ projectId: P2 }));
+    assert.equal(ok.isError, false, ok.text);
+    assert.equal(dialOf(routeFor(caddy, "web-9f8e7d6c.banto.example.net")), "192.168.10.50:20002");
+    // 突き合わせでも同じ行き先（書き直さない）で、届いている
+    const before = caddy.writes().length;
+    const listed = JSON.parse((await call("listRoutes", {})).text) as { routes: Array<{ state: string }> };
+    assert.deepEqual(listed.routes.map((r) => r.state), ["active"]);
+    assert.equal(caddy.writes().length, before, "同じ行き先なのに書き直した");
+    // やめる：host に道を外させる
+    const off = await call("unpublishRoute", { projectId: P2, service: "web", port: 3000 });
+    assert.equal(off.isError, false, off.text);
+    assert.deepEqual(released, [`${P2}:3000`]);
   });
 });

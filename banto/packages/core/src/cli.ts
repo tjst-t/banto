@@ -2836,7 +2836,9 @@ async function main(): Promise<void> {
     moduleCalls,
     // **公開の実装が、Project のコンテナに届くアドレスを引く**（§4.3 Publish）。この banto が作ったものだけ。
     // 確かに届かない（止まっている・無い・他人のもの）は値で返し、分からない（実行場所が答えない）は投げる
-    projectAddress: (projectId) => runtime.address(projectId),
+    projectAddress: (projectId, port) => runtime.address(projectId, port),
+    // 公開をやめたとき、別のサーバの containers が張った道（VM のポート → コンテナ）を外す
+    releaseProjectPort: (projectId, port) => runtime.releasePublishedPort(projectId, port),
     // **Project の一覧**（§2.4 Repositories——どの Project がそのフォルダを根にしているか）。引ける相手と場面は
     // 中継が絞る（`mayListProjects`）。根は store が正規化したもの（realpath）
     listProjects: () =>
@@ -3244,6 +3246,8 @@ async function main(): Promise<void> {
     },
     // 別のサーバの Project を閉じる前に（v4-security.md §1「閉じた Project は数えない」）
     suspendProjectServices,
+    // 閉じるとき、別のサーバの containers が公開のために張った道（VM のポート）を外す
+    releasePublishedPorts: (projectId: string) => runtime.releasePublishedPort(projectId),
     projectSleep,
     projectIdle,
     ...(bootstrap.testOnlyIdleCheck ? { testOnlyIdleCheck: true } : {}),

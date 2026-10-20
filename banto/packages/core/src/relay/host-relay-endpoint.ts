@@ -386,7 +386,12 @@ export interface HostRelayServerOptions {
    * （コンテナが無い・止まっている・この banto のものでない・アドレスがまだ無い）。投げたら**分からない**
    * （Incus が答えない等の一時の失敗）。公開の実装は、前者なら中継をやめ（503）、後者なら写しに触らない
    */
-  projectAddress?(projectId: string): Promise<{ address: string } | { unavailable: string }>;
+  projectAddress?(projectId: string, port?: number): Promise<{ address: string; port?: number } | { unavailable: string }>;
+  /**
+   * **公開をやめたとき、`projectAddress(projectId, port)` が張った道を外す**（追加・2026-10-20、別のサーバの containers——VM のポート
+   * からコンテナの中へ繋ぐ proxy device。v4-security.md §1「道」の公開）。張らない実行場所では何もしない。渡さなければこの口は断る
+   */
+  releaseProjectPort?(projectId: string, port: number): Promise<void>;
   /**
    * **Project の一覧**（id・名前・根のパス・状態、追加・2026-10-01、`docs/specs/v4-modules.md` §2.4 Repositories）。
    * 引ける相手と場面は `mayListProjects` が決める。渡さなければこの口は断る
@@ -525,6 +530,12 @@ export function mayResolveProjectAddress(identity: CallerIdentity): string | und
   return undefined;
 }
 const PUBLISH_ROLE = "publish";
+
+/** サービスのポート（1〜65535 の整数でなければ断る） */
+function servicePortOf(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 65535) throw new Error(`port は 1〜65535 の整数で渡してください（${String(v)}）`);
+  return v;
+}
 
 /** 宛先の tool が名乗った `batchOf` と、`batchOf.tool` の識別子・required（`targetTool`） */
 interface TargetBatchOf {
@@ -729,11 +740,23 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         // **公開の実装が、Project のコンテナに届くアドレスを引く**（追加・2026-09-27、§4.3 Publish）。
         // 引ける相手は `mayResolveProjectAddress` が決める。返すのはアドレスだけ
         name: "relayProjectAddress",
-        description: "host からその Project のコンテナに届くアドレス（IPv4）。変わりうるので覚えずに引き直す",
+        description:
+          "host からその Project のコンテナに届くアドレス（IPv4）。変わりうるので覚えずに引き直す。port（サービスのポート）を渡すと、" +
+          "そのポートに届く道を用意し、別の番号で届くならその番号を port で返す（別のサーバの Project ごとのコンテナ）",
         inputSchema: {
           type: "object",
-          properties: { projectId: { type: "string" } },
+          properties: { projectId: { type: "string" }, port: { type: "integer", minimum: 1, maximum: 65535 } },
           required: ["projectId"],
+        },
+      },
+      {
+        // **公開をやめたとき、道を外す**（追加・2026-10-20）。引ける相手は `relayProjectAddress` と同じ
+        name: "relayProjectPortRelease",
+        description: "公開をやめたとき、relayProjectAddress が port のために用意した道を外す（用意しない実行場所では何もしない）",
+        inputSchema: {
+          type: "object",
+          properties: { projectId: { type: "string" }, port: { type: "integer", minimum: 1, maximum: 65535 } },
+          required: ["projectId", "port"],
         },
       },
       {
@@ -867,9 +890,20 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       if (!opts.projectAddress) throw new Error("この banto は Project のアドレスを引く口を持っていません");
       const projectId = typeof args.projectId === "string" ? args.projectId : "";
       if (!projectId) throw new Error("projectId が要ります");
+      const port = args.port === undefined ? undefined : servicePortOf(args.port);
       // 確かに届かないときは理由を値で返す（`{unavailable}`）。分からないときは投げる——呼び出し元が区別できるように
-      const found = await opts.projectAddress(projectId);
+      const found = await opts.projectAddress(projectId, port);
       return { content: [{ type: "text", text: JSON.stringify(found) }] };
+    }
+
+    if (request.params.name === "relayProjectPortRelease") {
+      const why = mayResolveProjectAddress(identity);
+      if (why) throw new Error(`${identity.moduleName} は Project の公開の道を外せません（${why}）`);
+      if (!opts.releaseProjectPort) throw new Error("この banto は Project の公開の道を外す口を持っていません");
+      const projectId = typeof args.projectId === "string" ? args.projectId : "";
+      if (!projectId) throw new Error("projectId が要ります");
+      await opts.releaseProjectPort(projectId, servicePortOf(args.port));
+      return { content: [{ type: "text", text: JSON.stringify({ released: true }) }] };
     }
 
     // **宛先は host 自身**。返すのは人が作った Project の名前と根のパスだけ（値・秘密は通らない）ので承認は通さず、

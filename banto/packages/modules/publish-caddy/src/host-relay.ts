@@ -41,12 +41,12 @@ export class HostRelay {
    * host からその Project のコンテナに届くアドレス。**覚えない**——変わりうる（DHCP）。
    * 確かに届かない（止まっている・無い）は `{unavailable}`、**確かめられない**（host が答えない・中継が切れた）は投げる
    */
-  async projectAddress(projectId: string): Promise<AddressLookup> {
+  async projectAddress(projectId: string, port?: number): Promise<AddressLookup> {
     let text: string;
     let isError: boolean;
     try {
       const client = await this.connect();
-      const result = await client.callTool({ name: "relayProjectAddress", arguments: { projectId } });
+      const result = await client.callTool({ name: "relayProjectAddress", arguments: { projectId, ...(port !== undefined ? { port } : {}) } });
       text = (result.content as { type: string; text: string }[])[0]?.text ?? "";
       isError = result.isError === true;
     } catch (err) {
@@ -55,10 +55,33 @@ export class HostRelay {
       throw err;
     }
     if (isError) throw new Error(text || "アドレスを引けませんでした");
-    const found = JSON.parse(text) as { address?: unknown; unavailable?: unknown; exposedOnLan?: unknown };
+    const found = JSON.parse(text) as { address?: unknown; port?: unknown; unavailable?: unknown; exposedOnLan?: unknown };
     if (typeof found.unavailable === "string" && found.unavailable !== "") return { unavailable: found.unavailable };
     if (typeof found.address !== "string" || found.address === "") throw new Error("host がアドレスを返しませんでした");
-    return { address: found.address, ...(found.exposedOnLan === true ? { exposedOnLan: true as const } : {}) };
+    if (found.port !== undefined && !(typeof found.port === "number" && Number.isInteger(found.port) && found.port >= 1 && found.port <= 65535)) {
+      throw new Error(`host が返したポートがおかしいです：${String(found.port)}`);
+    }
+    return {
+      address: found.address,
+      ...(typeof found.port === "number" ? { port: found.port } : {}),
+      ...(found.exposedOnLan === true ? { exposedOnLan: true as const } : {}),
+    };
+  }
+
+  /** 公開をやめたとき、host が用意した道を外させる（`relayProjectPortRelease`） */
+  async releaseProjectPort(projectId: string, port: number): Promise<void> {
+    let isError: boolean;
+    let text: string;
+    try {
+      const client = await this.connect();
+      const result = await client.callTool({ name: "relayProjectPortRelease", arguments: { projectId, port } });
+      text = (result.content as { type: string; text: string }[])[0]?.text ?? "";
+      isError = result.isError === true;
+    } catch (err) {
+      if (isConnectionFailure(err)) this.forget();
+      throw err;
+    }
+    if (isError) throw new Error(text || "公開先の道を外せませんでした");
   }
 }
 

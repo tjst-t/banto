@@ -336,6 +336,11 @@ export interface AppDeps {
    */
   suspendProjectServices?(projectId: string): Promise<string[]>;
   /**
+   * **閉じるとき、公開のために実行場所が張った道を外す**（追加・2026-10-20、別のサーバの containers——VM のポートを空ける。
+   * v4-security.md §1「道」の公開）。張らない実行場所では何もしない。外せなくても閉じる（ログに残す）
+   */
+  releasePublishedPorts?(projectId: string): Promise<void>;
+  /**
    * **自動で続けるのをやめたターンを、人が「続ける」と言った**（追加・2026-10-05、アーキ仕様 §2.5「上限」）。受信箱の
    * お知らせ（`NoticeItem.resume`）の id で呼ぶ。渡されなければ口は断る
    */
@@ -3450,6 +3455,10 @@ export function createApp(deps: AppDeps) {
             }
           }
           await deps.projectThread.closeProject(projectCloseMatch[1]!);
+          // 公開の道（別のサーバの containers の VM のポート）は、接続を手放す前に外す。外せなくても閉じる——黙らずログに残す
+          await deps.releasePublishedPorts?.(projectCloseMatch[1]!).catch((err: unknown) =>
+            console.warn(`[host] project ${projectCloseMatch[1]!} の公開の道を外せませんでした（次に閉じる・公開をやめるときに外します）:`, err),
+          );
           // **畳んだら、その Project のために立てたものも落とす**（決定・2026-09-10）
           // ——記録だけ閉じてプロセスが残ると、鍵を持ったものまで生き残る
           // コンテナも止める（決定・2026-09-25）——中に入れた道具は残し、次に開いたら起こす

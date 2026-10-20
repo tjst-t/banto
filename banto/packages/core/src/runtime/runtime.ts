@@ -105,9 +105,11 @@ export interface PreparedPlace {
 /**
  * 外から中のサービスに届くアドレス（Publish）。確かに届かないなら理由。
  * `exposedOnLan`：そのアドレスは LAN に直に出ている（別のサーバ）——`0.0.0.0` で待ち受けたものは Publish の認証を通らずに
- * LAN から届く。コンテナ（ブリッジの奥）には付かない
+ * LAN から届く。コンテナ（ブリッジの奥）には付かない。
+ * `port`：サービスのポートとは別の番号で届く（別のサーバの `containers`——VM のポートからコンテナの中へ proxy device で
+ * 繋ぐ。追加・2026-10-20、#369）。無ければサービスのポートのまま
  */
-export type PlaceAddress = { address: string; exposedOnLan?: true } | { unavailable: string };
+export type PlaceAddress = { address: string; port?: number; exposedOnLan?: true } | { unavailable: string };
 
 /** 止めるのに失敗した（箱が動いたまま残った） */
 export class RuntimeStopError extends Error {
@@ -136,8 +138,16 @@ export interface Runtime {
   forget(placeId: string): void;
   /** 箱を手放す。`stop` なら止める——止められなければ `RuntimeStopError` */
   release(placeId: string, opts: { stop: boolean }): Promise<void>;
-  /** 外から Project の箱の中のサービスに届くアドレス（Publish）。分からない（答えが無い）ときは投げる */
-  address(projectId: string): Promise<PlaceAddress>;
+  /**
+   * 外から Project の箱の中のサービスに届くアドレス（Publish）。分からない（答えが無い）ときは投げる。`port`（サービスのポート）を
+   * 渡すと、そのポートに届く道を用意して返す（別のサーバの `containers` だけが道を張る——ほかは同じアドレスのまま）
+   */
+  address(projectId: string, port?: number): Promise<PlaceAddress>;
+  /**
+   * 公開をやめたとき：`address(projectId, port)` が張った道を外す（張らない箱では何もしない）。`port` が無ければその Project の
+   * 公開の道を全部（閉じるとき）
+   */
+  releasePublishedPort(projectId: string, port?: number): Promise<void>;
   /** 中継に来た要求の送り元が、その Project の箱か */
   sourceMatches(projectId: string, remote: string): Promise<boolean>;
   /** Project の箱の状態（設定の画面に出す）。無ければ undefined */

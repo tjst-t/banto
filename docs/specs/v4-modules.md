@@ -3514,7 +3514,11 @@ AI には見せない（`module` 可視性）。窓口から中継で呼ぶ。**
   一時の失敗）ときは道に触らず、状態を `address-unknown` にする**（改訂・2026-09-28、Fable のレビュー——以前は理由を問わず
   503 に書き換えていたので、一時の失敗で全部の公開が止まった）・自分の印の余りを消す。変わっていなければ
   書かない（Caddy は書くたびに設定を読み直す）
-- **公開先のアドレスは host（core）が引く**：中継の `relayProjectAddress`（`projectId`→コンテナの NIC の global な IPv4、
+- **公開先のアドレスは host（core）が引く**：中継の `relayProjectAddress`（`projectId`→コンテナの NIC の global な IPv4。
+  **`port`（サービスのポート）を渡すと、そのポートに届く道を用意し、別の番号で届くならその番号を `port` で返す**——別のサーバの
+  Project ごとのコンテナ（`containers`）は VM のポートからコンテナの中へ proxy device で繋ぐ（追加・2026-10-20、v4-security.md §1「道」
+  の公開）。公開の実装はその番号で届くかを確かめて Caddy の行き先にし、公開をやめたら中継の `relayProjectPortRelease`（`projectId`・`port`、
+  引ける相手は同じ）で道を外させる。
   毎回 Incus に聞く。確かに届かないときは `{unavailable}`、確かめられないときは失敗で返す）。中継に繋ぐ口は、繋いだ後に
   セッションが切れても次の呼び出しで繋ぎ直す（2026-09-28）。**引けるのは banto 本体で動く同梱の `publish` 実装だけ**。コンテナ自身の申告は使わない
   （中の AI が別の Project のアドレスを名乗れる）

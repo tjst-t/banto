@@ -168,7 +168,8 @@ export async function authRecordOf(auth: PublishConfig["auth"]): Promise<AuthRec
 export function buildRoute(
   id: string,
   rec: RouteRecord,
-  upstream: string | undefined,
+  /** 行き先（アドレスとポート）。無ければ中継をやめて 503 */
+  upstream: { address: string; port: number } | undefined,
   /** banto 本体（host）の口（例 `127.0.0.1:4737`）。banto のログインで守るときに Caddy が問い合わせる先 */
   bantoUpstream?: string,
 ): Record<string, unknown> {
@@ -227,7 +228,7 @@ export function buildRoute(
   }
   handle.push(
     upstream
-      ? { handler: "reverse_proxy", upstreams: [{ dial: `${upstream}:${rec.port}` }] }
+      ? { handler: "reverse_proxy", upstreams: [{ dial: `${upstream.address}:${upstream.port}` }] }
       : {
           handler: "static_response",
           status_code: 503,
