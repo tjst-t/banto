@@ -21,6 +21,10 @@ for (const dir of readdirSync(root)) {
 const total = { req: 0, in: 0, cw5m: 0, cw1h: 0, cr: 0, out: 0 };
 const buckets = [50e3, 100e3, 200e3, 400e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
 let breaks = { req: 0, tokens: 0, cost: 0 };
+// 書き直しの前に空いた時間ごと（1時間のキャッシュが切れたのか、それ以外か）
+const gaps = [5 * 60e3, 60 * 60e3, Infinity].map((max) => ({ max, req: 0, cost: 0 }));
+let images = 0;
+const breakDays = new Map(); // 日付（UTC）→ [回数, 値段の比]
 const kinds = new Map(); // 履歴の中身の種類 → 文字数
 const tools = new Map(); // tool の名前 → 結果の文字数
 const sessions = [];
@@ -37,13 +41,14 @@ for (const file of files) {
     try { e = JSON.parse(line); } catch { continue; }
     const msg = e.message;
     if (!msg || !Array.isArray(msg.content) && typeof msg.content !== "string") continue;
-    if (e.type === "assistant" && msg.usage && msg.id) byId.set(msg.id, msg);
+    if (e.type === "assistant" && msg.usage && msg.id) byId.set(msg.id, { ...msg, at: Date.parse(e.timestamp ?? "") });
     const parts = typeof msg.content === "string" ? [{ type: "text", text: msg.content }] : msg.content;
     for (const c of parts) {
       if (c.type === "text") add(kinds, e.type === "assistant" ? "AI の文" : "人・届いたものの文", (c.text ?? "").length);
       else if (c.type === "thinking") add(kinds, "考え（thinking）", (c.thinking ?? "").length);
       else if (c.type === "tool_use") { toolName.set(c.id, c.name); add(kinds, "tool の呼び出し（引数）", JSON.stringify(c.input ?? {}).length); }
       else if (c.type === "tool_result") {
+        if (Array.isArray(c.content)) images += c.content.filter((x) => x?.type === "image").length;
         const n = typeof c.content === "string" ? c.content.length : JSON.stringify(c.content ?? "").length;
         add(kinds, "tool の結果", n);
         add(tools, toolName.get(c.tool_use_id) ?? "(不明)", n);
@@ -65,7 +70,15 @@ for (const file of files) {
     const b = buckets.find((b) => prompt <= b.max);
     b.req++; b.cost += cost(r);
     // 会話の途中で書き直した（キャッシュが切れた）——最初の要求ではなく、書き込みが2万を超えたもの
-    if (i > 0 && cw > 20_000) { breaks.req++; breaks.tokens += cw; breaks.cost += cw1h * W.cw1h + (cw - cw1h) * W.cw5m; }
+    if (i > 0 && cw > 20_000) {
+      const c = cw1h * W.cw1h + (cw - cw1h) * W.cw5m;
+      breaks.req++; breaks.tokens += cw; breaks.cost += c;
+      const gap = m.at - reqs[i - 1].at;
+      const g = gaps.find((g) => (Number.isFinite(gap) ? gap : 0) <= g.max);
+      g.req++; g.cost += c;
+      const day = Number.isFinite(m.at) ? new Date(m.at).toISOString().slice(0, 10) : "?";
+      const d = breakDays.get(day) ?? [0, 0]; d[0]++; d[1] += c; breakDays.set(day, d);
+    }
   });
   s.cost = cost(s);
   sessions.push(s);
@@ -79,6 +92,11 @@ console.log(`入力（キャッシュ外） ${fmt(total.in)}・キャッシュ�
 console.log(`値段の比で見た内訳：入力 ${pct(total.in * W.in)}・書き込み ${pct(total.cw5m * W.cw5m + total.cw1h * W.cw1h)}・読み出し ${pct(total.cr * W.cr)}・出力 ${pct(total.out * W.out)}`);
 console.log(`1要求あたり：送った量（入力＋書き込み＋読み出し）の平均 ${fmt((total.in + total.cw5m + total.cw1h + total.cr) / total.req)}・出力の平均 ${fmt(total.out / total.req)}`);
 console.log(`途中でキャッシュを書き直した要求 ${fmt(breaks.req)} 回・${fmt(breaks.tokens)} トークン・値段の比で ${pct(breaks.cost)}`);
+console.log("書き直しの前の要求から空いた時間：");
+let glo = 0;
+for (const g of gaps) { console.log(`  ${glo / 60e3}分〜${g.max === Infinity ? "" : g.max / 60e3 + "分"}：${fmt(g.req)} 回・${pct(g.cost)}`); glo = g.max; }
+console.log("書き直しの日ごと（新しい10日）：" + [...breakDays].sort().slice(-10).map(([d, [n, c]]) => `${d.slice(5)} ${n}回 ${pct(c)}`).join("・"));
+console.log(`tool の結果の中の画像：${fmt(images)} 枚（文字数では base64 で大きく見えるが、トークンは1枚おおよそ千〜数千）`);
 console.log("送った量の大きさごとの要求（回数・値段の比）：");
 let lo = 0;
 for (const b of buckets) {
