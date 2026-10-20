@@ -661,3 +661,48 @@ test("別のサーバの Project：向こうから来た bundle の中身を fsc
     assert.equal(w.gh.gitRequests.filter((r) => r.path.includes("receive-pack")).length, 0);
   });
 });
+
+test("遅い線：ブランチを送る口を処理している間は進み具合を送る——頼んだ側の待ちが数え直され、途中で切れない（レビュー M3）", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "banto-repositories-branch-slow-")));
+  const slow: ProjectGitAccess = {
+    // 向こうへの線が遅い（頼んだ側の待ちの上限より長くかかる）
+    origin: () => new Promise((resolve) => setTimeout(() => resolve({ kind: "not-repo" }), 600)),
+    bundle: async () => undefined,
+    unbundle: async () => undefined,
+    track: async () => undefined,
+  };
+  const server = createRepositoriesServer({
+    dataDir: join(home, ".data"),
+    projects: {
+      listProjects: async () => [],
+      callerProject: async () => ({ id: "p1", name: "向こう", root: "/home/dev/x", status: "active", runtime: "remote:lab" }),
+    },
+    home,
+    vault: new MemoryVault(),
+    github: httpGithub({ web: "http://127.0.0.1:9", api: "http://127.0.0.1:9" }),
+    notices: new RecordingNotices(),
+    projectGit: slow,
+    progressIntervalMs: 50,
+  });
+  const client = new Client({ name: "test", version: "0.0.0" });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(s), client.connect(c)]);
+  const meta = { [CALLER_META_KEY]: { project: "p1" }, [CALL_ID_META_KEY]: "call-1" };
+  try {
+    for (const name of ["branch_target", "push_branch", "fetch_branch"]) {
+      let beats = 0;
+      const r = (await client.callTool({ name, arguments: { branch: "backlog" }, _meta: meta }, undefined, {
+        timeout: 200,
+        resetTimeoutOnProgress: true,
+        onprogress: () => (beats += 1),
+      })) as { content: { text: string }[]; isError?: boolean };
+      assert.equal(r.isError, undefined, `${name}：${r.content[0]!.text}`);
+      assert.ok(beats >= 3, `${name} の進み具合が ${beats} 回`);
+    }
+    // 進み具合が無ければ切れる（対照）——上の通りは進み具合のおかげ
+    await assert.rejects(() => client.callTool({ name: "push_branch", arguments: { branch: "backlog" }, _meta: meta }, undefined, { timeout: 200 }), /timed out/i);
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
