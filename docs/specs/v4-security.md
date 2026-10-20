@@ -1093,13 +1093,11 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      で縛る**——hugetlbfs の `size=` はそのマウント経由の確保しか縛らず、`mmap(MAP_HUGETLB)` や qemu の `memory-backend-memfd,hugetlb=on`
      はマウント無しでサーバ全体の確保から取れる（V2）。**仮想化を許した実行場所の全コンテナに書く**（設定の無い Project は 0、有る
      Project は N×2MiB。許したあとに作る Project・移してくる Project も作るときに 0 を書く。オフにしたら外す）。サーバの `vm.nr_hugepages` は人が押したときに core が `sudo -n` でその実行場所の合計に揃え
-     （`/etc/sysctl.d/90-banto-hugepages.conf` にも書く）、合計がサーバのメモリの半分を越えるなら断る。中で使う道は、memfd で足りれば
-     マウントを置かない（qemu は `-object memory-backend-memfd,hugetlb=on`）。hugetlbfs が要るなら Project id のフォルダ
-     （`<home>/.banto-hugepages/<Project id>`、`uid=<U>,gid=<G>,mode=0770`、systemd の `.mount` 単位で再起動でも戻す）を disk device で
-     `/dev/hugepages` に見せる。**実装の前に測る**：区画で `limits.hugepages.2MB` が効く（越えた確保が断られる）か、memfd で足りるか。
+     （`/etc/sysctl.d/90-banto-hugepages.conf` にも書く）、合計がサーバのメモリの半分を越えるなら断る。中で使う道は memfd（qemu は
+     `-object memory-backend-memfd,hugetlb=on`）で、**hugetlbfs のマウントは置かない**（下の「測った4つ」の 2.。hugetlbfs が要る道具が
+     出たら、Project id のフォルダを `uid=<U>,gid=<G>,mode=0770` でマウントして disk device で見せる形を足す）。
      運用（V6）：
-     - 使っている間（qemu が動いている）は外せない（umount が EBUSY）。0 に戻す・移す・オフにするとき、使っていれば「止めてから」と
-       断る
+     - 使っている間（qemu が動いている）は確保を減らせない。0 に戻す・移す・オフにするとき、使っていれば「止めてから」と断る
      - `nr_hugepages` を下げても使用中の分は減らず、再起動のあとは断片化で揃わないことがある——確かめで「確保できたのは N 個」を出す
      - 眠らせても外さない。**閉じるときは確かめの画面で「hugepages を N 個持っています——外す／持ったまま」を選ばせる**（既定は外す）。
        外したあとも設定の N は残し、人が再開するときに確保し直す（人の操作なので sudo の決まりの範囲）。断片化で足りなければ、
@@ -1146,9 +1144,27 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
    modules-load の書き方、中の番号、hugepages の合計・断る条件、識別子に名前を使わない）。本物はベアメタルで、KVM の VM・containerlab・
    hugepages の上限・特権の切り替えを確かめる
 
-**実装の前に決める・測る**（V1〜V5・V8、Fable の区別）：既定のモジュールの組／`limits.hugepages.2MB` が区画で効くか・memfd で足りるか／
-中の番号を U にできるか・既存のコンテナを移すか・付け直しの時間／特権無しのコンテナから Incus の口に届かないこと。**決めずに残して
-よい**：警告の文言、1GiB の hugepages、NUMA の扱い。
+**実装の前に測った4つ（2026-10-20、同じベアメタル。sakutei の Project が動いている区画で、試したものは全部戻した——ノート）**：
+
+1. **既定のモジュールの組**：特権無しのコンテナの中から `ip link add … type <種類>` をすると、まだ読まれていないモジュールをサーバの
+   カーネルが自動で読んだ（dummy・vlan（8021q）・bond・ipvlan・macvtap・macvlan・geneve・wireguard・gretap・vxlan・bridge・veth）。
+   **リンクの種類のために先に読むものは要らない**。自動で読まれないのは `br_netfilter`（手がかりが無い）と、装置の node が要る
+   `vhost_net`（`/dev/vhost-net` を見せる前にサーバに無ければならない）。→ 既定の組は **`vhost_net` だけ**、`br_netfilter` は人が
+   足す（注意つき）。macvtap はリンクは作れるが、`/dev/tapN` の node は中に出ないので qemu の macvtap は使えない（tap＋ブリッジを使う）
+2. **hugepages の上限**：`limits.hugepages.2MB` は制限された区画のまま付けられ、効いた（64MB の上限で 32MB は取れ 128MB は ENOMEM、
+   mmap の MAP_HUGETLB と memfd の両方。200MB に上げると 128MB が取れた、0 だと 2MB も取れない）。**付けないと制限が無い**——許した
+   実行場所の全コンテナに 0 を書く（上の 2.）のは必須。**memfd でマウント無しに使えた**ので、hugetlbfs のマウントと `.mount` 単位は
+   作らない（qemu は `-object memory-backend-memfd,hugetlb=on`）。hugetlbfs が要る道具が出たら足す
+3. **中の番号を U に**：incus-user の区画の既定の profile は `raw.idmap: uid U U / gid U U` を持っていて、そのままで中の U が VM の U に
+   対応した（`uid_map` に `1001 1001 1`）——区画で付けられる。中の U で見せたフォルダと home に書け、**特権への切り替え（止める→
+   `security.privileged=true`→起こす）は約2秒で rootfs の付け直しは起きず**（btrfs）、特権でも中の U で同じフォルダに書けた。特権無し
+   に戻すのも約1秒で、持ち主・書き込みは崩れなかった。→ **`containers` の Project は中の番号を U にする**（上の 3. の第一候補で決め）。
+   残り：#368 で中の 1000 で作った既存のコンテナを U に移すか（決める）
+4. **特権無しのコンテナから Incus の口に届かない**：中に `/var/lib/incus`・`/run/incus` が無く、中から見えるソケットにも Incus のものは
+   無く、Incus はネットワークで待ち受けていない（`core.https_address` が空）。→ 届かない。ついでに：**中から VM の SSH（22）には
+   届く**（鍵が無いので入れない。上の「VM は banto 専用」の sshd の設定（パスワード無し）が前提）
+
+**決めずに残してよい**：警告の文言、1GiB の hugepages、NUMA の扱い。
 
 #### Project を別の実行場所へ移す（決定・2026-10-11、ユーザー。Fable のレビュー（2026-10-11）を受けて改めた。本体は実装・2026-10-11、Backlog `runtime-move-core`。画面は `runtime-move-ui`）
 

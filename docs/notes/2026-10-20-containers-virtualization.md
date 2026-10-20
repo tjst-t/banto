@@ -68,8 +68,29 @@ restricted.networks.access: incusbr-1001
 コンテナ2つとイメージを消し、区画の設定を測る前の控え（`incus project show` の YAML）から `incus project edit` で戻して差分が無いことを
 確かめ、hugepages を 0、hugetlbfs を外してフォルダを消し、`modprobe -r dummy br_netfilter`。
 
+## 実装の前の4つ（2026-10-20 午後、同じサーバ。区画 user-1001 で sakutei の Project のコンテナが動いている中で）
+
+守ったこと：自分で作っていないイメージは消さない（前回、片づけでキャッシュのイメージ a8fa6db1a9fa を消し、banto が土台のイメージを
+作るのに取り直させた）、区画は丸ごと戻さず足した項目だけ unset、sakutei のコンテナは読むだけ、使われているモジュールは抜かない。
+
+1. 特権無しのコンテナ `vt-m`（区画は既定のまま）で `ip link add x … type <種類>`：dummy・vlan（`link eth0 type vlan id 10`）・bond・ipvlan・
+   macvtap・macvlan・geneve・wireguard・gretap・vxlan・bridge・veth すべて ok。サーバで新しく読まれた：8021q dummy garp geneve gre ip_gre
+   ip_tunnel ipvlan libcurve25519 macvtap mrp wireguard（前から：bridge vhost_net macvlan vxlan veth bonding。`/proc/sys/net/bridge` は
+   無いまま＝br_netfilter は読まれない）。`/dev/tap*` は中に出ない
+2. サーバで `nr_hugepages=128`、`vt-m` に `limits.hugepages.2MB=64MB`：python の mmap（MAP_HUGETLB）・memfd（MFD_HUGETLB）とも 32MB ok・128MB
+   ENOMEM。200MB で memfd 128MB ok。0 で anon 2MB ENOMEM。unset で anon 128MB ok
+3. `vt-m` の profile は既定（`raw.idmap: both 1001 1001`）。中で `useradd -u 1001` し、`/home/banto/vt-probe/share` を disk device で
+   `/mnt/share` に。1001 で書けた。区画に `restricted.containers.privilege=allow`、止める→`security.privileged=true`→起こす：止めるまで
+   1 秒・起こすのに 1 秒、`volatile.idmap.current: []`、uid_map `0 0 4294967295`、`/etc/passwd` は 0、home の b は 1001、1001 で両方に
+   書けた。戻す（unset→起こす）も 1 秒、uid_map は `1001 1001 1` に戻り書けた
+4. `vt-m` の中：`/var/lib/incus`・`/run/incus`・`/var/lib/incus-lxcfs` 無し、ソケットの検索で Incus のもの無し。サーバの
+   `core.https_address` は空。中から既定の経路（incusbr-1001 のサーバ側）の 8443 は閉、22 は開
+5. 片づけ：`vt-m` を消す、区画の `privilege` を unset、`nr_hugepages=0`、新しく読まれたモジュールを `modprobe -r`（使われていたもの
+   以外）——このとき測る前からあった macvlan が macvtap の依存として一緒に抜けたので `modprobe macvlan` で戻した。イメージは前と同じ
+   2つ、モジュールの一覧も前と同じ、sakutei のコンテナは動いたまま（`incus exec … true` が通る）
+
 ## 測っていないこと
 
-- 特権コンテナで、中のユーザー（1000）と VM の SSH ユーザー（1001）の番号が食い違い、見せたフォルダに書けない件（仕様の 3.）
-- 中の AI から Incus の口に届かないこと（特権のコンテナで）
-- 長い負荷での速さ、本物のルータのイメージ（SR Linux・vrnetlab）、既定のモジュールの組
+- 中の 1000 で作った既存のコンテナを U に移す手順
+- 特権のコンテナから Incus の口に届かないこと（境界が無いので測らない——仕様の 5.）
+- 長い負荷での速さ、本物のルータのイメージ（SR Linux・vrnetlab）
