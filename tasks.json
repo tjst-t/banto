@@ -9007,11 +9007,9 @@
       "number": 464,
       "kind": "task",
       "title": "containers の実行場所：Project を別の実行場所へ移す（向こうの手順を中から書く形に）",
-      "status": "backlog",
+      "status": "in-progress",
       "parent": "1-vm-project-a",
-      "dependsOn": [
-        "containers-proxy-device-banto-ssh-agent"
-      ],
+      "dependsOn": [],
       "milestone": null,
       "priority": "normal",
       "labels": [],
@@ -9019,9 +9017,14 @@
       "doneWhen": "偽の RunIncus の単体試験で、containers への・からの移すが VM のユーザーで見せたフォルダに書かずに済むこと。banto-dev-vm で、この機械のコンテナ → containers → この機械のコンテナと移して会話が続くこと。",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "9ed57dd6-3308-43fc-935a-e39aa695ede8"
+        }
+      ],
       "createdAt": "2026-10-20T10:12:06.964Z",
-      "updatedAt": "2026-10-20T10:12:06.964Z",
+      "updatedAt": "2026-10-20T13:13:40.469Z",
       "closedAt": null,
       "extra": {}
     },
