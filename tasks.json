@@ -10281,6 +10281,29 @@
       "updatedAt": "2026-10-20T08:17:50.088Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "containers-incusbr-uid",
+      "number": 427,
+      "kind": "bug",
+      "title": "containers の前提の確かめが、区画のネットワーク（incusbr-<uid>）のブリッジが本当にあるかを見ていない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "2026-10-20、ベアメタル（banto@10.10.254.50）で Project を作ると「土台イメージ用の一時のコンテナを作るのに失敗しました：Failed to start device \"eth0\": Parent device \"incusbr-1001\" doesn't exist」。Incus の記録には incusbr-1001・incusbr0 があり status Created なのに、ホストのインターフェースが消えていた（08:04 に dnsmasq が bind に失敗、同じ時間に別の Fork の仮想化の実験）。sudo systemctl restart incus で作り直されて直った（コンテナは止まらない）。\n\n直し：containers-host.ts の前提の確かめに「コンテナのネットワーク」の項目を足す——区画の restricted.networks.access（か default のプロファイルの eth0 の network）の名前のインターフェースが ip link にあるか。無ければ確かめ直すときに banto が sudo -n systemctl restart incus（と incus admin waitready）で作り直す（「足りないものは banto が入れる」と同じ形）。Module を起こすときの失敗の文にも「確かめ直す」を案内する。",
+      "doneWhen": "単体試験：インターフェースが無いと確かめが断り、確かめ直しで restart incus を打つ。ベアメタルで ip link del したブリッジが確かめ直しで戻る（実機、人と）。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T08:27:21.622Z",
+      "updatedAt": "2026-10-20T08:27:21.622Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
