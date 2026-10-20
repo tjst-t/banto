@@ -72,7 +72,7 @@ export interface ContainersHostState {
   linger: boolean;
   /**
    * 入れ子の KVM（`/sys/module/kvm_intel/parameters/nested` か `kvm_amd`）。`on`・`off`、KVM のモジュールが読まれていなければ
-   * `missing`。表示だけ（Proxmox を VM で立ててその中で VM を作るのに要る。v4-security.md §1「`containers` で仮想化の実験」の 1.）
+   * `missing`。表示だけ（Proxmox を VM で立ててその中で VM を作るのに要る。v4-security.md §1「`containers` で仮想化（KVM）」の 1.）
    */
   nestedKvm: "on" | "off" | "missing";
 }
@@ -309,7 +309,7 @@ interface PrepareStep {
    */
   commands(state: ContainersHostState, forPerson?: boolean): Promise<StepCommand[] | Blocked | AfterEarlier>;
   /**
-   * 繋ぐたびの確かめ（`verify`）で崩れていても、断らず注意にとどめる（「確かめ直す」で整えると言う）。仮想化の実験の項目
+   * 繋ぐたびの確かめ（`verify`）で崩れていても、断らず注意にとどめる（「確かめ直す」で整えると言う）。仮想化（KVM）の項目
    * ——崩れていても、/dev/kvm を見せていない Project は動ける
    */
   warnOnVerify?: boolean;
@@ -324,8 +324,8 @@ export interface PrepareOptions {
    */
   mayRestartUserManager: boolean;
   /**
-   * その実行場所が**仮想化の実験を許している**（実行場所の記録の `virtualization`）。許していれば、区画の
-   * `restricted.devices.unix-char=allow` も準備の項目に入る（v4-security.md §1「`containers` で仮想化の実験」の 1.）
+   * その実行場所が**仮想化（KVM）を許している**（実行場所の記録の `virtualization`）。許していれば、区画の
+   * `restricted.devices.unix-char=allow` も準備の項目に入る（v4-security.md §1「`containers` で仮想化（KVM）」の 1.）
    */
   virtualization?: boolean;
 }
@@ -460,7 +460,7 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       ? [
           {
             id: "incus-unix-char",
-            label: `仮想化の実験：区画で unix-char の装置を使える（${UNIX_CHAR_ALLOW}）`,
+            label: `仮想化（KVM）：区画で unix-char の装置を使える（${UNIX_CHAR_ALLOW}）`,
             done: (s: ContainersHostState) => !!s.projectConfig && (!restricted(s) || s.projectConfig[UNIX_CHAR_KEY] === "allow"),
             commands: async (s: ContainersHostState, forPerson?: boolean) => needsIncus(s, forPerson) ?? [allowUnixCharCommand(vm.uid)],
             warnOnVerify: true,
@@ -470,7 +470,7 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
   ];
 }
 
-/** 区画で unix-char の装置を許す設定（仮想化の実験。v4-security.md §1「`containers` で仮想化の実験」の 1.） */
+/** 区画で unix-char の装置を許す設定（仮想化（KVM）。v4-security.md §1「`containers` で仮想化（KVM）」の 1.） */
 export const UNIX_CHAR_KEY = "restricted.devices.unix-char";
 const UNIX_CHAR_ALLOW = `${UNIX_CHAR_KEY}=allow`;
 

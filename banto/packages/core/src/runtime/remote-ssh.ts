@@ -153,7 +153,7 @@ export interface RemoteSshRuntimeOptions {
    */
   agentBinaryDirNames?: () => ReadonlySet<string>;
   /**
-   * **containers のコンテナに付ける仮想化の実験の設定**（追加・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」）。
+   * **containers のコンテナに付ける仮想化（KVM）の設定**（追加・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）」）。
    * 実行場所が許していなければ null（付いていれば外す）。渡さなければ付けない
    */
   containerVirtualization?: (runtimeName: string, projectId: string) => ContainerVirtualization | null;
