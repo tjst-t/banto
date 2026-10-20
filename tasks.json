@@ -10365,7 +10365,7 @@
       "number": 432,
       "kind": "task",
       "title": "v4-desktop.md の下書きをレビューし、§10 の未決を人と決める",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "desktop-0-measure",
       "dependsOn": [],
       "milestone": null,
@@ -10375,9 +10375,14 @@
       "doneWhen": "レビューの指摘への対応が notes に残り、§10 の各項目に答えがある（または理由つきで後回しと書いてある）。v4-desktop.md の頭の「下書き」の注記が外れている",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "415887f0-9327-49fa-92c3-129750a64344"
+        }
+      ],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T08:56:56.683Z",
+      "updatedAt": "2026-10-20T10:40:23.983Z",
       "closedAt": null,
       "extra": {}
     },
