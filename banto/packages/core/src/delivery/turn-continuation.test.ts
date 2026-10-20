@@ -1666,14 +1666,17 @@ test("別のサーバの Module に上限まで繋がらなければ、理由と
 });
 
 test("打ち切った札：Module が続けないと答えたら何も届けず片づける。また答えなければ届け直せる印を残し直す", async () => {
-  for (const [name, ask, keepsMark] of [
-    ["続けない", async (_t: ResumeTarget, q: ResumeQuestion) => ({ answers: [{ replyTo: q.items[0]!.replyTo, resume: false, reason: "記録がありません" }] }), false],
-    ["答えない", () => new Promise<unknown>(() => {}), true],
+  for (const [name, ask, keepsMark, askTimeoutMs] of [
+    // 待つ上限は場合ごと：「続けない」は答えが上限より先に着くことが前提なので、上限が先に来ない長さにする（答えはすぐ返るので
+    // 試験は待たない）。同じ 30ms にしていたら、混んだ機械で上限が先に来て「答えない」と同じ扱いになり、間欠的に落ちた（2026-10-20、
+    // 31 回中 2 回。上限を 1ms にすると 5 回中 5 回落ちる）。「答えない」は上限で打ち切るのを見るので短いまま
+    ["続けない", async (_t: ResumeTarget, q: ResumeQuestion) => ({ answers: [{ replyTo: q.items[0]!.replyTo, resume: false, reason: "記録がありません" }] }), false, 10_000],
+    ["答えない", () => new Promise<unknown>(() => {}), true, 30],
   ] as const) {
     await withDir(async ({ dir, first, threadId, projectId }) => {
       await first.store.markReplyRedeliverable({ threadId, replyTo: "r-lost", connName: `${RESUMABLE}-${projectId}`, moduleName: RESUMABLE, hop: 1 });
       const host = await boot(dir);
-      const { recovery, replyHandles, asked } = recoveryOf(host, ask, { askTimeoutMs: 30, remote: { [RESUMABLE]: "vm" } });
+      const { recovery, replyHandles, asked } = recoveryOf(host, ask, { askTimeoutMs, remote: { [RESUMABLE]: "vm" } });
       await recovery.beforeListen();
       assert.equal(recovery.holdReason(threadId), undefined, `${name}：打ち切った札だけで Thread を留めた`);
       await recovery.afterListen();

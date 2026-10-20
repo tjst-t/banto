@@ -591,7 +591,9 @@ function originUrl() {
  * 写した等）理由を残してその場で組み立てる。使えたら true
  */
 async function tryPrebuilt(to, newDir) {
-  const setPrebuilt = (prebuilt) => setState({ prebuilt });
+  // 段と、その段の説明（note）は state.json に1回で書く——別々に書くと、読む側（画面・試験）が「段は waiting なのに説明が
+  // 前のまま」を見る（GitHub の試験が間欠的に落ちた、2026-10-20）。note を渡さなければ説明は変えない
+  const setPrebuilt = (prebuilt, opts = {}) => setState("note" in opts ? { prebuilt, note: opts.note } : { prebuilt });
   if (noPrebuilt) {
     setPrebuilt({ status: "skipped", reason: "--no-prebuilt" });
     return false;
