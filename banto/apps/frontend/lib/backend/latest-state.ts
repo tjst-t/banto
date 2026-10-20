@@ -122,6 +122,8 @@ function settleShownRecord(threadId: string): void {
   if (hasLiveRealRun(threadId)) return;
   applyThreadRecord(threadId, shown.record);
 }
+/** host が冷める前の要約をしている会話（§6.52）。終わったら記録から組み直す——要約の印は記録にだけある */
+const compacting = new Set<string>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const retryDelays = new Map<string, number>();
 let installed = false;
@@ -288,8 +290,19 @@ function install(): void {
 
   onRealAppEvent((event) => {
     // 知らせが（繋ぎ直して）届き始めた——途切れていた間に起きたことを取りこぼさない
-    if (event.type === "hello") showLatestEverywhere();
-    else if ((event.type === "turn.started" || event.type === "turn.ended") && openThreads.has(event.threadId)) {
+    if (event.type === "hello") {
+      compacting.clear();
+      for (const v of event.idleCompactions ?? []) if (v.compacting) compacting.add(v.threadId);
+      showLatestEverywhere();
+    } else if (event.type === "idle_compaction.changed") {
+      // **冷める前の要約が終わった**（§6.52）——会話に「要約しました」の印を出す。4時間空いたあとなので組み直してよい
+      // （人がその間に送っていれば、走り終えてから組み直す——`deferred`）
+      if (event.compacting) compacting.add(event.threadId);
+      else if (compacting.delete(event.threadId) && openThreads.has(event.threadId)) {
+        needsRebuild.add(event.threadId);
+        void showLatest(event.threadId);
+      }
+    } else if ((event.type === "turn.started" || event.type === "turn.ended") && openThreads.has(event.threadId)) {
       void showLatest(event.threadId);
     }
   });

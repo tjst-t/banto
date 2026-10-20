@@ -292,6 +292,8 @@ export interface ClaudeLoginRelayDeps {
   keepAliveWarmable?(threadId: string, fingerprint: string): boolean;
   /** 温め直しの時刻の1分（E2E だけが縮める） */
   keepAliveMinuteMs?: number;
+  /** その会話の温め直しの様子が変わった（#473 冷める前の要約の予定と画面） */
+  keepAliveOnChange?(threadId: string): void;
   now?: () => Date;
 }
 
@@ -350,6 +352,7 @@ export class ClaudeLoginRelay {
       ...(deps.keepAliveWarmable ? { stillWarmable: (threadId, fp) => deps.keepAliveWarmable!(threadId, fp) } : {}),
       now: () => this.now().getTime(),
       ...(deps.keepAliveMinuteMs !== undefined ? { minuteMs: deps.keepAliveMinuteMs } : {}),
+      ...(deps.keepAliveOnChange ? { onChange: (threadId) => deps.keepAliveOnChange!(threadId) } : {}),
     });
   }
 

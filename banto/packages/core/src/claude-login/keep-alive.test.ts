@@ -332,3 +332,65 @@ test("送っている間に次のターンが始まったら、その結果で�
   await h.at(400);
   assert.equal(h.sent.length, 1);
 });
+
+test("#473：4時間の温め直しのあと要約を待ち（本文は次の 50 分まで持つ）、取りやめ（extend）なら 50 分ごとに温め続ける", async () => {
+  const changes: string[] = [];
+  const h = harness({ onChange: (threadId) => changes.push(threadId) });
+  turn(h, [request({ minute: 2 })]);
+  assert.equal(h.ka.cacheOf("t1")!.baseAt, T0 + 2 * MIN);
+  assert.ok(changes.length >= 1, "温め始めたら知らせる");
+  for (const m of [52, 102, 152, 202]) await h.at(m);
+  assert.equal(h.sent.length, 4);
+  const parked = h.ka.cacheOf("t1")!;
+  assert.equal(parked.warming, false);
+  assert.equal(parked.baseAt, T0 + 2 * MIN, "要約を待つ間は基準を残す");
+  assert.equal(parked.totalWarms, 4);
+  assert.equal(parked.totalWarmTokens, 4 * 59_990);
+  // 取りやめ——250 分にまた温める
+  assert.equal(h.ka.extend("t1"), true);
+  assert.equal(h.ka.cacheOf("t1")!.warming, true);
+  await h.at(251);
+  assert.equal(h.sent.length, 4);
+  await h.at(252);
+  assert.equal(h.sent.length, 5);
+  await h.at(302);
+  assert.equal(h.sent.length, 6);
+  // 人が戻ったら止まる（合計は残る）
+  h.ka.turnStarted("t1");
+  const back = h.ka.cacheOf("t1")!;
+  assert.equal(back.baseAt, undefined);
+  assert.equal(back.warms, 0);
+  assert.equal(back.totalWarms, 6);
+  await h.at(500);
+  assert.equal(h.sent.length, 6);
+});
+
+test("#473：取りやめが無ければ、4時間の温め直しのあと持っていた本文は 250 分で捨てる（送らない）", async () => {
+  const h = harness();
+  turn(h, [request()]);
+  for (const m of [50, 100, 150, 200]) await h.at(m);
+  assert.equal(h.ka.warmingCount(), 1, "要約を待つ間は本文を持つ");
+  await h.at(250);
+  assert.equal(h.sent.length, 4);
+  assert.equal(h.ka.warmingCount(), 0);
+  assert.equal(h.ka.cacheOf("t1")!.baseAt, undefined);
+  assert.equal(h.ka.extend("t1"), false, "捨てたあとは続けられない");
+});
+
+test("#473：途中でやめたら基準を消し、止まった理由を残す。4時間の前の取りやめは 200 分のあとも続ける", async () => {
+  const h = harness();
+  turn(h, [request()]);
+  h.margin.value = { ok: false, reason: "5h=90%" };
+  await h.at(50);
+  const state = h.ka.cacheOf("t1")!;
+  assert.equal(state.baseAt, undefined);
+  assert.match(state.abandoned ?? "", /余白/);
+
+  const early = harness();
+  turn(early, [request()]);
+  await early.at(50);
+  assert.equal(early.ka.extend("t1"), true);
+  for (const m of [100, 150, 200, 250, 300]) await early.at(m);
+  assert.equal(early.sent.length, 6);
+  assert.equal(early.ka.cacheOf("t1")!.warming, true);
+});

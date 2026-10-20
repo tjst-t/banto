@@ -15,7 +15,8 @@ import { getContextUsage, type ContextCategory, type ContextUsage } from "@/lib/
 import { getThread } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { realContextUsageToDisplay, SKILL_CATEGORY_ID } from "@/lib/backend/context-usage";
-import { getRealThreadSkills, type RealThreadSkills } from "@/lib/backend/client";
+import { getRealThread, getRealThreadSkills, type RealThreadSkills } from "@/lib/backend/client";
+import { seedIdleCompaction, useIdleCompaction } from "@/lib/backend/idle-compactions";
 import { reportFailure } from "@/lib/report-failure";
 import { ClaudeAccountChip, ClaudeAccountSection, useCurrentClaudeAccount } from "@/components/banto/thread/claude-account-usage";
 import type { ThreadId } from "@/lib/mock/types";
@@ -95,7 +96,12 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
     getRealThreadSkills(threadId)
       .then(setThreadSkills)
       .catch((err: unknown) => reportFailure("この会話で効いている Skill を取得できませんでした", err));
+    // 空いた間の温め直しの回数（§6.52）——知らせを聞く前からの分も、開いたときに host から取る
+    getRealThread(threadId)
+      .then((record) => seedIdleCompaction(threadId, record.idleCompaction))
+      .catch((err: unknown) => reportFailure("空いた間の温め直しの回数を取得できませんでした", err));
   }
+  const idle = useIdleCompaction(threadId);
 
   const freeTokens = usage.categories.find((c) => c.id === "free")?.tokens ?? 0;
   const usedRatio = usage.windowTokens > 0 ? (usage.windowTokens - freeTokens) / usage.windowTokens : 0;
@@ -140,6 +146,15 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
 
       <PopoverContent align="end" className="w-96 p-0">
         {claudeAccount ? <ClaudeAccountSection key={openCount} current={claudeAccount} /> : null}
+        {/* **空いた間の温め直し**（§6.52）。中継のメモリにしか無い——起こし直すと 0 から数え直す */}
+        {isReal && idle && idle.warms > 0 ? (
+          <div className="border-b border-border px-3 py-2.5" data-testid="context-usage-idle-warms">
+            <p className="text-xs text-ink-2">
+              空いた間の温め直し：{idle.warms} 回・読み出し {formatTokens(idle.warmTokens)} トークン
+            </p>
+            <p className="text-xs text-ink-3">会話が空いている間、キャッシュが冷めないよう温め直した分です（banto を起こし直すと数え直します）</p>
+          </div>
+        ) : null}
         <div className="border-b border-border px-3 py-2.5">
           <p className="text-sm font-medium text-foreground">文脈の内訳</p>
           <p className="text-xs text-ink-3">

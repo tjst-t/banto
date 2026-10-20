@@ -57,6 +57,7 @@ import type { MessageQuote, ProjectState, ProjectWokeCause, ThreadClosedBy, Thre
 import { CanvasQuoteRejectedError, parseCanvasQuotes, parseFindingQuoteIds } from "./canvas-quotes.js";
 import { THREAD_EFFORTS, type ThreadEffort, type ThreadPermissionMode } from "../project-thread/types.js";
 import { rateLimitContinuedOf, rateLimitWaitOf } from "../project-thread/rate-limit-wait.js";
+import type { IdleCompactionView, IdleCompactions } from "../delivery/idle-compaction.js";
 import { RATE_LIMIT_CONTINUE_LIMIT } from "../delivery/rate-limit-continuation.js";
 import type { RateLimitContinuations } from "../delivery/rate-limit-continuation.js";
 import { listModels as listModelsFromCli } from "../runner/adapter.js";
@@ -473,6 +474,11 @@ export interface AppDeps {
    * 渡されなければ口は断る（止めるボタンは待ちに触らない）
    */
   rateLimitWaits?: Pick<RateLimitContinuations, "continueNow" | "cancel"> & Partial<Pick<RateLimitContinuations, "arm">>;
+  /**
+   * **空いた会話の冷める前の要約**（追加・2026-10-20、アーキ仕様 §3.1「冷める前の要約（host）」）。要約のターンを回す口を渡し、
+   * 取りやめの口・画面に出す予定を読む。無ければ要約しない（取りやめの口は断る）
+   */
+  idleCompactions?: Pick<IdleCompactions, "setRunner" | "cancel" | "view" | "list">;
   /**
    * **MCP Registry を引くときの fetch**（試験用の差し替え口、追加・2026-09-21）。
    *
@@ -1310,13 +1316,21 @@ export function rateLimitStopOf(thread: Pick<ThreadState, "lastTurn">): "stopped
   return rateLimitContinuedOf(turn) >= RATE_LIMIT_CONTINUE_LIMIT ? "gave_up" : "unknown_reset";
 }
 
-function toThreadDetail(thread: ThreadState, inbox: InboxStore, accounts: ClaudeAccountStore | undefined) {
-  // 届け直せる札（Backlog #324）も札そのものを持つ——画面には出さない
-  const { awaitingReplies, redeliverableReplies: _redeliverable, accountSwitches, ...rest } = thread;
+function toThreadDetail(
+  thread: ThreadState,
+  inbox: InboxStore,
+  accounts: ClaudeAccountStore | undefined,
+  idleCompaction: IdleCompactionView | undefined,
+) {
+  // 届け直せる札（Backlog #324）も札そのものを持つ——画面には出さない。走っている要約の記録は画面に要らない（`idleCompaction`）
+  const { awaitingReplies, redeliverableReplies: _redeliverable, accountSwitches, idleCompactionTurn: _idleTurn, ...rest } = thread;
   const labelOf = (id: string) => accounts?.get(id)?.label;
   const stop = rateLimitStopOf(thread);
   return {
     ...rest,
+    // **冷める前の要約の予定**（§3.1「書きかけ」）。中継のメモリから導く——起こし直すと消える（その会話は要約しない）
+    idleCompactionAt: idleCompaction?.at ?? null,
+    ...(idleCompaction ? { idleCompaction } : {}),
     // **上限で止まった帯を出すか・自動で続けない理由**（v4-frontend.md §6.46）。読むときに記録から導く（規則3）
     ...(stop ? { rateLimitStop: stop } : {}),
     // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）。記録は id だけ——名前は読むときに台帳から引く（変えられる、規則3）
@@ -1634,7 +1648,7 @@ export function createApp(deps: AppDeps) {
     /** 何で開くか——眠っている Project を起こす理由（`turn.started` の cause と同じ語、アーキ仕様 §2.2「起こす」） */
     cause: ProjectWokeCause = "human",
   ): AsyncGenerator<TurnStreamEvent> {
-    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes, cause)) {
+    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes, cause, false)) {
       if (event.type === "stopped") stop?.markStopped(event.withdrawn);
       yield event;
     }
@@ -1648,6 +1662,8 @@ export function createApp(deps: AppDeps) {
     stop: AbortSignal | undefined,
     quotes: MessageQuote[],
     cause: ProjectWokeCause,
+    /** 空いた会話の冷める前の要約（§3.1）。眠っている Project を起こさない（眠っていれば断る） */
+    idleCompaction: boolean,
   ): AsyncGenerator<TurnStreamEvent> {
     // **下ごしらえの途中で止められたら、待たずに終える**（§6.31、実測）——Module を起こす・モデルの一覧を CLI に聞く等は
     // 数秒かかることがあり、その間に押した停止が入力欄に戻るまで待たされていた。まだ何も記録していないので、そのまま取り消す。
@@ -1674,7 +1690,13 @@ export function createApp(deps: AppDeps) {
     // 人の送信・受信箱からの返信・Project をまたぐメッセージ・Webhook・時計・「続ける」・起動時の `resumeAll` は、どれも
     // ここを通る。眠らせている途中なら、終わるまで待ってから起こす（断らない——送ったつもりで消えるのを作らない）
     const wakeProjectId = deps.projectThread.getThread(threadId)?.projectId;
-    if (wakeProjectId !== undefined && deps.projectSleep) {
+    if (idleCompaction) {
+      const project = wakeProjectId !== undefined ? deps.projectThread.getProject(wakeProjectId) : undefined;
+      if (!project || project.sleep || project.status === "closed") {
+        yield { type: "error", message: "Project が眠っている・閉じているので要約しません" };
+        return;
+      }
+    } else if (wakeProjectId !== undefined && deps.projectSleep) {
       try {
         if ((await unlessStopped(deps.projectSleep.wake(wakeProjectId, cause))) === STOPPED) {
           yield withdrawnNow();
@@ -1765,8 +1787,24 @@ export function createApp(deps: AppDeps) {
       modules,
       cwd,
       ...(stop ? { stop } : {}),
+      ...(idleCompaction ? { idleCompaction: true as const } : {}),
     });
   }
+
+  // **空いた会話の冷める前の要約**（追加・2026-10-20、アーキ仕様 §3.1）。鍵は人のターンと同じものを取る——取れなければ回さない。
+  // 人は止められない（要約が終わるまで人の発言は待つ）。失敗はログだけ
+  deps.idleCompactions?.setRunner(async (threadId) => {
+    const release = deps.threadTurns?.tryAcquireForIdleCompaction(threadId);
+    if (!release) return false;
+    try {
+      for await (const event of openTurnInner(threadId, "", undefined, [], undefined, [], "human", true)) {
+        if (event.type === "error") throw new Error(event.message);
+      }
+    } finally {
+      release();
+    }
+    return true;
+  });
 
   // **届いたもので起こすターン**（決定・2026-09-25、アーキ仕様 §4.2）。画面が繋がっていなくても最後まで回す
   // ——途中経過は `turnEvents` に残るので、開いた画面は繋ぎ直せる。permissionMode はその Thread の設定のまま
@@ -2918,7 +2956,7 @@ export function createApp(deps: AppDeps) {
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });
-        json(res, 200, toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store));
+        json(res, 200, toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store, deps.idleCompactions?.view(thread.id)));
         return;
       }
 
@@ -3212,6 +3250,15 @@ export function createApp(deps: AppDeps) {
         return json(res, 200, outcome);
       }
 
+      // **冷める前の要約を取りやめる**（追加・2026-10-20、アーキ仕様 §3.1「書きかけ」）。帯の出ている会話で人が打った・送った・押した
+      // ——要約をやめて温め直しを続ける
+      const idleCancelMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/idle-compaction\/cancel$/);
+      if (idleCancelMatch && req.method === "POST") {
+        if (!deps.idleCompactions) return json(res, 501, { error: "この banto では空いた会話を要約しません" });
+        const result = deps.idleCompactions.cancel(idleCancelMatch[1]!);
+        if (!result.ok) return json(res, result.status, { error: result.error });
+        return json(res, 200, { ok: true });
+      }
       // **上限の待ちを人が動かす**（追加・2026-10-18、v4-security.md §2 の 9.）——「今すぐ続ける」「待つのをやめる」
       const rateLimitMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/rate-limit-wait\/(continue|cancel)$/);
       if (rateLimitMatch && req.method === "POST") {
@@ -3237,7 +3284,8 @@ export function createApp(deps: AppDeps) {
         // **繋いだ時点で走っている Thread も渡す**（決定・2026-10-03、ユーザー要望。v4-frontend.md §6.33）——
         // サイドバーはこれと turn.started / turn.ended で「AI が動いている」を出す。繋ぎ直したら丸ごと置き換えるので、
         // 途切れている間に終わったターンが回り続けることはない
-        const running = (deps.threadTurns?.list() ?? []).map((t) => {
+        // 冷める前の要約は「走っている」に出さない（サイドバーを動かさない、§3.1）——会話の帯は idleCompactions
+        const running = (deps.threadTurns?.list() ?? []).filter((t) => !deps.threadTurns?.isIdleCompacting(t.threadId)).map((t) => {
           const projectId = deps.projectThread.getThread(t.threadId)?.projectId;
           return { threadId: t.threadId, ...(projectId ? { projectId } : {}) };
         });
@@ -3261,6 +3309,11 @@ export function createApp(deps: AppDeps) {
         const missions = deps.projectThread.listProjects().flatMap((p) =>
           deps.projectThread.listThreadsForProject(p.id).flatMap((t) => (t.mission ? [{ threadId: t.id, projectId: p.id, mission: t.mission }] : [])),
         );
+        // **冷める前の要約の予定・要約している会話も渡す**（追加・2026-10-20、§3.1）——会話の帯。以後は idle_compaction.changed で置き換える
+        const idleCompactions = deps.idleCompactions?.list().map((v) => {
+          const projectId = deps.projectThread.getThread(v.threadId)?.projectId;
+          return { ...v, ...(projectId ? { projectId } : {}) };
+        });
         // **混んでいる Project とこの機械も渡す**（追加・2026-10-09、§6.36）——サイドバーの印。以後は resources.busy で置き換える
         const resources = deps.resources?.busy();
         // **移している Project も渡す**（追加・2026-10-12、Backlog #270）——以後は runtime_move.changed で置き換える
@@ -3272,7 +3325,7 @@ export function createApp(deps: AppDeps) {
         // **新しい Project の始め方の仕事**（追加・2026-10-20、§6.49）——終わっていないもの。以後は project.start.changed で置き換える
         const projectStarts = deps.projectStart?.pending();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, missions, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}), ...(projectStarts ? { projectStarts } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, missions, ...(idleCompactions ? { idleCompactions } : {}), ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}), ...(projectStarts ? { projectStarts } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);

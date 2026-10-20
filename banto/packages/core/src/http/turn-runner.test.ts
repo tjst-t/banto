@@ -1059,3 +1059,52 @@ test("見回りの Fork のターンにだけ notify を見せ、聞かずに通
     await after.client.close();
   });
 });
+
+// **空いた会話の冷める前の要約**（追加・2026-10-20、アーキ仕様 §3.1「冷める前の要約（host）」）
+
+test("冷める前の要約：続きから /compact だけを渡し、発言も届いたものも積まず、最後のターンを替えず、理由 idle の印を残す", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const seen: Array<{ prompt: string; resume?: string; onStop: boolean; decline?: boolean }> = [];
+    let compact = false;
+    const fake = (async function* (opts: { prompt: string; resumeSessionId?: string; onStop?: unknown; declineElicitations?: boolean }) {
+      seen.push({ prompt: opts.prompt, ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}), onStop: opts.onStop !== undefined, ...(opts.declineElicitations ? { decline: true } : {}) });
+      yield { type: "message" as const, message: { ...initMessage([]), session_id: "session-1" } } as never;
+      if (!compact) yield { type: "message" as const, message: assistantMessage("はい") } as never;
+      else yield { type: "message" as const, message: { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 1000 } } } as never;
+      return { sessionId: "session-1", compactionCount: compact ? 1 : 0 } as never;
+    }) as unknown as typeof runTurn;
+    await collect(runThreadTurn({ ...deps, runTurn: fake, turnSummaryEnabled: () => true }, { threadId, prompt: "こんにちは", modules: [] }));
+    const before = store.getThread(threadId)!;
+    const lastTurn = before.lastTurn;
+    const messages = before.messages.length;
+    // 要約の最中・前に届いたものは待ち行列に残る
+    await store.recordDelivery({ threadId, deliveryId: "d1", from: "subagent", title: "終わりました", text: "結果", hop: 1 });
+
+    compact = true;
+    const events = await collect(runThreadTurn({ ...deps, runTurn: fake, turnSummaryEnabled: () => true }, { threadId, prompt: "", modules: [], idleCompaction: true }));
+    assert.ok(events.some((e) => e.type === "done"), JSON.stringify(events));
+    assert.deepEqual(seen[1], { prompt: "/compact", resume: "session-1", onStop: false, decline: true });
+    const after = store.getThread(threadId)!;
+    assert.deepEqual(after.lastTurn, lastTurn, "要約は最後のターンを替えない（受信箱・上限の待ち・続きを動かさない）");
+    assert.equal(after.idleCompactionTurn, undefined, "終わりを書いた");
+    assert.equal(after.messages.length, messages, "会話に発言を積まない");
+    assert.equal(after.deliveries?.length, 1, "届いたものは残る");
+    assert.deepEqual(after.markers.at(-1), { seq: after.markers.at(-1)!.seq, kind: "compact", reason: "idle" });
+    assert.ok(after.memoryBaselineSeq > before.memoryBaselineSeq, "要約で確定した Memory を数え直す");
+  });
+});
+
+test("冷める前の要約：SDK が要約しなければ失敗にする。続ける会話が無ければ走らせない", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const { fake } = recordingRunner();
+    const none = await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "", modules: [], idleCompaction: true }));
+    assert.ok(none.some((e) => e.type === "error"));
+    assert.equal(store.getThread(threadId)!.idleCompactionTurn, undefined);
+    await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "はじめ", modules: [] }));
+    const events = await collect(runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "", modules: [], idleCompaction: true }));
+    const error = events.find((e) => e.type === "error");
+    assert.match((error as { message: string } | undefined)?.message ?? "", /要約しませんでした/);
+    assert.equal(store.getThread(threadId)!.markers.length, 0);
+    assert.equal(store.getThread(threadId)!.lastTurn?.cause, "human");
+  });
+});

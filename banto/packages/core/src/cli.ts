@@ -53,6 +53,7 @@ import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtua
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import type { WarmTicket } from "./claude-login/keep-alive.js";
+import { IdleCompactions } from "./delivery/idle-compaction.js";
 import { isIdleCompactionEnabled } from "./http/project-settings.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
 import { ClaudeAccountLogin } from "./claude-login/account-login.js";
@@ -407,6 +408,8 @@ async function main(): Promise<void> {
       fingerprint: JSON.stringify([thread.resumePoint, thread.rewindTo ?? null, thread.model ?? null, thread.effort ?? null, modules]),
     };
   };
+  /** 空いた会話の冷める前の要約（§3.1、下で用意する）。温め直しの様子が変わるたびに予定を立て直す */
+  let idleCompactions: IdleCompactions | undefined;
   const claudeLogin: ClaudeLoginRelay = new ClaudeLoginRelay({
     refreshEnabled: relayRefresh.enabled,
     accounts: claudeAccounts,
@@ -422,6 +425,7 @@ async function main(): Promise<void> {
     keepAliveWarmable: (threadId, fingerprint) => !threadTurns.isRunning(threadId) && keepAliveTicket(threadId)?.fingerprint === fingerprint,
     // E2E だけが縮める（50分を待たずに温め直しが届くところを見る）
     ...(process.env.BANTO_TEST_KEEP_ALIVE_MINUTE_MS !== undefined ? { keepAliveMinuteMs: Number(process.env.BANTO_TEST_KEEP_ALIVE_MINUTE_MS) } : {}),
+    keepAliveOnChange: (threadId) => idleCompactions?.refresh(threadId),
     // **送り元はその Project のコンテナ**（測った・2026-10-08：同じブリッジの別のコンテナからも core の口に届く。
     // 起こし直しでもアドレスは変わらない（MAC が固定・DHCP の貸し出しは1時間）が、中の root はアドレスを足せる）。
     // 覚えずに毎回、実行場所に聞く——止まっている・無いコンテナは「違う」
@@ -735,10 +739,27 @@ async function main(): Promise<void> {
   threadTurns.onChange((change) => rateLimitContinuations.arm(change.threadId));
   // **空いた会話の温め直し**（§3.1「温め直し（中継）」）：ターンが始まったらその会話の温め直しを止めて候補を集め直し、終わったら
   // 「この会話は温めてよい」を中継へ渡す（終わりの記録——resume-point——はターンの鍵を返す前に書かれている）
+  // 冷める前の要約のターンのあとは温めない（要約で会話が入れ替わった——覚えた要求は要約の前の会話）
   threadTurns.onChange((change) => {
     if (change.type === "started") claudeLogin.keepAlive.turnStarted(change.threadId);
-    else claudeLogin.keepAlive.turnEnded(change.threadId, keepAliveTicket(change.threadId));
+    else claudeLogin.keepAlive.turnEnded(change.threadId, change.idleCompaction ? undefined : keepAliveTicket(change.threadId));
   });
+  // **空いた会話の冷める前の要約**（§3.1「冷める前の要約（host）」）。温め直しの様子から予定を立て、225 分に当たっていれば要約の
+  // ターンを回す（回す口は HTTP の層が渡す）。画面には予定・帯の時刻・要約している・温め直しの回数を知らせる
+  idleCompactions = new IdleCompactions({
+    keepAlive: claudeLogin.keepAlive,
+    turns: threadTurns,
+    projectThread,
+    fingerprint: (threadId) => keepAliveTicket(threadId)?.fingerprint,
+    onChange: (threadId, view) => {
+      const projectId = projectThread.getThread(threadId)?.projectId;
+      appEvents.publish({ type: "idle_compaction.changed", threadId, ...(projectId ? { projectId } : {}), ...view });
+    },
+    // E2E だけが伸ばす（1分を縮めると、帯の出ている5分が1秒になる）
+    ...(process.env.BANTO_TEST_IDLE_COMPACTION_NOTICE_MS !== undefined ? { noticeMs: Number(process.env.BANTO_TEST_IDLE_COMPACTION_NOTICE_MS) } : {}),
+  });
+  // 起こし直しで切れた要約の記録を締める（続けない）——何かを走らせる前に
+  await idleCompactions.start();
   // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
   const automationRunner = new AutomationRunner({
     projectThread,
@@ -856,7 +877,7 @@ async function main(): Promise<void> {
   });
   // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
   threadTurns.onChange((change) => {
-    if (change.type !== "ended") return;
+    if (change.type !== "ended" || change.idleCompaction) return;
     void turnDecisions
       .endTurn(change.threadId)
       .catch((err: unknown) => console.warn(`[host] ${change.threadId} の判断役の答えを片づけられませんでした:`, err));
@@ -866,6 +887,9 @@ async function main(): Promise<void> {
   // ターンの始まりに本体が止まったら、何をしていたかを残す（`stall-profiler.ts`、下で用意する）
   let stallProfiler: StallProfiler | undefined;
   threadTurns.onChange((change) => {
+    // **冷める前の要約のターンは、人のターンの扱いをしない**（§3.1）：画面の「走っている」・受信箱のレビュー待ち・任務・判断役に
+    // 数えない。画面には `idle_compaction.changed` で「要約しています」を知らせる
+    if (change.idleCompaction) return;
     const projectId = projectThread.getThread(change.threadId)?.projectId;
     // 届いたもので起こしたターンはホップ 1 以上、人が送ったターンは 0
     if (change.type === "started") {
@@ -3260,6 +3284,7 @@ async function main(): Promise<void> {
     runnerEnv: (projectId, threadId, session) => claudeLogin.runnerEnvFor(projectId, threadId, session, `http://127.0.0.1:${bootstrap.port}`),
     rateLimitContinueAt: (threadId, resetsAt) => rateLimitContinuations.continueAt(threadId, resetsAt),
     rateLimitWaits: rateLimitContinuations,
+    idleCompactions,
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,
     globalMemory,

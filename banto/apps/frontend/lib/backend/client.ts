@@ -341,9 +341,23 @@ export interface RealUiToolCall {
   displayMode?: "inline" | "fullscreen";
 }
 
-export interface RealThreadMarker {
-  seq: number;
-  kind: "clear";
+/**
+ * 会話の横線。`compact`＋`reason: "idle"` は空いた会話を冷める前に要約した印（追加・2026-10-20、アーキ仕様 §3.1、
+ * v4-frontend.md §6.52）
+ */
+export type RealThreadMarker = { seq: number; kind: "clear" } | { seq: number; kind: "compact"; reason: "idle" };
+
+/**
+ * **空いた会話の冷める前の要約の様子**（追加・2026-10-20、アーキ仕様 §3.1、v4-frontend.md §6.52）。host の中継のメモリから導く
+ * ——起こし直すと消える。`at` は要約の予定、`noticeAt` から「まもなく要約します」の帯を出す。`warms`・`warmTokens` は温め直しの
+ * 回数と読み出しの量（文脈のメーター）
+ */
+export interface RealIdleCompaction {
+  at?: string;
+  noticeAt?: string;
+  compacting: boolean;
+  warms: number;
+  warmTokens: number;
 }
 
 /** G1〜G3・G5——決定事項の記録。**持ち主はProject**（決定・2026-09-05）。
@@ -417,6 +431,10 @@ export interface RealThread {
    * 知っている場所だけリンクにする。印の無い会話には無い
    */
   restriction?: "read-only";
+  /** 冷める前の要約の予定の時刻（追加・2026-10-20、§3.1）。無ければ null。古い host は付けない */
+  idleCompactionAt?: string | null;
+  /** 冷める前の要約の様子（予定・帯の時刻・要約している・温め直しの回数）。古い host は付けない */
+  idleCompaction?: RealIdleCompaction;
   createdAt: string;
 }
 
@@ -930,6 +948,13 @@ export async function wakeRealMission(threadId: string): Promise<RealMission> {
 /** **上限の待ちをやめる**（追加・2026-10-18、§6.46）。自動では続けない——人が送れば、その発言で始まる */
 export async function cancelRealRateLimitWait(threadId: string): Promise<void> {
   await request(`/api/threads/${threadId}/rate-limit-wait/cancel`, { method: "POST" });
+}
+
+/**
+ * **冷める前の要約を取りやめる**（追加・2026-10-20、§6.52）。要約をやめて温め直しを続ける。予定が無ければ host が 409 で断る
+ */
+export async function cancelRealIdleCompaction(threadId: string): Promise<void> {
+  await request(`/api/threads/${threadId}/idle-compaction/cancel`, { method: "POST" });
 }
 
 /** Fork Threadを畳む（削除ではない——履歴から読み返し、再度開ける）。 */

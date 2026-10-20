@@ -14,6 +14,8 @@
 
 /** 温め直す時刻（最後の本物の要求の開始から、分）。4時間まで（§3.1「境目を 4時間にした理由」） */
 export const KEEP_ALIVE_MINUTES = [50, 100, 150, 200] as const;
+/** 温め直しの間隔（分）。人が冷める前の要約を取りやめた会話は、4時間を越えてもこの間隔で温め続ける（§3.1「書きかけ」） */
+const KEEP_ALIVE_INTERVAL_MINUTES = 50;
 /** 送る時刻を散らす幅（分。起こし直し・多くの会話が同時に空いたときに一斉に送らない） */
 const JITTER_MINUTES = 5;
 /** これより入力の少ない会話は温めない（書き直しても安い） */
@@ -111,6 +113,14 @@ export interface CacheState {
   warming: boolean;
   /** 温め直しの回数（このターンのあとの） */
   warms: number;
+  /**
+   * 温め直しの時刻の基準（いま温めている要求の、最後の本物の要求の開始）。温めている間と、4時間の温め直しを終えて要約を待つ間だけ
+   * ある——止めた・次のターンが始まった・途中でやめたら消える。#473 冷める前の要約の時刻はここから数える
+   */
+  baseAt?: number;
+  /** この会話で温め直した回数と読み出しの量の合計（中継のメモリだけ。起こし直すと消える。右上の文脈のメーター） */
+  totalWarms: number;
+  totalWarmTokens: number;
   /** 温め直しが途中で止まった理由（失敗・外れた・余白を割った・押し出された）。次のターンが始まると消える */
   abandoned?: string;
 }
@@ -130,6 +140,8 @@ export interface CacheKeepAliveDeps {
   log?: (line: string) => void;
   /** 時計を回すか（試験は回さず `runDue` を呼ぶ） */
   timers?: boolean;
+  /** その会話のキャッシュの様子（`cacheOf`）が変わった——温め始めた・温め直した・止めた・やめた（#473 の予定と画面） */
+  onChange?(threadId: string): void;
 }
 
 interface Entry {
@@ -144,6 +156,13 @@ interface Entry {
   dueAt: number;
   /** いま送っている */
   inFlight: boolean;
+  /**
+   * 4時間の温め直しを終え、冷める前の要約を待っている（本文は持ったまま——人が要約を取りやめたら温め直しを続ける）。この時刻に
+   * まだ待っていれば捨てる
+   */
+  parked?: boolean;
+  /** 人が要約を取りやめた——4時間を越えても 50 分ごとに温め続ける（`extend`） */
+  extended?: boolean;
 }
 
 interface Collect {
@@ -182,6 +201,7 @@ export class CacheKeepAlive {
       state.warms = 0;
     }
     this.collecting.set(threadId, {});
+    this.changed(threadId);
   }
 
   /** **中継が本体の要求の返事を読んだ**（usage が読めなくても、時刻の基準として呼ぶ） */
@@ -196,6 +216,9 @@ export class CacheKeepAlive {
         ...(hit ? { lastHitAt: o.startedAt } : prev?.lastHitAt !== undefined ? { lastHitAt: prev.lastHitAt } : {}),
         warming: prev?.warming ?? false,
         warms: prev?.warms ?? 0,
+        ...(prev?.baseAt !== undefined ? { baseAt: prev.baseAt } : {}),
+        totalWarms: prev?.totalWarms ?? 0,
+        totalWarmTokens: prev?.totalWarmTokens ?? 0,
         ...(prev?.abandoned ? { abandoned: prev.abandoned } : {}),
       });
     }
@@ -239,25 +262,58 @@ export class CacheKeepAlive {
     entry.dueAt = this.dueAt(entry);
     this.entries.set(threadId, entry);
     const state = this.states.get(threadId);
-    if (state) state.warming = true;
+    if (state) {
+      state.warming = true;
+      state.baseAt = entry.baseAt;
+    }
     this.enforceLimits();
     this.arm();
+    this.changed(threadId);
+  }
+
+  /**
+   * **人が冷める前の要約を取りやめた**（#473、§3.1「書きかけ」）：4時間を越えても 50 分ごとに温め続ける（上限の中で）。温めている
+   * 会話が無ければ（もう止まった・やめた）false
+   */
+  extend(threadId: string): boolean {
+    const entry = this.entries.get(threadId);
+    if (!entry) return false;
+    entry.extended = true;
+    if (entry.parked) {
+      entry.parked = false;
+      entry.dueAt = this.dueAt(entry);
+      const state = this.states.get(threadId);
+      if (state) state.warming = true;
+      this.arm();
+    }
+    this.changed(threadId);
+    return true;
   }
 
   /** **止める**（閉じた・Clear・やり直し・眠らせた・モデル等を変えた）。再開はしない——次のターンの終わりからまた数える */
   stop(threadId: string): void {
     this.drop(threadId);
+    this.changed(threadId);
   }
 
   /** その Project の会話を全部止める（眠らせた） */
   stopProject(projectId: string): void {
-    for (const [threadId, e] of this.entries) if (e.req.projectId === projectId) this.drop(threadId);
+    for (const [threadId, e] of this.entries) {
+      if (e.req.projectId !== projectId) continue;
+      this.drop(threadId);
+      this.changed(threadId);
+    }
   }
 
   /** その会話のキャッシュの様子（無ければ undefined） */
   cacheOf(threadId: string): CacheState | undefined {
     const s = this.states.get(threadId);
     return s ? { ...s } : undefined;
+  }
+
+  /** 時刻の基準の1分のミリ秒（#473 冷める前の要約が同じ物差しで数える） */
+  get minute(): number {
+    return this.minuteMs;
   }
 
   /** 温めている会話の数（観測と試験） */
@@ -284,8 +340,15 @@ export class CacheKeepAlive {
 
   private async warm(threadId: string, entry: Entry): Promise<void> {
     const { req } = entry;
+    // 4時間の温め直しのあと、要約も取りやめも無いまま待ちの時刻を過ぎた——本文を捨てる
+    if (entry.parked) {
+      this.drop(threadId);
+      this.changed(threadId);
+      return;
+    }
     if (this.deps.stillWarmable && !this.deps.stillWarmable(threadId, entry.fingerprint)) {
       this.drop(threadId);
+      this.changed(threadId);
       return;
     }
     const margin = this.deps.margin(req.accountId);
@@ -326,24 +389,30 @@ export class CacheKeepAlive {
       state.lastHit = hit;
       if (hit) state.lastHitAt = at;
       state.warms = entry.sent + 1;
+      state.totalWarms += 1;
+      state.totalWarmTokens += usage.cacheReadTokens;
     }
-    if (!still) return;
+    if (!still) {
+      this.changed(threadId);
+      return;
+    }
     if (!hit) {
       this.abandon(threadId, "外れました（キャッシュが冷えていました）");
       return;
     }
     entry.sent++;
-    if (entry.sent >= KEEP_ALIVE_MINUTES.length) {
-      this.entries.delete(threadId);
+    if (entry.sent >= KEEP_ALIVE_MINUTES.length && !entry.extended) {
+      // 4時間の温め直しを終えた——冷める前の要約（#473）を待つ。本文は次の 50 分の時刻まで持ち、取りやめが無ければ捨てる
+      entry.parked = true;
       if (state) state.warming = false;
-      return;
     }
     entry.dueAt = this.dueAt(entry);
+    this.changed(threadId);
   }
 
-  /** 次の温め直しの時刻（最後の本物の要求から、0〜5分散らす） */
+  /** 次の温め直しの時刻（最後の本物の要求から、0〜5分散らす）。4時間を越えたら 50 分ごと */
   private dueAt(entry: Entry): number {
-    const minutes = KEEP_ALIVE_MINUTES[entry.sent]!;
+    const minutes = KEEP_ALIVE_MINUTES[entry.sent] ?? KEEP_ALIVE_MINUTES.at(-1)! + (entry.sent + 1 - KEEP_ALIVE_MINUTES.length) * KEEP_ALIVE_INTERVAL_MINUTES;
     return entry.baseAt + (minutes + this.random() * JITTER_MINUTES) * this.minuteMs;
   }
 
@@ -364,7 +433,7 @@ export class CacheKeepAlive {
       let planned = 0;
       for (const e of this.entries.values()) {
         bytes += e.req.body.length;
-        planned += (KEEP_ALIVE_MINUTES.length - e.sent) * e.inputTokens;
+        planned += Math.max(0, KEEP_ALIVE_MINUTES.length - e.sent) * e.inputTokens;
       }
       return bytes > KEEP_ALIVE_TOTAL_LIMIT || this.spentInWindow() + planned > KEEP_ALIVE_WINDOW_TOKENS;
     };
@@ -383,15 +452,29 @@ export class CacheKeepAlive {
     if (state) {
       state.warming = false;
       state.abandoned = reason;
+      delete state.baseAt;
     }
     if (entry) this.log(`[claude-login] 温め直しをやめました project=${entry.req.projectId} thread=${threadId}: ${reason}`);
+    this.changed(threadId);
   }
 
   private drop(threadId: string): void {
     this.entries.delete(threadId);
     this.collecting.delete(threadId);
     const state = this.states.get(threadId);
-    if (state) state.warming = false;
+    if (state) {
+      state.warming = false;
+      delete state.baseAt;
+    }
+  }
+
+  private changed(threadId: string): void {
+    try {
+      this.deps.onChange?.(threadId);
+    } catch (err) {
+      // 聞き手の失敗で温め直しを止めない——ただし黙らない（規則2）
+      console.warn("[claude-login] 温め直しの様子の聞き手が例外を投げました:", err);
+    }
   }
 
   /** 一番早い予定に時計を合わせる */

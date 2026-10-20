@@ -21,6 +21,7 @@ import type {
   ThreadEffort,
   ThreadState,
   TurnCause,
+  CompactionReason,
   TurnContinuation,
   DeliveryAuthor,
   ExternalContent,
@@ -182,7 +183,8 @@ export type ProjectThreadEvent =
     }
   | { type: "thread.cleared"; payload: { threadId: string } }
   // **自動の要約（SDK の compact_boundary）が起きたターン**（追加・2026-10-09、アーキ仕様 §2.2）
-  | { type: "thread.compacted"; payload: { threadId: string; compactionCount: number } }
+  // `reason: "idle"`＝空いた会話を冷める前に要約した（追加・2026-10-20、アーキ仕様 §3.1）——会話に印を出す
+  | { type: "thread.compacted"; payload: { threadId: string; compactionCount: number; reason?: CompactionReason } }
   // **新しいセッションで効かせた Skill の集合**（決定・2026-09-23、§5.7）
   | { type: "thread.skills_fixed"; payload: { threadId: string; set: SessionSkillSet } }
   | {
@@ -942,10 +944,16 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         // system prompt に入れる Memory をこの時点で確定し直す（改訂・2026-10-09、§2.2）。
         // memoryDeliveredSeq は Clear と同じく動かさない（確定した分は届け済みかどうかに関わらず system prompt に入る）
         if (t) t.memoryBaselineSeq = raw.seq;
+        if (t && event.payload.reason === "idle") t.markers.push({ seq: raw.seq, kind: "compact", reason: "idle" });
         return next;
       }
       case "turn.started": {
         const t = next.threads.get(event.payload.threadId);
+        // 冷める前の要約は最後のターンに入れない（`TurnCause` の説明）
+        if (t && event.payload.cause === "idle-compaction") {
+          t.idleCompactionTurn = { turnId: event.payload.turnId, startedSeq: raw.seq, startedAt: raw.ts };
+          return next;
+        }
         if (t) {
           const p = event.payload;
           t.lastTurn = {
@@ -978,6 +986,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       }
       case "turn.ended": {
         const t = next.threads.get(event.payload.threadId);
+        if (t?.idleCompactionTurn?.turnId === event.payload.turnId) {
+          delete t.idleCompactionTurn;
+          return next;
+        }
         if (t?.lastTurn?.turnId === event.payload.turnId) {
           const p = event.payload;
           t.lastTurn = {
