@@ -1,6 +1,6 @@
 # v4 デスクトップ版（Windows）——下書き
 
-> **これは下書きである（2026-10-20、レビュー前）。** 決まったのは §0 の「ユーザーが決めたこと」だけで、ほかは案。
+> **これは下書きである（2026-10-20、レビュー前。同日「インストールしない」を反映）。** 決まったのは §0 の「ユーザーが決めたこと」だけで、ほかは案。
 > レビューと §9 の実測を経て決まったものから、この文書を「決まったこと」に書き換える。経緯と却下した案は
 > `docs/notes/2026-10-20-desktop-windows.md`。
 >
@@ -15,6 +15,7 @@
 - **会社の PC は Windows。** 殻は **Electron**
 - **デスクトップ版ではコンテナで分離しない。** Module・AI のコマンド・サブエージェントは、PC の人のユーザー権限のまま直に動く
 - **Claude へは個人のログイン**（Claude Code の OAuth ログイン。API キー・Bedrock・Vertex ではない）
+- **インストールしないで使う**（2026-10-20 追加）。インストーラを作らず、展開したフォルダの banto.exe を起こすだけで動く（§7）
 
 ### 変えないもの
 
@@ -225,33 +226,47 @@ Windows では**名前付きパイプ**（`\\.\pipe\banto-<データの置き場
 ## 6. Windows との繋ぎ（Electron の main）
 
 - **受信箱に来たら OS の通知**（Electron の `Notification`）。押すとその会話を開く。出すのは受信箱に新しく入ったものだけ
-  （アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」）
+  （アーキ仕様 §2.4「受信箱は『あなたの番になったもの』だけ」）。**Windows の通知には、AppUserModelID と ToastActivatorCLSID を持つ
+  スタートメニューのショートカットが要る**（Electron の手順書。インストーラがあれば作るもの）。インストールしないので、設定の
+  「通知を出す」を入れたときに、banto が人のスタートメニュー（`%APPDATA%\Microsoft\Windows\Start Menu\Programs`）にショートカットを
+  作る。切ったら消す。フォルダを動かしたら作り直す（ショートカットの先が切れるため）。通知が出せないときは、画面の件数とタスクバーの
+  件数だけになることを設定に出す
 - **タスクバーのアイコンに件数**（`setOverlayIcon`）とトレイの件数
-- **ログイン時に起こす**かは人が設定で選ぶ（既定は起こさない）
+- **ログイン時に起こす**かは人が設定で選ぶ（既定は起こさない。入れたら `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` に
+  今のフォルダの `banto.exe` を書く）
 - **プロキシ**：Windows のプロキシの設定（WinINET）を読んで、core・Module・Claude Code に `HTTPS_PROXY`・`NO_PROXY` として渡す。
   設定で上書きできる
 
 ## 7. 組み立てと配布
 
-- **インストーラは人ごとに入れる形（NSIS、管理者の権限が要らない）。** 置き場は `%LOCALAPPDATA%\Programs\banto`
+- **インストーラは作らない。配るのは zip に固めたフォルダ**（ユーザーの決定）。人は好きな場所に展開して `banto.exe` を起こす。
+  管理者の権限も、レジストリの「アプリと機能」への登録も要らない
+  - electron-builder の `portable`（1つの exe）は使わない——起こすたびに中身を `%TEMP%` に展開するので、約 1GB（大半は
+    エージェントの本体と依存）だと起動が遅く、ウイルス対策が毎回全部を調べる
+  - **アプリのフォルダには書かない**（ダウンロード・OneDrive の下・読み取り専用の場所に置かれうる）。データは今どおり
+    `%LOCALAPPDATA%\banto`（§1）。フォルダを消せばアプリは消え、データは残る
+  - **人のプロファイルに書くのは2つだけ、どちらも人が設定で入れたとき**：通知のためのスタートメニューのショートカット
+    （§6）と、ログイン時に起こすための `HKCU\...\Run`。切ったら消す
 - **中身**：Electron・node.exe・core と Module の `dist` と依存・画面の組み立て（Next の静的な書き出し）・Claude Code の
   Windows 向けの本体・Job Object の起動役。ネイティブの npm 依存（node-gyp で組むもの）は Windows 向けに組んだものを入れる
 - **組み立てと試験は GitHub Actions の Windows のランナー**で行う（Linux から Windows 向けにネイティブの依存を組むのは避ける）
 - **組み立ての台本を Windows でも通る形にする**：`scripts/build-all.mjs` が `spawnSync("npm")` を shell 無しで呼ぶ（Windows では
   `npm.cmd`）。各 `package.json` の `test` がシングルクォート（cmd.exe では文字として渡る）。`.gitattributes` が無い（`*.sh eol=lf`）。
-  `install.sh`・`scripts/update.mjs`・`prebuilt.mjs`・`restart-when-idle.mjs` はデスクトップ版では使わない（インストーラとアプリの更新に置き換える）
+  `install.sh`・`scripts/update.mjs`・`prebuilt.mjs`・`restart-when-idle.mjs` はデスクトップ版では使わない（zip の配布とアプリの更新に置き換える）
 - **ネイティブの依存は今は無い**（node-gyp で組むものは無く、sharp・swc・Agent SDK には win32 向けの組んだものが lock にある）。
   Terminal の ConPTY（段 3）で初めて増える
 - **パスの長さ**：`node_modules` の深いパスが 260 字を超えないよう、配布物は asar にまとめるか、外に置くものの深さを測る
-- **コードの署名**：署名の無いインストーラは SmartScreen に止められ、会社の PC では入れられないことがある——§10 の未決
-- **更新**：GitHub の Releases に出し、アプリが起きたときと1日1回見る。入れるのは人が「更新して再起動」を押したとき
+- **コードの署名**：署名の無い exe は SmartScreen に止められ、会社の PC では起こせないことがある——§10 の未決
+- **更新**：GitHub の Releases に zip を出し、アプリが起きたときと1日1回見る。electron-updater はインストーラの形が前提で
+  zip の形を更新できない。入れ替え方は §10 の未決（案：新しい版の zip を取って署名とハッシュを確かめ、今のフォルダの隣に
+  展開して「更新して再起動」で入れ替える。今のフォルダに書けなければ、展開した場所を開いて人に入れ替えてもらう）
 
 ## 8. 段階
 
 | 段 | 中身 | 終わりの印（計測） |
 |---|---|---|
 | 0. 実測 | §9 の項目を Windows の実機で確かめる | 各項目に結果と、決めたことが note に書いてある |
-| 1. 会話と開発ができる | Electron の殻・node.exe で core と画面・実行場所「この PC」・Job Object・名前付きパイプ・FileSystem・Shell（Git Bash）・Subagent・Backlog・Vault・Skills・Repositories・Factory・インストーラ | Windows の実機で、インストーラから入れ、Claude にログインし、Project を作り、AI が Shell と FileSystem でファイルを直してコミットできる。E2E（Windows のランナー）の会話・承認・Shell・FileSystem の spec が通る |
+| 1. 会話と開発ができる | Electron の殻・node.exe で core と画面・実行場所「この PC」・Job Object・名前付きパイプ・FileSystem・Shell（Git Bash）・Subagent・Backlog・Vault・Skills・Repositories・Factory・zip の配布 | Windows の実機で、zip を展開して起こし、Claude にログインし、Project を作り、AI が Shell と FileSystem でファイルを直してコミットできる。E2E（Windows のランナー）の会話・承認・Shell・FileSystem の spec が通る |
 | 2. 毎日使える | Service・OS の通知・タスクバーの件数・トレイ常駐・アプリの更新・プロキシ | 窓を閉じても走行が続き、受信箱に来たものが通知で出る。新しい版を Releases に出すと、アプリから更新できる |
 | 3. 残りの Module | Terminal（ConPTY）・Browser（CDP の画面の流れ）・Documents の代わり・別のサーバの実行場所 | 各 Module の E2E が Windows のランナーで通る |
 
@@ -265,13 +280,17 @@ Windows では**名前付きパイプ**（`\\.\pipe\banto-<データの置き場
 4. 名前付きパイプを Vault の ssh-agent の窓口にし、`git push` が Windows の ssh.exe で通るか
 5. Event Store の書き替え（一時ファイル → rename）が、Defender が有効な PC で連続して通るか（1万回で何回失敗するか）
 6. Vault（local）の sops・age：Windows 向けの本体を同梱する形と、age を JS の実装に替える形のどちらが、今の置き場の中身をそのまま読めるか
-7. 会社の PC と同じ条件（管理者の権限なし・プロキシあり）でインストーラが入るか
+7. 会社の PC と同じ条件（管理者の権限なし・プロキシあり）で、署名の無い zip を展開した `banto.exe` が起きるか（ダウンロードした
+   zip に付く印（Mark of the Web）・SmartScreen、人が書ける場所の exe を止める規則（AppLocker・WDAC））
+8. 自分で作ったスタートメニューのショートカット（AppUserModelID つき）で、インストールしていない Electron の通知が出て、押すと
+   アプリに戻るか
 
 ## 10. まだ決まっていないこと
 
-- **Windows の試験の場**：手元の Windows の実機を誰が用意するか。GitHub Actions の Windows のランナーで足りない分（通知・トレイ・
-  インストーラ）は実機でしか見られない
-- **コードの署名**：証明書を用意するか（会社の PC の規則で、署名の無いものを入れられるか）
+- **Windows の試験の場**：開発用の Windows の VM をユーザーが用意する（2026-10-20）。AI の繋ぎ方は
+  `docs/notes/2026-10-20-windows-dev-vm.md`（案）。組み立てと E2E は GitHub Actions の Windows のランナー
+- **コードの署名**：証明書を用意するか（会社の PC の規則で、署名の無い exe を起こせるか——§9 の7）
+- **更新の入れ替え方**：§7 の案でよいか。今のフォルダに書けないときにどうするか
 - **Shell の既定**：Git Bash で決めてよいか。PowerShell を Project ごとに選べるようにするか
 - **要件との食い違い**：`docs/requirements.md` の E1 は「Web アプリ／PWA」と書いている。デスクトップ版を要件に足す書き方を人と決める
   （この下書きでは要件を書き換えていない）
