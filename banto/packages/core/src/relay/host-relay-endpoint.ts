@@ -48,6 +48,7 @@ import {
   RELAY_PROJECT_GIT_UNBUNDLE_TOOL,
   RELAY_PROJECT_GIT_TRACK_TOOL,
   PROJECT_GIT_BUNDLE_MAX_BYTES,
+  PROJECT_GIT_META_KEY,
   type ProjectGitOrigin,
   type BantoModuleMeta,
   type Visibility,
@@ -351,7 +352,11 @@ export interface HostRelayServerOptions {
       toolUseId?: string,
       /** 呼び元の呼び出し（人を待つ印を外側へたどるため、追加・2026-10-06） */
       parent?: { connName: string; callId?: string },
+      /** その呼び出しに付ける印（宛先の tool が `dev.banto/projectGit` を名乗った、追加・2026-10-20） */
+      marks?: { projectGit?: true },
     ): { id: string; end: () => void };
+    /** その呼び出し（印が要る）の中で Project の git の口に届くか（`dev.banto/projectGit`、追加・2026-10-20） */
+    mayReachProjectGit?(connName: string, callId: string | undefined): boolean;
     /** 呼び元の呼び出しが属する AI の tool 呼び出しの id（Runner の tool_use の id）。1つに決まるときだけ */
     toolUseIdFor?(connName: string, callId?: string): string | undefined;
     /** 起こし直しのために止め始めているか（新しい中継を断る） */
@@ -603,6 +608,8 @@ async function targetTool(
       receivesReplies: boolean;
       /** `dev.banto/effect: "read"` を名乗っているか（信じてよいかは宛先の出所で決める） */
       readEffect: boolean;
+      /** `dev.banto/projectGit` を名乗っているか（信じるのは同梱の宛先だけ） */
+      projectGit: boolean;
       /**
        * **まとめて呼ぶ口の名乗り**（追加・2026-10-18）。名乗っていなければ付かない。`declared` だけで中身が無いのは、
        * 形が違うか、`batchOf.tool` が同じ宛先に無いとき（どちらも断る）
@@ -645,6 +652,7 @@ async function targetTool(
     deliversLater: deliversLater(x),
     receivesReplies: receivesReplies(x),
     readEffect: declaresReadEffect(x),
+    projectGit: x._meta?.[PROJECT_GIT_META_KEY] === true,
   };
 }
 
@@ -1010,7 +1018,12 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       const why = mayUseProjectGit(identity);
       if (why) throw new Error(`${identity.moduleName} は Project の git に届けません（${why}）`);
       if (!opts.projectGit) throw new Error("この banto は Project の git に届く口を持っていません");
-      const projectId = opts.moduleCalls?.projectFor(identity.connName ?? identity.moduleName, callId);
+      const conn = identity.connName ?? identity.moduleName;
+      // **Project の git に届くと名乗った tool を処理している呼び出しの中だけ**（レビュー L2）——同じ Module の別の仕事からは届かない
+      if (!opts.moduleCalls?.mayReachProjectGit?.(conn, callId)) {
+        throw new Error("Project の git に届くのは、それを名乗った tool（dev.banto/projectGit）を処理している呼び出しの中だけです");
+      }
+      const projectId = opts.moduleCalls.projectFor(conn, callId);
       if (!projectId) throw new Error("どの Project のための呼び出しか決められません（Project のための呼び出しを処理している間だけ届けます）");
       // 遅い線で bundle を運ぶ間、呼び出し元の待ちが切れないように進み具合を送る
       const progressToken = extra._meta?.progressToken;
@@ -1477,7 +1490,13 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const callerToolUseId = opts.moduleCalls?.toolUseIdFor?.(callerConn, callId);
     // **宛先にも呼び出しの印を渡す**（追加・2026-09-28）——宛先がさらに中継を呼ぶとき、この1件を名指せる
     const targetCall = opts.moduleCalls?.beginCall
-      ? opts.moduleCalls.beginCall(...targetArgs, callerToolUseId, { connName: callerConn, ...(callId ? { callId } : {}) })
+      ? opts.moduleCalls.beginCall(
+          ...targetArgs,
+          callerToolUseId,
+          { connName: callerConn, ...(callId ? { callId } : {}) },
+          // Project の git の口に届く印は、同梱の宛先の名乗りだけを信じる
+          targetInfo?.projectGit === true && target.meta.origin === "bundled" ? { projectGit: true } : undefined,
+        )
       : { id: undefined, end: opts.moduleCalls?.begin(...targetArgs) };
     const endTargetCall = targetCall.end;
 

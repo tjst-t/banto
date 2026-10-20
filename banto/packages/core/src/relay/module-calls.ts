@@ -76,6 +76,11 @@ interface CallEntry {
    * 60 秒で切れ、内側の承認カードも一緒に畳まれていた
    */
   parents: CallEntry[];
+  /**
+   * **この呼び出しの中でだけ Project の git の口に届く**（追加・2026-10-20、`dev.banto/projectGit`。レビュー L2）。中継で呼んだ
+   * 宛先の tool が名乗り、host が付ける
+   */
+  projectGit?: true;
 }
 
 export class ModuleCallTracker {
@@ -124,6 +129,8 @@ export class ModuleCallTracker {
     toolUseId?: string,
     /** **中継で呼んだ側の呼び出し**（`host-relay-endpoint.ts`）。人を待つ印をたどって立てる先（追加・2026-10-06） */
     parent?: { connName: string; callId?: string },
+    /** その呼び出しに付ける印（`projectGit`——宛先の tool が `dev.banto/projectGit` を名乗った） */
+    marks?: { projectGit?: true },
   ): { id: string; end: () => void } {
     const callId = randomBytes(12).toString("base64url");
     let calls = this.inFlight.get(connName);
@@ -141,6 +148,7 @@ export class ModuleCallTracker {
       ...(toolUseId ? { toolUseId } : {}),
       onEnd: new Set(),
       parents: parent ? this.entriesOf(parent.connName, parent.callId) : [],
+      ...(marks?.projectGit ? { projectGit: true as const } : {}),
     };
     calls.set(callId, entry);
     return {
@@ -367,6 +375,16 @@ export class ModuleCallTracker {
     if (origins.includes("turn")) return "turn";
     if (origins.includes("host")) return "host";
     return "canvas";
+  }
+
+  /**
+   * **その呼び出しの中で Project の git の口に届くか**（追加・2026-10-20、レビュー L2）。**印（`callId`）が要る**——印の無い問い
+   * では、同じ接続で並んで走っている別の呼び出しの印を借りられてしまう
+   */
+  mayReachProjectGit(connName: string, callId: string | undefined): boolean {
+    if (callId === undefined) return false;
+    const [one] = this.entriesOf(connName, callId);
+    return one?.projectGit === true;
   }
 
   /**

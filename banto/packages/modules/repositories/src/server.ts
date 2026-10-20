@@ -29,6 +29,7 @@ import {
   CANVAS_META_KEY,
   MODULE_META_KEY,
   PRESENTS_OWNED_SECRET_META_KEY,
+  PROJECT_GIT_META_KEY,
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
   callIdOf,
@@ -112,7 +113,8 @@ function branchTool(name: string, description: string) {
       },
       required: ["branch"],
     },
-    _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch", "repository", "account"] },
+    // 処理している間だけ、別のサーバの Project の git に届く（core の relayProjectGit*）
+    _meta: { [VISIBILITY_META_KEY]: "module", [AUDIT_ARGS_META_KEY]: ["branch", "repository", "account"], [PROJECT_GIT_META_KEY]: true },
   };
 }
 
@@ -310,7 +312,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
           "呼び出し元の Project が別のサーバのとき、ブランチを送る先（repository）とアカウント（account）。答えは {remote:false}・" +
           "{remote:true, handled:false, reason}・{remote:true, handled:true, ok:false, message}・{remote:true, repository, account, pinned}",
         inputSchema: { type: "object", properties: {} },
-        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true },
+        _meta: { [VISIBILITY_META_KEY]: "module", [VALUE_FREE_META_KEY]: true, [PROJECT_GIT_META_KEY]: true },
       },
       // ── Vault が、持ち主でない呼び元に GitHub のログインを渡す前に呼ぶ口（2026-10-18、Backlog #405。§2.4）。**中継からだけ**
       // （可視性 module）。host は役割 vault の同梱の Module からの中継を、依存を見ず人に聞かずに通す——確かめはここでする ──
