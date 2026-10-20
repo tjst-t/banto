@@ -10054,7 +10054,7 @@
       "number": 417,
       "kind": "task",
       "title": "均すの本体（mode・固定の表と寿命・選び方・Runner の固定と Fork の継承・読み直しの歯止め・送り直し・切り替えの記録・口）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "claude-accounts-balance",
       "dependsOn": [
         "balance-probe"
@@ -10068,7 +10068,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:11:21.638Z",
-      "updatedAt": "2026-10-20T05:11:21.638Z",
+      "updatedAt": "2026-10-20T05:51:26.190Z",
       "closedAt": null,
       "extra": {}
     },
