@@ -11843,7 +11843,7 @@
       "number": 492,
       "kind": "task",
       "title": "Shell：待たない形の結果で画面を名乗り、サイドバーの1件・会話のカードの「画面で見る」から開く",
-      "status": "ready",
+      "status": "backlog",
       "parent": "shell-service",
       "dependsOn": [
         "background-work-summary-relay",
@@ -11858,7 +11858,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:30:06.580Z",
-      "updatedAt": "2026-10-20T20:30:06.580Z",
+      "updatedAt": "2026-10-20T20:31:02.998Z",
       "closedAt": null,
       "extra": {}
     },
