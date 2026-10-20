@@ -9936,7 +9936,7 @@
       "number": 412,
       "kind": "task",
       "title": "POST /api/admin/update/rollback と設定の「更新」の「前の版に戻す」の画面",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "update-rollback",
       "dependsOn": [
         "rollback-history",
@@ -9951,7 +9951,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-19T22:57:13.582Z",
-      "updatedAt": "2026-10-19T22:57:13.582Z",
+      "updatedAt": "2026-10-20T00:04:35.481Z",
       "closedAt": null,
       "extra": {}
     },
