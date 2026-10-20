@@ -10604,7 +10604,7 @@
       "number": 443,
       "kind": "task",
       "title": "画面を Next の静的な書き出しにして core が同じオリジンで配る",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [],
       "milestone": null,
@@ -10616,7 +10616,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:42.121Z",
       "closedAt": null,
       "extra": {}
     },
