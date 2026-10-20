@@ -10432,7 +10432,7 @@
       "number": 436,
       "kind": "task",
       "title": "会社の PC と同じ条件で、署名の無い zip を展開した banto.exe が起きるか・通知が出るかを実測する（§9 の7・8）",
-      "status": "backlog",
+      "status": "ready",
       "parent": "desktop-0-measure",
       "dependsOn": [
         "desktop-dev-vm"
@@ -10446,7 +10446,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T10:06:16.971Z",
+      "updatedAt": "2026-10-20T10:06:59.425Z",
       "closedAt": null,
       "extra": {}
     },
