@@ -10242,7 +10242,7 @@
       "number": 425,
       "kind": "task",
       "title": "別のサーバでも新しい Project の始め方（手元のフォルダ／clone／新しいリポジトリ）をこの機械と揃える",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -10257,7 +10257,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T07:06:04.314Z",
-      "updatedAt": "2026-10-20T07:06:04.314Z",
+      "updatedAt": "2026-10-20T07:20:45.167Z",
       "closedAt": null,
       "extra": {}
     }
