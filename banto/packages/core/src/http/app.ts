@@ -142,7 +142,7 @@ import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
 import { ClaudeAccountLoginError, type ClaudeAccountLogin, type ClaudeLoginFailure } from "../claude-login/account-login.js";
-import { freshUsage, type ClaudeAccountStore } from "../claude-login/accounts.js";
+import { CLAUDE_ACCOUNT_MODES, freshUsage, type ClaudeAccountMode, type ClaudeAccountStore } from "../claude-login/accounts.js";
 import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
@@ -3996,14 +3996,16 @@ export function createApp(deps: AppDeps) {
           // 設定の画面が出すもの（v4-frontend.md §6.46）：アカウントごとの「いま使っている Project」（中継が起こしてから
           // 覚えたもの）・決めてある Project の並び（外すと並びから消える Project）・最後に読み直した時刻・本体のログイン
           const view = async () => {
-            const current = deps.claudeLogin?.currentAccounts() ?? new Map<string, string>();
+            // 上から順にの Project は最後に返事をしたもの、均すの Project は生きている固定先（直近1時間に使ったもの）
+            const current = deps.claudeLogin?.currentAccounts() ?? [];
             const projectName = (id: string) => deps.projectThread.getProject(id)?.name ?? id;
             const usageReadAt = deps.claudeLogin?.lastUsageReadAt();
             return {
               accounts: store.list().map((a) => ({
                 ...a,
-                usedBy: [...current].filter(([, accountId]) => accountId === a.id).map(([projectId]) => ({ projectId, name: projectName(projectId) })),
+                usedBy: current.filter((c) => c.accountId === a.id).map(({ projectId }) => ({ projectId, name: projectName(projectId) })),
               })),
+              mode: store.mode(),
               defaultOrder: store.defaultOrder(),
               thresholds: store.thresholds(),
               projectOrders: Object.entries(store.projectOrders())
@@ -4021,9 +4023,14 @@ export function createApp(deps: AppDeps) {
             const { failures } = await deps.claudeLogin.readUsage();
             return json(res, 200, { ...(await view()), failures });
           }
-          // **既定の並びと閾値**（banto 全体の設定、§2 の 5.・6.）。閾値は 0〜1（5時間と週で別々）。渡したものだけ変える
+          // **既定の並びと閾値と使い方**（banto 全体の設定、§2 の 5.・6.、「均す」の 1.）。閾値は 0〜1（5時間と週で別々）。
+          // 渡したものだけ変える
           if (sub === "/settings" && req.method === "PUT") {
-            const body = (await readJsonBody(req)) as { defaultOrder?: unknown; thresholds?: unknown } | undefined;
+            const body = (await readJsonBody(req)) as { defaultOrder?: unknown; thresholds?: unknown; mode?: unknown } | undefined;
+            const mode = body?.mode;
+            if (mode !== undefined && !CLAUDE_ACCOUNT_MODES.includes(mode as ClaudeAccountMode)) {
+              return json(res, 400, { error: `mode は ${CLAUDE_ACCOUNT_MODES.join("・")} のどれかで渡してください` });
+            }
             const order = body?.defaultOrder;
             const th = body?.thresholds as { fiveHour?: unknown; sevenDay?: unknown } | undefined;
             if (order !== undefined && !(Array.isArray(order) && order.every((x) => typeof x === "string"))) {
@@ -4035,6 +4042,7 @@ export function createApp(deps: AppDeps) {
             try {
               if (order !== undefined) store.setDefaultOrder(order as string[]);
               if (th !== undefined) store.setThresholds({ fiveHour: th.fiveHour as number, sevenDay: th.sevenDay as number });
+              if (mode !== undefined) store.setMode(mode as ClaudeAccountMode);
             } catch (err) {
               return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
             }
@@ -4103,25 +4111,51 @@ export function createApp(deps: AppDeps) {
             if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
             throw err;
           }
-          const body = (await readJsonBody(req)) as { order?: unknown } | undefined;
+          // 渡したものだけ変える（並びと使い方の少なくとも1つ）
+          const body = (await readJsonBody(req)) as { order?: unknown; mode?: unknown } | undefined;
           const order = body?.order;
-          if (order !== null && !(Array.isArray(order) && order.every((x) => typeof x === "string"))) {
+          const mode = body?.mode;
+          if (order === undefined && mode === undefined) {
+            return json(res, 400, { error: "order（アカウントの id の配列か null）か mode（null・balance・ordered）を渡してください" });
+          }
+          if (order !== undefined && order !== null && !(Array.isArray(order) && order.every((x) => typeof x === "string"))) {
             return json(res, 400, { error: "order はアカウントの id の配列か null（既定のまま）で渡してください" });
           }
+          if (mode !== undefined && mode !== null && !CLAUDE_ACCOUNT_MODES.includes(mode as ClaudeAccountMode)) {
+            return json(res, 400, { error: `mode は null（banto 全体と同じ）か ${CLAUDE_ACCOUNT_MODES.join("・")} で渡してください` });
+          }
           try {
-            store.setProjectOrder(projectId, order === null ? undefined : (order as string[]));
+            if (order !== undefined) store.setProjectOrder(projectId, order === null ? undefined : (order as string[]));
+            if (mode !== undefined) store.setProjectMode(projectId, mode === null ? undefined : (mode as ClaudeAccountMode));
           } catch (err) {
             return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
           }
         }
+        // いま使っているもの：上から順には最後に返事をしたもの（`currentAccount`）、均すは生きている固定先の全部
+        // （`pinnedAccounts`——Thread ごとに違いうる。§2「均す」の 9.）
         const current = deps.claudeLogin.currentAccountOf(projectId);
+        const effectiveMode = store.modeFor(projectId);
         json(res, 200, {
           order: store.projectOrder(projectId) ?? null,
           effectiveOrder: store.orderFor(projectId),
+          mode: store.projectMode(projectId) ?? null,
+          effectiveMode,
           ...(current ? { currentAccount: current } : {}),
+          ...(effectiveMode === "balance" ? { pinnedAccounts: deps.claudeLogin.pinnedAccountsOf(projectId) } : {}),
           ...(project.recentClaudeAccountSwitches?.length ? { lastSwitch: project.recentClaudeAccountSwitches.at(-1), recentSwitches: project.recentClaudeAccountSwitches } : {}),
         });
         return;
+      }
+
+      // **その会話のいまの Claude のアカウント**（`docs/specs/v4-security.md` §2「均す」の 9.——右上のメーター）。均すときの
+      // その Thread の生きている固定先。まだ固定が無ければ（上から順にの Project も）何も返さない
+      const threadClaudeAccountMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/claude-account$/);
+      if (threadClaudeAccountMatch && req.method === "GET") {
+        const threadId = decodeURIComponent(threadClaudeAccountMatch[1]!);
+        if (!deps.projectThread.getThread(threadId)) return json(res, 404, { error: "not found" });
+        if (!deps.claudeLogin) return json(res, 501, { error: "この banto は Claude のログインの中継を持っていません" });
+        const accountId = deps.claudeLogin.pinnedAccountOfThread(threadId);
+        return json(res, 200, accountId ? { accountId } : {});
       }
 
       // **この Project に Claude のログインを使わせる**（決定・2026-09-27、ユーザー。`docs/specs/v4-security.md` §2）。

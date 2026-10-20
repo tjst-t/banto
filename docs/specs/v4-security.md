@@ -1763,7 +1763,7 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
        Thread の `lastTurn.rateLimit.continueAt`（と `continuationCancelled`）で読める
      - 余白（リセットの1分後）は E2E だけが `BANTO_TEST_RATE_LIMIT_MARGIN_MS` で縮める
 
-#### 均す——閾値の下で使用率をそろえる（決定・2026-10-20、ユーザー。Fable のレビュー（2026-10-20）を反映。未実装）
+#### 均す——閾値の下で使用率をそろえる（決定・2026-10-20、ユーザー。Fable のレビュー（2026-10-20）を反映。core は実装・2026-10-20、Backlog #417。画面は #418）
 
 **何をするか**：いまの選び方（並びの先頭から、閾値を越えていない最初のもの＝「上から順に」）に加えて、**使用率がそろうように
 アカウントを散らす「均す」**を足し、**既定を「均す」**にする。「上から順に」は banto 全体と Project ごとの設定で選べる。
@@ -1832,6 +1832,21 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
    `x-banto-thread-id` の Thread の生きている固定先、無ければ何も返さない）で出し、まだ固定が無ければ何も出さない。設定の
    「いま使っている Project」（`usedBy`）も生きている固定から引き、1つの Project を複数のアカウントの下に出してよい。
    「上から順に」の Project は今どおり
+- **形**（実装・2026-10-20、Backlog #417。`claude-login/relay.ts`・`select.ts`・`accounts.ts`）：
+  - 台帳の `mode`・`projectModes`（無ければ均す）。口は `GET /api/claude-accounts` の `mode`、`PUT /api/claude-accounts/settings` の
+    `mode`、`GET|PUT /api/projects/:id/claude-accounts` の `mode`（null＝banto 全体と同じ）・`effectiveMode`。均すの Project では
+    `currentAccount` を返さず `pinnedAccounts`（生きている固定先、並びの順）を返す。`GET /api/threads/:id/claude-account` は
+    `{ accountId }`（無ければ `{}`）
+  - 固定の表の鍵は `<Project id>\0<x-claude-code-session-id>`（印が無ければ空）。Runner は `runnerEnvFor(projectId, threadId,
+    { sessionId, inheritFrom? }, baseUrl)`——`sessionId` は新しい会話・Fork なら host が決めた id、続きなら続ける会話の id。
+    `inheritFrom` は Fork の最初のターンの親のセッション（親の固定が生きていて使えるときだけ継ぐ）
+  - 切り替えの記録は、同じ鍵で固定先を移したときに種を持たせ、**移った先が上限で断られずに返事をしたとき**に1件
+  - 使用率の読み直しは**候補（並びのうちこの要求でまだ試していないもの）が2つ以上のときだけ**（1つなら選ぶ余地が無い）。
+    台帳に使用率が無いアカウントも「古い」に数える
+  - 偽の Runner（`relayRequests`）も本物と同じく `x-claude-code-session-id` を付ける。E2E は `claude-accounts-balance.spec.ts`。
+    「上から順に」を見る既存の spec（`claude-accounts-switch`・`-settings`・`-thread-ui`）は最初に `mode: "ordered"` にする
+  - 画面（使い方の2択・右上のメーターを固定先から出す・「直近1時間に使った Project」）はまだ（#418）——右上のメーターは今も
+    `currentAccount ?? 並びの先頭` で、均すでは固定先と食い違いうる
 - **承知していること**：(a) 「上から順に」から「均す」に変えた直後は、生きているセッションが全部選び直しになりキャッシュを
   1回失う（稀なので受け入れる）。(b) 均すと全部のアカウントの5時間の窓が同じころ始まり同じころリセットされるので、「全部越え」が
   揃って起きやすい（総量は同じ）

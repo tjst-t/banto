@@ -185,3 +185,35 @@ test(
     assert.equal(new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: join(dir, "h.json"), now: () => now }).get(HOST_ACCOUNT_ID)!.label, "手元");
   }),
 );
+
+// **使い方**（§2「均す」の 1.）：既定は均す。Project ごとに決められ、null で banto 全体と同じに戻る
+test(
+  "使い方：既定は均す。banto 全体と Project ごとに決められ、起こし直しても残る。知らない値は断る",
+  withDir((dir) => {
+    const hostPath = join(dir, "host.json");
+    const store = new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath });
+    assert.equal(store.mode(), "balance");
+    assert.equal(store.modeFor("p1"), "balance");
+    store.setProjectMode("p1", "ordered");
+    assert.equal(store.projectMode("p1"), "ordered");
+    assert.equal(store.modeFor("p1"), "ordered");
+    assert.equal(store.projectMode("p2"), undefined);
+    store.setMode("ordered");
+    store.setProjectMode("p2", "balance");
+    const again = new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath });
+    assert.equal(again.mode(), "ordered");
+    assert.equal(again.modeFor("p2"), "balance");
+    assert.equal(again.modeFor("p3"), "ordered");
+    again.setProjectMode("p2", undefined);
+    assert.equal(again.modeFor("p2"), "ordered");
+    assert.throws(() => again.setMode("random" as never), /使い方は/);
+    assert.throws(() => again.setProjectMode("p1", "random" as never), /使い方は/);
+    // 台帳に知らない使い方があれば起動を止める（黙って既定に読み替えない）
+    const path = join(dir, "claude-accounts.json");
+    const ledger = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify({ ...ledger, mode: "spread" }));
+    assert.throws(() => new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath }), /壊れています/);
+    writeFileSync(path, JSON.stringify({ ...ledger, projectModes: { p1: "spread" } }));
+    assert.throws(() => new ClaudeAccountStore({ dataDir: dir, hostCredentialsPath: hostPath }), /壊れています/);
+  }),
+);

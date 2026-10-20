@@ -95,6 +95,14 @@ test("切り替えの1行（warn の形も）・全部越えのカードと自�
     await withOwnHost(
       async (own) => {
         await login(page, own);
+        // この spec が見るのは「上から順に」（既定は均す——v4-security.md §2「均す」。均すは claude-accounts-balance.spec.ts）
+        {
+          const ordered = await page.context().request.put(`${own.url}/api/claude-accounts/settings`, {
+            headers: { "x-banto-client": "1", origin: FRONTEND_BASE_URL, "content-type": "application/json" },
+            data: { mode: "ordered" },
+          });
+          expect(ordered.status(), await ordered.text()).toBe(200);
+        }
         // ---- アカウント B を足す（画面と同じ口） -------------------------------------------------------------
         fakeApi.addLogin("code-b", { accessToken: "tok-b", email: B_LABEL });
         const started = await human<{ loginId: string; url: string }>(page, own, "/api/claude-accounts/login");

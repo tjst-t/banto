@@ -29,12 +29,23 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
 import { HOST_ACCOUNT_ID, usageFromUsageApi, type ClaudeAccountStore } from "./accounts.js";
-import { blockedBy, chooseAccount, earliestRecovery, type Blocked } from "./select.js";
+import { blockedBy, chooseAccount, chooseBalanced, earliestRecovery, type Blocked, type Choice } from "./select.js";
 
 const UPSTREAM = "https://api.anthropic.com";
 /** アカウントの使用率を読む口（§2 の 7.。#397 で scope `user:inference user:profile` で通るのを確かめた） */
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const USAGE_READ_TIMEOUT_MS = 15_000;
+/**
+ * **固定の寿命**（§2「均す」の 2.）：最後の要求から1時間（プロンプトのキャッシュの寿命。上流の寿命は最後にキャッシュを
+ * 触った時刻から数えるので、中継が上流へ送った時刻を基準にする）
+ */
+const PIN_TTL_MS = 60 * 60_000;
+/** 均すときに選ぶ前に読み直すのは、台帳の使用率がこれより古いアカウントだけ。試みた時刻からこの間は試み直さない（§2「均す」の 6.） */
+const USAGE_STALE_MS = 30 * 60_000;
+/** 選ぶ側が読み直しを待つのはここまで。過ぎたら手元の値で選び、読み直しは裏で続ける */
+const USAGE_WAIT_MS = 3_000;
+/** セッションの印（会話の本体・`claude -p`・claude-agent-acp が要求ごとに付ける。§2「均す」の実測）。上流へもそのまま流す */
+export const SESSION_ID_HEADER = "x-claude-code-session-id";
 /**
  * **試し直すために本文を持つ上限**（API の要求の上限 32 MB）。超えるものは持たずに流し、401 でも送り直さない
  */
@@ -195,6 +206,22 @@ export interface ClaudeAccountSwitch {
   allOver?: true;
 }
 
+/**
+ * **固定の表の1行**（§2「均す」の 2.）。鍵は Project＋セッション。`movedFrom` は、同じ鍵で固定先を移したがまだその
+ * アカウントが返事をしていない（切り替えの記録は、移った先が返事をしたときに1件——上限で断られた返事は数えない）
+ */
+interface Pin {
+  projectId: string;
+  accountId: string;
+  /** 最後に上流へ送った時刻（ミリ秒）。ここから1時間で切れる */
+  lastAt: number;
+  /** 選んでから、まだ上流の返事が来ていない（使用率に映っていない——選ぶときに重みを足す） */
+  awaiting: boolean;
+  /** その鍵の要求を出した Thread（本体の要求なら分かる。右上のメーターの口が引く） */
+  threadId?: string;
+  movedFrom?: { from: string; reason: ClaudeAccountSwitchReason };
+}
+
 /** 並びの全部が閾値を越えた（受信箱に1枚。鍵は並びの中身——Project の並びごとに1枚） */
 export interface ClaudeAccountsAllOver {
   key: string;
@@ -243,6 +270,8 @@ export interface ClaudeLoginRelayDeps {
   tokenUrl?: string;
   /** 使用率を読む口（試験・E2E で差し替える。既定は本番の `/api/oauth/usage`） */
   usageUrl?: string;
+  /** 均すときに選ぶ側が読み直しを待つ上限（試験だけが縮める。既定は3秒） */
+  usageWaitMs?: number;
   /** 中継が取り直すか（既定はする。切れば今までどおり読むだけ） */
   refreshEnabled?: boolean;
   now?: () => Date;
@@ -280,6 +309,12 @@ export class ClaudeLoginRelay {
   private readonly recoveryTimers = new Map<string, NodeJS.Timeout>();
   /** 最後に全部の使用率を読み直した時刻 */
   private usageReadAt: string | undefined;
+  /** **固定の表**（均すとき、§2「均す」の 2.）。鍵は `pinKey`。メモリだけ（起こし直したら全部選び直す） */
+  private readonly pins = new Map<string, Pin>();
+  /** アカウントごとの、使用率の読み直しを試みた時刻（成否によらない——読めないものを選ぶたびに読みに行かない） */
+  private readonly usageAttemptAt = new Map<string, number>();
+  /** アカウントごとの、走っている読み直し（同時に来た選びは同じものを待つ） */
+  private readonly usageReads = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
@@ -318,7 +353,13 @@ export class ClaudeLoginRelay {
    * 誰も取り直さず約8時間で本体の会話まで 401 になる。そのときは今の形（`~/.claude` を自分で読む）に付随の通信を止める
    * 印だけを足す
    */
-  async runnerEnvFor(projectId: string, threadId: string, baseUrl: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string | undefined>> {
+  async runnerEnvFor(
+    projectId: string,
+    threadId: string,
+    session: RunnerSession,
+    baseUrl: string,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<Record<string, string | undefined>> {
     if (this.deps.refreshEnabled === false) return { ...env, ...NONESSENTIAL_TRAFFIC_ENV };
     let secret = this.runnerSecrets.get(projectId);
     if (!secret) {
@@ -327,19 +368,32 @@ export class ClaudeLoginRelay {
     }
     const base = { ...env };
     for (const name of UPSTREAM_ENV) delete base[name];
+    // **均すときは、ターンの始めにそのセッションを固定する**（§2「均す」の 3.）。契約の種類はその固定先のもの
+    // ——`accountFor(projectId)`（上から順に）は均すでは固定先と食い違う
+    const accountId =
+      this.deps.accounts.modeFor(projectId) === "balance"
+        ? (await this.pinFor(projectId, pinKey(projectId, session.sessionId), threadId, session.inheritFrom !== undefined ? pinKey(projectId, session.inheritFrom) : undefined))
+            ?.accountId
+        : this.accountFor(projectId);
     return {
       ...base,
       ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
       CLAUDE_CODE_OAUTH_TOKEN: secret,
-      ...(await this.accountEnv(projectId)),
+      ...(await this.accountEnvOf(accountId)),
       ...NONESSENTIAL_TRAFFIC_ENV,
       ANTHROPIC_CUSTOM_HEADERS: `${THREAD_ID_HEADER}: ${threadId}`,
     };
   }
 
-  /** 契約の種類（秘密ではない）。いまその Project で選ばれるアカウントのもの。ログインしていなければ入れない（中継に来たときに理由を返す） */
-  private async accountEnv(projectId: string): Promise<Record<string, string>> {
-    const accountId = this.accountFor(projectId);
+  /**
+   * 契約の種類（秘密ではない）。コンテナの環境はいまその Project で上から順に選ばれるもの（起こすときに決まる——
+   * 中のセッションごとの固定はまだ無い）。ログインしていなければ入れない（中継に来たときに理由を返す）
+   */
+  private accountEnv(projectId: string): Promise<Record<string, string>> {
+    return this.accountEnvOf(this.accountFor(projectId));
+  }
+
+  private async accountEnvOf(accountId: string | undefined): Promise<Record<string, string>> {
     const status: HostLoginStatus = accountId
       ? await readHostClaudeAccount(this.deps.accounts.credentialsPathOf(accountId))
       : { loggedIn: false, reason: "使える Claude のアカウントがありません" };
@@ -382,14 +436,51 @@ export class ClaudeLoginRelay {
     return chooseAccount(store.orderFor(projectId), (id) => store.usageOf(id), store.thresholds(), this.now(), skip);
   }
 
-  /** その Project が最後に使ったアカウント（Project 設定の観測。起こしてから1度も使っていなければ undefined） */
+  /**
+   * その Project が最後に使ったアカウント（上から順にの Project 設定の観測。起こしてから1度も使っていなければ undefined）。
+   * 均すの Project では持たない（隣の Thread のものが出る——`pinnedAccountsOf` を使う）
+   */
   currentAccountOf(projectId: string): string | undefined {
-    return this.current.get(projectId);
+    return this.deps.accounts.modeFor(projectId) === "ordered" ? this.current.get(projectId) : undefined;
   }
 
-  /** いま各 Project が使っているアカウント（Project の id → アカウントの id。起こしてから返事をしたものだけ） */
-  currentAccounts(): Map<string, string> {
-    return new Map(this.current);
+  /** **均すの Project の、生きている固定先**（直近1時間に使ったアカウント。並びの順、重ねない） */
+  pinnedAccountsOf(projectId: string): string[] {
+    const used = new Set<string>();
+    for (const [key, pin] of this.pins) if (pin.projectId === projectId && this.livePin(key)) used.add(pin.accountId);
+    const order = this.deps.accounts.orderFor(projectId);
+    return [...used].sort((a, b) => rank(order, a) - rank(order, b));
+  }
+
+  /**
+   * **いま各 Project が使っているアカウント**（設定の「いま使っている Project」、§2「均す」の 9.）。上から順にの Project は
+   * 最後に返事をしたもの、均すの Project は生きている固定先の全部（1つの Project が複数のアカウントの下に出てよい）
+   */
+  currentAccounts(): Array<{ projectId: string; accountId: string }> {
+    const out: Array<{ projectId: string; accountId: string }> = [];
+    for (const [projectId, accountId] of this.current) {
+      if (this.deps.accounts.modeFor(projectId) === "ordered") out.push({ projectId, accountId });
+    }
+    const balanced = new Set<string>();
+    for (const pin of this.pins.values()) balanced.add(pin.projectId);
+    for (const projectId of balanced) {
+      if (this.deps.accounts.modeFor(projectId) !== "balance") continue;
+      for (const accountId of this.pinnedAccountsOf(projectId)) out.push({ projectId, accountId });
+    }
+    return out;
+  }
+
+  /**
+   * **その Thread の生きている固定先**（右上のメーター、`GET /api/threads/:id/claude-account`。§2「均す」の 9.）。
+   * 無ければ undefined。同じ Thread に鍵が複数あれば（Clear のあと等）最後に送ったもの
+   */
+  pinnedAccountOfThread(threadId: string): string | undefined {
+    let best: Pin | undefined;
+    for (const [key, pin] of this.pins) {
+      if (pin.threadId !== threadId || !this.livePin(key)) continue;
+      if (!best || pin.lastAt >= best.lastAt) best = pin;
+    }
+    return best?.accountId;
   }
 
   /**
@@ -403,15 +494,7 @@ export class ClaudeLoginRelay {
     await Promise.all(
       store.list().map(async ({ id }) => {
         try {
-          const outcome = await this.refresherFor(id).ensureFresh();
-          const token = outcome.accessToken;
-          if (!token) throw new Error(outcome.kind === "failed" ? outcome.reason : "トークンがありません");
-          const res = await fetch(this.deps.usageUrl ?? CLAUDE_USAGE_URL, {
-            headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
-            signal: AbortSignal.timeout(USAGE_READ_TIMEOUT_MS),
-          });
-          if (!res.ok) throw new Error(`使用率の口が ${res.status} を返しました`);
-          store.recordUsageRead(id, usageFromUsageApi(await res.json()));
+          await this.readUsageOf(id);
         } catch (err) {
           failures.push({ accountId: id, reason: err instanceof Error ? err.message : String(err) });
         }
@@ -419,6 +502,151 @@ export class ClaudeLoginRelay {
     );
     this.usageReadAt = this.now().toISOString();
     return { readAt: this.usageReadAt, failures };
+  }
+
+  /** 1つのアカウントの使用率を `/api/oauth/usage` で読み、台帳に覚える。読めなければ投げる */
+  private async readUsageOf(id: string): Promise<void> {
+    this.usageAttemptAt.set(id, this.now().getTime());
+    const outcome = await this.refresherFor(id).ensureFresh();
+    const token = outcome.accessToken;
+    if (!token) throw new Error(outcome.kind === "failed" ? outcome.reason : "トークンがありません");
+    const res = await fetch(this.deps.usageUrl ?? CLAUDE_USAGE_URL, {
+      headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
+      signal: AbortSignal.timeout(USAGE_READ_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`使用率の口が ${res.status} を返しました`);
+    this.deps.accounts.recordUsageRead(id, usageFromUsageApi(await res.json()));
+  }
+
+  /**
+   * **選ぶ前に、古い使用率だけを読み直す**（§2「均す」の 6.——`host` のアカウントは人の `claude` も使い、その分は中継を
+   * 通らない）。候補のうち台帳の使用率が30分より古い（一度も読んでいない）ものだけ。試みた時刻から30分は試み直さない。
+   * 待つのは3秒まで（過ぎたら手元の値で選び、読み直しは裏で続けて台帳に書く）。同時に来た選びは同じ読み直しを待つ。
+   * 読めなくても選択は止めない。候補が1つなら選ぶ余地が無いので読まない
+   */
+  private async refreshStaleUsage(candidates: readonly string[]): Promise<void> {
+    if (candidates.length < 2) return;
+    const now = this.now().getTime();
+    const waits: Promise<void>[] = [];
+    for (const id of candidates) {
+      const running = this.usageReads.get(id);
+      if (running) {
+        waits.push(running);
+        continue;
+      }
+      const readAt = this.deps.accounts.usageOf(id)?.readAt;
+      if (readAt !== undefined && now - Date.parse(readAt) < USAGE_STALE_MS) continue;
+      const tried = this.usageAttemptAt.get(id);
+      if (tried !== undefined && now - tried < USAGE_STALE_MS) continue;
+      const read = this.readUsageOf(id)
+        .catch((err: unknown) => console.warn(`[claude-login] ${id} の使用率を読み直せませんでした（手元の値で選びます）: ${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => this.usageReads.delete(id));
+      this.usageReads.set(id, read);
+      waits.push(read);
+    }
+    if (waits.length === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(waits),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, this.deps.usageWaitMs ?? USAGE_WAIT_MS);
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+
+  /** 生きている固定（寿命の切れたものは捨てて undefined） */
+  private livePin(key: string): Pin | undefined {
+    const pin = this.pins.get(key);
+    if (!pin) return undefined;
+    if (this.now().getTime() - pin.lastAt >= PIN_TTL_MS) {
+      this.pins.delete(key);
+      return undefined;
+    }
+    return pin;
+  }
+
+  /** 固定先から離れる理由：閾値越え・上限で断った（`Blocked`）、並びに無い（`order`）、どれでもなければ使えなかった */
+  private leaveReason(accountId: string, order: readonly string[]): ClaudeAccountSwitchReason {
+    if (!order.includes(accountId)) return { kind: "order" };
+    return blockedBy(this.deps.accounts.usageOf(accountId), this.deps.accounts.thresholds(), this.now()) ?? { kind: "unavailable" };
+  }
+
+  /** 固定先がいま使えないなら、その理由（使えるなら undefined）。ログインが壊れているかは送るまで分からない */
+  private pinProblem(pin: Pin, order: readonly string[]): ClaudeAccountSwitchReason | undefined {
+    if (!order.includes(pin.accountId)) return { kind: "order" };
+    return blockedBy(this.deps.accounts.usageOf(pin.accountId), this.deps.accounts.thresholds(), this.now());
+  }
+
+  /** 均すときの選び（まだ返事の来ていない固定の数を重みにする） */
+  private chooseBalanced(order: readonly string[], skip?: ReadonlySet<string>): Choice | undefined {
+    const store = this.deps.accounts;
+    const pending = new Map<string, number>();
+    for (const [key, pin] of this.pins) if (pin.awaiting && this.livePin(key)) pending.set(pin.accountId, (pending.get(pin.accountId) ?? 0) + 1);
+    return chooseBalanced(order, (id) => store.usageOf(id), store.thresholds(), this.now(), (id) => pending.get(id) ?? 0, skip);
+  }
+
+  /**
+   * **固定先を移す・作る**。前の固定があれば（同じ鍵で先が変わった）切り替えの記録の種を持たせる——記録するのは移った先が
+   * 返事をしたとき。最初の選び・寿命切れのあとの選び直しは記録しない（前が無い）
+   */
+  private setPin(key: string, projectId: string, accountId: string, prev: Pin | undefined, reason?: ClaudeAccountSwitchReason, threadId?: string): Pin {
+    const order = this.deps.accounts.orderFor(projectId);
+    const from = prev?.movedFrom?.from ?? prev?.accountId;
+    const movedFrom =
+      prev && from !== undefined && from !== accountId
+        ? { from, reason: prev.movedFrom?.reason ?? reason ?? this.leaveReason(prev.accountId, order) }
+        : undefined;
+    const pin: Pin = {
+      projectId,
+      accountId,
+      lastAt: this.now().getTime(),
+      awaiting: prev?.accountId === accountId ? prev.awaiting : true,
+      ...((threadId ?? prev?.threadId) ? { threadId: threadId ?? prev?.threadId } : {}),
+      ...(movedFrom ? { movedFrom } : {}),
+    };
+    this.pins.set(key, pin);
+    return pin;
+  }
+
+  /**
+   * **その鍵の固定先**（均すとき、§2「均す」の 2.〜5.）：生きていて使える固定があればそれ。無ければ（最初・寿命切れ）
+   * 継ぐ元（Fork の親）の生きていて使える固定を継ぎ、それも無ければ選ぶ。固定先が閾値を越えた・上限で断られた・並びに
+   * 無いときも選び直す。**選んだらすぐ表に入れる**（同じセッションの要求が2つ同時に来ても別々に選ばない——読み直しの
+   * `await` のあとで表を見直す）
+   */
+  private async pinFor(projectId: string, key: string, threadId: string | undefined, inheritKey?: string): Promise<(Choice & { pin: Pin }) | undefined> {
+    const order = this.deps.accounts.orderFor(projectId);
+    const reuse = (): (Choice & { pin: Pin }) | undefined => {
+      const own = this.livePin(key);
+      if (own) {
+        if (this.pinProblem(own, order)) return undefined;
+        if (threadId) own.threadId = threadId;
+        return { accountId: own.accountId, allOver: false, pin: own };
+      }
+      const parent = inheritKey !== undefined ? this.livePin(inheritKey) : undefined;
+      if (parent && !this.pinProblem(parent, order)) {
+        const pin = this.setPin(key, projectId, parent.accountId, undefined, undefined, threadId);
+        pin.awaiting = parent.awaiting;
+        return { accountId: pin.accountId, allOver: false, pin };
+      }
+      return undefined;
+    };
+    const quick = reuse();
+    if (quick) return quick;
+    await this.refreshStaleUsage(order);
+    const again = reuse();
+    if (again) return again;
+    const prev = this.livePin(key);
+    const choice = this.chooseBalanced(order);
+    if (!choice) return undefined;
+    // 全部越えで、固定先が一番早く戻るものなら、そのまま（移らない）
+    if (prev && prev.accountId === choice.accountId) {
+      if (threadId) prev.threadId = threadId;
+      return { ...choice, pin: prev };
+    }
+    return { ...choice, pin: this.setPin(key, projectId, choice.accountId, prev, prev ? this.pinProblem(prev, order) : undefined, threadId) };
   }
 
   /** 最後に全部を読み直した時刻（起こしてから。設定の「n分前に読みました」） */
@@ -449,10 +677,12 @@ export class ClaudeLoginRelay {
     return earliest;
   }
 
-  /** **アカウントを外した**：その取り直し役と開いている知らせを忘れる（同じ id が戻ることは無い） */
+  /** **アカウントを外した**：その取り直し役と開いている知らせ・そのアカウントの固定を全部忘れる（同じ id が戻ることは無い） */
   forgetAccount(accountId: string): void {
     this.refreshers.delete(accountId);
     this.openTrouble.delete(accountId);
+    this.usageAttemptAt.delete(accountId);
+    for (const [key, pin] of this.pins) if (pin.accountId === accountId) this.pins.delete(key);
   }
 
   private refresherFor(accountId: string): CredentialRefresher {
@@ -517,7 +747,20 @@ export class ClaudeLoginRelay {
       return;
     }
     const order = this.deps.accounts.orderFor(projectId);
-    const first = this.choose(projectId);
+    // Thread の印は本体用の合言葉で来たときだけ読む（コンテナから来たものは無視する）
+    const threadHeader = caller.kind === "runner" ? req.headers[THREAD_ID_HEADER] : undefined;
+    const threadId = typeof threadHeader === "string" && threadHeader ? threadHeader : undefined;
+    // **均すときは固定の表を引く**（§2「均す」の 2.・3.）。鍵は Project＋セッションの印（無ければ Project ごとに1つ）
+    const balance = this.deps.accounts.modeFor(projectId) === "balance";
+    const sessionHeader = req.headers[SESSION_ID_HEADER];
+    const key = pinKey(projectId, typeof sessionHeader === "string" && sessionHeader ? sessionHeader : undefined);
+    /** この要求の前の固定（全部に断られたら戻す——固定は動かさない） */
+    const pinBefore = balance ? this.livePin(key) : undefined;
+    const pinSnapshot = pinBefore ? { ...pinBefore } : undefined;
+    const pinned = balance ? await this.pinFor(projectId, key, threadId) : undefined;
+    // 上から順にの「最後に返事をしたアカウント」は均すでは持たない（使い方を戻したとき、古い値と比べて切り替えにしない）
+    if (balance) this.current.delete(projectId);
+    const first = balance ? pinned : this.choose(projectId);
     if (!first) {
       refuse(res, 500, "使える Claude のアカウントがありません（並びが空です）");
       return;
@@ -533,6 +776,10 @@ export class ClaudeLoginRelay {
     this.bufferedBytes += held;
     /** 本文を持てた（または本文が無い）——401 の試し直し・429 の送り直しができる */
     const resendable = !hasBody || body.buffered !== undefined;
+    // 上流へ送る時刻が、固定の寿命の基準
+    if (pinned) pinned.pin.lastAt = this.now().getTime();
+    /** 送り直しの次の候補：使い方に従う（均すなら残りから余裕の比の小さい順） */
+    const nextCandidate = (tried: ReadonlySet<string>) => (balance ? this.chooseBalanced(order, tried) : this.choose(projectId, tried));
     const send = (bearer: string) =>
       fetch(`${this.upstream}${path}`, {
         method: req.method ?? "POST",
@@ -561,7 +808,7 @@ export class ClaudeLoginRelay {
         if (attempt.kind === "refused") {
           // そのアカウントはログインしていない：並びに次があればそれへ。無ければ、前に断られた 429 があればそれを、
           // 無ければ理由を返す
-          const next = resendable ? this.choose(projectId, tried) : undefined;
+          const next = resendable ? nextCandidate(tried) : undefined;
           if (next) {
             candidate = next.accountId;
             candidateAllOver = next.allOver;
@@ -579,7 +826,7 @@ export class ClaudeLoginRelay {
         accountId = candidate;
         allOver = candidateAllOver;
         if (!rejectedByLimit(upstreamRes) || !resendable) break;
-        const next = this.choose(projectId, tried);
+        const next = nextCandidate(tried);
         if (!next) {
           exhausted = true;
           break;
@@ -598,11 +845,8 @@ export class ClaudeLoginRelay {
     s.lastRequestAt = at;
     if (upstreamRes.status === 401) s.lastUnauthorizedAt = at;
     table.set(projectId, s);
-    if (!rejectedByLimit(upstreamRes)) {
-      // Thread の印は本体用の合言葉で来たときだけ読む（コンテナから来たものは無視する）
-      const threadHeader = caller.kind === "runner" ? req.headers[THREAD_ID_HEADER] : undefined;
-      this.noteServed(projectId, accountId, order, typeof threadHeader === "string" && threadHeader ? threadHeader : undefined, allOver);
-    }
+    if (pinned) this.notePinServed(key, pinned.pin, pinSnapshot, accountId, order, threadId, allOver, rejectedByLimit(upstreamRes));
+    else if (!rejectedByLimit(upstreamRes)) this.noteServed(projectId, accountId, order, threadId, allOver);
     const headers: Record<string, string> = {};
     // fetch は圧縮を解いて渡すので、長さと符号化の見出しは付け直さない
     upstreamRes.headers.forEach((v, k) => {
@@ -671,6 +915,44 @@ export class ClaudeLoginRelay {
       }
     }
     return { kind: "response", res: upstreamRes };
+  }
+
+  /**
+   * **均すときの返事のあと**（§2「均す」の 7.・8.）：送り直して通ったら、その要求の固定をそのアカウントへ移す。全部に
+   * 断られたら固定は動かさない（この要求の前のものに戻す）。**同じ固定の鍵で固定先が変わり、移った先が返事をしたときだけ**
+   * 切り替えを知らせる（上限で断られた返事は数えない。最初の選び・寿命切れのあとの選び直しは記録しない）
+   */
+  private notePinServed(
+    key: string,
+    pin: Pin,
+    before: Pin | undefined,
+    accountId: string,
+    order: readonly string[],
+    threadId: string | undefined,
+    allOver: boolean,
+    rejected: boolean,
+  ): void {
+    // その鍵の固定がこの要求の間に替わっていれば（外した・別の要求が移した）、そちらを正とする
+    if (this.pins.get(key) !== pin) return;
+    if (rejected) {
+      if (before) this.pins.set(key, { ...before, lastAt: pin.lastAt, ...(pin.threadId ? { threadId: pin.threadId } : {}) });
+      else pin.awaiting = false;
+      return;
+    }
+    const current = pin.accountId === accountId ? pin : this.setPin(key, pin.projectId, accountId, pin, this.leaveReason(pin.accountId, order), threadId);
+    current.awaiting = false;
+    const moved = current.movedFrom;
+    if (!moved) return;
+    delete current.movedFrom;
+    if (moved.from === accountId) return;
+    this.deps.onAccountSwitched?.({
+      projectId: current.projectId,
+      ...(threadId ? { threadId } : {}),
+      from: moved.from,
+      to: accountId,
+      reason: moved.reason,
+      ...(allOver ? { allOver: true as const } : {}),
+    });
   }
 
   /** **返事を返したアカウントを覚え、替わっていたら切り替えを知らせる**（起こしてから最初の1回は比べる相手が無い） */
@@ -749,6 +1031,24 @@ export class ClaudeLoginRelay {
     writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.secrets)), { mode: 0o600 });
     renameSync(tmp, this.deps.secretsPath);
   }
+}
+
+/** 会話の本体のセッション（core が先に知っている id。Fork の最初のターンは親のセッションの固定を継ぐ） */
+export interface RunnerSession {
+  sessionId: string;
+  /** Fork の最初のターン：継ぐ親のセッションの id */
+  inheritFrom?: string;
+}
+
+/** 固定の表の鍵：Project＋セッション。印の無い要求は Project ごとに1つ */
+function pinKey(projectId: string, sessionId: string | undefined): string {
+  return `${projectId}\u0000${sessionId ?? ""}`;
+}
+
+/** 並びの中の位置（無ければ後ろ） */
+function rank(order: readonly string[], id: string): number {
+  const i = order.indexOf(id);
+  return i === -1 ? order.length : i;
 }
 
 function loadSecrets(path: string): Record<string, string> {

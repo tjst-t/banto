@@ -89,6 +89,14 @@ test("閾値を越えたら次のアカウントへ・リセットで戻る・�
     await withOwnHost(
       async (own) => {
         await login(page, own);
+        // この spec が見るのは「上から順に」（既定は均す——v4-security.md §2「均す」。均すは claude-accounts-balance.spec.ts）
+        {
+          const ordered = await page.context().request.put(`${own.url}/api/claude-accounts/settings`, {
+            headers: { "x-banto-client": "1", origin: FRONTEND_BASE_URL, "content-type": "application/json" },
+            data: { mode: "ordered" },
+          });
+          expect(ordered.status(), await ordered.text()).toBe(200);
+        }
         // ---- アカウントを2つ足す（画面と同じ口：始める → 向こうに出た `<コード>#<state>` を貼る） ------------------------
         const ids: Record<string, string> = { host: "host" };
         for (const name of ["b", "c"]) {

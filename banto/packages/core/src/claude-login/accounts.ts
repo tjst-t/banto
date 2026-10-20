@@ -64,6 +64,14 @@ export interface ClaudeAccount {
   usage?: AccountUsage;
 }
 
+/**
+ * **使い方**（§2「均す」の 1.）：`balance`＝均す（既定。セッションごとに固定し、区切りで余裕のあるものを選ぶ）、
+ * `ordered`＝上から順に（並びの先頭から、閾値を越えていない最初のもの）
+ */
+export type ClaudeAccountMode = "balance" | "ordered";
+export const CLAUDE_ACCOUNT_MODES: readonly ClaudeAccountMode[] = ["balance", "ordered"];
+export const DEFAULT_CLAUDE_ACCOUNT_MODE: ClaudeAccountMode = "balance";
+
 interface Ledger {
   version: 1;
   accounts: ClaudeAccount[];
@@ -76,6 +84,10 @@ interface Ledger {
   projectOrders?: Record<string, string[]>;
   /** 切り替えの閾値（0〜1、5時間と週で別々、§2 の 6.）。無ければ既定（95%・95%）。前からある台帳には無い */
   thresholds?: UsageThresholds;
+  /** banto 全体の使い方。無ければ既定（均す）。前からある台帳には無い */
+  mode?: ClaudeAccountMode;
+  /** Project ごとの使い方。鍵は Project の id。無ければ banto 全体と同じ */
+  projectModes?: Record<string, ClaudeAccountMode>;
 }
 
 export interface ClaudeAccountStoreDeps {
@@ -186,6 +198,40 @@ export class ClaudeAccountStore {
       if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > 1) throw new Error(`${name}の閾値は 0 より大きく 1 以下で渡してください`);
     }
     this.ledger.thresholds = { fiveHour: t.fiveHour, sevenDay: t.sevenDay };
+    this.write();
+  }
+
+  /** banto 全体の使い方 */
+  mode(): ClaudeAccountMode {
+    return this.ledger.mode ?? DEFAULT_CLAUDE_ACCOUNT_MODE;
+  }
+
+  /** **banto 全体の使い方を決める**（知らない値は断る） */
+  setMode(mode: ClaudeAccountMode): void {
+    checkMode(mode);
+    this.ledger.mode = mode;
+    this.write();
+  }
+
+  /** その Project の使い方。決めていなければ undefined（banto 全体と同じ） */
+  projectMode(projectId: string): ClaudeAccountMode | undefined {
+    return this.ledger.projectModes?.[projectId];
+  }
+
+  /** その Project で効く使い方：決めていればそれ、無ければ banto 全体のもの */
+  modeFor(projectId: string): ClaudeAccountMode {
+    return this.projectMode(projectId) ?? this.mode();
+  }
+
+  /** **Project の使い方を決める**。`undefined` で「banto 全体と同じ」に戻す */
+  setProjectMode(projectId: string, mode: ClaudeAccountMode | undefined): void {
+    const modes = { ...(this.ledger.projectModes ?? {}) };
+    if (mode === undefined) delete modes[projectId];
+    else {
+      checkMode(mode);
+      modes[projectId] = mode;
+    }
+    this.ledger.projectModes = modes;
     this.write();
   }
 
@@ -423,6 +469,10 @@ export function usageFromHeaders(headers: Headers, now: Date): AccountUsage | un
   };
 }
 
+function checkMode(mode: unknown): asserts mode is ClaudeAccountMode {
+  if (!CLAUDE_ACCOUNT_MODES.includes(mode as ClaudeAccountMode)) throw new Error(`使い方は ${CLAUDE_ACCOUNT_MODES.join("・")} のどれかで渡してください`);
+}
+
 function loadLedger(path: string): Ledger | undefined {
   if (!existsSync(path)) return undefined;
   // 壊れていたら止まる（規則2）——黙って作り直すと、足したアカウントと並びが消える
@@ -445,7 +495,11 @@ function loadLedger(path: string): Ledger | undefined {
       (typeof l.projectOrders === "object" &&
         l.projectOrders !== null &&
         Object.values(l.projectOrders).every((o) => Array.isArray(o) && o.every((id) => typeof id === "string" && l.accounts!.some((a) => a.id === id))))) &&
-    (l.thresholds === undefined || (typeof l.thresholds?.fiveHour === "number" && typeof l.thresholds?.sevenDay === "number"));
+    (l.thresholds === undefined || (typeof l.thresholds?.fiveHour === "number" && typeof l.thresholds?.sevenDay === "number")) &&
+    // 知らない使い方は断る（黙って既定に読み替えない）
+    (l.mode === undefined || CLAUDE_ACCOUNT_MODES.includes(l.mode)) &&
+    (l.projectModes === undefined ||
+      (typeof l.projectModes === "object" && l.projectModes !== null && Object.values(l.projectModes).every((m) => CLAUDE_ACCOUNT_MODES.includes(m))));
   if (!ok) throw new Error(`Claude のアカウントの台帳が壊れています：${path}`);
   return l as Ledger;
 }

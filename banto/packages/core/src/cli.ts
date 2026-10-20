@@ -3015,7 +3015,7 @@ async function main(): Promise<void> {
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
     // **会話の本体も Claude のログインの中継を通す**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 2.）。
     // 住所は host の loopback——中継は本体用の合言葉をそこからだけ受ける
-    runnerEnv: (projectId, threadId) => claudeLogin.runnerEnvFor(projectId, threadId, `http://127.0.0.1:${bootstrap.port}`),
+    runnerEnv: (projectId, threadId, session) => claudeLogin.runnerEnvFor(projectId, threadId, session, `http://127.0.0.1:${bootstrap.port}`),
     rateLimitContinueAt: (threadId, resetsAt) => rateLimitContinuations.continueAt(threadId, resetsAt),
     rateLimitWaits: rateLimitContinuations,
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
