@@ -11677,6 +11677,34 @@
       "updatedAt": "2026-10-20T20:29:29.140Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "shell-service",
+      "number": 485,
+      "kind": "story",
+      "title": "Shell の待たないコマンドと Service に人の画面（入口）を足す",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "shell",
+        "service",
+        "frontend"
+      ],
+      "body": "ユーザー要望（2026-10-20）：「裏で動くが Launcher が無いもの（Shell の待たないコマンド・Service）の状況・進捗が分かるようにしてほしい」。案A を採用。それぞれに入口の画面を足し、サイドバーのバックグラウンドの1件から Shell の画面も開けるようにする。\n\n仕様（下書き・ブランチ fork/bg-visibility、レビュー前）：v4-modules.md §2.3「人の画面——バックグラウンドのコマンド」・§4.2「人の画面——サービス」、v4-architecture.md §4.2「結果で名乗る画面」、v4-frontend.md §6.33。経緯は docs/notes/2026-10-20-background-visibility.md。",
+      "doneWhen": "E2E で次を確かめる。(1) 待たない形のコマンドを流すと、サイドバーの1件から Shell の画面のその1件が開き、出力が増えていくのが見え、「止める」で止まって AI に「止めました」が届く。(2) Service の入口で状態・ポート・ログが見え、止める・起動・起こし直すが効く。待つ形の runCommand の会話のカードは今のまま",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-10-20-background-visibility.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T20:29:37.288Z",
+      "updatedAt": "2026-10-20T20:29:37.288Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
