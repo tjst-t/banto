@@ -10000,6 +10000,33 @@
       "updatedAt": "2026-10-20T01:41:27.210Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "claude-accounts-balance",
+      "number": 415,
+      "kind": "story",
+      "title": "Claude のアカウントを均す——セッションごとに固定し、区切りで余裕のあるアカウントを選ぶ",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "claude-login"
+      ],
+      "body": "既定を「均す」にし、「上から順に」は設定で選べる。セッション（x-claude-code-session-id）ごとにアカウントを固定し、固定が無い（最初の要求・最後の要求から1時間）・固定先が使えない・並びに無いときだけ、閾値の下で余裕の比 r=max(5h率/閾値, 週率/閾値) が一番小さいものを選ぶ。Runner は core がターンの始めに固定（Fork は継ぐ）。切り替えの記録と見え方は固定の表から。仕様は Fable のレビュー2回で「直せば入れてよい」→直した。実測は tmp/claude-paths-probe/probe3.mjs。",
+      "doneWhen": "均すの banto で、2つの会話が別々のアカウントに固定され、同じ会話の要求は同じアカウントで送られ（キャッシュが読まれる）、閾値越え・並びの変更で移ることを、偽の上流の E2E と本物での1回の確かめで示せる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-security.md §2「均す——閾値の下で使用率をそろえる」",
+        "docs/specs/v4-frontend.md §6.46「使い方『均す』『上から順に』」・「右上の文脈のメーター」",
+        "main ccfe9401"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T05:10:31.916Z",
+      "updatedAt": "2026-10-20T05:10:31.916Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
