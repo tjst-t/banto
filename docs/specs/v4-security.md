@@ -1202,7 +1202,9 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
        `PUT /api/projects/<id>/container/hugepages`（`{ count }`。画面は #462）。合計はその実行場所の全 Project（閉じたもの・眠っている
        もの・移してくる途中のものも）の和。断る：数が整数でない（400）・許していない（409）・既定の hugepages の大きさが 2MiB でない・
        合計×2MiB が `MemTotal` の半分を越える（`code: "hugepages-too-many"`）・減らすときにその Project の動いているコンテナの
-       `hugetlb.2MB.current`（中の cgroup）が 0 でない（`code: "hugepages-in-use"`。読めなければ断る）。通れば（減らすときは先に
+       `hugetlb.2MB.current` が 0 でない（`code: "hugepages-in-use"`。**VM の側のコンテナの cgroup**
+       `/sys/fs/cgroup/lxc.payload.user-<uid>_<名前>/` から読む——資源の画面と同じ場所。中の root は中の見え方を差し替えられるので、
+       中からは読まない。読めなければ断る）。通れば（減らすときは先に
        上限を下げてから）`sudo -n sysctl -w vm.nr_hugepages=<合計>` → `tee` で sysctl.d に書く（0 なら `rm -f`）→ `HugePages_Total` を
        読み、足りなければ `warnings` で「確保できたのは N 個」→ 設定に書く → 上限を `<N×2>MiB`。合計が変わったら、同じ実行場所の
        動いているコンテナのメモリの上限を `MemTotal − 合計` から既定の決め方で引き直す（`applyLimits`）。コンテナを用意するときも
