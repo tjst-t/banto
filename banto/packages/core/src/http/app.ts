@@ -141,6 +141,7 @@ import { SelfUpdateError, type SelfUpdate } from "../self-update/self-update.js"
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
+import { describeClaudeUsage } from "../claude-login/usage-view.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
 import { ClaudeAccountLoginError, type ClaudeAccountLogin, type ClaudeLoginFailure } from "../claude-login/account-login.js";
 import { CLAUDE_ACCOUNT_MODES, freshUsage, type ClaudeAccountMode, type ClaudeAccountStore } from "../claude-login/accounts.js";
@@ -1458,6 +1459,15 @@ export function createApp(deps: AppDeps) {
     publishAnswered: (threadId, answered) =>
       deps.turnEvents?.publish(threadId, { type: "answered", judgmentId: answered.id, answer: answered.answer }),
   };
+  /** **AI に見せる Claude の使用量**（v4-security.md §2「AI が使用量を見る」）——その Project の全部のアカウント */
+  const claudeUsage = deps.claudeAccounts
+    ? (projectId: string, threadId: string) =>
+        describeClaudeUsage(
+          { store: deps.claudeAccounts!.store, ...(deps.claudeLogin ? { pinnedOfThread: (t: string) => deps.claudeLogin!.pinnedAccountOfThread(t) } : {}) },
+          projectId,
+          threadId,
+        )
+    : undefined;
   const automationTools = deps.automations
     ? new AutomationTools({
         projectThread: deps.projectThread,
@@ -1702,7 +1712,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,

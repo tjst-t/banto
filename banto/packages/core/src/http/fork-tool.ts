@@ -48,6 +48,7 @@ export interface ForkRequest {
 export const FORK_SERVER_NAME = "banto-thread";
 export const FORK_TOOL_NAME = "start_forks";
 export const LIST_THREADS_TOOL_NAME = "list_threads";
+export const CLAUDE_USAGE_TOOL_NAME = "claude_usage";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
 /** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く */
@@ -246,6 +247,11 @@ export function createForkMcpServer(
   automations?: AutomationTools,
   /** **判断役の答え**（§4.3「banto.turn-decisions と判断役」）。渡されなければ tool は見せたまま断る */
   decisions?: Pick<TurnDecisions, "answer">,
+  /**
+   * **Claude の使用量**（追加・2026-10-20、v4-security.md §2「AI が使用量を見る」）。この会話の Thread を渡すと、その
+   * Project で使える全部のアカウントの使用量を返す。渡されなければ tool は見せたまま断る（§3）
+   */
+  claudeUsage?: (threadId: string) => string,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -272,6 +278,20 @@ export function createForkMcpServer(
             }),
           ]
         : []),
+      tool(
+        CLAUDE_USAGE_TOOL_NAME,
+        [
+          "この Project で使える Claude のアカウント全部の使用量（5時間・週）・閾値・この会話がどのアカウントか。",
+          "banto は会話ごとにアカウントを選び、閾値を越えたら次のアカウントへ移す——返事の見出し・Claude Code の警告・",
+          "/usage で見えるのはいまの会話のアカウント1つだけなので、それだけで「使用量が足りない」と判断しない。",
+          "使用量を理由に仕事を止める・減らす・人に知らせる前に、これを呼んで全体を見る。",
+        ].join(""),
+        {},
+        async () => {
+          if (!claudeUsage) return { content: [{ type: "text" as const, text: "この banto では Claude の使用量を読めません。" }], isError: true };
+          return { content: [{ type: "text" as const, text: claudeUsage(threadId) }] };
+        },
+      ),
       tool(
         LIST_THREADS_TOOL_NAME,
         [

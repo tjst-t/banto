@@ -19,7 +19,7 @@ import { createMemoryMcpServer, REVISE_MEMORY_TOOL_NAME } from "./memory-tool.js
 import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import {
   AUTOMATION_TOOL_NAMES,
-  CLOSE_FORK_TOOL_NAME,
+  CLOSE_FORK_TOOL_NAME, CLAUDE_USAGE_TOOL_NAME,
   closeForkDroppedNote,
   createForkMcpServer,
   type CloseForkReservation,
@@ -333,6 +333,8 @@ async function* runThreadTurnInner(
     messaging?: ThreadMessaging;
     /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
     automationTools?: AutomationTools;
+    /** **Claude の使用量**（v4-security.md §2「AI が使用量を見る」）。core の tool `claude_usage` が返す文を作る */
+    claudeUsage?: (projectId: string, threadId: string) => string;
     /**
      * **Memory を取り消す・改めるときに人に聞く口**（追加・2026-10-15、§2.2）。承認モードに依らず会話のカードで聞く
      * （「承認をすべて自動で許可する」がオンなら聞かずに通す、改訂・2026-10-18）。渡されなければ `revise_memory` は断る
@@ -552,6 +554,7 @@ async function* runThreadTurnInner(
     forks.closing,
     deps.automationTools,
     deps.turnDecisions,
+    deps.claudeUsage ? (threadId) => deps.claudeUsage!(thread.projectId, threadId) : undefined,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -667,6 +670,8 @@ async function* runThreadTurnInner(
       // 自動化の tool も通す——作る・変える・再開するは tool の中で、承認モードに依らず必ず人に聞く（2回聞かない。§4.3）
       allowedTools: [
         `mcp__banto-thread__${CLOSE_FORK_TOOL_NAME}`,
+        // Claude の使用量を読むだけ（環境を変えない）——毎回聞かない（v4-security.md §2「AI が使用量を見る」）
+        `mcp__banto-thread__${CLAUDE_USAGE_TOOL_NAME}`,
         ...AUTOMATION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
         // Memory を取り消す・改めるも tool の中で人に聞く（自動許可がオンなら tool の中で通す。2回聞かない。§2.2）
         `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,

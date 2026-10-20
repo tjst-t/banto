@@ -235,6 +235,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
       first!.allowedTools,
       [
         "mcp__banto-thread__close_fork",
+        "mcp__banto-thread__claude_usage",
         ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
         "mcp__banto-memory__revise_memory",
         "mcp__banto-thread__answer_decision",
@@ -255,6 +256,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
     // 自分の Fork を閉じる・判断役の答えはまとめのオンオフに依らず聞かない（§2.2「AI が自分の Fork を閉じる」・§4.3）
     assert.deepEqual(second!.allowedTools, [
       "mcp__banto-thread__close_fork",
+      "mcp__banto-thread__claude_usage",
       ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
       "mcp__banto-memory__revise_memory",
       "mcp__banto-thread__answer_decision",
