@@ -1887,7 +1887,14 @@ export function createApp(deps: AppDeps) {
           deps.projectThread.listProjects().map((p) => {
             const partlyAwake = p.sleep ? deps.projectSleep?.partlyAwake(p.id) : undefined;
             const mark = idle?.idleOf(p.id);
-            return { ...p, ...(partlyAwake && partlyAwake.length > 0 ? { partlyAwake } : {}), ...(mark ? { idle: mark } : {}) };
+            // 特権コンテナにした Project（サイドバーの行の印。v4-security.md §1「`containers` で仮想化の実験」の 4.）
+            const privileged = deps.containersVirtualization?.privileged(p.id) === true;
+            return {
+              ...p,
+              ...(partlyAwake && partlyAwake.length > 0 ? { partlyAwake } : {}),
+              ...(mark ? { idle: mark } : {}),
+              ...(privileged ? { privileged: true } : {}),
+            };
           }),
         );
         return;

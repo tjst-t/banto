@@ -32,6 +32,7 @@ import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-
 import { PathPicker } from "@/components/banto/settings/path-picker";
 import { ProjectContainerSection } from "@/components/banto/settings/project-container-section";
 import { ProjectRuntimeSection } from "@/components/banto/settings/project-runtime-section";
+import { ProjectVirtualizationSection } from "@/components/banto/settings/project-virtualization-section";
 import { remoteRuntimeName } from "@/lib/backend/client";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { ProjectClaudeLoginSection } from "@/components/banto/settings/project-claude-login-section";
@@ -111,6 +112,11 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
         </div>
 
         {CONNECTED_FEATURES.remoteRuntimes ? <ProjectRuntimeSection projectId={project.id} runtime={project.runtime} /> : null}
+        {/* 仮想化の実験（Backlog 462 番）。実行場所が containers で許しているときだけ（同じサーバの特権の Project の注意は許していなくても）。
+            移して実行場所が変わったら読み直す */}
+        {CONNECTED_FEATURES.remoteRuntimes ? (
+          <ProjectVirtualizationSection key={`${project.id}\n${project.runtime ?? ""}`} projectId={project.id} projectName={project.name} />
+        ) : null}
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="project-root">Root パス{remoteName ? `（${remoteName} の上）` : ""}</Label>

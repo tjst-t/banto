@@ -12,6 +12,8 @@
 // - 注意（サーバ丸ごと AI のもの・LAN から直に届く・他のアカウントにも中継の口が見える）は足す前に読める位置に置く
 // - **動かし方**（決定・2026-10-17、v4-security.md §1「別のサーバの中のコンテナ」、Backlog #367）は登録で選ぶ：サーバ丸ごと
 //   1つの Project の箱（machine）／Project ごとにコンテナ（containers）。containers は登録のときに banto が sudo -n で準備する
+// - **仮想化の実験を許す**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 1.・4.、Backlog 462 番）は containers の
+//   行のスイッチ。止めるときに使っている Project が残っていれば、host が名指しして断る（その理由をスイッチの下に出す）
 import { RuntimeCodeTransferLine } from "@/components/banto/shell/code-transfer";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
@@ -28,6 +30,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -47,6 +50,7 @@ import {
   registerRealRuntime,
   removeRealRuntime,
   scanRealRuntimeHostKey,
+  setRealRuntimeVirtualization,
   type RealHostKey,
   type RealRemoteRuntime,
   type RealRuntimeCheck,
@@ -316,6 +320,8 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
             <CheckList checks={r.checks} />
           </div>
 
+          {r.mode === "containers" ? <VirtualizationSwitch runtime={r} onChanged={onChanged} /> : null}
+
           {error ? (
             <p data-testid="runtime-error" className="text-xs text-stop">
               {error}
@@ -359,6 +365,49 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
         </div>
       ) : null}
     </li>
+  );
+}
+
+/** 実行場所の「仮想化の実験を許す」（containers だけ）。断られたら host の理由（残っている Project の名前）を出す */
+function VirtualizationSwitch({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const id = `runtime-virtualization-${r.name}`;
+  async function toggle(allowed: boolean) {
+    setSaving(true);
+    setError(null);
+    try {
+      await setRealRuntimeVirtualization(r.name, allowed);
+    } catch (err) {
+      setError(describeFailure(err));
+    } finally {
+      setSaving(false);
+      onChanged();
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border p-3" data-testid="runtime-virtualization">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor={id}>仮想化の実験を許す</Label>
+          <p className="text-xs text-ink-3">
+            {"このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project ごとに選びます。"}
+          </p>
+        </div>
+        <Switch
+          id={id}
+          data-testid="runtime-virtualization-switch"
+          checked={r.virtualization === true}
+          disabled={saving || !!r.hostKeyMismatch}
+          onCheckedChange={(v) => void toggle(v)}
+        />
+      </div>
+      {error ? (
+        <p data-testid="runtime-virtualization-error" className="text-xs text-stop">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

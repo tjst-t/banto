@@ -387,6 +387,11 @@ export class ContainersVirtualization {
     }
   }
 
+  /** 特権コンテナにする設定か（Project の一覧の印。v4-security.md §1「`containers` で仮想化の実験」の 4.） */
+  privileged(projectId: string): boolean {
+    return this.deps.settingsOf(projectId).privileged;
+  }
+
   /** 画面に出す様子（その Project で使えるか・今の設定） */
   describe(projectId: string): ProjectVirtualization & {
     available: boolean;

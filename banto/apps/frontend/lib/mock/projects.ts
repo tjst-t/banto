@@ -220,6 +220,8 @@ export async function syncRealProjects(): Promise<void> {
     else delete next.partlyAwake;
     if (rp.idle) next.idle = rp.idle;
     else delete next.idle;
+    if (rp.privileged) next.privileged = true;
+    else delete next.privileged;
     return next;
   });
   // host に無いもの（ありえないが）は元の場所の順で後ろへ
@@ -395,6 +397,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       ...(rp.sleep ? { sleep: rp.sleep } : {}),
       ...(rp.partlyAwake ? { partlyAwake: rp.partlyAwake } : {}),
       ...(rp.idle ? { idle: rp.idle } : {}),
+      ...(rp.privileged ? { privileged: true as const } : {}),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。

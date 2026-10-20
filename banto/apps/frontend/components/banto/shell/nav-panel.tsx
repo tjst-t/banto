@@ -60,6 +60,7 @@ import { useProjectWaking } from "@/lib/backend/project-waking";
 import { useHostBusy, useProjectBusy } from "@/lib/backend/resources-busy";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { MovingProjectMark } from "@/components/banto/shell/moving-project-mark";
+import { PrivilegedProjectMark } from "@/components/banto/shell/privileged-project-mark";
 import { UnreachableProjectMark } from "@/components/banto/shell/unreachable-project-mark";
 import { useAnyThreadUnread, useThreadUnread } from "@/lib/backend/real-inbox";
 import { ThemeToggle } from "./theme-toggle";
@@ -341,6 +342,8 @@ export function ProjectTreeItem({
                   {busyReason !== undefined ? <BusyProjectMark projectName={project.name} reason={busyReason} /> : null}
                   {/* 別の実行場所へ移している印（追加・2026-10-12、Backlog #270） */}
                   <MovingProjectMark projectId={project.id} projectName={project.name} />
+                  {/* 特権コンテナの印（追加・2026-10-20、Backlog 462 番） */}
+                  {project.privileged ? <PrivilegedProjectMark projectName={project.name} /> : null}
                 </Link>
               </SidebarMenuButton>
               {waking ? <WakingMark /> : more}
