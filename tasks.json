@@ -10923,7 +10923,7 @@
       "number": 455,
       "kind": "task",
       "title": "デスクトップ版から別のサーバの実行場所を使えるようにするか決めて作る",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-3-modules",
       "dependsOn": [],
       "milestone": null,
@@ -10935,7 +10935,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:37.881Z",
-      "updatedAt": "2026-10-20T08:57:37.881Z",
+      "updatedAt": "2026-10-20T08:59:46.570Z",
       "closedAt": null,
       "extra": {}
     }
