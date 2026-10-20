@@ -79,7 +79,6 @@ export interface PatrolsDeps {
   automations: AutomationStore;
   inbox: Pick<InboxStore, "raiseFinding">;
   projectThread: { getThread(id: string): ThreadState | undefined };
-  now?: () => Date;
 }
 
 /** `notify` の答え（AI に返す文） */
@@ -105,7 +104,8 @@ export class Patrols {
     if (turn.notified >= PATROL_NOTIFY_PER_RUN) {
       return { ok: false, text: `1回に出せる気づきは ${PATROL_NOTIFY_PER_RUN} 件までです。大事なものから出してください。` };
     }
-    const now = this.deps.now?.() ?? new Date();
+    // 時計は手帳の時刻（Event Store の ts）と同じもの——別の時計で比べると、日付の境や 7日の数えがずれる
+    const now = new Date();
     const note = patrol.notebook?.find((n) => n.key === input.key);
     if (note?.status === "muted") {
       await this.deps.automations.notePatrol(patrol.id, input.key, "seen");

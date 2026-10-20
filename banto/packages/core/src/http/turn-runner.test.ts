@@ -1042,7 +1042,7 @@ test("見回りの Fork のターンにだけ notify を見せ、聞かずに通
     };
 
     const { client, allowed } = await toolsOf();
-    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads", "notify"]);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "list_automations", "list_threads", "notify"]);
     assert.ok(allowed.includes("mcp__banto-thread__notify"), "notify を聞かずに通していない");
     const r = (await client.callTool({ name: "notify", arguments: { key: "k", title: "t", finding: "f" } })) as { content: Array<{ text: string }> };
     assert.equal(r.content[0]!.text, "受信箱に出しました");
@@ -1053,7 +1053,7 @@ test("見回りの Fork のターンにだけ notify を見せ、聞かずに通
     // 見回りを消したあと（読むだけの印は残る）
     patrolFork.current = undefined;
     const after = await toolsOf();
-    assert.deepEqual((await after.client.listTools()).tools.map((t) => t.name).sort(), ["list_automations", "list_threads"]);
+    assert.deepEqual((await after.client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "list_automations", "list_threads"]);
     assert.ok(!after.allowed.includes("mcp__banto-thread__notify"));
     await after.client.close();
   });
