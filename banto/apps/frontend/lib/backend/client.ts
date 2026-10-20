@@ -899,7 +899,7 @@ export async function getRealMission(threadId: string): Promise<{ mission: RealM
   return request(`/api/threads/${threadId}/mission`);
 }
 
-/** **人が任務を始める**（「…」の「任務にする」）。人が押しているので host は聞かない */
+/** **人が任務を始める**（会話の「…」と受信箱の気づきの「任務にする」）。人が押しているので host は聞かない */
 export async function startRealMission(
   threadId: string,
   input: { goal: string; doneWhen: string } & RealMissionFramePatch,
@@ -1910,17 +1910,6 @@ export async function sendRealThreadMessage(
   }
   // 受け付けた（流れが始まった）ところで読むのをやめる
   await res.body.cancel().catch(() => undefined);
-}
-
-/**
- * **人が任務を始める**（`POST /api/threads/:id/mission`、アーキ仕様 §4.4「始め方」）。受信箱の気づきの「任務にする」が使う。
- * 人が押しているので聞かない。枠は `until`（ISO）・`minInterval`（分）
- */
-export async function startRealMission(
-  threadId: string,
-  input: { goal: string; doneWhen: string; maxWakes?: number; until?: string; minInterval?: number },
-): Promise<void> {
-  await request(`/api/threads/${threadId}/mission`, { method: "POST", body: JSON.stringify(input) });
 }
 
 /** 見回りの気づきの「今後知らせない」（`mute`）・「片づけた」（`dismiss`）。手帳にも残る */
