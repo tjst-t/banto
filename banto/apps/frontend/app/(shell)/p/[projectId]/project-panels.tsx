@@ -29,6 +29,7 @@ import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
+import { MissionBadge } from "@/components/banto/thread/mission-panel";
 import { ForkDialog, type ForkDialogRequest } from "@/components/banto/thread/fork-dialog";
 import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ForkClosedBanner } from "@/components/banto/thread/fork-closed-banner";
@@ -64,12 +65,15 @@ const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.
 function PanelHeader({
   leading,
   title,
+  badge,
   onRename,
   children,
 }: {
   /** ヘッダの左端に置くもの（モバイルのナビの入口） */
   leading?: ReactNode;
   title: string;
+  /** 題のすぐ右に置く小さな札（任務、v4-frontend.md §6.47） */
+  badge?: ReactNode;
   /** 題を右クリックしたら名前を変えられる（決定・2026-09-11、ユーザー要望）
    *  ——サイドバーまで戻らなくても、いま見ている面から直せる */
   onRename?: RenameTarget;
@@ -87,14 +91,17 @@ function PanelHeader({
           クライアント側で作り直す——その巻き添えでThreadPanel（会話中の
           ストリーミング購読）ごと再マウントされ、応答が届かなくなる実害を
           実測で確認した。ここでは意図的な差分なので警告を抑止する */}
-      <RenameOnRightClick target={onRename}>
-        <p
-          className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
-          suppressHydrationWarning
-        >
-          {title}
-        </p>
-      </RenameOnRightClick>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <RenameOnRightClick target={onRename}>
+          <p
+            className="min-w-0 truncate text-sm font-medium text-foreground"
+            suppressHydrationWarning
+          >
+            {title}
+          </p>
+        </RenameOnRightClick>
+        {badge}
+      </div>
       <div className="flex shrink-0 items-center gap-1.5">{children}</div>
     </header>
   );
@@ -109,6 +116,7 @@ function ClosablePanelHeader({
   closeLabel,
   titleIcon: TitleIcon,
   title,
+  badge,
   onRename,
   trailing,
 }: {
@@ -121,6 +129,8 @@ function ClosablePanelHeader({
       題そのものを押し出してしまう（3層のときフォーク名が途中で切れていた） */
   titleIcon?: IconComponent;
   title: string;
+  /** 題のすぐ右に置く小さな札（任務、v4-frontend.md §6.47） */
+  badge?: ReactNode;
   /** 題を右クリックしたら名前を変えられる（決定・2026-09-11、ユーザー要望） */
   onRename?: RenameTarget;
   trailing?: ReactNode;
@@ -137,11 +147,14 @@ function ClosablePanelHeader({
         <Icon className="size-4" />
       </button>
       {TitleIcon ? <TitleIcon className="size-4 shrink-0 text-ink-3" /> : null}
-      <RenameOnRightClick target={onRename}>
-        <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
-          {title}
-        </p>
-      </RenameOnRightClick>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <RenameOnRightClick target={onRename}>
+          <p className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
+            {title}
+          </p>
+        </RenameOnRightClick>
+        {badge}
+      </div>
       {trailing}
     </div>
   );
@@ -421,6 +434,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             // 「Base Thread —」の接頭辞はやめた——その面が何かは、いま開いて
             // いるもので分かる（Fork なら Fork の名前とアイコンが出る）
             title={project.name}
+            badge={<MissionBadge threadId={project.baseThreadId} />}
             onRename={{
               what: "Project",
               name: project.name,
@@ -438,6 +452,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
             ) : null}
             <ThreadActionsMenu
+              threadId={project.baseThreadId}
               onFork={() => requestFork(project.baseThreadId, { start: "choose" })}
               onClear={() => handleClear(project.baseThreadId)}
               onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(project.baseThreadId, "compact") : undefined}
@@ -481,6 +496,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               closeLabel={`${project.name} の Base Thread に戻る`}
               titleIcon={automation ? Zap : ForkIcon}
               title={thread?.title ?? threadId}
+              badge={<MissionBadge threadId={threadId} />}
               onRename={
                 thread
                   ? {
@@ -496,6 +512,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                   {isMobile ? <SearchHeaderButton onClick={() => stack.open({ overlay: "palette" })} /> : null}
                   {/* **Fork からも Fork を作れる**（2026-10-11、ユーザー）。「Fork を開く」と Close は「…」の中（2026-10-20、ユーザー要望） */}
                   <ThreadActionsMenu
+                    threadId={threadId}
                     onFork={!closed ? () => requestFork(threadId, { start: "choose" }) : undefined}
                     onCloseFork={
                       CONNECTED_FEATURES.threadCloseReopen && !closed

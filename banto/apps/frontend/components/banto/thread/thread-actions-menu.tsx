@@ -14,26 +14,36 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useState } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { CloseIcon, ForkIcon } from "./thread-icons";
+import { StartMissionDialog, useCanStartMission } from "./mission-panel";
 
 /**
  * **「Fork を開く」と「この Fork Thread を Close」もこのメニューに入れる**（2026-10-20、ユーザー要望）——右上には
  * 文脈のメーターと「…」（携帯は検索・受信箱も）だけを並べる。渡されないときは項目を出さない
  */
 export function ThreadActionsMenu({
+  threadId,
   onClear,
   onCompact,
   onFork,
   onCloseFork,
 }: {
+  /** この会話の id（「任務にする」に使う、v4-frontend.md §6.47） */
+  threadId: string;
   onClear: () => void;
   onFork?: () => void;
   onCloseFork?: () => void;
   /** hostに残らない操作はまだ繋いでいない——渡されないときは項目自体を出さない（規則13） */
   onCompact?: () => void;
 }) {
+  // **「任務にする」**（追加・2026-10-20、§6.47）。任務が動いていない会話だけ——自動化・見回り・判断役の Fork、読むだけの会話には
+  // 出さない（host が理由を返す）
+  const canStartMission = useCanStartMission(threadId);
+  const [missionOpen, setMissionOpen] = useState(false);
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
@@ -60,7 +70,10 @@ export function ThreadActionsMenu({
         {onFork || onCloseFork ? <DropdownMenuSeparator /> : null}
         <DropdownMenuItem onClick={onClear}>Clear</DropdownMenuItem>
         {onCompact ? <DropdownMenuItem onClick={onCompact}>Compaction</DropdownMenuItem> : null}
+        {canStartMission ? <DropdownMenuItem onClick={() => setMissionOpen(true)}>任務にする</DropdownMenuItem> : null}
       </DropdownMenuContent>
     </DropdownMenu>
+    <StartMissionDialog threadId={threadId} open={missionOpen} onOpenChange={setMissionOpen} />
+    </>
   );
 }

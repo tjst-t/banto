@@ -83,6 +83,8 @@ import { formFieldsOf } from "@/lib/form-fields";
 import { ClaudeAccountsAllOverNotice } from "./claude-accounts-notice";
 import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
 import { FindingBody } from "./finding-card";
+import { MissionExtendForm, stopMission } from "@/components/banto/thread/mission-panel";
+import { MISSION_STATUS_TEXT, missionIsOpen, missionNeedsHuman, useThreadMission } from "@/lib/backend/missions";
 
 type Section = "judgment" | "decide" | "returned" | "finding" | "fix";
 
@@ -781,6 +783,8 @@ function ReturnedBody({
           </p>
         ) : null}
 
+        {item.mission ? <MissionOutcome item={item} mission={item.mission} /> : null}
+
         {/* 自動化の回：後の回で置き換えなかったカードに、この会話でまだ見ていない回の数を添える（アーキ仕様 §4.3「受信箱」） */}
         {(item.unseenRuns ?? 0) > 1 ? (
           <p data-testid="inbox-unseen-runs" className="mt-2.5 text-xs text-ink-2">
@@ -928,6 +932,8 @@ function ReturnedBody({
                 ) : null}
               </div>
             ))}
+            {/* 任務を持つ会話の決めること：選択肢の横に「枠を延ばす」（§6.47）——枠を延ばせるのは人だけ。結末を添えたカードは結末の側で出す */}
+            {!item.mission ? <DecisionMissionExtend threadId={item.threadId} /> : null}
           </div>
         ) : null}
       </div>
@@ -1001,6 +1007,111 @@ function ReturnedBody({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * **任務の結末**（追加・2026-10-20、v4-frontend.md §6.47）。返ってきた会話のカードに添える：終わった（結果・起きた回数）／
+ * 枠を使い切った・止まっている（「延ばす」「終える」）。ボタンを出すかは今の任務で決める（カードは返ったときの写し）
+ */
+function MissionOutcome({ item, mission }: { item: RealInboxReview; mission: NonNullable<RealInboxReview["mission"]> }) {
+  const live = useThreadMission(item.threadId);
+  const same = live?.id === mission.id ? live : undefined;
+  const [extending, setExtending] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const human = mission.status === "exhausted" || mission.status === "stalled";
+  return (
+    <div
+      data-testid="inbox-mission"
+      data-status={mission.status}
+      className={cn("mt-2.5 rounded-lg border px-3 py-2.5 text-sm", human ? "border-turn/50 bg-turn-soft/40" : "border-border")}
+    >
+      <p className={cn("text-sm font-medium", human ? "text-turn" : "text-foreground")} data-testid="inbox-mission-status">
+        {MISSION_STATUS_TEXT[mission.status]}
+      </p>
+      <p className="mt-0.5 text-xs text-ink-2" data-testid="inbox-mission-goal">
+        任務：{mission.goal}
+      </p>
+      {mission.result ? (
+        <p className="mt-1 text-sm whitespace-pre-wrap text-foreground" data-testid="inbox-mission-result">
+          {mission.result}
+        </p>
+      ) : null}
+      <p className="mt-1 text-xs text-ink-3" data-testid="inbox-mission-wakes">
+        起きた回数 {mission.wakes}/{mission.maxWakes} 回
+      </p>
+      {same && missionNeedsHuman(same) ? (
+        extending ? (
+          <div className="mt-2">
+            <MissionExtendForm threadId={item.threadId} mission={same} onDone={() => setExtending(false)} onCancel={() => setExtending(false)} />
+          </div>
+        ) : (
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" data-testid="inbox-mission-extend" disabled={busy} onClick={() => setExtending(true)}>
+              延ばす
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="inbox-mission-stop"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await stopMission(item.threadId);
+                  setError(null);
+                } catch (err) {
+                  setError(errorText(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              終える
+            </Button>
+          </div>
+        )
+      ) : human && same ? (
+        // 人がもう延ばした・終えた（カードは返ったときの写しのまま）
+        <p className="mt-1.5 text-xs text-ink-2" data-testid="inbox-mission-now">
+          いまは：{MISSION_STATUS_TEXT[same.status]}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-1.5 text-xs text-stop" data-testid="inbox-mission-error">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** 決めることのカードの「枠を延ばす」（任務を持つ会話だけ）。押すと任務の面と同じ小さな欄 */
+function DecisionMissionExtend({ threadId }: { threadId: string }) {
+  const mission = useThreadMission(threadId);
+  const [open, setOpen] = useState(false);
+  if (!missionIsOpen(mission)) return null;
+  return (
+    <div data-testid="inbox-decision-mission" className="rounded-lg border border-border px-3 py-2">
+      {open ? (
+        <MissionExtendForm threadId={threadId} mission={mission} onDone={() => setOpen(false)} onCancel={() => setOpen(false)} />
+      ) : (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+          <span>
+            任務の枠：{mission.wakes}/{mission.frame.maxWakes} 回
+          </span>
+          <button
+            type="button"
+            data-testid="inbox-decision-mission-extend"
+            onClick={() => setOpen(true)}
+            className="flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs text-foreground hover:border-turn/60"
+          >
+            枠を延ばす
+          </button>
+        </div>
+      )}
     </div>
   );
 }

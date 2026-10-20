@@ -178,3 +178,26 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
   origin/main に載せ替えた。ぶつかりは `http/app.ts`・`fork-tool.ts`・`turn-runner.ts`・`relay/read-only.ts` で、どれも
   origin/main の Claude の使用量（`claude_usage`・`memoryAsk`・受信箱の行き先 `withPlace`）と見回りの足し算——両方を残した。
   気づきのカードにも行き先（`threadKind`）が付くようになった
+
+## 実装（2026-10-20、Backlog #422 任務の画面）
+
+- 画面の写しは出来事の流れに乗せた（`mission.changed` で今の任務を丸ごと、hello に任務を持つ Thread）。札・サイドバー・受信箱の3か所が
+  同じ任務を見るので、画面ごとに `GET /api/threads/:id/mission` を回すと食い違う。サイドバーの他の1行（裏の仕事・上限の待ち）と同じ形
+- 「…」の「任務にする」を出すかは host に聞く（`GET /api/threads/:id/mission` の `startRefused`）。自動化の専用の Fork・読むだけの会話の
+  見分けは host の `refuseThread` にしか無い——画面で同じ判定を持つと写しになる（規則3）
+- 「終える」のために、枠を使い切った・止まっている任務も人が止められるようにした（`PATCH … { stop: true }` と fold の `mission.finished`。
+  前は動いている任務だけ）。受信箱の「終える」が押せても断られる、を作らないため
+- 起きた回の薄い1行の「n/上限」と「前の予約」は、起こした時点の値を `origin.mission` に載せた。任務の今の値から引くと、延ばしたあとに
+  前の回の上限が書き変わって見える。予約は起こした時点で使い切る（履歴に残らない）ので、メモは印に載せるしかない
+- E2E（`mission-ui.spec.ts`）で受信箱を開くときは、別の Project の会話にいる——設定の画面は受信箱の上に重なってボタンが押せない
+  （mission.spec.ts は読むだけなので設定の画面のまま）
+- 間欠の失敗（記録）：`npm test` の `turn-continuation.test.ts`「繋がり直したあと Module が続けられないと答えたら…」が 6 回中 2 回、
+  後片づけの `rm` で `ENOTEMPTY` に落ちた。任務を使わない試験で、この変更が書き込みを足す経路ではない。試験の本体が終わったあとも
+  届けものの書き込みが続き、一時ディレクトリの削除と競合しているように見える。スコープ外なので直していない（規則6・7）
+- origin/main の上に載せ直したら、mission.spec.ts の受信箱の結末の検査が落ちた（目標の行が見つからない）。spec は人を `/settings` に
+  移して「会話を離れた」ことにしていたが、失敗時の画面の写しでは Base の会話が開いていて、画面がそのカードを「見た」にして受信箱から
+  外していた（`real-inbox.ts` の `acknowledgeViewed`）。#421 では件数だけ見てすぐ終わっていたので間に合っていた。mission-ui.spec.ts と
+  同じく別の Project の会話へ移す形に直した（直したあと mission・mission-ui を 3 回ずつ流して 6/6）
+- 間欠の失敗（記録）：inbox-page・inbox・sidebar*・thread-running-icon をまとめて流したとき、2 回中 1 回、sidebar.spec.ts の最初の試験の
+  替わり目の片づけで `GET /api/modules` が「fetch failed（other side closed）」で落ちた。Backlog #385 と同じ文言（原因は未確定）。
+  sidebar.spec.ts だけを 3 回（12/12）、まとめてもう 1 回（22/22）は通った。任務の画面の経路ではないので直していない（規則6・7）

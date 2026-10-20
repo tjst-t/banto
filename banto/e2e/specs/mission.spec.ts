@@ -41,7 +41,7 @@ type ThreadDetail = {
     seq: number;
     role: string;
     text: string;
-    origin?: { from: string; title: string; hop: number; mission?: { id: string; wake: number }; external?: Array<{ event?: { name: string; fields: Record<string, unknown> } }> };
+    origin?: { from: string; title: string; hop: number; mission?: { id: string; wake: number; maxWakes?: number; note?: string }; external?: Array<{ event?: { name: string; fields: Record<string, unknown> } }> };
   }>;
   lastTurn?: { outcome?: string };
 };
@@ -66,6 +66,9 @@ test("任務：承認のカードで枠を変えて始め、時刻と出来事�
   const get = async <T,>(path: string) => (await (await page.request.get(`${CORE_BASE_URL}${path}`, { headers })).json()) as T;
 
   await openApp(page);
+  // 人が「会話を離れる」先（開いている会話のカードは画面が「見た」にして受信箱から外す）
+  await createProject(page, `${PROJECT_NAME} 別`, mkdtempSync(join(tmpdir(), "banto-e2e-mission-other-")));
+  const elsewhere = currentProjectId(page);
   await createProject(page, PROJECT_NAME, mkdtempSync(join(tmpdir(), "banto-e2e-mission-")));
   const projectId = currentProjectId(page);
   const baseId = (await get<Array<{ id: string; kind: string }>>(`/api/projects/${projectId}/threads`)).find((t) => t.kind === "base")!.id;
@@ -141,10 +144,11 @@ test("任務：承認のカードで枠を変えて始め、時刻と出来事�
   const started = (await mission())!;
   expect(started).toMatchObject({ status: "active", wakes: 0, frame: { maxWakes: 4, minIntervalMinutes: 0 } });
   expect(started.followup?.at, "最初の予約が残っていない").toBe(at);
-  // 人は会話を離れて設定の画面にいる（開いている会話のカードは画面が「見た」にする——Fork を開くと Base も隣に出る）。
-  // 人が送ったターンのカードは片づけておく
-  await page.goto("/settings");
-  await expect(page.getByPlaceholder(/に送る/)).toHaveCount(0, { timeout: 30_000 });
+  // 人は会話を離れて別の Project の会話にいる（開いている会話のカードは画面が「見た」にする——Fork を開くと Base も隣に出る。
+  // 前は `/settings` に移していたが、受信箱で結末を読んでいる間に Base の会話が開いてカードが消えた——失敗時の画面の写しに
+  // Base の会話が出ていた）。人が送ったターンのカードは片づけておく
+  await page.goto(`/p/${elsewhere}`);
+  await expect(page.getByPlaceholder(`${PROJECT_NAME} 別 の Base Thread に送る`)).toBeVisible({ timeout: 30_000 });
   for (const r of await baseReviews()) await page.request.post(`${CORE_BASE_URL}/api/inbox/${r.id}/acknowledge`, { headers });
   expect(await mission(), "片づけている間に1回目が起きた（予約の時刻を延ばす）").toMatchObject({ wakes: 0 });
 
@@ -210,11 +214,29 @@ test("任務：承認のカードで枠を変えて始め、時刻と出来事�
   await expect
     .poll(async () => (await baseReviews()).find((r) => r.mission)?.mission, { timeout: 30_000, message: "受信箱に任務の結末が出ない" })
     .toMatchObject({ status: "done", result: RESULT, wakes: 2, maxWakes: 4, goal: GOAL });
-  // 返ってきた会話のカードは受信箱の画面にも出ている（設定の画面から開く）。結末の見せ方は
+  // 返ってきた会話のカードは受信箱の画面にも出ている（別の Project の会話から開く）。結末の見せ方は
   // 任務の画面（v4-frontend.md §6.47、Backlog #422）
   await page.getByRole("button", { name: /^受信箱/ }).first().click();
   const returned = page.getByRole("dialog", { name: "受信箱" }).getByTestId("inbox-section-returned").getByTestId("inbox-review");
   await expect(returned.filter({ hasText: "任務を終えました" }), "受信箱に返ってきた会話のカードが出ない").toHaveCount(1, { timeout: 30_000 });
+  // カードに添えた結末（v4-frontend.md §6.47）。終わった任務に「延ばす」「終える」は出ない
+  const outcome = returned.filter({ hasText: "任務を終えました" }).getByTestId("inbox-mission");
+  await expect(outcome.getByTestId("inbox-mission-status")).toHaveText("任務が終わりました");
+  await expect(outcome.getByTestId("inbox-mission-goal")).toHaveText(`任務：${GOAL}`);
+  await expect(outcome.getByTestId("inbox-mission-result")).toHaveText(RESULT);
+  await expect(outcome.getByTestId("inbox-mission-wakes")).toHaveText("起きた回数 2/4 回");
+  await expect(outcome.getByRole("button")).toHaveCount(0);
+  // 任務で起きた回は、会話の頭に薄い1行（上限と前の予約のメモ）。届いたもののカードには出さない
+  expect(wake1.origin?.mission, "起きた回の印に上限とメモが無い").toMatchObject({ wake: 1, maxWakes: 4, note: expect.stringContaining("1回目に起きました") });
+  await page.goto(`/p/${projectId}`);
+  const wakeLines = page.getByTestId("mission-wake-text");
+  await expect(wakeLines).toHaveCount(2, { timeout: 30_000 });
+  await expect(wakeLines.nth(0)).toContainText("任務で起きました（1/4 回目）——前の予約：");
+  await expect(wakeLines.nth(1)).toContainText("任務で起きました（2/4 回目）——前の予約：");
+  await expect(wakeLines.nth(1)).toContainText("判断が出たので");
+  await expect(page.getByTestId("delivered-message").filter({ hasText: "任務「" })).toHaveCount(0);
+  // 終わった任務の札は出さない
+  await expect(page.getByTestId("mission-badge")).toHaveCount(0);
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
   // 後の spec に受信箱を持ち越さない
