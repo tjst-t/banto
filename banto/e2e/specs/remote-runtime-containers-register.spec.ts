@@ -141,6 +141,8 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
         "incus-idmap": "fail",
         "incus-pool": "fail",
         linger: "fail",
+        // 入れ子の KVM は表示だけ——仮想化（KVM）を許していない実行場所では ok（#458）
+        "nested-kvm": "ok",
         sudo: "fail",
       });
       await expect(addChecks.locator('[data-check="incus"]')).toContainText("Incus が入っていません。");
