@@ -232,11 +232,15 @@ export class CaddyPublisher {
       } catch (err) {
         notes.push(`Caddy のルートはまだ消せていません（届いたら消します）：${errText(err)}`);
       }
-      // host が用意した道（別のサーバの Project ごとのコンテナの、VM のポート）を外させる。外せなくても公開はやめている——黙らない
-      try {
-        await this.deps.releasePort?.(t.projectId, t.port);
-      } catch (err) {
-        notes.push(`公開先の道（別のサーバのポート）はまだ外せていません：${errText(err)}`);
+      // host が用意した道（別のサーバの Project ごとのコンテナの、VM のポート）を外させる。外せなくても公開はやめている——黙らない。
+      // 道は Project とサービスのポートで決まる——同じ Project の別の Service が同じポートで公開されていれば、そちらが使うので外さない
+      const stillUsed = records.some((r) => r !== rec && r.projectId === t.projectId && r.port === t.port);
+      if (!stillUsed) {
+        try {
+          await this.deps.releasePort?.(t.projectId, t.port);
+        } catch (err) {
+          notes.push(`公開先の道（別のサーバのポート）はまだ外せていません：${errText(err)}`);
+        }
       }
       return { removed: true, url: urlOf(rec.hostname), ...(notes.length > 0 ? { note: notes.join("／") } : {}) };
     });

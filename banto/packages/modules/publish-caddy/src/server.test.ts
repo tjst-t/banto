@@ -515,3 +515,21 @@ test("別のサーバの Project ごとのコンテナ：サービスのポー�
     assert.deepEqual(released, [`${P2}:3000`]);
   });
 });
+
+test("同じ Project の別の Service が同じポートで公開されていれば、片方をやめても host に道を外させない（道は Project とポートで決まる）", async () => {
+  await withCaddy(async ({ call, addresses, listening, onLan, mapped, released }) => {
+    onLan.add(P2);
+    addresses.set(P2, "192.168.10.50");
+    mapped.set(P2, new Map([[3000, 20002]]));
+    listening.clear();
+    listening.add("192.168.10.50:20002");
+    for (const service of ["web", "api"]) {
+      const ok = await call("publishRoute", publishArgs({ projectId: P2, service }));
+      assert.equal(ok.isError, false, ok.text);
+    }
+    assert.equal((await call("unpublishRoute", { projectId: P2, service: "web", port: 3000 })).isError, false);
+    assert.deepEqual(released, [], "もう1つの公開が使っている道を外させた");
+    assert.equal((await call("unpublishRoute", { projectId: P2, service: "api", port: 3000 })).isError, false);
+    assert.deepEqual(released, [`${P2}:3000`]);
+  });
+});
