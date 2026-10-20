@@ -1536,10 +1536,12 @@ export class RemoteSshRuntime {
           if (existsSync(packageDir) && statSync(packageDir).isDirectory()) {
             // 配布物は読み取り専用で見せる——中から書き換えられないので、VM のユーザーで置き換えてよい
             const remote = base.pathInside(packageDir);
-            // **置き換えたら付け直す**：フォルダごと差し替える（rename）ので、付いたままの装置は消した古いフォルダを指し続け、
-            // 中からは空に見える（Module が起きられない）
-            const replaced = await self.syncPackageDir(conn, packageDir, remote);
-            disks.push(incus.ensureDisk(container, diskName(remote), remote, { readonly: true, remount: replaced }));
+            // **コンテナが今の VM のフォルダを見ていなければ付け直す**：置き換えはフォルダごと差し替える（rename）ので、付いたままの
+            // 装置は消した古いフォルダを指し続け、中からは空に見える（Module が起きられない）。配布物の置き場は同じ VM の全 Project で
+            // 共有なので、「この接続が置き換えたか」では決めない——ほかの Project の接続が置き換えた分も、ここで拾う
+            await self.syncPackageDir(conn, packageDir, remote);
+            const stale = await self.mountIsStale(conn, container, remote);
+            disks.push(incus.ensureDisk(container, diskName(remote), remote, { readonly: true, remount: stale }));
           }
           await Promise.all(disks);
         })();
@@ -1594,12 +1596,31 @@ export class RemoteSshRuntime {
   }
 
   /** registry から取ってきた配布物を送る（中身が違えば置き換える） */
-  /** 置き換えたら true（中身が同じなら何もせず false） */
-  private async syncPackageDir(conn: Connection, hostDir: string, remoteDir: string): Promise<boolean> {
+  /**
+   * **コンテナに付いているフォルダが、VM の今のフォルダと違うか**（inode で比べる。bind mount は付けたときのフォルダを見続ける）。
+   * 中にまだ付いていない（中で引けない）なら false——付けるのは `ensureDisk` がする
+   */
+  private async mountIsStale(conn: Connection, container: string, dir: string): Promise<boolean> {
+    const out = await this.mustRun(
+      conn,
+      "配布物のフォルダを確かめられ",
+      [
+        `printf 'vm=%s\\n' "$(stat -c %i -- ${shq(dir)})"`,
+        `printf 'in=%s\\n' "$(incus exec ${shq(container)} -- stat -c %i -- ${shq(dir)} 2>/dev/null)"`,
+        "",
+      ].join("\n"),
+    );
+    const vm = /^vm=(\d+)$/m.exec(out)?.[1];
+    const inside = /^in=(\d+)$/m.exec(out)?.[1];
+    if (!vm) throw new Error(`別のサーバ「${conn.runtimeName}」の配布物のフォルダ ${dir} を読めませんでした`);
+    return inside !== undefined && inside !== vm;
+  }
+
+  private async syncPackageDir(conn: Connection, hostDir: string, remoteDir: string): Promise<void> {
     const entries = collectTreeEntries(hostDir);
     const digest = await bundleDigest(entries, this.hashes);
     const now = await this.run(conn, `[ -d ${shq(remoteDir)} ] && printf '%s\\n' "$(${remoteDigestCommand(shq(remoteDir))})"\nexit 0\n`, { timeoutMs: 120_000 });
-    if (now.stdout.trim() === digest) return false;
+    if (now.stdout.trim() === digest) return;
     const staging = `${remoteDir}.incoming-${randomBytes(4).toString("hex")}`;
     const tar = spawn("tar", ["-C", hostDir, "--null", "--no-recursion", "-cf", "-", "-T", "-"], { stdio: ["pipe", "pipe", "inherit"] });
     tar.stdin.end(entries.map((e) => `${e.rel}\0`).join(""));
@@ -1607,7 +1628,6 @@ export class RemoteSshRuntime {
       stdin: tar.stdout,
       timeoutMs: 600_000,
     });
-    return true;
   }
 
   /**
