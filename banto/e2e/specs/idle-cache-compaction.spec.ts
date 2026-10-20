@@ -160,8 +160,9 @@ test("4時間空いた会話は冷める前に要約され、会話に印が出�
         await acknowledgeReviews(own, c.threadId);
         await login(page, own);
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${a.threadId}`);
-        await expect(page.getByPlaceholder(/に送る/).first()).toBeVisible({ timeout: 30_000 });
-        const mark = page.locator('[data-testid="thread-marker"][data-kind="compact"][data-reason="idle"]');
+        // Fork を開いた画面には隠れた Base の面（入力欄・印・帯）もある——A・B は作った Base Thread なので、どちらの面にも出る。見えている方を取る
+        await expect(page.locator('textarea[placeholder*="に送る"]:visible').first()).toBeVisible({ timeout: 30_000 });
+        const mark = page.locator('[data-testid="thread-marker"][data-kind="compact"][data-reason="idle"]:visible');
         await expect(mark).toHaveCount(1, { timeout: 15_000 });
         await expect(mark).toHaveText(IDLE_MARK);
         // 要約のあとは温めない
@@ -170,10 +171,10 @@ test("4時間空いた会話は冷める前に要約され、会話に印が出�
         // ---- B：帯で取りやめる ------------------------------------------------------------------------------------
         const b = await bigThread(own, fakeApi, projectId, "B：");
         await page.goto(`/p/${projectId}?bantoHost=${own.url}&fork=${b.threadId}`);
-        const composer = page.getByPlaceholder(/に送る/).first();
+        const composer = page.locator('textarea[placeholder*="に送る"]:visible').first();
         await expect(composer).toBeVisible({ timeout: 30_000 });
         // 帯は要約の 8 秒前から（それまでは出ない）
-        const notice = page.getByTestId("thread-idle-compaction-notice");
+        const notice = page.locator('[data-testid="thread-idle-compaction-notice"]:visible');
         await expect(notice).toHaveCount(0);
         await expect(notice).toBeVisible({ timeout: 60_000 });
         await expect(notice).toContainText("まもなく要約します");
