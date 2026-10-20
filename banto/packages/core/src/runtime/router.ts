@@ -43,7 +43,7 @@ export class RuntimeRouter implements Runtime {
   }
 
   release(placeId: string, opts: { stop: boolean }): Promise<void> {
-    return this.remote.handles(placeId) ? this.remote.release(placeId) : this.host.release(placeId, opts);
+    return this.remote.handles(placeId) ? this.remote.release(placeId, opts) : this.host.release(placeId, opts);
   }
 
   async address(projectId: string): Promise<PlaceAddress> {

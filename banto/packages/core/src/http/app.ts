@@ -3440,7 +3440,7 @@ export function createApp(deps: AppDeps) {
           // v4-security.md §1「閉じた Project は数えない」）。閉じたら実行場所は空き、別の Project が来る——enable のままだと
           // 向こうの起こし直しで起きてぶつかる。止められなければ閉じない（空いたことにしない）
           // 眠っているなら、眠らせたときに止めて自動起動から外してある（眠っている間は Service の Module も起こさない）
-          if (suspendsServicesToClose(closing.runtime) && !closing.sleep && deps.suspendProjectServices) {
+          if (suspendsServicesToClose(closing.runtime, (name) => deps.remoteRuntimes?.get(name)?.mode) && !closing.sleep && deps.suspendProjectServices) {
             try {
               await deps.suspendProjectServices(closing.id);
             } catch (err) {

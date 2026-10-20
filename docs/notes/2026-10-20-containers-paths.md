@@ -51,6 +51,22 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   - VM には symlink を置かない（machine は `<置き場>/s/st-<印>` に Module の待ち受けへの symlink を置き、sshd が辿る）——containers
     で sshd（VM のユーザー）に中の置き場を辿らせない
 
+- **実行場所の種類の3つ目（`remote-containers`）**：Project の記録の `runtime` は `remote:<名前>` だけで、動かし方（`machine`／
+  `containers`）は実行場所の登録が持つ。答えが分かれる2つの問い（眠らせる・閉じるときに Service を止めるか）だけ、登録を引く口
+  （`RemoteModeOf`）を受ける形にした。根の場所・この機械のコンテナかは、どちらの動かし方でも同じ答えなので記録だけで答える——
+  Project の記録の層（`project-thread/store.ts`）は登録を知らず、渡す道を作ると関係の無い層に依存が増える
+  - 却下：Project の記録に動かし方を写す——真実が2か所になる（規則3）。動かし方は使っている Project がある間は変えないが、
+    登録を消して同じ名前で作り直すと食い違う
+  - 登録の無い名前（外された）は前の2択どおり `machine` として扱う
+- **眠らせる・閉じるときにコンテナを止める**：`RuntimeRouter.release` は `stop` を別のサーバに渡していなかった（machine は止める箱が
+  無い）。containers では、接続が無くても止めるために繋ぐ——接続を閉じてもコンテナと中の Service は動いたままなので、banto を
+  起こし直したあとに眠らせたときに止まらないことになる。止められなければ接続は閉じたうえで `RuntimeStopError`（呼び元が受信箱で
+  言う、この機械と同じ）
+- **起こし直したときに眠っている Project のコンテナを確かめるのは、この機械だけのまま**（`stopSleepingContainers`）。containers で
+  同じことをすると、起きるたびに眠っている Project の数だけ VM に繋ぐ。眠らせたときに止めてあり、Incus は止まったコンテナを
+  勝手に起こさない（`boot.autostart` は付けていない——VM を起こし直すと、止まる前に動いていたものだけを起こす）ので、残すのは
+  人が手で起こした場合だけ
+
 ## 試験
 
 - `packages/container/src/project-container.test.ts`：`proxyDevice` の番号の向き（`instance`/`host`、TCP と UNIX の待ち受け、中の
@@ -60,6 +76,9 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   Project ごとのトンネル（`-O forward -R <p-<id>/t.sock>:127.0.0.1:<その Project の待ち受け>`、2つの Project で別の待ち受け、置き場は
   0700）、鍵の窓口の転送と装置（p2 のコンテナには出ない・置き場の外は断る）、host の窓口が消えたら転送と装置を外し、トンネルは
   外さない、手放して繋ぎ直すと前の窓口の装置を外しトンネルを同じパスに張り直す。流れの口の装置の形（`bind=host`、繋ぐのは中の
-  番号・VM の待ち受けは VM のユーザー）と `-L` の先、VM に symlink を置かない、2回目は張り直さない
+  番号・VM の待ち受けは VM のユーザー）と `-L` の先、VM に symlink を置かない、2回目は張り直さない。手放すとき `stop` ならその
+  Project のコンテナだけ止める（stop なしなら動いたまま、接続が無くても繋いで止める、次に用意すると起こす）
+- `packages/core/src/runtime/remote-runtimes.test.ts`：実行場所の種類（containers の登録は `remote-containers`、登録が無い名前は
+  machine）と、眠らせる・閉じるときの答え
 - 直しを外すと落ちることを、組んだ JS を書き換えて確かめた（窓口を閉じても装置を外さない・前の接続の装置を外さない・見張りが
   トンネルも外す、の3つ。最後のは最初の試験では通ってしまったので、トンネルを外していないことを見る行を足した）

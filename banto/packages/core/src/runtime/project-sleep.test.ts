@@ -21,6 +21,7 @@ async function withSleep(
     const calls: string[] = [];
     const deps: ProjectSleepDeps = {
       projectThread: store,
+      remoteModeOf: () => undefined,
       hostActivity: () => [],
       suspendServices: async (id) => {
         calls.push(`suspend:${id}`);

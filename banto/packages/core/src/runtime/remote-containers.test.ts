@@ -253,7 +253,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   const rt = new RemoteSshRuntime({
     dataDir,
     monorepoRoot: join(root, "repo"),
-    runtimes: { withConnection: async () => conn() } as never,
+    runtimes: { withConnection: async () => conn(), get: () => ({ mode: "containers" }) } as never,
     remoteNameOf: (id) => (id.startsWith("p") ? "vm" : undefined),
     createRelayListener: (_name, projectId) => {
       connecting = projectId;
@@ -479,6 +479,23 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.equal(state().instances["banto-p1"]!.devices["banto-relay"]?.["connect"], `unix:${tunnelA}`);
     assert.ok(controls().some((l) => l.includes(`-O forward -R ${tunnelA}:127.0.0.1:`)), "繋ぎ直したのにトンネルを張っていない");
     assert.equal(a2.bantoOrigin, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
+
+    // 眠らせる・閉じる（#369）：containers は手放すときに Project のコンテナを止めるだけ（ほかの Project のコンテナには触らない）。
+    // 手放すだけ（stop なし）なら動いたまま
+    await rt.release("p1");
+    assert.equal(state().instances["banto-p1"]!.status, "Running", "stop を頼んでいないのにコンテナを止めた");
+    await rt.release("p2", { stop: true });
+    assert.equal(state().instances["banto-p2"]!.status, "Stopped", "眠らせたのにコンテナが動いている");
+    assert.equal(state().instances["banto-p1"]!.status, "Running", "ほかの Project のコンテナまで止めた");
+    // 接続が無くても（banto を起こし直したあと等）、止めるために繋いで止める
+    await rt.prepare({ id: "p1", root: rootA, nesting: false });
+    await rt.release("p1");
+    await rt.release("p1", { stop: true });
+    assert.equal(state().instances["banto-p1"]!.status, "Stopped", "接続が無いときにコンテナを止めていない");
+    // 起こす：次に使うときにコンテナを起こす（装置はそのまま）
+    await rt.prepare({ id: "p2", root: rootB, nesting: false });
+    assert.equal(state().instances["banto-p2"]!.status, "Running");
+    assert.equal(state().instances["banto-p2"]!.devices["banto-relay"]?.["connect"], `unix:${tunnelB}`);
   } finally {
     await rt.closeAll();
     for (const m of masters) m.kill("SIGKILL");
