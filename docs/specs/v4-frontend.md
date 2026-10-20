@@ -2984,6 +2984,9 @@ Repositories が名乗る画面（folder-provider、v4-modules.md の「core と
    `interrupted` にし（git は Shell との接続が閉じたときに止まる）、帯に「途中で止まりました」と「もう一度」を出す（自動で流し
    直さない）。始め方の仕事が走っている間は、その Project を眠らせない
 6. **Repositories の台帳には載せない**（向こうのフォルダは Repositories が扱えない）。一覧の「Project で使っている」にも出ない。
+   clone し終えた Project の記録（clone した URL・選んだアカウント）は、core が Module に渡す Project の姿の `clonedFrom` に載せる
+   ——Repositories が、その Project の Backlog のブランチを送るアカウントを決めるのに使う（v4-modules.md §2.4「別のサーバの Project」、
+   2026-10-20、Backlog #466）。
    **core が `repositories-github-*` の名前を知るのは「core は Repositories を名指しで知らない」の例外**——v4-modules.md の
    「core との境目」に書いた
 

@@ -2366,6 +2366,47 @@ Project の画面からも一覧からも開く。アカウント・名前・公
   `insteadOf` は origin の読み方そのものを変える）がある・origin の URL が台帳の GitHub の場所の1つだけでない・方式（ssh／
   https）がアカウントと合わない・git が断った（先を越された＝non-fast-forward は「origin のブランチが先に進んでいます」）
 - 取ってこようとしたブランチが origin にまだ無いのは失敗ではない（`{handled: true, ok: true, absent: true}`）
+- **別のサーバの Project**（決定・2026-10-20、ユーザー（案A）。実装・2026-10-20、Backlog #466。経緯と採らなかった案は
+  `docs/notes/2026-10-20-remote-branch-sync.md`）：根は向こうのパスで、この機械には無い。以前は `handled: false` で返し、Backlog が
+  向こうで素の `git push` を流して資格情報が無く失敗していた。**引き受けるが、資格情報は Repositories（host）から出さない**——
+  向こうとの間は core の実行場所の接続で **git の中身（bundle）だけ**を運び、host の使い捨ての bare リポジトリから送る・取ってくる。
+  machine・containers の両方。この機械の Project の振る舞いは変えない
+  - **core の口**（中継、`@banto/module-contract` の `project-git.ts` に名前と決まりを置く）：`relayProjectGitOrigin`（origin の
+    設定）・`relayProjectGitBundle {branch}`（`refs/heads/<b>` だけの bundle。`{bundle: base64}` か、ブランチが無ければ `{absent: true}`）・
+    `relayProjectGitUnbundle {branch, bundle}`（bundle の `refs/heads/<b>` を `+…:refs/remotes/origin/<b>` に取り込む。手元の
+    ブランチ・タグ・submodule には触らない）・`relayProjectGitTrack {branch, commit}`（`refs/remotes/origin/<b>` を、向こうに
+    もうあるコミットに合わせる）。**どの Project かは host の台帳が呼び出しの印で決める**（`relayCallerProject` と同じ——引数で
+    選べない）。呼べるのは `repositories` 役割を名乗る、banto 本体で動く同梱の banto 全体の Module だけ。値は Repositories にしか
+    渡らず、Repositories は承認つきの口（`push_branch`・`fetch_branch`）を処理している最中なので、ここでは承認を重ねない。
+    この機械の Project・Module が起きていない（接続が無い）Project は理由つきで断る。待つ間は 10 秒ごとに進み具合を送る
+  - **向こうの git は Project の中のユーザーで動かす**：machine は VM のユーザー（箱そのもの）、containers はコンテナの中の
+    ユーザー（`incus exec <c> --user <中の番号>`——v4-security.md §1 の条件3。VM のユーザーでは動かさない）。コマンドは core が
+    組み、根・ブランチ名・コミットは位置引数で渡す。フックと fsmonitor は止めて流す（`-c core.hooksPath=/dev/null -c core.fsmonitor=false`
+    ——同期のたびに中のものを走らせない）。bundle を取り込むときの一時ファイルは中のユーザーの `mktemp` で、終わったら消す
+  - **運び方**：送る＝向こうで bundle を作る → host の使い捨ての bare リポジトリ（Module の置き場の `branch-sync/`、毎回作って消す）に
+    中身を確かめて（`transfer.fsckObjects`）取り込む → **host で組んだ URL** へ Repositories の資格情報（一度きりの窓口か ssh-agent、
+    この機械と同じ）で `refs/heads/<b>:refs/heads/<b>`（force しない）→ 送れたら向こうの `refs/remotes/origin/<b>` を送ったコミットに
+    合わせる（この機械で `git push origin` が追跡の ref を進めるのと同じ。Backlog はこれで「まだ送っていない」を数える。合わせられ
+    なくても送れたことは変えず、返事の文言に理由を添える）。取ってくる＝host で origin から `+refs/heads/<b>:refs/heads/<b>` を取り、
+    bundle にして運び、向こうで取り込む（GitHub にまだ無ければ `absent`、向こうには触らない）
+  - **送り先**：向こうの `remote.origin.url`（**リポジトリの段だけ**・書かれた形のまま。`insteadOf` を当てず、ユーザー・システムの段は
+    読まない）が1つだけで、GitHub の場所に読めるとき、その owner/name で host が URL を組む。**方式（https／ssh）は向こうの URL では
+    なくアカウントで決める**（この機械では合わなければ断るが、ここは向こうの URL を使わないので嘘の失敗にならない）。origin の値は
+    中の AI が書ける申告——この機械の Project の `.git/config` も中から書けるのと同じ扱いで、ブランチごとの承認（中継のゲート）が守り
+  - **見ないもの**：向こうの `http.*`・`remote.origin.proxy`・`receivepack`・`uploadpack`・ユーザーの段の設定——送る git は host の
+    使い捨ての置き場のもので、向こうの設定を読まない。**断るもの**（`handled: true, ok: false`）：リポジトリの段の `remote.origin.pushurl`・
+    `url.<x>.insteadOf`・`url.<x>.pushInsteadOf`（向こうの git が送る先と、ここが送る先が食い違う——どちらが正しいか決められない）・
+    origin の URL が2つ以上・送るブランチが向こうに無い・bundle が上限を越える・origin が先に進んでいる（non-fast-forward）
+  - **アカウント**（向こうのリポジトリは台帳に無い）——人が決めたものから順に：(1) その Project を core の「clone」のタブ
+    （v4-frontend.md §6.49）で作り終えたときに選んだアカウント（clone した URL が origin と同じ GitHub の場所のとき。core が
+    `listProjects`・`relayCallerProject` の `clonedFrom: {url, account?}` で渡す）、(2) 台帳で同じ GitHub の場所を扱うアカウント
+    （行どうしで違えば決めない）、(3) 登録したアカウントのうち origin の持ち主と同じ login（Import と同じ決まり）。決まらない・登録が
+    外れたなら `handled: false`（頼んだ側が自分の git で試す——Backlog の Vault の SSH 鍵の道、§4.4）。返事の文言にどれで決めたかを添える
+  - **信用しないもの**：向こうから来るもの全部——origin の設定（上の申告）・bundle（大きさの上限 6MB——中継の本文 10MB に base64 で
+    収まる大きさ、`PROJECT_GIT_BUNDLE_MAX_BYTES`。越えたら core が読むのをやめて断り、Repositories も確かめる。取り込むのは
+    `refs/heads/<b>` だけで、中身は fsck を通す）・ブランチ名（`isSafeBranchName` を core と Repositories の両方で）・コミットの名前
+    （16進 40/64 字）
+  - **毎回ブランチ全体の bundle を運ぶ**（差分にしない）。Backlog の一覧のブランチは小さい（2026-10-20 の banto で 690 コミット・1.3MB）
 
 **core との境目**（2026-10-01。名乗りの形と返す口は段階4で決めた・2026-10-03）：**core は Repositories を名指しで知らない**。
 - core の新しい Project の画面が持つのは「手元のフォルダを選ぶ」と、**Module が中身を持ち込む空きの場所**だけ。
@@ -2396,7 +2437,8 @@ Organization のものは「読むだけ」のまま。clone のときに選ん�
 gitlab 等のアカウント（いまはこのマシンの git の設定で clone するだけ）／Factory が worktree を頼む口（要件）／
 公開したあと、ほかのブランチを送る手（いまは人が git push で）／origin を足す前に失敗して GitHub にだけ空のリポジトリが
 残ったとき、それを origin にする手（いまは文言で `git remote add` を案内するだけ）／ブランチを送る口で、GitHub の外（gitlab 等）の
-origin を引き受けるか（いまは引き受けず、頼んだ側がリポジトリの git の設定で試す）。
+origin を引き受けるか（いまは引き受けず、頼んだ側がリポジトリの git の設定で試す）／別のサーバの Project のブランチが bundle の上限
+（6MB）を越えたとき——差分の bundle（相手が持っているコミットを除く）にするか、運び方を変えるか（いまは理由を言って送らない）。
 
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない
 
@@ -3623,6 +3665,9 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   どうしは別の列で1本ずつ（送るのはその時点の ref——先に並んだ書き込みの分もまとめて送られる）
 - **Vault の SSH 鍵で送る**（決定・2026-10-14、ユーザー（案A）。Backlog #296）——別のサーバの Project（v4-security.md §1）は
   Repositories が引き受けず、向こうの git には鍵が無いので `Permission denied (publickey)` で送れなかった（2026-10-14 実機）。
+  **2026-10-20 から Repositories が別のサーバの Project も引き受ける**（§2.4「ブランチを送る口」の「別のサーバの Project」、
+  Backlog #466）——origin が GitHub でアカウントが決まれば、こちらの道は通らない。鍵で送る道は、Repositories が引き受けないとき
+  （origin が GitHub の外・アカウントが決まらない）の道として残る。
   - **設定**：Backlog の設定（Project ごと、設定 Canvas）に「送るときに使う SSH 鍵」を足す。選べるのは Vault の alias のうち kind が
     `ssh-identity` のもの（その Project から引けるもの）。既定は「使わない」（今までどおり）。設定の写しには alias 名だけを置き、鍵は置かない
   - **送り方**：Repositories が無い・引き受けないとき（「自分の git で試す」道）、鍵が設定されていれば、Vault に中継で

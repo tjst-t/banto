@@ -212,6 +212,9 @@ Vault・Publish・Backlog の「窓口1本＋実装が複数」の形も考え�
   E2E は origin を向こうの bare リポジトリ（ファイルのパス）にして、資格情報の要らない形で「向こうから push する」ことだけを
   確かめた。origin が GitHub の ssh のときに Vault の鍵で送らせるには、Backlog に ssh-agent の窓口を渡す形（宣言に
   `sshIdentity` 相当を足す等。ソケットの転送そのものは Backlog `remote-runtime-sockets` で入った）を決める必要がある——このタスクでは作らない
+  - **追記（2026-10-20）**：鍵で送る道は #296（2026-10-14）で入った。そのうえで、Repositories が別のサーバの Project の push・fetch も
+    引き受けるようになった（#466、ユーザーの決定（案A）。資格情報は向こうへ出さず、core の口で bundle を運んで host から送る）。
+    経緯は `docs/notes/2026-10-20-remote-branch-sync.md`
 
 ## Project を別の実行場所へ移す（2026-10-11、ユーザー）
 
