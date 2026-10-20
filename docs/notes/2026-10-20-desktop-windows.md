@@ -38,3 +38,19 @@
   - 小さいが最初に当たるもの：ディレクトリの fsync（`event-store/log.ts`、直さないと core が起きない見込み）、Repositories の台帳
     （`ledger.ts` の `startsWith("/")`、1件登録すると読めなくなる）、`config/bootstrap.ts` の `isAncestorOrEqual`（重なりの見落とし）
   - 画面は静的に書き出せそう（妨げは `generateStaticParams` の無い動的な道と `headers()`）。今は `/api` を repo の外の Caddy が流している
+
+## 下書きのレビュー（2026-10-20、サブエージェント Claude Code。#432）
+
+下書きの主張はコードと照合し、ファイル名・行の多くは合っていた。反映したもの（下書きに入れた）：
+
+- **高**：`runtimeKindOf` が `local` を別のサーバにしてしまう・`runtime === "host-container"` の直の比較が型で落ちない（§2）
+- **高**：Claude のログインの中継の `sourceMatches` が 127.0.0.1 からの要求を断る——段1の Subagent が動かない（§2）
+- **高**：core 自身が Job に入っておらず、Electron が落ちると core が残り2つ目が同じ `events.jsonl` に書く → core も Job で起こし、core が置き場に錠を取る（§1）
+- **高**：asar は同梱の node.exe から読めない → core と Module を1ファイルに束ねる（§7）
+- **高**：会社の TLS の検査（社内のルート証明書）で Claude に繋がらない → `--use-system-ca`・`NODE_EXTRA_CA_CERTS`（§6）
+- **高**：AI は置き場を書ける・合言葉を読めるので、承認だけが AI に効く守り。「残る守り」を書き直し、ログインのリンクを使わないことにした（§2.4）。Shell を毎回承認にするか・外から足した Module を許すかを §10 の「段1より前に決める」に上げた
+- **高**：段1が大きすぎる → 1a（本体が Windows で起きる・Edge で開く）・1b（コマンドとサブエージェント）・1c（Electron と zip）に分け、完了条件に回数と条件（Defender 有効・管理者なし・日本語のユーザー名）・孫のプロセス 0 個を入れた（§8）
+- **中**：`inWorkScope` の Windows 版として Job Object を入れる、`CTRL_BREAK_EVENT` は届かない見込み、名前付きパイプの成りすまし、ポートを覚える、git の `credential.helper`・`core.autocrlf`、ログオフ・スリープ、OneDrive、ssh.exe の有無、`will-frame-navigate`・権限の要求、§5 と §7 の更新の食い違い、§9 に6項目を足した（TLS・日本語の環境・Defender の遅れ・core の錠・Cookie と OAuth・OneDrive）
+- **人に上げたもの**（§10）：Shell の専用のホームをデスクトップ版で作るか（セキュリティ仕様 §2 のユーザーの決定を黙って外していた）・画面のモックを挟むか
+
+反映していないもの：各節に（案）（決定・日付）を付けること——下書き全体を「案」とする冒頭の注記のまま、決まった時点で付ける。
