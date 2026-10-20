@@ -10490,7 +10490,7 @@
       "number": 438,
       "kind": "task",
       "title": "Event Store・射影・置き場の書き込みを Windows で通る形にする（ディレクトリの fsync・rename のやり直し）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-measure-files"
@@ -10504,7 +10504,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:15.165Z",
       "closedAt": null,
       "extra": {}
     },
