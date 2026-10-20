@@ -19,6 +19,14 @@ export const RELAY_PROJECT_GIT_UNBUNDLE_TOOL = "relayProjectGitUnbundle";
 export const RELAY_PROJECT_GIT_TRACK_TOOL = "relayProjectGitTrack";
 
 /**
+ * **その tool を処理している間だけ、Project の git の口（上の4本）を呼べる**と名乗る印（`_meta` に `true`。追加・2026-10-20、
+ * レビュー L2）。host は中継でその tool を呼んだ呼び出しに印を付け、`relayProjectGit*` は呼び出しの印（`dev.banto/callId`）が
+ * 指す呼び出しに印があるときだけ受ける——同梱の Module の別の仕事（一覧を作る等）から、Project の中身に届かないように。
+ * 信じるのは同梱の宛先の名乗りだけ
+ */
+export const PROJECT_GIT_META_KEY = "dev.banto/projectGit";
+
+/**
  * 運ぶ bundle の上限（バイト、base64 にする前）。中継の本文は 10MB まで（`RELAY_BODY_MAX_BYTES`）で、base64 は 4/3 倍
  * ——取り込みの頼みが本文に収まる大きさ。Backlog の一覧のブランチ（690 コミットで 1.3MB、2026-10-20 の banto で実測）には足りる
  */

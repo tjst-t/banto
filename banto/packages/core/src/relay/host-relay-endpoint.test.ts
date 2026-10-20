@@ -1088,9 +1088,15 @@ test("別のサーバの Project の git に届くのは、repositories 役割�
     }
   };
   try {
-    // 何も処理していない——どの Project か決められない（Module は Project を選べない——引数に projectId を渡しても効かない）
-    await assert.rejects(() => call(tokens.bundled, "relayProjectGitOrigin", { projectId: "pA" }), /決められません/);
-    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pB");
+    // 何も処理していない・印の無い問い——届かない（Module は Project を選べない——引数に projectId を渡しても効かない）
+    await assert.rejects(() => call(tokens.bundled, "relayProjectGitOrigin", { projectId: "pA" }), /名乗った tool（dev\.banto\/projectGit）を処理している呼び出しの中だけ/);
+    // 名乗っていない tool の呼び出しの中（同じ Module の別の仕事）——届かない（レビュー L2）
+    const other = moduleCalls.beginCall("repositories", "t1", "turn", "pB");
+    await assert.rejects(() => call(tokens.bundled, "relayProjectGitOrigin", {}, other.id), /名乗った tool/);
+    other.end();
+    const turn = moduleCalls.beginCall("repositories", "t1", "turn", "pB", false, undefined, undefined, { projectGit: true });
+    // 印を付けない問いは、名乗った呼び出しが走っていても届かない（並んだ別の呼び出しの印を借りさせない）
+    await assert.rejects(() => call(tokens.bundled, "relayProjectGitOrigin", {}), /名乗った tool/);
     assert.deepEqual(await call(tokens.bundled, "relayProjectGitOrigin", { projectId: "pA" }, turn.id), {
       kind: "repo",
       urls: ["https://github.com/a/b.git"],
@@ -1122,6 +1128,71 @@ test("別のサーバの Project の git に届くのは、repositories 役割�
     assert.equal(seen.length, 5, "断ったのに向こうに届いた");
   } finally {
     close();
+  }
+});
+
+test("Project の git に届く印は、中継で呼んだ宛先の tool が dev.banto/projectGit を名乗ったときだけ host が付ける", async () => {
+  const registry = new RelayRegistry();
+  const moduleCalls = new ModuleCallTracker();
+  const seen: string[] = [];
+  const reposMeta = bundledMeta({ satisfies: ["repositories"], dependsOn: [], isolation: "subprocess", scope: "instance" }, "repositories");
+  const reposToken = registry.issueToken({ moduleName: "repositories", meta: reposMeta });
+  let url = "";
+  // 偽の Repositories：どちらの tool も、受けた呼び出しの印のまま中継の relayProjectGitOrigin を呼ぶ
+  const server = new McpServer({ name: "fake-repositories", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      { name: "push_branch", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "module", "dev.banto/projectGit": true } },
+      { name: "list_things", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "module" } },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const callId = (req.params._meta as Record<string, unknown> | undefined)?.["dev.banto/callId"] as string | undefined;
+    const c = await relayClient(url, reposToken);
+    try {
+      const r = await c.callTool({ name: "relayProjectGitOrigin", arguments: {}, ...(callId ? { _meta: { "dev.banto/callId": callId } } : {}) });
+      return { content: [{ type: "text", text: r.isError ? `refused: ${textOf(r)}` : textOf(r) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `refused: ${(err as Error).message}` }] };
+    } finally {
+      await c.close();
+    }
+  });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  const reposClient = new Client({ name: "test", version: "0.0.0" });
+  await Promise.all([server.connect(st), reposClient.connect(ct)]);
+  registry.registerModule({ name: "repositories", client: reposClient, meta: reposMeta });
+  const backlogMeta = bundledMeta(
+    { satisfies: ["backlog"], dependsOn: [{ role: "repositories", required: false }], isolation: "subprocess", scope: "project" },
+    "backlog",
+  );
+  const backlogToken = registry.issueToken({ moduleName: "backlog", connName: "backlog-pA", meta: backlogMeta, projectId: "pA" });
+  const started = await startTestServer(registry, {
+    moduleCalls,
+    projectGit: {
+      origin: async (projectId) => {
+        seen.push(projectId);
+        return { kind: "not-repo" };
+      },
+      bundle: async () => undefined,
+      unbundle: async () => undefined,
+      track: async () => undefined,
+    },
+  });
+  url = started.url;
+  try {
+    const c = await relayClient(url, backlogToken);
+    try {
+      const marked = textOf(await c.callTool({ name: "relayCallTool", arguments: { targetModule: "repositories", name: "push_branch", arguments: {} } }));
+      assert.deepEqual(JSON.parse(marked), { kind: "not-repo" });
+      const unmarked = textOf(await c.callTool({ name: "relayCallTool", arguments: { targetModule: "repositories", name: "list_things", arguments: {} } }));
+      assert.match(unmarked, /^refused: .*名乗った tool/);
+    } finally {
+      await c.close();
+    }
+    assert.deepEqual(seen, ["pA"]);
+  } finally {
+    started.close();
   }
 });
 
