@@ -2385,6 +2385,9 @@ Project の画面からも一覧からも開く。アカウント・名前・公
   そのフォルダを入れた状態で開く**——人がそこで作る。**core に「Project を作る」口は足さない**。開く口は banto の拡張
   `dev.banto/open-new-project`（`v4-frontend.md` §6.2、段階3で作った・2026-10-02）。一覧の「Project を始める」も同じ口
 - Repositories を無効にすると「手元のフォルダ」だけになる
+- **例外（2026-10-20、v4-frontend.md §6.49）**：別のサーバでの新しい Project の clone だけは、core が Repositories のブラウザログインの
+  alias の形（`repositories-github-<login>`・種別 oauth-token・持ち主 repositories）を知り、その Project の Shell に渡す。向こうの
+  フォルダを Repositories が扱えないため（案A を採らなかった）。GitHub のユーザー名 `x-access-token` も core が持つ
 
 **まだ決めていないこと**：AI が「新しい開発を始めて」と頼む道具（承認つき）——最初は人の画面だけ／GitHub App に求める権限の一覧（案は
 `docs/notes/2026-10-02-repositories-stage2.md`。更新に失敗したときの知らせ方は決まった——上の「アカウント」）／

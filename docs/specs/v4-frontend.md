@@ -2925,3 +2925,64 @@ banto 全体の設定「Claude のアカウント」の「切り替える閾値�
 - **携帯の検索**：右上の虫眼鏡で Command Palette を開く（パソコンは ⌘K とサイドバーの「検索」のまま、右上には置かない）
 - **Command Palette の並び**：一番上を「Module の入口」にする。ほかの組（Project・Thread・受信箱・資源・操作）の順は変えない
 
+
+### 6.49 別のサーバでも、新しい Project の始め方をこの機械と揃える（決定・2026-10-20、ユーザー、案B。Fable のレビュー2回（2026-10-20）を受けて改めた。未実装）
+
+**別のサーバを選んでも、この機械と同じ「手元のフォルダ／clone／新しいリポジトリ」のタブを出す。** いまは別のサーバを選ぶと
+タブが消え、「選ぶ」しか無かった（ユーザー指摘「リモートとローカルで Project 作成の UI が違って困る」）。この機械のタブは
+Repositories が名乗る画面（folder-provider、v4-modules.md の「core との境目」）で、git を banto 本体の機械で動かして host の
+フォルダを用意する——別のサーバのフォルダは用意できない。採らない案（案A）：Repositories が向こうで clone・`git init` し、台帳に
+別のサーバの場所として記録する（Repositories の台帳・資格情報の渡し方・削除の流れまで直すことになる）。
+
+1. **タブ**：別のサーバを選んだときは、core が「clone」「新しいリポジトリ」の2つのタブを自分で出す（名前・アイコン・並びは
+   この機械のタブと同じ。Repositories の folder-provider は出さない）。どちらも**置く場所**（向こうのフォルダ。「選ぶ」の画面と
+   「新しいフォルダ」、§6.18）と**名前**（作るフォルダの名前。clone は URL の最後から `.git` を除いて入れておく）を持ち、下の段の
+   Project 名・作るボタンはこの機械と同じ。Repositories を無効にしていても出す（core の機能。そのときは公開のものだけ clone
+   できる——下の 4.）
+2. **作る順番**（`POST /api/projects` に `start: { kind: "init" } | { kind: "clone", url, account? }` を足す。別のサーバのときだけ受け、
+   この機械では 400 で断る——この機械は Repositories の folder-provider が同じ役）：(1) 置く場所の中に名前のフォルダを作る
+   （`createRemoteDirectory` と同じ。同じ名前があれば断る）、(2) そのフォルダを根に Project を作る（今の作り方。根の重なりの断りも
+   同じ。ここで断られたら (1) で作った空のフォルダを消す）、(3) **始め方の仕事を core の仕事として始めて、すぐ返す**（画面は作った
+   Project へ移る）。(3) は HTTP から切り離し、Project の記録に `start: { kind, url?, account?, startedAt, status: "waking"|"running"|
+   "done"|"failed"|"interrupted", error? }` を持つ（「移す」の `move` と同じ置き方）。**1つの Project に始め方の仕事は同時に1本**
+3. **流し方**：その Project の Shell の `runCommand` を人の印（admin）で呼ぶ——`containers` ならコンテナの中、`machine` なら VM の
+   ユーザーで動く（v4-security.md §1 の条件3「見せたフォルダに書くものは中から」をそのまま満たす）。Shell が起きるまで（`containers`
+   の最初の1回は土台のイメージを作るので数分）は `status: "waking"`。コマンドはすべて core が組み、値は1語ずつ shell-quote する。
+   git のコマンドの頭に `GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null git …` と書く（Shell の `runCommand` には `envSecrets`
+   のほかに環境の引数が無い）——資格情報が違えば入力を待たずに落ち、Shell のホームの `.gitconfig` の写しの `url.*.insteadOf` 等に
+   左右されない（Repositories の clone と同じ）。既定のブランチ名を読むコマンドだけは `GIT_CONFIG_GLOBAL` を付けない
+   - **新しいリポジトリ**：根で `git init -b <ブランチ>`。ブランチは Shell のホームの git の設定の `init.defaultBranch`（この機械の
+     設定の写し）、無ければ `main`——この機械の新しいリポジトリと同じ決まり。名前を読むコマンドと init は別に流す
+   - **clone**：根の下に core の作業フォルダ `.banto-clone-<id>/` を作り、`git clone --progress -- <URL> .banto-clone-<id>` で流す。
+     流す前に根が空（作業フォルダを除く）でなければ断る。成功したら中身（隠しファイルも）を根へ動かして作業フォルダを消す
+     （`find <作業> -mindepth 1 -maxdepth 1 -exec mv -t <根> {} +`）。失敗したら作業フォルダだけを消す（消すのは自分が作ったもの
+     だけ——Repositories の失敗の片づけと同じ考え）。片づけも Shell の中で行う（条件3）ので、起こし直しで中断したものは次に
+     「もう一度」を押したときの最初に片づける（片づけのためだけにコンテナを起こさない）
+   - **URL の決まりは Repositories の clone と同じ**：https・ssh（`ssh://`・`git@host:path`）だけ。`file://`・`git://`・`http://`・
+     `ext::` 等・`-` で始まるもの・資格情報を書いたもの（`https://user:token@…`）・空白・改行・制御文字は断る。`--` を必ず置く。
+     断る決まりは Repositories の `parseCloneSource` を共通の package（`@banto/module-contract` 等）の純粋な関数に出し、両方が使う
+     （写さない）
+   - **時間**：全体の上限は 6 時間（`runCommand` の `timeout`）。**Shell の進み具合の通知の `progress` に出力の文字数を入れ**（今は
+     0 固定）、core はそれが5分変わらなければ MCP の取り消しで切る（git が5分何も言わなければ切る——Repositories の clone と同じ）
+4. **資格情報**（clone のタブ）：**URL の host が GitHub（Repositories の GitHub の場所）のときだけ**「GitHub のアカウント」を出す
+   ——新しい Project が紐付く Vault（既定の Vault）の窓口（`lookupAliases`）で引ける `repositories-github-<login>`（Repositories の
+   ブラウザログイン、種別 oauth-token・持ち主 repositories）と「使わない（公開のもの）」。Repositories が入っていなければアカウントの
+   選択を出さない（alias が Vault に残っていても、持ち主が答えないので渡せない）。選んだら Shell の `envSecrets` で `GIT_HTTP_TOKEN` に
+   渡し（#405 で access token の文字列が渡る）、git の `-c credential.helper` には、標準入力の問いを読んで `protocol=https` かつ
+   `host=github.com`（Repositories の GitHub の host）のときだけ `username=x-access-token`・`password=$GIT_HTTP_TOKEN` を答え、ほかの
+   host（リダイレクトの先を含む）には何も答えない1行の関数を渡す。トークンは**環境変数の名前で参照し**、コマンドの文字列に埋めない
+   （`ps` と Shell の結果に出さない。`-c` なので設定にも書かない）。環境が同じコンテナ／VM のユーザーから読めるのは「中から来たものは
+   その Project の AI」の境界どおりで受け入れる。PAT のアカウントは出さない（Vault の alias を Repositories だけが知っているため。
+   選択肢の下に「PAT のアカウントはここでは選べません（AI に頼むと使えます）」）。第三者の Vault で承認が要るときは断られる——その
+   理由を帯にそのまま出す
+   - **`containers` は #369（中から banto への道）が入るまで、アカウントの選択と ssh の URL を出さない**——コンテナの中の Shell は
+     Vault にも ssh-agent にも届かない。それまでの `containers` は `git init` と公開の https の clone だけ。`machine` は今でも全部通る
+5. **見せ方**：会話の上の帯で「Module を起こしています（初めてなら数分）→ clone しています（経過 m 分）→ 終わり／失敗」を出す。
+   状態は core の記録にあり、画面へは `app-events` の `project.start.changed` で流す（コードの送り込みの `code.transfer` と並べる）。
+   終わったら帯を閉じる。失敗したら理由と「もう一度」（作業フォルダを片づけたあと根が空なら。走っている間は出さない）・「AI に頼む」
+   （入力欄に clone の頼みを置く）を出す。Project とフォルダはそのまま残す。**banto を起こし直したら**、走っていた仕事は
+   `interrupted` にし（git は Shell との接続が閉じたときに止まる）、帯に「途中で止まりました」と「もう一度」を出す（自動で流し
+   直さない）。始め方の仕事が走っている間は、その Project を眠らせない
+6. **Repositories の台帳には載せない**（向こうのフォルダは Repositories が扱えない）。一覧の「Project で使っている」にも出ない。
+   **core が `repositories-github-*` の名前を知るのは「core は Repositories を名指しで知らない」の例外**——v4-modules.md の
+   「core との境目」に書いた
