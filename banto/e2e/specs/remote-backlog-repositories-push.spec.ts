@@ -11,6 +11,7 @@
 //      listItems は送っていない変更が無いと言う（向こうの追跡の ref が送ったコミットに合う）
 //   2. 偽の GitHub の側で一覧が進んだ（別の手元から送られた）あと、もう1件書くと、取ってきて取り込んでから書き、送れる
 //      ——偽の GitHub の一覧に、向こうで書いた2件と GitHub の側で変えたものが全部ある
+//   2b. 承認のカードに送り先とアカウントが出る。origin を別のリポジトリに書き換えると、最初に決めた送り先と違うので送らない
 //   3. PAT は向こうのどこにも無い
 import { test, expect } from "../test-base.js";
 import { execFileSync } from "node:child_process";
@@ -84,6 +85,7 @@ async function callAsAgent(
         if (item.kind !== "judgment" || item.liveness !== "live" || answered.has(item.id)) continue;
         if (item.projectId !== ctx.projectId && item.threadId !== ctx.threadId) continue;
         answered.add(item.id);
+        answeredCards.push(JSON.stringify(item));
         const res = await api(`/api/inbox/${item.id}/answer`, { method: "POST", body: { answer: { behavior: "allow" } } });
         expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
       }
@@ -99,6 +101,9 @@ async function callAsAgent(
     await client.close();
   }
 }
+
+/** 許可した判断待ち（中身ごと。承認のカードに送り先とアカウントが出ていたかを見る） */
+const answeredCards: string[] = [];
 
 async function connectedModules(projectId: string): Promise<string[]> {
   const r = await api<{ connected?: string[] }>(`/api/projects/${projectId}/modules/prepare`, { method: "POST" });
@@ -229,6 +234,26 @@ test("別のサーバの Project で、Backlog の一覧のブランチを Repos
         gitHere(other, "fetch", "-q", "origin", "+backlog:backlog");
         const onGithub = JSON.parse(gitHere(other, "show", "backlog:tasks.json")) as { items: Array<{ title: string }> };
         expect(onGithub.items.map((i) => i.title)).toEqual(["Renamed on GitHub", "Written after fetch"]);
+
+        // 承認のカードに、送り先とアカウントが出ていた（名乗った引数——branch_target で引いたもの。レビュー H1）
+        const pushCard = answeredCards.find((c) => c.includes("push_branch"));
+        expect(pushCard, "push_branch の承認のカードが出ていない").toBeTruthy();
+        expect(pushCard).toContain(`github.com/${E2E_GITHUB_PAT_LOGIN}/${repoName}`);
+        expect(pushCard).toContain(E2E_GITHUB_PAT_LOGIN);
+
+        // ---- 2b. origin を別のリポジトリ（同じ持ち主）に書き換える：最初に決めた送り先と違うので送らない（レビュー H1） ---
+        const otherRepo = `${repoName}-other`;
+        await setGithubLoginFixture({ addRepo: { owner: E2E_GITHUB_PAT_LOGIN, name: otherRepo } });
+        const otherUrl = `${web}/${E2E_GITHUB_PAT_LOGIN}/${otherRepo}.git`;
+        const rewired = await host.ssh(`cd ~/work/proj && git remote set-url origin '${otherUrl}'`);
+        expect(rewired.code, rewired.stderr).toBe(0);
+        const third = await callAsAgent(conn, "createItem", { kind: "task", title: "After origin rewrite" }, ctx);
+        expect(third.isError, third.text).toBe(false);
+        expect(third.text).toContain("origin に送れませんでした");
+        expect(third.text).toContain(`github.com/${E2E_GITHUB_PAT_LOGIN}/${repoName}`);
+        expect(third.text).toContain("決めてあります");
+        expect(gitHere(scratch, "ls-remote", otherUrl, "refs/heads/backlog"), "書き換えた先に送った").toBe("");
+        expect(githubRef(), "決めた送り先が動いた").toBe(local2);
 
         // ---- 3. PAT は向こうのどこにも無い（SSH の外から root で探す） ------------------------------------------------
         const leaked = await host.rootExec(`grep -rlF -- '${E2E_GITHUB_PAT}' /home /tmp /var/tmp /run/user 2>/dev/null || true`);
