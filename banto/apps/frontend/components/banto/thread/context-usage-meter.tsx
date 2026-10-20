@@ -14,8 +14,8 @@ import { cn } from "@/lib/utils";
 import { getContextUsage, type ContextCategory, type ContextUsage } from "@/lib/mock/context-usage";
 import { getThread } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import { realContextUsageToDisplay, SKILL_CATEGORY_ID } from "@/lib/backend/context-usage";
-import { getRealThreadSkills, type RealThreadSkills } from "@/lib/backend/client";
+import { MEMORY_CATEGORY_ID, realContextUsageToDisplay, SKILL_CATEGORY_ID, withMemorySplit } from "@/lib/backend/context-usage";
+import { getRealPromptFootprint, getRealThreadSkills, type RealPromptFootprint, type RealThreadSkills } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
 import { ClaudeAccountChip, ClaudeAccountSection, useCurrentClaudeAccount } from "@/components/banto/thread/claude-account-usage";
 import type { ThreadId } from "@/lib/mock/types";
@@ -41,6 +41,8 @@ const CONTENT_COLOR: Readonly<Record<string, string>> = {
   skills: "bg-chart-2",
   "mcp-tools": "bg-chart-3",
   memory: "bg-chart-4",
+  // banto の Memory（System prompt から切り出したもの、§6.50）
+  [MEMORY_CATEGORY_ID]: "bg-chart-4",
   messages: "bg-chart-5",
 };
 
@@ -79,14 +81,20 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // **この会話で効いている Skill**——開いたときに host から取る（手元に写しを持たない、規則3）
   const [threadSkills, setThreadSkills] = useState<RealThreadSkills | null>(null);
+  // **土台の指示の節ごとの文字数**——Memory の分を System prompt から切り出す（§6.50）。開いたときに取る
+  const [promptFootprint, setPromptFootprint] = useState<RealPromptFootprint | null>(null);
   const thread = getThread(threadId);
   const isReal = thread?.real === true;
   // **いま使っている Claude のアカウントと使用量**（§6.46）。ターンが終わって使った量の記録が増えたら取り直す
   const claudeAccount = useCurrentClaudeAccount(isReal ? thread?.projectId : undefined, threadId, thread?.realUsage?.length ?? 0);
-  const usage = {
-    ...rawUsage,
-    categories: rawUsage.categories.map((c) => withSkillItems(c, threadSkills)),
-  };
+  const usage = withMemorySplit(
+    {
+      ...rawUsage,
+      categories: rawUsage.categories.map((c) => withSkillItems(c, threadSkills)),
+    },
+    promptFootprint,
+  );
+  const memoryTokens = usage.categories.find((c) => c.id === MEMORY_CATEGORY_ID)?.tokens ?? 0;
 
   const [openCount, setOpenCount] = useState(0);
   function handleOpenChange(open: boolean) {
@@ -95,6 +103,9 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
     getRealThreadSkills(threadId)
       .then(setThreadSkills)
       .catch((err: unknown) => reportFailure("この会話で効いている Skill を取得できませんでした", err));
+    getRealPromptFootprint(threadId)
+      .then(setPromptFootprint)
+      .catch((err: unknown) => reportFailure("土台の指示の内訳を取得できませんでした", err));
   }
 
   const freeTokens = usage.categories.find((c) => c.id === "free")?.tokens ?? 0;
@@ -146,6 +157,15 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
             {formatTokens(usage.windowTokens - freeTokens)} / {formatTokens(usage.windowTokens)}{" "}
             トークン使用中（{Math.round(usedRatio * 100)}%）
           </p>
+          {memoryTokens > 0 ? (
+            <p data-testid="context-memory-share" className="text-xs text-ink-3">
+              うち Memory {formatTokens(memoryTokens)} トークン（使用中の{" "}
+              {usage.windowTokens - freeTokens > 0
+                ? ((memoryTokens / (usage.windowTokens - freeTokens)) * 100).toFixed(1)
+                : "0.0"}
+              %）——土台の指示の文字数で按分したおおよその値
+            </p>
+          ) : null}
         </div>
 
         <div className="px-3 py-3">

@@ -81,3 +81,39 @@ export function realContextUsageToDisplay(raw: unknown): ContextUsage | null {
 
   return { windowTokens: raw.rawMaxTokens, categories, deferred };
 }
+
+/** 残量メーターの Memory の行（SDK の「System prompt」から切り出したもの、§6.50）。 */
+export const MEMORY_CATEGORY_ID = "banto-memory";
+
+/** 按分に使う節の文字数（core の `GET /api/threads/:id/prompt-footprint`）。 */
+export interface PromptFootprintShape {
+  parts: readonly { kind: string; chars: number }[];
+  totalChars: number;
+  projectMemoryLines: number;
+}
+
+/**
+ * **SDK の「System prompt」から Memory の分を切り出す**（追加・2026-10-20、ユーザー要望。v4-frontend.md §6.50）。
+ * SDK が数えるのは土台の指示の全体だけなので、core が返す節ごとの文字数で按分する（Skill と同じ形——数字は作らず、
+ * SDK の値を割り振るだけ）。Memory＝Project Memory・Global Memory・AI への指示。切り出したら System prompt からは引く
+ */
+export function withMemorySplit(usage: ContextUsage, footprint: PromptFootprintShape | null): ContextUsage {
+  if (!footprint || footprint.totalChars <= 0) return usage;
+  const index = usage.categories.findIndex((c) => /^system prompt$/i.test(c.label));
+  if (index < 0) return usage;
+  const system = usage.categories[index]!;
+  const charsOf = (kind: string) => footprint.parts.filter((p) => p.kind === kind).reduce((n, p) => n + p.chars, 0);
+  const share = (chars: number) => Math.round((system.tokens * chars) / footprint.totalChars);
+  const items = [
+    { name: `Project Memory（${footprint.projectMemoryLines} 行）`, tokens: share(charsOf("project-memory")) },
+    { name: "Global Memory", tokens: share(charsOf("global-memory")) },
+    { name: "この Project の AI への指示", tokens: share(charsOf("instruction")) },
+  ].filter((i) => i.tokens > 0);
+  const memoryTokens = items.reduce((n, i) => n + i.tokens, 0);
+  if (memoryTokens <= 0) return usage;
+  const memory: ContextCategory = { id: MEMORY_CATEGORY_ID, label: "Memory", tokens: memoryTokens, kind: "content", items };
+  const rest: ContextCategory = { ...system, tokens: Math.max(0, system.tokens - memoryTokens) };
+  const categories = [...usage.categories];
+  categories.splice(index, 1, ...(rest.tokens > 0 ? [rest, memory] : [memory]));
+  return { ...usage, categories };
+}

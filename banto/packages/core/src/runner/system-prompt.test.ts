@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "@anthropic-ai/claude-agent-sdk";
-import { buildSystemPrompt, BANTO_SYSTEM_PROMPT_CORE } from "./system-prompt.js";
+import { buildSystemPrompt, buildSystemPromptParts, BANTO_SYSTEM_PROMPT_CORE } from "./system-prompt.js";
 import { buildTurnContext } from "./turn-context.js";
 
 const project = { name: "demo", root: "/tmp/demo" };
@@ -155,3 +155,27 @@ test("動いているモデルの名前と ID は、境界より後に入る（�
   assert.ok(!without.some((b) => b.includes("モデル ID")), "分からないのに書いている");
 });
 
+
+// 右上の文脈のメーターが Memory の割合を出すのに使う（v4-frontend.md §6.50）——節の種類と文が、実際に渡す
+// 土台の指示と食い違わないこと
+test("buildSystemPromptParts labels each block and matches buildSystemPrompt exactly", () => {
+  const input = {
+    project,
+    globalMemory: ["全体の決まり"],
+    memory: [
+      { seq: 3, text: "残る行", invalidated: false },
+      { seq: 4, text: "取り消した行", invalidated: true },
+    ],
+    turnSummary: true,
+    projectInstruction: "固有の指示",
+  };
+  const parts = buildSystemPromptParts(input);
+  assert.deepEqual(parts.map((p) => p.text), buildSystemPrompt(input));
+  assert.deepEqual(
+    parts.map((p) => p.kind),
+    ["core", "global-memory", "boundary", "project", "project-memory", "turn-summary", "instruction"],
+  );
+  const memory = parts.find((p) => p.kind === "project-memory")!.text;
+  assert.ok(memory.includes("[#3] 残る行"));
+  assert.ok(!memory.includes("取り消した行"), "取り消した行は数えない");
+});

@@ -2986,3 +2986,19 @@ Repositories が名乗る画面（folder-provider、v4-modules.md の「core と
 6. **Repositories の台帳には載せない**（向こうのフォルダは Repositories が扱えない）。一覧の「Project で使っている」にも出ない。
    **core が `repositories-github-*` の名前を知るのは「core は Repositories を名指しで知らない」の例外**——v4-modules.md の
    「core との境目」に書いた
+
+### 6.50 文脈のメーターで Memory の割合を分けて見せる（決定・2026-10-20、ユーザー要望）
+
+ユーザー：「右上のコンテキスト消費のなかに、Memory がどれだけの割合になっているかをわかるように分けて示して」。Memory は毎ターン
+土台の指示（system prompt）に全部入るが、SDK の `getContextUsage()` は土台の指示を「System prompt」1つでしか数えない。
+
+- **按分**：core の `GET /api/threads/:id/prompt-footprint` が、その会話の土台の指示を `turn-runner.ts` と同じ部品
+  （`buildSystemPromptParts`）・同じ入力（その会話で確定した Memory、Global Memory、AI への指示、まとめのスイッチ）で組み、
+  節ごとの文字数を返す（`parts[{kind, chars}]`・`totalChars`・`projectMemoryLines`）。画面は SDK の「System prompt」の量を文字数で
+  割り振り、**Memory**（Project Memory（n 行）・Global Memory・この Project の AI への指示）を別の行にして、System prompt からは
+  その分を引く（合計は変えない。Skill の按分 §5.7 と同じ形、数字は作らない）
+- **出し方**：開いた内訳の頭に「うち Memory n トークン（使用中の x%）——土台の指示の文字数で按分したおおよその値」、帯と表に
+  「Memory」の行（押すと3つの内訳）。節の文字数は開いたときに取る
+- **数えないもの**：会話の始まりより後に足された Memory の行は土台に入らず、ターンの頭に添えて届ける（§2.3）ので Messages に入る。
+  ここの Memory は「この会話の土台に入っている分」
+

@@ -102,6 +102,8 @@ import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-o
 import { listPatrolTools, readOnlyModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
+import { buildSystemPromptParts } from "../runner/system-prompt.js";
+import { splitMemory } from "../project-thread/memory-split.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { closeForkDroppedNote, composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
@@ -2825,6 +2827,34 @@ export function createApp(deps: AppDeps) {
           return respond(() => missions.patch(threadId, body), 200);
         }
         return json(res, 405, { error: "method not allowed" });
+      }
+
+      // **土台の指示の節ごとの文字数**（追加・2026-10-20、ユーザー要望。v4-frontend.md §6.50）——右上の文脈のメーターが SDK の
+      // 「System prompt」の量を、Memory（Project Memory・Global Memory・AI への指示）とそれ以外に按分する。組み立ては turn-runner.ts と
+      // 同じ部品（buildSystemPromptParts）・同じ入力（その会話で確定した Memory）で、数字は作らない（文字数だけ返す）
+      const promptFootprintMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/prompt-footprint$/);
+      if (promptFootprintMatch && req.method === "GET") {
+        const thread = deps.projectThread.getThread(promptFootprintMatch[1]!);
+        if (!thread) return json(res, 404, { error: "not found" });
+        const project = deps.projectThread.getProject(thread.projectId);
+        if (!project) return json(res, 404, { error: "not found" });
+        const memory = deps.projectThread.memoryForThread(thread.id);
+        const global_ = splitMemory(deps.globalMemory.list(), thread.memoryBaselineSeq, thread.memoryDeliveredSeq);
+        const instruction = projectInstruction(thread.projectId);
+        const parts = buildSystemPromptParts({
+          globalMemory: global_.established.filter((m) => !m.invalidated).map((m) => m.text),
+          project: { name: project.name, root: project.root, remoteRuntime: remoteNameOf(project.runtime) },
+          memory: memory.established,
+          ...(turnSummaryEnabled(thread.projectId) ? { turnSummary: true } : {}),
+          ...(instruction ? { projectInstruction: instruction } : {}),
+        });
+        const projectMemoryLines = memory.established.filter((m) => !m.invalidated).length;
+        json(res, 200, {
+          parts: parts.filter((p) => p.kind !== "boundary").map((p) => ({ kind: p.kind, chars: p.text.length })),
+          totalChars: parts.filter((p) => p.kind !== "boundary").reduce((n, p) => n + p.text.length, 0),
+          projectMemoryLines,
+        });
+        return;
       }
 
       // **この会話で効いている Skill**（決定・2026-09-23、§5.7）。会話の始まりで固定した

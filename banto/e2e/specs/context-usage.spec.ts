@@ -78,4 +78,28 @@ test("会話を送る→文脈使用量メーターの数値が変わる→リ�
   const usage = thread.usage.at(-1).contextUsage as { categories?: { name: string; tokens: number }[] };
   const memoryFiles = usage.categories?.find((c) => c.name === "Memory files");
   expect(memoryFiles?.tokens ?? 0).toBe(0);
+
+  // **Memory の割合を分けて見せる**（2026-10-20、ユーザー要望。v4-frontend.md §6.50）——この Project の AI への指示を書いて
+  // 1ターン走らせると、メーターの内訳に「Memory」の行と「うち Memory …」が出る。量は core の節ごとの文字数で SDK の
+  // System prompt を按分したもの（System prompt から引いた分が Memory になる）
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const put = await page.request.put(`${CORE_BASE_URL}/api/projects/${project.id}/instruction`, {
+    headers,
+    data: { text: "この Project 固有の指示。".repeat(200) },
+  });
+  expect(put.ok()).toBe(true);
+  const footprint = await (await page.request.get(`${CORE_BASE_URL}/api/threads/${threadList[0].id}/prompt-footprint`, { headers })).json();
+  expect(footprint.parts.find((p: { kind: string }) => p.kind === "instruction")?.chars ?? 0).toBeGreaterThan(2000);
+  expect(footprint.totalChars).toBe(footprint.parts.reduce((n: number, p: { chars: number }) => n + p.chars, 0));
+
+  await composer.fill("目印として「文脈確認790」と1語だけ返してください。");
+  await composer.press("Enter");
+  await expect(assistantBubble.filter({ hasText: "文脈確認790" })).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: /文脈使用量/ }).click();
+  await expect(page.getByTestId("context-memory-share")).toContainText(/うち Memory [\d,]+ トークン/, { timeout: 15_000 });
+  const memoryRow = page.getByRole("button", { name: /^Memory [\d,]+（[\d.]+%）$/ });
+  await expect(memoryRow).toBeVisible();
+  await memoryRow.click();
+  await expect(page.getByText("この Project の AI への指示", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
 });
