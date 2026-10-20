@@ -11550,6 +11550,32 @@
       "updatedAt": "2026-10-20T15:49:34.599Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "virt-move-close-choices",
+      "number": 480,
+      "kind": "task",
+      "title": "仮想化（KVM）の設定を持つ Project を移す・閉じるときの選択（3つの設定を外すか、hugepages を外す／持ったまま）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime",
+        "container"
+      ],
+      "body": "仕様 v4-security.md §1「`containers` で仮想化（KVM）」の 2.（hugepages の運用）と 7.。#456 では作らなかった：(1) 移す先が containers で仮想化を許していなければ3つの設定を外してから移すかを聞く、machine・この機械へは外して移す、hugepages は元のサーバで外す（使っていれば断る）。(2) 閉じるときの確かめの画面で「hugepages を N 個持っています——外す／持ったまま」（既定は外す）、外したあとも N は残し人が再開するときに確保し直す（足りなければ起こしたうえで注意）。",
+      "doneWhen": "単体試験と E2E（偽の実行場所）で、移す・閉じる・再開の各場合に設定と確保が仕様どおりになる。",
+      "resolution": null,
+      "refs": [
+        "#456"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T20:03:53.832Z",
+      "updatedAt": "2026-10-20T20:03:53.832Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
