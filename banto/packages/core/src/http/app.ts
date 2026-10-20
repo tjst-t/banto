@@ -49,6 +49,7 @@ import {
   remoteNameOf,
   type RemoteRuntimes,
 } from "../runtime/remote-runtimes.js";
+import type { ContainersVirtualization } from "../runtime/containers-virt.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { InboxItem } from "../inbox/types.js";
@@ -344,6 +345,8 @@ export interface AppDeps {
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
   remoteRuntimes?: RemoteRuntimes;
+  /** `containers` の仮想化の実験（実行場所の「許す」・Project ごとの設定。人の画面からだけ） */
+  containersVirtualization?: ContainersVirtualization;
   /**
    * **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・止まるもの・起こす口（`modules/prepare` と
    * ターンを開く口だけが呼ぶ）。無ければ眠らせる口は 404 で、起こす口は何もしない（試験の最小構成）
@@ -2170,6 +2173,15 @@ export function createApp(deps: AppDeps) {
               // 繋がった——鍵は置き場にある。鍵のカードが開いていれば閉じる（人が Vault で手で直したあとの確かめ直し、Backlog #375）
               void deps.runtimeKeys?.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
               return json(res, 200, view);
+            }
+            // **仮想化の実験を許す**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 1.）。人の画面からだけ
+            // （AI の tool は無い）。オンで区画に unix-char を足し、オフは全 Project が外してから
+            if (action === "/virtualization" && req.method === "PUT") {
+              if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+              const body = (await readJsonBody(req)) as { allowed?: unknown };
+              if (typeof body.allowed !== "boolean") return json(res, 400, { error: "allowed は true か false で渡してください" });
+              const result = await deps.containersVirtualization.setAllowed(name, body.allowed);
+              return json(res, 200, { ...result, runtime: runtimes.get(name) });
             }
             if (action === "/accept-host-key" && req.method === "POST") {
               const body = (await readJsonBody(req)) as { fingerprint?: unknown };

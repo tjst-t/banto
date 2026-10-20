@@ -41,6 +41,8 @@ interface FakeVm {
   socketDown?: boolean;
   /** apt で入れた道具 */
   tools: Set<string>;
+  /** `/sys/module/kvm_intel/parameters/nested` の中身（無ければ KVM のモジュールが読まれていない） */
+  nested?: string;
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -102,6 +104,11 @@ function accessOf(vm: FakeVm): VmAccess {
         const [k, v] = kv.split("=");
         vm.project[k!] = v!;
       }
+      return ok();
+    }
+    if (cmd === "project" && rest[0] === "unset") {
+      if (!vm.project) return fail("project not found");
+      delete vm.project[rest[2]!];
       return ok();
     }
     if (cmd === "admin" && rest[0] === "waitready") return ok();
@@ -188,6 +195,9 @@ function accessOf(vm: FakeVm): VmAccess {
       if (cmd === "cat" && rest[0] === "/etc/subgid") return ok(vm.subgid);
       if (cmd === "test") return vm.linger ? ok() : fail("", 1);
       if (cmd === "findmnt") return ok(`${vm.fs}\n`);
+      if (cmd === "cat" && rest[0] === "/sys/module/kvm_intel/parameters/nested") {
+        return vm.nested !== undefined ? { code: 1, stdout: vm.nested, stderr: "cat: /sys/module/kvm_amd/parameters/nested: No such file or directory" } : fail("No such file or directory", 1);
+      }
       if (cmd === "df") return ok(`Avail\n  ${vm.availGiB}G\n`);
       return fail(`偽の VM は ${args.join(" ")} を知らない`, 127);
     },
@@ -208,6 +218,7 @@ test("まっさらな VM（sudo -n が通る）：確かめは何も変えず、
     "incus-idmap": "warn",
     "incus-pool": "warn",
     linger: "warn",
+    "nested-kvm": "ok",
     sudo: "ok",
   });
   // Incus に繋がらないうちは版が分からない——区画の項目で名指しする
@@ -264,6 +275,7 @@ test("sudo -n が通らない：何も打たず、足りないものと打つコ
     "incus-idmap": "fail",
     "incus-pool": "fail",
     linger: "fail",
+    "nested-kvm": "ok",
     sudo: "fail",
   });
   const byId = Object.fromEntries(checks.map((c) => [c.id, c]));
@@ -293,6 +305,7 @@ test("人が先に整えてあれば sudo -n が無くても使える（sudo は
     "incus-idmap": "ok",
     "incus-pool": "ok",
     linger: "ok",
+    "nested-kvm": "ok",
     sudo: "warn",
   });
   // 人が区画の設定を戻した——繋ぐたびの確かめ（sudo しない）は断り、「確かめ直す」で整えると言う
@@ -326,7 +339,7 @@ test("Incus が無い（Ubuntu 24.04）：確かめは「登録のときに入�
   const access = accessOf(vm);
   const before = await evaluateContainersHost(await inspectContainersHost(access), access, "check");
   // 後ろの項目は「Incus を入れたあとに整えます」の注意（断らない——「準備して登録する」が押せる）
-  assert.deepEqual(new Set(before.filter((c) => c.id !== "sudo" && c.id !== "user-manager").map((c) => c.status)), new Set(["warn"]));
+  assert.deepEqual(new Set(before.filter((c) => c.id !== "sudo" && c.id !== "user-manager" && c.id !== "nested-kvm").map((c) => c.status)), new Set(["warn"]));
   assert.match(before.find((c) => c.id === "incus")!.detail!, /Incus が入っていません。登録するときに banto/);
   assert.match(before.find((c) => c.id === "incus")!.fix!, /sudo tee \/etc\/apt\/keyrings\/zabbly\.asc（Zabbly の鍵。banto の host で指紋 4EFC590696CB15B87C73A3AD82CC8797C838DCFD を確かめたもの）/);
   assert.match(before.find((c) => c.id === "incus")!.fix!, /sudo apt-get install --no-install-recommends incus btrfs-progs$/);
@@ -501,4 +514,50 @@ test("区画の idmap の許しに足すときは、今の値を残して足す"
   assert.equal(idRangesInclude("1-5,1000-1000", 1000), true);
   assert.equal(idRangesInclude("1-5", 1000), false);
   assert.equal(idRangesInclude(undefined, 1000), false);
+});
+
+test("仮想化の実験を許した実行場所：区画の unix-char も準備の項目に入り、登録・確かめ直しで sudo -n で足す。崩れても繋ぐたびは注意だけ", async () => {
+  const vm = fakeVm({ inGroup: true, linger: true, pools: new Set(["banto"]), subuid: "root:1000:1\n", subgid: "root:1001:1\n" });
+  vm.project = { restricted: "true", "restricted.devices.proxy": "allow", "restricted.idmap.uid": "1000", "restricted.idmap.gid": "1001" };
+  const access = accessOf(vm);
+  // 許していなければ項目に無い
+  const off = await evaluateContainersHost(await inspectContainersHost(access), access, "verify");
+  assert.equal(off.find((c) => c.id === "incus-unix-char"), undefined);
+
+  const opts = { mayRestartUserManager: true, virtualization: true };
+  const { ran } = await prepareContainersHost(access, opts);
+  assert.deepEqual(ran, [["incus", "project", "set", "user-1000", "restricted.devices.unix-char=allow"]]);
+  assert.equal(vm.project["restricted.devices.unix-char"], "allow");
+  const again = await prepareContainersHost(access, opts);
+  assert.deepEqual(again.ran, [], "済んでいれば何も打たない");
+
+  // 人の手で崩された：繋ぐたびの確かめは sudo せず、断らずに「確かめ直す」で整えると言う
+  delete vm.project["restricted.devices.unix-char"];
+  vm.sudoCalls.length = 0;
+  const checks = await evaluateContainersHost(await inspectContainersHost(access), access, "verify", opts);
+  const item = checks.find((c) => c.id === "incus-unix-char")!;
+  assert.equal(item.status, "warn");
+  assert.match(item.detail!, /確かめ直す/);
+  assert.equal(item.fix, "sudo incus project set user-1000 restricted.devices.unix-char=allow");
+  assert.ok(!vm.sudoCalls.some((c) => c.includes("set")), "繋ぐたびの確かめで変えた");
+});
+
+test("入れ子の KVM は表示だけ：有効・無効・KVM が無いを出し分け、仮想化を許していて無効なら注意（何も打たない）", async () => {
+  const on = fakeVm({ nested: "Y\n" });
+  const onChecks = await evaluateContainersHost(await inspectContainersHost(accessOf(on)), accessOf(on), "verify", { mayRestartUserManager: false, virtualization: true });
+  assert.match(onChecks.find((c) => c.id === "nested-kvm")!.label, /有効/);
+  assert.equal(onChecks.find((c) => c.id === "nested-kvm")!.status, "ok");
+
+  const offVm = fakeVm({ nested: "N\n" });
+  const offState = await inspectContainersHost(accessOf(offVm));
+  assert.equal(offState.nestedKvm, "off");
+  const plain = await evaluateContainersHost(offState, accessOf(offVm), "verify");
+  assert.equal(plain.find((c) => c.id === "nested-kvm")!.status, "ok", "仮想化を許していなければ注意にしない");
+  const allowed = await evaluateContainersHost(offState, accessOf(offVm), "verify", { mayRestartUserManager: false, virtualization: true });
+  const item = allowed.find((c) => c.id === "nested-kvm")!;
+  assert.equal(item.status, "warn");
+  assert.equal(item.fix, undefined, "banto は変えない（直し方のコマンドを出さない）");
+  assert.ok(!item.autoFix);
+
+  assert.equal((await inspectContainersHost(accessOf(fakeVm()))).nestedKvm, "missing");
 });

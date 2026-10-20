@@ -47,6 +47,7 @@ import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { isAutoApproveAll } from "./inbox/auto-approve.js";
 import { TurnEventBus } from "./http/turn-events.js";
+import { ContainersVirtualization, readProjectVirtualization } from "./runtime/containers-virt.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import { ClaudeAccountStore, HOST_ACCOUNT_ID } from "./claude-login/accounts.js";
@@ -482,6 +483,17 @@ async function main(): Promise<void> {
         .filter((p) => (p.runtime === rt && (p.status !== "closed" || opts?.includeClosed)) || p.move?.to.runtime === rt)
         // 根はその実行場所の側のもの（移してくる途中なら移す先の根）——containers の根の重なりを見る
         .map((p) => ({ id: p.id, name: p.name, root: p.runtime === rt ? p.root : (p.move?.to.root ?? p.root) })),
+  });
+  /**
+   * **`containers` の仮想化の実験**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験——/dev/kvm と特権」）。
+   * 人の画面の口からだけ変える。Project ごとの設定は host 側の Project の設定（runtime config の Project の層）
+   */
+  const containersVirtualization = new ContainersVirtualization({
+    runtime: (name) => remoteRuntimeStore.get(name),
+    withVm: (name, fn) => remoteRuntimes.withVm(name, fn),
+    recordAllowed: (name, allowed) => remoteRuntimes.recordVirtualization(name, allowed),
+    projectsOn: (rt) => remoteRuntimes.projectsOn(rt),
+    settingsOf: (projectId) => readProjectVirtualization((key) => runtimeConfig.layerValue(key, projectId)),
   });
   /**
    * **実行場所の SSH 鍵が置き場の外にあれば、受信箱に実行場所ごとに1枚**（決定・2026-10-17、Backlog #375、
@@ -3180,6 +3192,7 @@ async function main(): Promise<void> {
     // 起こし直したあと Module に続けるかを聞いている Thread は、人が送ったターンも答えを待ってから始める（§2.5「2.」）
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
     remoteRuntimes,
+    containersVirtualization,
     runtimeMove: projectMover,
     projectStart: projectStarter,
     listSshIdentities: sshIdentitiesThroughVault,

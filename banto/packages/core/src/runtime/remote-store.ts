@@ -48,6 +48,11 @@ export interface RemoteRuntime extends RemoteRuntimeInput {
   checks: RuntimeCheck[];
   checkedAt: string;
   registeredAt: string;
+  /**
+   * **仮想化の実験を許す**（`containers` だけ。既定オフ——決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験
+   * ——/dev/kvm と特権」の 1.）。オンの間、区画に `restricted.devices.unix-char=allow` を足してある。人の画面からだけ変える
+   */
+  virtualization?: boolean;
 }
 
 export interface RemoteRuntimeState {
@@ -60,7 +65,8 @@ export type RemoteRuntimeEvent =
   | { type: "runtime.remote_checked"; payload: { name: string; checks: RuntimeCheck[] } }
   | { type: "runtime.remote_host_key_mismatch"; payload: { name: string; hostKey: HostKey } }
   | { type: "runtime.remote_host_key_accepted"; payload: { name: string; hostKey: HostKey } }
-  | { type: "runtime.remote_removed"; payload: { name: string } };
+  | { type: "runtime.remote_removed"; payload: { name: string } }
+  | { type: "runtime.remote_virtualization_set"; payload: { name: string; allowed: boolean } };
 
 export const remoteRuntimeFold: Fold<RemoteRuntimeState> = {
   initial: () => ({ runtimes: new Map() }),
@@ -111,6 +117,14 @@ export const remoteRuntimeFold: Fold<RemoteRuntimeState> = {
       case "runtime.remote_removed":
         runtimes.delete(event.payload.name);
         break;
+      case "runtime.remote_virtualization_set": {
+        const r = runtimes.get(event.payload.name);
+        if (r) {
+          const { virtualization: _was, ...rest } = r;
+          runtimes.set(r.name, event.payload.allowed ? { ...rest, virtualization: true } : rest);
+        }
+        break;
+      }
     }
     return { runtimes };
   },
@@ -158,6 +172,10 @@ export class RemoteRuntimeStore {
 
   async remove(name: string): Promise<void> {
     await this.append({ type: "runtime.remote_removed", payload: { name } });
+  }
+
+  async setVirtualization(name: string, allowed: boolean): Promise<void> {
+    await this.append({ type: "runtime.remote_virtualization_set", payload: { name, allowed } });
   }
 
   private async append(event: RemoteRuntimeEvent): Promise<void> {

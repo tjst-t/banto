@@ -70,6 +70,18 @@ export interface ContainersHostState {
   pool: boolean;
   sudo: boolean;
   linger: boolean;
+  /**
+   * 入れ子の KVM（`/sys/module/kvm_intel/parameters/nested` か `kvm_amd`）。`on`・`off`、KVM のモジュールが読まれていなければ
+   * `missing`。表示だけ（Proxmox を VM で立ててその中で VM を作るのに要る。v4-security.md §1「`containers` で仮想化の実験」の 1.）
+   */
+  nestedKvm: "on" | "off" | "missing";
+}
+
+/** 入れ子の KVM の設定のファイルの中身（`Y`・`1` が有効） */
+export function parseNestedKvm(stdout: string): ContainersHostState["nestedKvm"] {
+  const v = stdout.trim().split(/\s+/)[0] ?? "";
+  if (!v) return "missing";
+  return v === "Y" || v === "1" ? "on" : "off";
 }
 
 export function projectNameOf(uid: number): string {
@@ -121,11 +133,13 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
     vm.run(["cat", "/etc/subuid"]),
     vm.run(["cat", "/etc/subgid"]),
   ]);
-  const [sudo, linger, managerPid, dpkg] = await Promise.all([
+  const [sudo, linger, managerPid, dpkg, nested] = await Promise.all([
     vm.run([SUDO, "-n", "true"]),
     vm.run(["test", "-e", `/var/lib/systemd/linger/${vm.user}`]),
     vm.run(["systemctl", "show", "-p", "MainPID", "--value", `user@${vm.uid}.service`]),
     vm.run(["dpkg-query", "-W", "-f=${Version}", "incus"]),
+    // 片方しか無い（Intel か AMD）——cat は無い方で 1 を返すが、ある方の中身は出す
+    vm.run(["cat", NESTED_KVM_FILES[0], NESTED_KVM_FILES[1]]),
   ]);
   let incus: ContainersHostState["incus"];
   if (info.code === 127) incus = { status: "missing" };
@@ -184,8 +198,12 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
     pool,
     sudo: sudo.code === 0,
     linger: linger.code === 0,
+    nestedKvm: parseNestedKvm(nested.code === 127 ? "" : nested.stdout),
   };
 }
+
+/** 入れ子の KVM の設定のファイル（Intel・AMD） */
+export const NESTED_KVM_FILES = ["/sys/module/kvm_intel/parameters/nested", "/sys/module/kvm_amd/parameters/nested"] as const;
 
 /** `1000`・`1000-1000,2000` の形の範囲の並びが id を含むか */
 export function idRangesInclude(ranges: string | undefined, id: number): boolean {
@@ -290,6 +308,11 @@ interface PrepareStep {
    * ものを返す（sudo -n が通らない相手に、人が打つコマンドを見せるため）
    */
   commands(state: ContainersHostState, forPerson?: boolean): Promise<StepCommand[] | Blocked | AfterEarlier>;
+  /**
+   * 繋ぐたびの確かめ（`verify`）で崩れていても、断らず注意にとどめる（「確かめ直す」で整えると言う）。仮想化の実験の項目
+   * ——崩れていても、/dev/kvm を見せていない Project は動ける
+   */
+  warnOnVerify?: boolean;
 }
 
 export interface PrepareOptions {
@@ -300,6 +323,11 @@ export interface PrepareOptions {
    * 起こし直すと、そのユーザーの Service・待たない形のコマンドが止まる
    */
   mayRestartUserManager: boolean;
+  /**
+   * その実行場所が**仮想化の実験を許している**（実行場所の記録の `virtualization`）。許していれば、区画の
+   * `restricted.devices.unix-char=allow` も準備の項目に入る（v4-security.md §1「`containers` で仮想化の実験」の 1.）
+   */
+  virtualization?: boolean;
 }
 
 const incusFresh = (s: ContainersHostState) =>
@@ -428,7 +456,32 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       done: (s) => s.linger,
       commands: async () => [{ args: ["loginctl", "enable-linger", vm.user] }],
     },
+    ...(opts.virtualization
+      ? [
+          {
+            id: "incus-unix-char",
+            label: `仮想化の実験：区画で unix-char の装置を使える（${UNIX_CHAR_ALLOW}）`,
+            done: (s: ContainersHostState) => !!s.projectConfig && (!restricted(s) || s.projectConfig[UNIX_CHAR_KEY] === "allow"),
+            commands: async (s: ContainersHostState, forPerson?: boolean) => needsIncus(s, forPerson) ?? [allowUnixCharCommand(vm.uid)],
+            warnOnVerify: true,
+          },
+        ]
+      : []),
   ];
+}
+
+/** 区画で unix-char の装置を許す設定（仮想化の実験。v4-security.md §1「`containers` で仮想化の実験」の 1.） */
+export const UNIX_CHAR_KEY = "restricted.devices.unix-char";
+const UNIX_CHAR_ALLOW = `${UNIX_CHAR_KEY}=allow`;
+
+/** 区画に unix-char を許す（sudo の後ろ。項目ごとの固定のコマンド） */
+export function allowUnixCharCommand(uid: number): RootCommand {
+  return { args: ["incus", "project", "set", projectNameOf(uid), UNIX_CHAR_ALLOW] };
+}
+
+/** 区画の unix-char を戻す（unset——incus-user が作った既定と差分が無い形。`block` は書かない） */
+export function unsetUnixCharCommand(uid: number): RootCommand {
+  return { args: ["incus", "project", "unset", projectNameOf(uid), UNIX_CHAR_KEY] };
 }
 
 /**
@@ -491,7 +544,7 @@ export async function evaluateContainersHost(
       checks.push({
         id: step.id,
         label,
-        status: "fail",
+        status: step.warnOnVerify ? "warn" : "fail",
         detail: `${why}設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で整えます。`,
         fix,
         autoFix: true,
@@ -502,6 +555,21 @@ export async function evaluateContainersHost(
       checks.push({ id: step.id, label, status: "fail", detail: `${why}sudo -n が通らないので、banto は整えられません。向こうで打ってください。`, fix });
     }
   }
+
+  // 入れ子の KVM は表示だけ（banto は変えない——カーネルのモジュールの設定はサーバ全体に効く）
+  checks.push({
+    id: "nested-kvm",
+    label: `入れ子の KVM（${state.nestedKvm === "on" ? "有効" : state.nestedKvm === "off" ? "無効" : "KVM のモジュールが読まれていません"}。VM の中でさらに VM を作る——Proxmox を VM で立てる等——のに要る）`,
+    status: state.nestedKvm !== "on" && opts.virtualization ? "warn" : "ok",
+    ...(state.nestedKvm !== "on"
+      ? {
+          detail:
+            state.nestedKvm === "off"
+              ? `${NESTED_KVM_FILES.join(" か ")} が有効ではありません。要るなら、サーバで kvm_intel（kvm_amd）を nested=1 で読み直してください（banto は変えません）。`
+              : "サーバで KVM のモジュール（kvm_intel・kvm_amd）が読まれていません。/dev/kvm を見せても VM は KVM で動きません（banto は変えません）。",
+        }
+      : {}),
+  });
 
   checks.push({
     id: "sudo",
@@ -569,6 +637,20 @@ export async function prepareContainersHost(
   return { state, ran, log };
 }
 
+/** 向こうのユーザー（`id` の出力。`uid=1001(banto) gid=1001(banto) groups=…`） */
+export function parseId(out: string): { user: string; uid: number; gid: number } | undefined {
+  const m = /uid=(\d+)\(([^)]+)\)\s+gid=(\d+)/.exec(out);
+  return m ? { user: m[2]!, uid: Number(m[1]), gid: Number(m[3]) } : undefined;
+}
+
+/** その実行場所の VM のユーザーとして、1つずつコマンドを流す口を作る（ユーザーと番号は `id` で読む） */
+export async function vmAccessOf(run: RootRun, log?: (line: string) => void): Promise<VmAccess> {
+  const r = await run(["id"]);
+  const id = r.code === 0 ? parseId(r.stdout) : undefined;
+  if (!id) throw new Error(`向こうのユーザーの番号を読めませんでした：${(r.stderr || r.stdout).trim() || `終了コード ${r.code}`}`);
+  return { ...id, run, ...(log ? { log } : {}) };
+}
+
 /** 向こうのユーザーとしてコマンドを1つ流す口を、SSH で作る */
 export function sshVmRun(t: SshTarget, files: SshFiles, hostKeyType: string): RootRun {
   return sshRun(t, files, hostKeyType);
@@ -594,6 +676,7 @@ export async function probeContainersPrerequisites(
   const prepareOpts: PrepareOptions = {
     mayRestartUserManager: opts.mayRestartUserManager ?? opts.mode !== "verify",
     ...(opts.zabblyKey ? { zabblyKey: opts.zabblyKey } : {}),
+    ...(opts.virtualization ? { virtualization: true } : {}),
   };
   let { probe, forwarding, result } = await base(t, files, hostKeyType, dataRoot, { sudo: opts.mode !== "verify" });
   if (!probe || !forwarding) return { checks: [], result, ran: [] };
