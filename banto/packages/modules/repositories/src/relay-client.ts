@@ -1,11 +1,20 @@
 // host の中継（docs/specs/v4-architecture.md §2.5）のうち、この Module が使う口——**Project の一覧・呼び出し元の Project・
-// Vault・受信箱**。
+// Vault・受信箱・別のサーバの Project の git（ブランチの中身を運ぶ）**。
 // publish-directory・vault-directory の `relay-client.ts` と同じ形（共有にはまだしない、`module-kit-extract`）。
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { CALL_ID_META_KEY } from "@banto/module-contract";
+import {
+  CALL_ID_META_KEY,
+  PROJECT_GIT_BUNDLE_MAX_BYTES,
+  RELAY_PROJECT_GIT_BUNDLE_TOOL,
+  RELAY_PROJECT_GIT_ORIGIN_TOOL,
+  RELAY_PROJECT_GIT_UNBUNDLE_TOOL,
+  RELAY_PROJECT_GIT_TRACK_TOOL,
+  type ProjectGitOrigin,
+} from "@banto/module-contract";
+import type { ProjectGitAccess } from "./branch-sync.js";
 import type { ProjectSummary } from "./repositories.js";
 
 /**
@@ -57,14 +66,33 @@ export function parseProjectSummaries(text: string): ProjectSummary[] {
     ) {
       throw new Error(`中継の Project の一覧の ${i + 1} 件目の形が違います（id・name・root・status が要ります）`);
     }
+    const cloned = r.clonedFrom as Record<string, unknown> | undefined;
     return {
       id: r.id,
       name: r.name,
       root: r.root,
       status: r.status,
       ...(typeof r.runtime === "string" ? { runtime: r.runtime } : {}),
+      ...(cloned && typeof cloned.url === "string"
+        ? { clonedFrom: { url: cloned.url, ...(typeof cloned.account === "string" ? { account: cloned.account } : {}) } }
+        : {}),
     };
   });
+}
+
+/** core が返した origin の設定を読む。形が違えば理由つきで投げる（規則2） */
+export function parseProjectGitOrigin(text: string): ProjectGitOrigin {
+  const r = JSON.parse(text) as Record<string, unknown> | null;
+  const strings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (r?.kind === "not-repo") return { kind: "not-repo" };
+  if (r?.kind === "repo" && strings(r.urls) && strings(r.redirects)) return { kind: "repo", urls: r.urls as string[], redirects: r.redirects as string[] };
+  throw new Error("中継が返した origin の設定の形が違います");
+}
+
+/** base64 の bundle を読む。上限を越えるものは受けない（向こうから来るものは信用しない） */
+function decodeBundle(b64: string): Buffer {
+  if (b64.length > Math.ceil(PROJECT_GIT_BUNDLE_MAX_BYTES / 3) * 4 + 4) throw new Error("中継が返した bundle が大きすぎます");
+  return Buffer.from(b64, "base64");
 }
 
 /**
@@ -76,7 +104,7 @@ export function hostFolderProjects(projects: ProjectSummary[]): ProjectSummary[]
   return projects.filter((p) => p.runtime === undefined || p.runtime === "host-container");
 }
 
-export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
+export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink, ProjectGitAccess {
   private client?: Promise<Client>;
 
   constructor(
@@ -150,5 +178,27 @@ export class HostRelay implements ProjectsSource, ModuleCaller, NoticeSink {
 
   async raiseNotice(input: { key: string; title: string; detail: string }): Promise<void> {
     await this.relay("relayRaiseNotice", input, undefined, "受信箱に出せませんでした");
+  }
+
+  async origin(callId?: string): Promise<ProjectGitOrigin> {
+    return parseProjectGitOrigin(await this.relay(RELAY_PROJECT_GIT_ORIGIN_TOOL, {}, callId, "中継が origin の設定を返しませんでした"));
+  }
+
+  async bundle(branch: string, callId?: string): Promise<Buffer | undefined> {
+    const r = JSON.parse(await this.relay(RELAY_PROJECT_GIT_BUNDLE_TOOL, { branch }, callId, "中継が bundle を返しませんでした")) as {
+      absent?: unknown;
+      bundle?: unknown;
+    };
+    if (r.absent === true) return undefined;
+    if (typeof r.bundle !== "string") throw new Error("中継が返した bundle の形が違います");
+    return decodeBundle(r.bundle);
+  }
+
+  async unbundle(branch: string, bundle: Buffer, callId?: string): Promise<void> {
+    await this.relay(RELAY_PROJECT_GIT_UNBUNDLE_TOOL, { branch, bundle: bundle.toString("base64") }, callId, "中継が bundle を取り込みませんでした");
+  }
+
+  async track(branch: string, commit: string, callId?: string): Promise<void> {
+    await this.relay(RELAY_PROJECT_GIT_TRACK_TOOL, { branch, commit }, callId, `中継が origin/${branch} を進めませんでした`);
   }
 }

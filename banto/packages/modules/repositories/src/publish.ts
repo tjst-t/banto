@@ -139,6 +139,15 @@ function explainPush(own: string): string {
 }
 
 /**
+ * GitHub のリポジトリの URL（資格情報は入れない）。SSH 鍵のアカウントなら ssh、そうでなければ https。公開が origin に書くものと、
+ * 別のサーバの Project のブランチを送る先（`branch-sync.ts`）
+ */
+export function githubRemoteUrl(endpoints: GithubEndpoints, ssh: boolean, owner: string, name: string): string {
+  if (ssh) return `git@${endpoints.ssh ?? new URL(endpoints.web).hostname}:${owner}/${name}.git`;
+  return `${endpoints.web.replace(/\/+$/, "")}/${owner}/${name}.git`;
+}
+
+/**
  * push・fetch の資格情報を用意する（押した呼び出しの中で。Vault・GitHub の口はここで使い終える）。SSH 鍵のアカウントなら
  * ssh-agent、そうでなければ一度きりの窓口（相手は GitHub の host）。公開と、Backlog のブランチ（`branch-sync.ts`）が使う
  */
@@ -287,10 +296,8 @@ export class Publisher {
     return this.deps.accounts.tokenFor(account.login, callId);
   }
 
-  /** origin に書く URL（資格情報は入れない）。SSH 鍵のアカウントなら ssh、そうでなければ https */
   private remoteUrl(ssh: boolean, owner: string, name: string): string {
-    if (ssh) return `git@${this.deps.endpoints.ssh ?? new URL(this.deps.endpoints.web).hostname}:${owner}/${name}.git`;
-    return `${this.deps.endpoints.web.replace(/\/+$/, "")}/${owner}/${name}.git`;
+    return githubRemoteUrl(this.deps.endpoints, ssh, owner, name);
   }
 
   private credentialFor(login: string, callId?: string): Promise<{ ssh: boolean; credential: GitCredential; window?: CredentialWindow }> {

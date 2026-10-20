@@ -90,6 +90,7 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "remote add",
     "push",
     "fetch",
+    "bundle create",
   ]);
 });
 
