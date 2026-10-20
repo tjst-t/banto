@@ -10033,7 +10033,7 @@
       "number": 416,
       "kind": "task",
       "title": "均すの実装の前の実測（acp と claude -p のセッションの印・渡した sessionId が見出しに出るか）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "claude-accounts-balance",
       "dependsOn": [],
       "milestone": null,
@@ -10045,7 +10045,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:11:21.638Z",
-      "updatedAt": "2026-10-20T05:21:47.371Z",
+      "updatedAt": "2026-10-20T05:21:52.996Z",
       "closedAt": null,
       "extra": {}
     },
