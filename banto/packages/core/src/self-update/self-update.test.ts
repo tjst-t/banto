@@ -748,3 +748,110 @@ test("戻す先の一覧：今の版・口を持たない版・分からない�
     );
   });
 });
+
+test("戻すのを頼めるのはログイン中の人だけ・step-up のあと。戻す先の一覧にある版だけ、request.json に kind rollback", async () => {
+  await withUpdate(async (ctx) => {
+    // 最初の版（今の版）より後の、口を持つ版。一度この機械で動いた（記録にある）が、今の版の祖先ではない
+    const other = ctx.commit("口を持つ版", { api: true });
+    const notRun = ctx.commit("動いたことのない版", { api: true });
+    ctx.fetch();
+    const history = await readHistory(ctx);
+    await writeFile(
+      ctx.historyPath,
+      JSON.stringify({ versions: [...history.versions, { commit: other, firstStartedAt: null, lastStartedAt: null }] }),
+    );
+    const cookie = await ctx.login();
+    const key = await ctx.requireStepUpFrom(cookie);
+
+    // 機械の合言葉は断る（読むのも頼むのも）
+    assert.equal((await ctx.machine("/api/admin/update/rollback", { method: "POST", body: { commit: other, mode: "now" } })).status, 403);
+    assert.equal((await ctx.machine(`/api/admin/update/rollback?commit=${other}`)).status, 403);
+    // 小窓の中身は step-up なしで読める。祖先でないので、入るものも返す
+    const preview = await ctx.ui(`/api/admin/update/rollback?commit=${other}`, { cookie });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    const body = (await preview.json()) as { ancestor: boolean; leaving: Array<{ commit: string }>; entering: Array<{ commit: string; subject: string }> };
+    assert.equal(body.ancestor, false);
+    assert.deepEqual(body.leaving, []);
+    assert.deepEqual(body.entering.map((c) => [c.commit, c.subject]), [[other, "口を持つ版"]]);
+    // 一覧に無い版は小窓も答えない
+    assert.equal((await ctx.ui(`/api/admin/update/rollback?commit=${notRun}`, { cookie })).status, 404);
+    assert.equal((await ctx.ui("/api/admin/update/rollback?commit=HEAD", { cookie })).status, 400);
+
+    // 本人確認がまだ
+    const denied = await ctx.ui("/api/admin/update/rollback", { method: "POST", cookie, body: { commit: other, mode: "wait" } });
+    assert.equal(denied.status, 403);
+    assert.equal(((await denied.json()) as { code?: string }).code, "step-up-required");
+    await ctx.stepUp(cookie, key);
+
+    // 一覧に無い版・今の版・形の違う値は断る
+    for (const [commit, code] of [
+      [notRun, "not-a-target"],
+      [ctx.first, "up-to-date"],
+    ] as const) {
+      const res = await ctx.ui("/api/admin/update/rollback", { method: "POST", cookie, body: { commit, mode: "now" } });
+      assert.equal(res.status, 409, commit);
+      assert.equal(((await res.json()) as { code?: string }).code, code);
+    }
+    assert.equal((await ctx.ui("/api/admin/update/rollback", { method: "POST", cookie, body: { commit: other, mode: "later" } })).status, 400);
+    assert.equal(starts(ctx.systemd).length, 0, "断ったのに unit を起こした");
+    assert.equal(existsSync(join(ctx.dataDir, "update", "request.json")), false, "断ったのに頼みを書いた");
+
+    const ok = await ctx.ui("/api/admin/update/rollback", { method: "POST", cookie, body: { commit: other, mode: "wait" } });
+    assert.equal(ok.status, 202, await ok.clone().text());
+    const { id } = (await ok.json()) as { id: string };
+    const request = JSON.parse(await readFile(join(ctx.dataDir, "update", "request.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(request.id, id);
+    assert.equal(request.kind, "rollback");
+    assert.equal(request.commit, other);
+    assert.equal(request.mode, "wait");
+    assert.deepEqual(Object.keys(request.requestedBy as object), ["label"]);
+    assert.deepEqual(starts(ctx.systemd), [["start", "--no-block", UPDATE_UNIT]]);
+
+    // 走っている間は断る
+    ctx.systemd.activeState = "active";
+    const running = await ctx.ui("/api/admin/update/rollback", { method: "POST", cookie, body: { commit: other, mode: "now" } });
+    assert.equal(running.status, 409);
+    assert.equal(((await running.json()) as { code?: string }).code, "running");
+  });
+});
+
+test("更新の頼みには kind を書かない（前の版の update.mjs も読める形のまま）", async () => {
+  await withUpdate(async (ctx) => {
+    const latest = ctx.commit("二つ目");
+    const cookie = await ctx.login();
+    await ctx.ui("/api/admin/update/check", { method: "POST", cookie });
+    const ok = await ctx.ui("/api/admin/update", { method: "POST", cookie, body: { commit: latest, mode: "now" } });
+    assert.equal(ok.status, 202, await ok.clone().text());
+    const request = JSON.parse(await readFile(join(ctx.dataDir, "update", "request.json"), "utf8")) as Record<string, unknown>;
+    assert.equal("kind" in request, false);
+  });
+});
+
+test("小窓の中身：祖先へ戻すなら抜けるコミット（新しい順）だけ。行き先の object が無ければ分からない（null）", async () => {
+  await withUpdate(async (ctx) => {
+    const a = ctx.commit("戻す先", { api: true });
+    const b = ctx.commit("抜ける1");
+    const c = ctx.commit("抜ける2");
+    ctx.fetch();
+    const currentDir = ctx.addVersion(c);
+    const gone = "e".repeat(40);
+    await writeFile(
+      ctx.historyPath,
+      JSON.stringify({
+        versions: [
+          { commit: c, firstStartedAt: iso(3), lastStartedAt: iso(3) },
+          { commit: a, firstStartedAt: iso(2), lastStartedAt: iso(2) },
+        ],
+      }),
+    );
+    const selfUpdate = ctx.selfUpdateIn(currentDir, ctx.clock.now);
+    const preview = await selfUpdate.rollbackPreview(a);
+    assert.equal(preview.ancestor, true);
+    assert.deepEqual(preview.leaving?.map((x) => [x.commit, x.subject]), [
+      [c, "抜ける2"],
+      [b, "抜ける1"],
+    ]);
+    assert.deepEqual(preview.entering, []);
+    await assert.rejects(selfUpdate.rollbackPreview(gone), (err: { status?: number }) => err.status === 404);
+  });
+});

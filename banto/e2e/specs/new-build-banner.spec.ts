@@ -1,4 +1,4 @@
-// **banto を更新したあと、開いたままの画面に「新しい版の画面があります」を出す**（追加・2026-10-05、ユーザー報告
+// **banto を更新したあと、開いたままの画面に「別の版の画面があります」を出す**（前の版に戻したときも出るので文を改めた・2026-10-19）（追加・2026-10-05、ユーザー報告
 // 「更新したけど何も変わってなさそう」）。画面から更新しても、開いていたページは古い画面のプログラムのまま動いていた。
 //
 // ページは組み立てたときの印を持ち、画面のサーバは `/banto-build` で自分の印を返す。E2E の画面のサーバは1回しか
@@ -25,7 +25,7 @@ test("サーバの画面が新しい版なら帯を出し、読み込み直す�
   await page.route("**/banto-build", (route) => route.fulfill({ json: { build: "e2e-newer-build" } }));
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(banner, "タブに戻ったときに新しい版に気づかない").toBeVisible({ timeout: 10_000 });
-  await expect(banner).toContainText("新しい版の画面があります");
+  await expect(banner).toContainText("別の版の画面があります");
 
   // 2b. 繋いだとき（hello）にも確かめる——読み込み直したページは、何もしなくても気づく
   await page.reload();

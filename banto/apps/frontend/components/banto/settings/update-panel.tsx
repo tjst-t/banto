@@ -12,6 +12,9 @@
 //   同じ確かめでまだ実行中の呼び出しだけを並べる。「待つのをやめる」は最初の画面に戻る
 // - 起こし直しの間は host が居ない——繋がらなくても失敗にせず、画面全体に「繋がり直すのを待っています」を出して待つ
 // - 準備が済んでいない（版ごとのフォルダから動いていない・unit が無い）ときは、理由と手順書だけ。ボタンは出さない
+// - **前の版に戻す**（追加・2026-10-19、アーキ仕様 §2.5「前の版に戻す」・v4-frontend.md §6.34）：節の下に、この機械で動いた版の
+//   一覧（`rollbackTargets`）。「戻す」で確かめの小窓（抜ける・入るコミット・データの注意・自動で戻る安全網・この画面を持たない
+//   版の注意）。ボタンは更新と同じ2つ、パスキーは最後。進み具合・結果は更新と同じ面で、文だけ「戻す」
 //
 // 真実は host（`GET /api/admin/update`。進み具合は `update.mjs` が書いた `state.json`）。画面は覚えない（規則3）。
 // **読みに行くのは走っている間だけ**——GET は host で git を数回打つので、止まっているときは読まない
@@ -23,6 +26,7 @@ import {
   ChevronDown,
   CircleAlert,
   ExternalLink,
+  History,
   KeyRound,
   PackageCheck,
   Loader2,
@@ -49,11 +53,15 @@ import {
   cancelUpdate,
   checkForUpdate,
   fetchActivity,
+  fetchRollbackPreview,
   fetchUpdateLog,
   fetchUpdateStatus,
   forceUpdateNow,
+  requestRollback,
   requestUpdate,
   type ActivityItem,
+  type RollbackPreview,
+  type RollbackTarget,
   type UpdateActivity,
   type UpdateCommit,
   type UpdatePhase,
@@ -68,6 +76,8 @@ import { cn } from "@/lib/utils";
 const POLL_MS = 3000;
 
 type Mode = "wait" | "now";
+/** 更新か、前の版に戻すか（`state.json` の `kind`。無ければ更新） */
+type Kind = "update" | "rollback";
 type StepId = "fetch" | "build" | "wait" | "restart";
 const STEPS: readonly StepId[] = ["fetch", "build", "wait", "restart"];
 const FINISHED: ReadonlySet<UpdatePhase> = new Set(["done", "failed", "rolled-back", "cancelled"]);
@@ -189,7 +199,7 @@ async function withPasskey<T>(action: () => Promise<T>, onStepUp: () => void): P
   }
 }
 
-type Busy = "check" | "wait" | "now" | "cancel" | "force" | null;
+type Busy = "check" | "wait" | "now" | "cancel" | "force" | "rollback-wait" | "rollback-now" | null;
 
 export function UpdatePanel() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
@@ -200,8 +210,11 @@ export function UpdatePanel() {
   const [busy, setBusy] = useState<Busy>(null);
   const [steppingUp, setSteppingUp] = useState(false);
   const [confirm, setConfirm] = useState<{ reason: "now" | "skip-wait"; work: WorkRow[]; continuing: number } | null>(null);
-  // この画面で頼んだ形（`state.json` に mode が書かれるまでの間、進み具合の段の出し方に使う）
-  const [requestedMode, setRequestedMode] = useState<Mode | null>(null);
+  // この画面で頼んだもの（`state.json` が書かれるまでの間、進み具合の段の出し方・題に使う）
+  const [requested, setRequested] = useState<{ mode: Mode; kind: Kind; commit: string } | null>(null);
+  // 「戻す」を押した版（確かめの小窓）と、「すぐ戻す」で途中で切れるもの
+  const [rollbackTarget, setRollbackTarget] = useState<RollbackTarget | null>(null);
+  const [rollbackCutOff, setRollbackCutOff] = useState<{ work: WorkRow[]; continuing: number } | null>(null);
   // 「もう一度ためす」で閉じた失敗
   const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
@@ -262,8 +275,39 @@ export function UpdatePanel() {
 
   async function request(commit: string, mode: Mode) {
     await withPasskey(() => requestUpdate(commit, mode), () => setSteppingUp(true));
-    setRequestedMode(mode);
+    setRequested({ mode, kind: "update", commit });
     await refresh();
+  }
+
+  function openRollback(target: RollbackTarget) {
+    setActionError(null);
+    setRollbackCutOff(null);
+    setRollbackTarget(target);
+  }
+
+  function closeRollback() {
+    setRollbackTarget(null);
+    setRollbackCutOff(null);
+  }
+
+  /**
+   * 前の版に戻す。すぐ戻すなら、途中で切れる呼び出しがあれば先に小窓に並べて確かめる（2度目の押下で頼む）。
+   * パスキーは最後（host が求めたときだけ）
+   */
+  function pressRollback(commit: string, mode: Mode) {
+    void run(mode === "wait" ? "rollback-wait" : "rollback-now", async () => {
+      if (mode === "now" && rollbackCutOff === null) {
+        const cutOff = cutOffOf(await fetchActivity());
+        if (cutOff.work.length > 0) {
+          setRollbackCutOff(cutOff);
+          return;
+        }
+      }
+      await withPasskey(() => requestRollback(commit, mode), () => setSteppingUp(true));
+      setRequested({ mode, kind: "rollback", commit });
+      closeRollback();
+      await refresh();
+    });
   }
 
   /** すぐ更新：途中で切れる呼び出しがあれば先に確かめる（無ければ確かめない——会話は起き直したあと続く） */
@@ -328,7 +372,9 @@ export function UpdatePanel() {
   const last = status.state;
   // 走っている回。走り出したばかりで `state.json` がまだ前の回のままなら、取ってくる段にいる
   const live = status.running ? (last && !FINISHED.has(last.phase) ? last : null) : null;
-  const liveMode: Mode = live?.mode ?? requestedMode ?? "wait";
+  const liveMode: Mode = live?.mode ?? requested?.mode ?? "wait";
+  // `kind` を書かない前の版の `update.mjs` の回は更新
+  const liveKind: Kind = live ? (live.kind ?? "update") : (requested?.kind ?? "update");
   const liveStep: StepId | null = status.running ? (live ? stepOf(live.phase) : "fetch") : null;
   // 失敗・前の版に戻した・途中で止まった（host が「中断」と返す）回。「もう一度ためす」で閉じたものは出さない
   const failed =
@@ -342,6 +388,8 @@ export function UpdatePanel() {
   const current = status.current;
   const latest = status.latest;
   const justUpdated = !status.running && last?.phase === "done" && last.to !== null && current?.commit === last.to;
+  const lastKind: Kind = last?.kind ?? "update";
+  const rollbackTargets = status.rollbackTargets ?? [];
 
   return (
     <div className="flex max-w-2xl flex-col gap-4 pb-16" data-testid="update-panel">
@@ -352,14 +400,14 @@ export function UpdatePanel() {
         >
           <Check className="mt-0.5 size-4 shrink-0" />
           <p className="min-w-0 flex-1 text-sm font-medium">
-            版 <span className="font-mono">{short(last.to)}</span> になりました
+            版 <span className="font-mono">{short(last.to)}</span> {lastKind === "rollback" ? "に戻しました" : "になりました"}
           </p>
         </div>
       ) : null}
 
       {!status.running && last?.phase === "cancelled" && !failed ? (
         <p data-testid="update-cancelled" className="rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-ink-2">
-          更新をやめました。今の版のまま動いています。
+          {lastKind === "rollback" ? "戻すのをやめました。" : "更新をやめました。"}今の版のまま動いています。
         </p>
       ) : null}
 
@@ -397,7 +445,8 @@ export function UpdatePanel() {
 
           {liveStep ? (
             <ProgressCard
-              to={live?.to ?? latest?.commit ?? null}
+              to={live?.to ?? requested?.commit ?? latest?.commit ?? null}
+              kind={liveKind}
               mode={liveMode}
               step={liveStep}
               waiting={live?.waiting}
@@ -416,6 +465,7 @@ export function UpdatePanel() {
               run={failed}
               interrupted={status.interrupted}
               currentCommit={current?.commit ?? null}
+              kind={lastKind}
               onRetry={() => setDismissedRunId(failed.id)}
             />
           ) : latest && current && latest.commit !== current.commit && !latest.fastForward ? (
@@ -436,10 +486,33 @@ export function UpdatePanel() {
               onCheck={() => void run("check", async () => setStatus(await checkForUpdate()))}
             />
           )}
+
+          {current && rollbackTargets.length > 0 ? (
+            <RollbackSection
+              targets={rollbackTargets}
+              disabled={status.running || busy !== null}
+              running={status.running}
+              onOpen={openRollback}
+            />
+          ) : null}
         </>
       )}
 
-      {liveStep === "restart" || reconnecting ? <ReconnectingOverlay /> : null}
+      {liveStep === "restart" || reconnecting ? <ReconnectingOverlay kind={liveKind} /> : null}
+
+      {rollbackTarget && current ? (
+        <RollbackDialog
+          target={rollbackTarget}
+          current={current}
+          busy={busy}
+          steppingUp={steppingUp}
+          error={actionError}
+          cutOff={rollbackCutOff}
+          onCancel={closeRollback}
+          onWait={() => pressRollback(rollbackTarget.commit, "wait")}
+          onNow={() => pressRollback(rollbackTarget.commit, "now")}
+        />
+      ) : null}
 
       <CutOffDialog
         open={confirm !== null}
@@ -695,6 +768,12 @@ const STEP_HINT: Record<StepId, string> = {
   restart: "画面が一度切れます",
 };
 
+/** 戻すときの段の説明（この機械にある版は取ってこず、組み立てない） */
+const ROLLBACK_HINT: Partial<Record<StepId, string>> = {
+  fetch: "この機械にあればそのまま使い、無ければ GitHub から取ってきます",
+  build: "この機械にあれば組み立てません",
+};
+
 type StepStatus = "done" | "current" | "pending" | "skipped" | "failed";
 
 function StepList({
@@ -828,6 +907,7 @@ function ContinuingLine({ count }: { count: number }) {
 
 function ProgressCard({
   to,
+  kind,
   mode,
   step,
   waiting,
@@ -839,6 +919,7 @@ function ProgressCard({
   onSkipWait,
 }: {
   to: string | null;
+  kind: Kind;
   mode: Mode;
   step: StepId;
   waiting: UpdateWaiting | undefined;
@@ -860,11 +941,29 @@ function ProgressCard({
   ) : null;
   return (
     <Card testId="update-progress">
-      <CardLabel>{to ? <>版 <span className="font-mono">{short(to)}</span> に更新しています</> : "新しい版に更新しています"}</CardLabel>
+      <CardLabel>
+        {kind === "rollback" ? (
+          to ? (
+            <>
+              版 <span className="font-mono">{short(to)}</span> に戻しています
+            </>
+          ) : (
+            "前の版に戻しています"
+          )
+        ) : to ? (
+          <>
+            版 <span className="font-mono">{short(to)}</span> に更新しています
+          </>
+        ) : (
+          "新しい版に更新しています"
+        )}
+      </CardLabel>
       <StepList
         statuses={statusesFor(step, mode)}
         hints={{
-          ...(mode === "now" ? { wait: "待ちません（すぐ更新）" } : {}),
+          // 戻すときも、機械に無い版は組み立て済みを取ってくることがある——その様子（buildHint）を戻すときの説明より優先する
+          ...(kind === "rollback" ? ROLLBACK_HINT : {}),
+          ...(mode === "now" ? { wait: kind === "rollback" ? "待ちません（すぐ戻す）" : "待ちません（すぐ更新）" } : {}),
           ...buildHint(prebuilt),
         }}
         renderDetail={(s) => {
@@ -881,7 +980,7 @@ function ProgressCard({
               data-testid="update-stop"
             >
               {busy === "cancel" ? <Loader2 className="size-4 animate-spin" /> : null}
-              更新をやめる
+              {kind === "rollback" ? "戻すのをやめる" : "更新をやめる"}
             </Button>
           );
           if (s === "fetch")
@@ -961,12 +1060,14 @@ function FailedCard({
   run,
   interrupted,
   currentCommit,
+  kind,
   onRetry,
 }: {
   run: UpdateRunState;
   /** host が「途中で止まった」と返した回（段と理由） */
   interrupted: UpdateStatus["interrupted"];
   currentCommit: string | null;
+  kind: Kind;
   onRetry: () => void;
 }) {
   const [log, setLog] = useState<{ text: string; truncated: boolean } | { error: string } | null>(null);
@@ -974,14 +1075,17 @@ function FailedCard({
   // 始める前に断った回（頼みが読めない・設定が無い等）は、どの段でもない
   const beforeStart = !interrupted && run.phase === "failed" && run.failedPhase === undefined;
   const step = stepOf(interrupted ? interrupted.phase : (run.failedPhase ?? run.phase));
+  const what = kind === "rollback" ? "戻すの" : "更新";
   const title = interrupted
-    ? "更新が途中で止まりました"
+    ? `${what}が途中で止まりました`
     : beforeStart
-      ? "更新を始められませんでした"
+      ? `${what}を始められませんでした`
       : `「${STEP_LABEL[step]}」で止まりました`;
   const summary =
     run.phase === "rolled-back"
-      ? "新しい版が起きなかったので、前の版に戻しました。"
+      ? kind === "rollback"
+        ? "戻した版が起きなかったので、元の版に戻しました。"
+        : "新しい版が起きなかったので、前の版に戻しました。"
       : step === "restart"
         ? `今動いているのは版 ${currentCommit ? short(currentCommit) : "（不明）"} です。`
         : "今の版のまま動いています。";
@@ -1063,7 +1167,7 @@ function FailedCard({
  * 起こし直し中——繋がりが一度切れるので、画面全体に「繋がり直すのを待っている」を出す。body に出す
  * （設定の枠の中に置くと、左の Project の列が覆われずに押せてしまう）
  */
-function ReconnectingOverlay() {
+function ReconnectingOverlay({ kind }: { kind: Kind }) {
   return createPortal(
     <div
       data-testid="update-reconnecting"
@@ -1072,7 +1176,7 @@ function ReconnectingOverlay() {
       <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-lg border border-border bg-card p-6 text-center shadow-3">
         <WifiOff className="size-6 text-ink-3" />
         <p className="text-md font-semibold text-foreground">起こし直しています</p>
-        <p className="text-sm text-ink-2">画面が一度切れます。新しい版が起きたら、自動でこの画面に戻ります。</p>
+        <p className="text-sm text-ink-2">画面が一度切れます。{kind === "rollback" ? "戻した版" : "新しい版"}が起きたら、自動でこの画面に戻ります。</p>
         <p className="flex items-center gap-1.5 text-xs text-ink-3">
           <Loader2 className="size-3.5 animate-spin" />
           繋がり直すのを待っています
@@ -1220,4 +1324,234 @@ function buildHint(prebuilt: UpdateRunState["prebuilt"]): Partial<Record<StepId,
     default:
       return {};
   }
+}
+
+/**
+ * **前の版に戻す**の一覧（この機械で動いた版、今の版を除いた新しい 10 件）。空なら出さない（呼ぶ側）。
+ * 走っている更新があれば押せない
+ */
+function RollbackSection({
+  targets,
+  disabled,
+  running,
+  onOpen,
+}: {
+  targets: readonly RollbackTarget[];
+  disabled: boolean;
+  running: boolean;
+  onOpen: (target: RollbackTarget) => void;
+}) {
+  return (
+    <section data-testid="rollback-section" className="flex flex-col gap-2 pt-2">
+      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+        <History className="size-4 text-ink-3" />
+        前の版に戻す
+      </h2>
+      <p className="text-xs text-ink-3">
+        この機械で動いた版です。{running ? "走っている更新が終わるまで戻せません。" : null}
+      </p>
+      <ol data-testid="rollback-targets" className="flex flex-col divide-y divide-border rounded-md border border-border bg-card">
+        {targets.map((t) => (
+          <li
+            key={t.commit}
+            data-testid="rollback-target"
+            data-commit={t.commit}
+            className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-sm break-words text-foreground">{t.subject ?? "（題が分かりません）"}</p>
+              <p className="mt-0.5 text-xs text-ink-3">
+                <span className="font-mono text-ink-2">{short(t.commit)}</span>
+                {t.lastStartedAt ? <span data-testid="rollback-target-started"> · 最後に起きた日時 {formatAt(t.lastStartedAt)}</span> : null}
+              </p>
+              <p data-testid="rollback-target-where" className="mt-0.5 text-xs text-ink-3">
+                {t.local
+                  ? "この機械にあります（すぐ戻せます）"
+                  : "GitHub から取ってくるか、この機械で組み立てます（GitHub に届くこと。組み立て済みが無ければ数分かかります）"}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              className="h-10 self-start sm:h-8 sm:self-center"
+              disabled={disabled}
+              onClick={() => onOpen(t)}
+              data-testid="rollback-open"
+            >
+              戻す
+            </Button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function CommitList({ commits, testId }: { commits: readonly UpdateCommit[]; testId: string }) {
+  return (
+    <ol data-testid={testId} className="flex max-h-60 flex-col divide-y divide-border overflow-auto rounded-md border border-border">
+      {commits.map((c) => (
+        <li key={c.commit} className="px-3 py-2">
+          <CommitLine commit={c} />
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * **戻す前の確かめの小窓**：抜ける（祖先でなければ入るも）コミット・データの注意・自動で戻る安全網・この画面を持たない版の
+ * 注意。ボタンは更新と同じ2つ。「すぐ戻す」で途中で切れる呼び出しがあれば、それを並べてもう一度押させる。パスキーは最後
+ */
+function RollbackDialog({
+  target,
+  current,
+  busy,
+  steppingUp,
+  error,
+  cutOff,
+  onCancel,
+  onWait,
+  onNow,
+}: {
+  target: RollbackTarget;
+  current: UpdateCommit;
+  busy: Busy;
+  steppingUp: boolean;
+  error: string | null;
+  cutOff: { work: WorkRow[]; continuing: number } | null;
+  onCancel: () => void;
+  onWait: () => void;
+  onNow: () => void;
+}) {
+  // 読んだ答えは、どの版について読んだかと一緒に持つ——戻す先が替わったら、前の版の答えは出さず「読んでいます」に戻る
+  const [read, setRead] = useState<{ commit: string; preview: RollbackPreview | { error: string } } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const commit = target.commit;
+    fetchRollbackPreview(commit)
+      .then((p) => !cancelled && setRead({ commit, preview: p }))
+      .catch((err: unknown) => !cancelled && setRead({ commit, preview: { error: describeFailure(err) } }));
+    return () => {
+      cancelled = true;
+    };
+  }, [target.commit]);
+  const preview = read?.commit === target.commit ? read.preview : null;
+  const requesting = busy === "rollback-wait" || busy === "rollback-now";
+  const loaded = preview !== null && !("error" in preview) ? preview : null;
+  // 祖先かどうかは host の小窓の答えを優先する（一覧を読んだあとに変わっていることがある）
+  const ancestor = loaded?.ancestor ?? target.ancestor;
+
+  return (
+    <Dialog open onOpenChange={(o) => (o || requesting ? undefined : onCancel())}>
+      <DialogContent data-testid="rollback-dialog" className="max-h-dvh overflow-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>
+            版 <span className="font-mono">{short(target.commit)}</span> に戻しますか？
+          </DialogTitle>
+          <DialogDescription>
+            {target.subject ?? "（題が分かりません）"}。今の版 <span className="font-mono">{short(current.commit)}</span> から戻します。
+          </DialogDescription>
+        </DialogHeader>
+
+        {preview === null ? (
+          <p className="text-xs text-ink-3">抜けるコミットを読んでいます…</p>
+        ) : "error" in preview ? (
+          <p data-testid="rollback-preview-error" className="text-xs break-words text-stop">
+            抜けるコミットを読めませんでした：{preview.error}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {!ancestor ? (
+              <p data-testid="rollback-not-ancestor" className="flex items-start gap-1.5 text-sm font-medium text-warn">
+                <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                この版は今の版の祖先ではありません。戻すと、抜けるものと入るものの両方があります。
+              </p>
+            ) : null}
+            {preview.leaving === null ? (
+              <p data-testid="rollback-leaving-unknown" className="text-xs text-ink-2">
+                この機械に版の中身が無いので、抜けるコミットはまだ分かりません（戻すときに GitHub から取ってきます）。
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <p data-testid="rollback-leaving-count" className="text-xs font-medium text-ink-2">
+                  戻すと抜けるコミット {preview.leaving.length} 件
+                </p>
+                {preview.leaving.length > 0 ? <CommitList commits={preview.leaving} testId="rollback-leaving" /> : null}
+              </div>
+            )}
+            {!ancestor && preview.entering !== null && preview.entering.length > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                <p data-testid="rollback-entering-count" className="text-xs font-medium text-ink-2">
+                  戻すと入るコミット {preview.entering.length} 件
+                </p>
+                <CommitList commits={preview.entering} testId="rollback-entering" />
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        <ul data-testid="rollback-notes" className="flex list-disc flex-col gap-1 pl-5 text-xs text-ink-2">
+          <li>データは戻りません。新しい版で書いたものは古い版では効かないことがあります。</li>
+          <li>戻した版が起きなければ、自動で今の版に戻ります。</li>
+          <li>戻す版は、この画面（前の版に戻す）を持たないかもしれません。そのときにもう一度戻すには、先に最新へ更新してください。</li>
+        </ul>
+
+        {cutOff ? (
+          <div data-testid="rollback-cutoff" className="flex flex-col gap-2">
+            <p className="text-xs text-ink-2">いま途中で切れる呼び出しが {cutOff.work.length} 件あります。</p>
+            <WorkList work={cutOff.work} />
+            <p className="flex items-start gap-1.5 text-sm font-medium text-warn">
+              <CircleAlert className="mt-0.5 size-4 shrink-0" />
+              「すぐ戻す」と、これらは途中で切れ、結果が分からなくなります。
+            </p>
+            <ContinuingLine count={cutOff.continuing} />
+          </div>
+        ) : null}
+
+        {error ? (
+          <p data-testid="rollback-error" className="text-xs break-words text-stop">
+            {error}
+          </p>
+        ) : null}
+
+        {steppingUp ? (
+          <p data-testid="update-passkey" className="flex items-center gap-2 py-1 text-sm text-ink-2">
+            <KeyRound className="size-4 shrink-0 text-accent-ink" />
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            パスキーを確かめています
+          </p>
+        ) : (
+          <p className="text-xs text-ink-3">
+            {requesting
+              ? "頼んでいます"
+              : "「呼び出しを待って戻す」は、実行中の呼び出しが終わるのを待って起こし直します。「すぐ戻す」は待たないので、実行中の呼び出しは途中で切れます。押すとパスキーで本人を確かめます（少し前に確かめていれば省きます）。"}
+          </p>
+        )}
+
+        <DialogFooter className="gap-2">
+          <Button type="button" variant="ghost" size="lg" className="h-10 sm:h-8" disabled={requesting} onClick={onCancel}>
+            やめる
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            className="h-10 sm:h-8"
+            disabled={busy !== null}
+            onClick={onNow}
+            data-testid="rollback-now"
+          >
+            {busy === "rollback-now" ? <Loader2 className="size-4 animate-spin" /> : null}
+            {cutOff ? "切れてもよいので戻す" : "すぐ戻す"}
+          </Button>
+          <Button type="button" size="lg" className="h-10 sm:h-8" disabled={busy !== null} onClick={onWait} data-testid="rollback-wait">
+            {busy === "rollback-wait" ? <Loader2 className="size-4 animate-spin" /> : null}
+            呼び出しを待って戻す
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }

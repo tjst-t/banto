@@ -82,6 +82,8 @@ export type UpdatePhase = "fetch" | "build" | "wait" | "restart" | "verify" | "d
 /** `update.mjs` が書く進み具合（形は `scripts/update.mjs` の冒頭） */
 export interface UpdateState {
   id: string;
+  /** 更新か、前の版に戻すか（2026-10-19 より前の `update.mjs` は書かない——更新） */
+  kind?: "update" | "rollback";
   phase: UpdatePhase;
   mode?: "wait" | "now";
   from: string | null;
@@ -138,6 +140,17 @@ export interface RollbackTarget {
   local: boolean;
   /** 今の版の祖先か（release が書き換えられたあとは偽になりうる） */
   ancestor: boolean;
+}
+
+/** 戻す前の確かめの小窓に出すもの（`GET /api/admin/update/rollback?commit=`） */
+export interface RollbackPreview {
+  commit: string;
+  /** 行き先が今の版の祖先か。偽なら `entering` にも中身がある */
+  ancestor: boolean;
+  /** 戻すと抜けるコミット（`<行き先>..<今の版>`、新しい順）。行き先の object が `repo.git` に無ければ null（戻すときに取ってくる） */
+  leaving: CommitInfo[] | null;
+  /** 戻すと入るコミット（`<今の版>..<行き先>`、新しい順）。祖先なら空。分からなければ null */
+  entering: CommitInfo[] | null;
 }
 
 export interface UpdateStatus {
@@ -362,6 +375,60 @@ export class SelfUpdate {
    * `commit` は画面に見せた最新——人が読んだ一覧と違うものを組み立てない
    */
   async request(input: { commit: unknown; mode: unknown }, requestedBy: UpdateRequester): Promise<{ id: string }> {
+    return this.writeRequest(input, requestedBy, undefined, (status, commit) => {
+      if (!status.latest) throw new SelfUpdateError(409, "まだ release の最新を確かめていません", "not-checked");
+      if (commit !== status.latest.commit) {
+        throw new SelfUpdateError(
+          409,
+          "見せた一覧の commit が、最後に確かめた release の最新と違います。確かめ直してから押してください",
+          "stale-commit",
+        );
+      }
+      if (status.current?.commit === commit) throw new SelfUpdateError(409, "もうこの版で動いています", "up-to-date");
+      if (!status.latest.fastForward) {
+        throw new SelfUpdateError(409, "release が今の版から早送りで辿れません（書き換えられています）。更新しません", "not-fast-forward");
+      }
+    });
+  }
+
+  /**
+   * **前の版に戻すのを頼む**（決定・2026-10-19、アーキ仕様 §2.5「前の版に戻す」）。呼ぶ側が「ログイン中の人・step-up 済み」を
+   * 確かめてから呼ぶ。戻せるのは戻す先の一覧（この機械で動いた版）にある版だけ——release から辿れるかは見ない
+   */
+  async requestRollback(input: { commit: unknown; mode: unknown }, requestedBy: UpdateRequester): Promise<{ id: string }> {
+    return this.writeRequest(input, requestedBy, "rollback", (status, commit) => {
+      if (status.current?.commit === commit) throw new SelfUpdateError(409, "もうこの版で動いています", "up-to-date");
+      if (!status.rollbackTargets.some((t) => t.commit === commit)) {
+        throw new SelfUpdateError(409, "その版は戻す先の一覧（この機械で動いた版）にありません。開き直してから押してください", "not-a-target");
+      }
+    });
+  }
+
+  /** 戻す前の確かめの小窓に出す、抜ける・入るコミット。戻す先の一覧にある版だけ答える */
+  async rollbackPreview(commit: unknown): Promise<RollbackPreview> {
+    if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) throw new SelfUpdateError(400, "commit（40文字の id）が要ります");
+    const status = await this.status();
+    const target = status.rollbackTargets.find((t) => t.commit === commit);
+    if (!status.current || !target) {
+      throw new SelfUpdateError(404, "その版は戻す先の一覧（この機械で動いた版）にありません", "not-a-target");
+    }
+    const known = (await this.gitRepo(["cat-file", "-e", `${commit}^{commit}`])).code === 0;
+    const current = status.current.commit;
+    return {
+      commit,
+      ancestor: target.ancestor,
+      leaving: known ? await this.commitsIn(`${commit}..${current}`) : null,
+      entering: known ? (target.ancestor ? [] : await this.commitsIn(`${current}..${commit}`)) : null,
+    };
+  }
+
+  /** 頼みを確かめて `request.json` を書き、unit を起こす（更新・戻すで同じ。違うのは `kind` と行き先の確かめ） */
+  private async writeRequest(
+    input: { commit: unknown; mode: unknown },
+    requestedBy: UpdateRequester,
+    kind: "rollback" | undefined,
+    checkTarget: (status: UpdateStatus, commit: string) => void,
+  ): Promise<{ id: string }> {
     if (typeof input.commit !== "string" || !/^[0-9a-f]{40}$/.test(input.commit)) {
       throw new SelfUpdateError(400, "commit（40文字の id）が要ります");
     }
@@ -376,18 +443,7 @@ export class SelfUpdate {
         throw new SelfUpdateError(409, `画面から更新できる形になっていません：${status.reasons.join("／")}`, "not-ready");
       }
       if (status.running) throw new SelfUpdateError(409, "更新が走っています。終わってから頼んでください", "running");
-      if (!status.latest) throw new SelfUpdateError(409, "まだ release の最新を確かめていません", "not-checked");
-      if (input.commit !== status.latest.commit) {
-        throw new SelfUpdateError(
-          409,
-          "見せた一覧の commit が、最後に確かめた release の最新と違います。確かめ直してから押してください",
-          "stale-commit",
-        );
-      }
-      if (status.current?.commit === input.commit) throw new SelfUpdateError(409, "もうこの版で動いています", "up-to-date");
-      if (!status.latest.fastForward) {
-        throw new SelfUpdateError(409, "release が今の版から早送りで辿れません（書き換えられています）。更新しません", "not-fast-forward");
-      }
+      checkTarget(status, input.commit);
 
       const id = `${new Date(this.now()).toISOString().replace(/[:.]/g, "-")}-${input.commit.slice(0, 7)}`;
       await mkdir(this.updateDir, { recursive: true, mode: 0o700 });
@@ -396,6 +452,8 @@ export class SelfUpdate {
       await rm(join(this.updateDir, "force-now"), { force: true });
       const request = {
         id,
+        // 更新は今までどおり `kind` を書かない（`update.mjs` は無ければ更新）
+        ...(kind ? { kind } : {}),
         commit: input.commit,
         mode: input.mode,
         // 名前だけ（セッションの id は書かない——state.json・画面に写っていく）
@@ -605,18 +663,23 @@ export class SelfUpdate {
     let commits: CommitInfo[] = [];
     if (current) {
       fastForward = (await this.gitRepo(["merge-base", "--is-ancestor", current, info.commit])).code === 0;
-      const log = await this.gitOk(["log", "--format=%H%x1f%s%x1f%cI%x1f%an", `${current}..${info.commit}`, "--"]);
-      commits = log
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [commit, subject, date, author] = line.split("\x1f");
-          return { commit: commit!, subject: subject ?? "", date: date ?? "", author: author ?? "" };
-        });
+      commits = await this.commitsIn(`${current}..${info.commit}`);
     }
     const prebuilt: PrebuiltProbe =
       this.prebuiltProbe?.commit === info.commit ? this.prebuiltProbe.probe : { status: "unknown", checkedAt: null };
     return { ...info, checkedAt: fetchedAt ? fetchedAt.mtime.toISOString() : null, fastForward, commits, prebuilt };
+  }
+
+  /** 範囲のコミット（新しい順） */
+  private async commitsIn(range: string): Promise<CommitInfo[]> {
+    const log = await this.gitOk(["log", "--format=%H%x1f%s%x1f%cI%x1f%an", range, "--"]);
+    return log
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [commit, subject, date, author] = line.split("\x1f");
+        return { commit: commit!, subject: subject ?? "", date: date ?? "", author: author ?? "" };
+      });
   }
 
   private async unitProperty(name: string): Promise<string> {

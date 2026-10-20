@@ -1935,7 +1935,7 @@ export function createApp(deps: AppDeps) {
         return;
       }
       // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5・`docs/specs/v4-security.md` §2「画面からの更新」）。
-      // 読むのは人も機械（`update.mjs` の確かめ）も。頼む・止める・ログを読むのは人のセッションだけ（頼む・すぐ起こし直すは step-up も）
+      // 読むのは人も機械（`update.mjs` の確かめ）も。頼む・戻す・止める・ログを読むのは人のセッションだけ（頼む・戻す・すぐ起こし直すは step-up も）
       if (url.pathname === "/api/admin/update" || url.pathname.startsWith("/api/admin/update/")) {
         const selfUpdate = deps.selfUpdate;
         if (!selfUpdate) return json(res, 404, { error: "この host は画面からの更新を持っていません" });
@@ -1948,23 +1948,32 @@ export function createApp(deps: AppDeps) {
             deps.auth.requireHuman(principal, { stepUp: false });
             return json(res, 200, await selfUpdate.readLog());
           }
-          if (req.method !== "POST" || !["", "/check", "/cancel", "/force-now"].includes(action)) {
+          // 戻す前の確かめの小窓：抜ける・入るコミット（前の版に戻す、2026-10-19）。人のセッションでだけ
+          if (action === "/rollback" && req.method === "GET") {
+            if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
+            deps.auth.requireHuman(principal, { stepUp: false });
+            return json(res, 200, await selfUpdate.rollbackPreview(url.searchParams.get("commit")));
+          }
+          if (req.method !== "POST" || !["", "/check", "/cancel", "/force-now", "/rollback"].includes(action)) {
             return json(res, 404, { error: "not found" });
           }
           // 機械の合言葉・Module・コンテナからは呼べない。AuthService が無い構成（Bearer だけ）は人がいない
           if (!deps.auth) return json(res, 403, { error: "この操作は人のセッションでだけ使えます" });
-          const session = deps.auth.requireHuman(principal, { stepUp: action === "" || action === "/force-now" });
+          const session = deps.auth.requireHuman(principal, {
+            stepUp: action === "" || action === "/rollback" || action === "/force-now",
+          });
           if (action === "/check") return json(res, 200, await selfUpdate.check());
           if (action === "/cancel" || action === "/force-now") {
             await selfUpdate.signal(action === "/cancel" ? "cancel" : "force-now");
             return json(res, 200, { ok: true });
           }
           const body = (await readJsonBody(req)) as { commit?: unknown; mode?: unknown } | undefined;
-          const { id } = await selfUpdate.request(
-            { commit: body?.commit, mode: body?.mode },
-            // 名前だけ（セッションの id は request.json・state.json・画面に写さない）
-            { label: session.label },
-          );
+          // 前の版に戻す（決定・2026-10-19、アーキ仕様 §2.5「前の版に戻す」）：更新と同じ口の決まり、行き先は戻す先の一覧から
+          const input = { commit: body?.commit, mode: body?.mode };
+          // 名前だけ（セッションの id は request.json・state.json・画面に写さない）
+          const requestedBy = { label: session.label };
+          const { id } =
+            action === "/rollback" ? await selfUpdate.requestRollback(input, requestedBy) : await selfUpdate.request(input, requestedBy);
           return json(res, 202, { ok: true, id });
         } catch (err) {
           if (err instanceof AuthHttpError || err instanceof SelfUpdateError) {
