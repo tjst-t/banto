@@ -306,8 +306,9 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await expect(dialog.getByTestId("new-project-runtime-note")).toHaveText(
         `${name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${host.user} ができることを全部できます。作ったあとで変えられません。`,
       );
-      // Module が名乗る始め方（clone 等）は出さない
-      await expect(dialog.getByTestId("start-method")).toHaveCount(0);
+      // Module が名乗る始め方は出さず、core が「clone」「新しいリポジトリ」を出す（§6.49）。既定は手元のフォルダ
+      await expect(dialog.getByTestId("start-method-tab")).toHaveText(["手元のフォルダ", "clone", "新しいリポジトリ"]);
+      await expect(dialog.locator('[data-testid="start-method-tab"][aria-selected="true"]')).toHaveText("手元のフォルダ");
       await expect(dialog.getByText(`Root パス（${name} の上）`)).toBeVisible();
       await dialog.getByRole("button", { name: "選ぶ" }).click();
       const picker = page.getByTestId("path-picker");

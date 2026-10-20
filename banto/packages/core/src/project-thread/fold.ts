@@ -4,6 +4,7 @@ import type { Fold } from "../event-store/snapshot.js";
 import type {
   ProjectLocation,
   RuntimeMoveCreated,
+  ProjectStart,
   MessageEntry,
   MessageImage,
   MessageQuote,
@@ -71,6 +72,8 @@ export type ProjectThreadEvent =
   | { type: "project.runtime_move_started"; payload: { id: string; from: ProjectLocation; to: ProjectLocation; created: RuntimeMoveCreated } }
   | { type: "project.runtime_moved"; payload: { id: string; from: ProjectLocation; to: ProjectLocation } }
   | { type: "project.runtime_move_failed"; payload: { id: string; reason: string } }
+  // **始め方の仕事**（追加・2026-10-20、v4-frontend.md §6.49）。記録を丸ごと置き換える
+  | { type: "project.start_changed"; payload: { id: string; start: ProjectStart } }
   | {
       type: "thread.created";
       payload: {
@@ -483,6 +486,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           const { move: _move, ...rest } = p;
           next.projects.set(p.id, rest);
         }
+        return next;
+      }
+      case "project.start_changed": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, start: event.payload.start });
         return next;
       }
       case "project.reopened": {

@@ -359,10 +359,10 @@ export function createShellServer(deps: ShellServerDeps) {
             ...(requestedByModule ? { requestedByModule } : {}),
             onProgress:
               progressToken !== undefined
-                ? (note) => {
+                ? (note, outputChars) => {
                     void extra.sendNotification({
                       method: "notifications/progress",
-                      params: { progressToken, progress: 0, message: note },
+                      params: { progressToken, progress: outputChars ?? 0, message: note },
                     });
                   }
                 : undefined,
@@ -393,10 +393,11 @@ export function createShellServer(deps: ShellServerDeps) {
           relayClient: deps.relayClient,
           onProgress:
             progressToken !== undefined
-              ? (note) => {
+              ? (note, outputChars) => {
+                  // 出力の文字数を progress に入れる（呼び手が「出力が何分も変わらない」を見られるように、§6.49）
                   void extra.sendNotification({
                     method: "notifications/progress",
-                    params: { progressToken, progress: 0, message: note },
+                    params: { progressToken, progress: outputChars ?? 0, message: note },
                   });
                 }
               : undefined,

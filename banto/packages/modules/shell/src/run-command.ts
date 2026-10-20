@@ -40,7 +40,11 @@ export interface RunCommandDeps {
   relayClient: HostRelayClient;
   /** 名前から在りかを引く窓口（既定 `vault-directory`）。**試験で差し替えるための穴**。 */
   directoryModuleName?: string;
-  onProgress?(note: string): void;
+  /**
+   * 進み具合。`outputChars` は走っている間の出力の文字数（追加・2026-10-20、v4-frontend.md §6.49——呼び手が「出力が何分も
+   * 変わらない」を見て取り消せるよう、MCP の進み具合の `progress` に入れる）。走る前の知らせ（秘密の受け取り等）には無い
+   */
+  onProgress?(note: string, outputChars?: number): void;
   /** 進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**——本番では既定のまま。 */
   progressIntervalMs?: number;
   /** 長い出力の上限（`output-capture.ts`）。**試験で小さくするための穴**——本番では既定のまま。 */
@@ -329,7 +333,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       const startedAt = Date.now();
       const heartbeat = setInterval(() => {
         const sec = Math.round((Date.now() - startedAt) / 1000);
-        deps.onProgress?.(`実行中（${sec}秒経過、出力 ${capture.totalChars} 文字）`);
+        deps.onProgress?.(`実行中（${sec}秒経過、出力 ${capture.totalChars} 文字）`, capture.totalChars);
       }, deps.progressIntervalMs ?? PROGRESS_INTERVAL_MS);
       // このタイマーだけで Node を生かし続けない
       heartbeat.unref();

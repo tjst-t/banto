@@ -18,7 +18,7 @@
 // 文だけなので localStorage に置く（`lib/canvas-quotes.ts`）。会話の面が開いていないときに渡されたものも、そこに入っている
 
 import type { ThreadComposerRuntime } from "@assistant-ui/react";
-import { quoteFromAttachment, quoteToAttachment, readDraftQuotes, writeDraftQuotes, type CanvasQuote } from "@/lib/canvas-quotes";
+import { openComposerOf, quoteFromAttachment, quoteToAttachment, readDraftQuotes, writeDraftQuotes, type CanvasQuote } from "@/lib/canvas-quotes";
 
 const KEY_PREFIX = "banto.composerDraft.";
 
@@ -108,6 +108,18 @@ function attachmentFiles(attachments: readonly ComposerAttachment[]): File[] {
 
 function attachmentKey(attachments: readonly ComposerAttachment[]): string {
   return attachments.map((a) => a.id).join("\n");
+}
+
+/**
+ * **その Thread の入力欄に文を置く**（送らない。追加・2026-10-20、v4-frontend.md §6.49 の「AI に頼む」）。打ちかけがあれば
+ * その前に足す。会話の面が開いていなければ書きかけに入れる（開いたときに戻る）
+ */
+export function placeComposerText(threadId: string, text: string): void {
+  const composer = openComposerOf(threadId);
+  const current = composer ? composer.getState().text : read(threadId);
+  const next = current.trim() === "" ? text : `${text}\n\n${current}`;
+  if (composer) composer.setText(next);
+  else write(threadId, next);
 }
 
 /**

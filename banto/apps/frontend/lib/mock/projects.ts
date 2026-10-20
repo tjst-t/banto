@@ -1,4 +1,6 @@
 import type { MockProject, MockProjectOverrides } from "./types";
+import type { RealProjectStartRequest } from "../backend/client";
+import { noteProjectStart } from "../backend/project-starts";
 import { notifyMockStoreChange } from "./store-events";
 import { getThread, registerRealFork, registerRealThread } from "./threads";
 import { seedThreadPermissionMode } from "./permission-mode";
@@ -234,6 +236,11 @@ export interface NewProjectInput {
   runtime?: string;
   /** Advanced で選んだ Configuration の上書き（§2.2「設定のカスケード」） */
   overrides?: Omit<MockProjectOverrides, "projectId" | "securityRoot">;
+  /**
+   * **始め方**（別のサーバの clone・新しいリポジトリ、v4-frontend.md §6.49）。あれば `basePath` は置く場所で、host がその中に
+   * `folder` を作って根にする
+   */
+  start?: { start: RealProjectStartRequest; folder: string };
 }
 
 /**
@@ -302,7 +309,9 @@ export async function sleepProject(projectId: string): Promise<void> {
  * 実bantoホストにProjectとBase Threadを作る（決定・2026-09-03）。
  */
 export async function createRealProject(input: NewProjectInput): Promise<MockProject> {
-  const realProject = await createRealProjectOnHost(input.name, input.basePath, input.runtime);
+  const realProject = await createRealProjectOnHost(input.name, input.basePath, input.runtime, input.start);
+  // 帯は作った応答の記録から先に出す（知らせの流れより先に画面が移る）
+  noteProjectStart(realProject.id, realProject.start);
   const realThread = await createRealBaseThread(realProject.id);
   const project: MockProject = {
     id: realProject.id,
@@ -324,7 +333,7 @@ export async function createRealProject(input: NewProjectInput): Promise<MockPro
     realThread.markers,
     realThread.usage,
   );
-  setProjectOverrides({ projectId: project.id, securityRoot: input.basePath, ...input.overrides });
+  setProjectOverrides({ projectId: project.id, securityRoot: input.start ? realProject.root : input.basePath, ...input.overrides });
   notifyMockStoreChange();
   // **作った時点で Module の用意を始める**（追加・2026-09-26、実測）。新しい Project は
   // コンテナを作るところから始まるので 1.5 秒ほどかかる——画面が切り替わって Project の

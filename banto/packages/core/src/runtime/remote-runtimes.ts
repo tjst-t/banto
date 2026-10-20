@@ -32,6 +32,7 @@ import {
   isSshUnreachable,
   knownHostsLine,
   createRemoteDirectory,
+  removeRemoteEmptyDirectory,
   listRemoteDirectories,
   probePrerequisites,
   realpathRemote,
@@ -300,6 +301,12 @@ export class RemoteRuntimes {
   async createDirectory(name: string, parent: string | undefined, folder: string): Promise<string> {
     const r = this.mustGetUsable(name);
     return this.connect(r, (files) => createRemoteDirectory(r, files, r.hostKey.type, parent, folder));
+  }
+
+  /** 向こうの空のフォルダを消す（`createDirectory` で作ったものに Project を作れなかったときの片づけ） */
+  async removeEmptyDirectory(name: string, path: string): Promise<void> {
+    const r = this.mustGetUsable(name);
+    await this.connect(r, (files) => removeRemoteEmptyDirectory(r, files, r.hostKey.type, path));
   }
 
   /** **広すぎる根か**（向こうの banto の置き場を含むか）。`/api/config/root-scope` と同じ形で返す */

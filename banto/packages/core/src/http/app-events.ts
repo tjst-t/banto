@@ -4,7 +4,7 @@
 // 気づく道が要る。**ポーリングはしない**（受信箱で踏んだ——再描画が assistant-ui のランタイムを壊した）。
 // 流すのは「何が起きたか」の知らせだけで、中身は画面が既存の口で取りに行く（繋ぎ直す・記録を読む・受信箱）。
 
-import type { AwaitingReply, ThreadClosedBy } from "../project-thread/types.js";
+import type { AwaitingReply, ProjectStart, ThreadClosedBy } from "../project-thread/types.js";
 import type { RuntimeMoveChange } from "../runtime/project-move.js";
 
 /**
@@ -70,7 +70,10 @@ export type AppEvent =
   | ({ type: "runtime_move.changed" } & RuntimeMoveChange)
   // 別のサーバへ banto のコードを送っている（追加・2026-10-12、Backlog #269）。送り始め・進むたび（間引いて）・送れなかった
   // とき（`transfer.failed`）・使えるようになったとき（`transfer` 無し）。**その実行場所の分を丸ごと**送る（画面は置き換える）
-  | { type: "code.transfer"; runtime: string; projectIds: string[]; transfer?: CodeTransferView };
+  | { type: "code.transfer"; runtime: string; projectIds: string[]; transfer?: CodeTransferView }
+  // 新しい Project の始め方の仕事（別のサーバの clone・新しいリポジトリ。追加・2026-10-20、v4-frontend.md §6.49）。記録が
+  // 変わるたびに丸ごと。会話の上の帯に使う
+  | { type: "project.start.changed"; projectId: string; start: ProjectStart };
 
 /** 別のサーバへコードを送っている途中の1件（大きさは縮める前のバイト数） */
 export interface CodeTransferView {

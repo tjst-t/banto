@@ -17,11 +17,15 @@
 // **どこで動かすか**（決定・2026-10-08、`docs/specs/v4-security.md` §1「登録と選び方」。画面はモックの `RuntimeStep` の形で
 // 決定・2026-10-10）：一番上で選ぶ。既定はこの機械のコンテナ。登録した別のサーバのうち選べないものは、host が言う理由を
 // 添えて薄く出す（隠すと「登録したのに出てこない」になる）。別のサーバでは、Root は向こうのフォルダ（host が SSH で名前
-// だけを引く）で、Module が名乗る始め方（clone 等）は出さない——向こうのフォルダは Repositories が扱わない（最初の版）。
-// 実行場所は作ったあとに変えられない
+// だけを引く）。実行場所は作ったあとに変えられない
+//
+// **別のサーバでも始め方をこの機械と揃える**（決定・2026-10-20、v4-frontend.md §6.49）：Module が名乗る始め方は出さず
+// （向こうのフォルダは Repositories が扱えない）、core が「clone」「新しいリポジトリ」のタブを自分で出す（名前・アイコン・並びは
+// この機械のタブと同じ）。置く場所（向こうのフォルダ）と名前を選び、host が作ってから git init／clone を始める（進み具合は会話の
+// 上の帯）。`containers` は #369 まで、アカウントの選択と ssh の URL を出さない
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, CircleCheck, FolderOpen, Server, ShieldCheck } from "lucide-react";
+import { ChevronRight, CircleCheck, CloudDownload, FolderOpen, FolderPlus, Server, ShieldCheck } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -55,6 +59,7 @@ import {
   createRealRuntimeDirectory,
   listRealRuntimeDirectories,
   listRealRuntimes,
+  listRealStartGithubAccounts,
   remoteRuntimeName,
   type RealFolderProvider,
   type RealRemoteRuntime,
@@ -68,6 +73,24 @@ import type { MockProjectOverrides } from "@/lib/mock/types";
 type Overrides = Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 
 const EMPTY_OVERRIDES: Overrides = {};
+
+/** 別のサーバで core が出す始め方のタブ（§6.49）。名前・アイコン・並びはこの機械の Repositories のタブと同じ */
+const REMOTE_START_METHODS = [
+  { key: "core:clone", label: "clone", description: "GitHub などのリポジトリを、向こうのサーバのフォルダに clone します。" },
+  { key: "core:init", label: "新しいリポジトリ", description: "向こうのサーバにフォルダを作って git init します。" },
+] as const;
+
+/** GitHub の https の URL か（アカウントを選べるか。決めるのは host——ここは選択肢を出すかだけ） */
+function looksLikeGithubHttps(url: string): boolean {
+  const t = url.trim();
+  return /^https:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(t) || /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(t);
+}
+
+/** URL の最後から `.git` を除いたもの（作るフォルダの名前の既定） */
+function folderNameFromUrl(url: string): string {
+  const last = url.trim().replace(/\/+$/, "").split(/[/:]/).pop() ?? "";
+  return last.replace(/\.git$/, "");
+}
 
 export function NewProjectDialog({
   open,
@@ -122,6 +145,12 @@ export function NewProjectDialog({
     };
   }, [open]);
   const remoteName = remoteRuntimeName(runtime);
+  const remoteRuntime = runtimes?.find((r) => r.runtime === runtime);
+  // 別のサーバの始め方（§6.49）：clone の URL・アカウント、作るフォルダの名前（打つまでは URL から）
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [account, setAccount] = useState("");
+  const [typedFolder, setFolder] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<string[] | null>(null);
   // 「選ぶ」の画面の「新しいフォルダ」はその場で作る（この機械も別のサーバも。追加・2026-10-20、ユーザー）。引き方は実行場所が
   // 替わったときだけ作り直す（描くたびに作ると、一覧の読み込みが描くたびに走る）
   const folderSource: FolderSource = useMemo(
@@ -139,6 +168,25 @@ export function NewProjectDialog({
   // 別のサーバでは、フォルダを用意する Module（Repositories の clone など）は使えない——向こうのフォルダを選ぶだけ
   const visibleProviders = remoteName ? [] : (providers ?? []);
   const provider = visibleProviders.find((p) => providerKey(p) === method);
+  const remoteStart = remoteName ? REMOTE_START_METHODS.find((m) => m.key === method) : undefined;
+  // アカウントを選べるのは machine で、GitHub の https の URL のときだけ（containers は #369 まで出さない）
+  const accountsAllowed = remoteStart?.key === "core:clone" && remoteRuntime?.mode !== "containers" && looksLikeGithubHttps(cloneUrl);
+  useEffect(() => {
+    if (!accountsAllowed || accounts !== null) return;
+    let cancelled = false;
+    listRealStartGithubAccounts().then(
+      (list) => !cancelled && setAccounts(list),
+      // 引けなければ選択肢を出さない（公開のものは clone できる）。黙りはしない
+      (err: unknown) => {
+        console.warn("[banto] GitHub のアカウントを引けませんでした:", err);
+        if (!cancelled) setAccounts([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [accountsAllowed, accounts]);
+  const folder = typedFolder ?? (remoteStart?.key === "core:clone" ? folderNameFromUrl(cloneUrl) : "");
   // **初期値は入れない**（改訂・2026-09-11、ユーザー指摘）——`~/worktrees/` を
   // 置いていたが、その場所を使うかどうかは人が決めること。空にしておけば、
   // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）。Module の画面から頼まれたときだけ入る
@@ -158,14 +206,19 @@ export function NewProjectDialog({
     setOverrides(EMPTY_OVERRIDES);
     setMethod("folder");
     setPrepared(null);
+    setCloneUrl("");
+    setAccount("");
+    setFolder(null);
+    setAccounts(null);
   }
 
   const ready = provider && prepared?.method === method ? prepared.folder : null;
-  const root = provider ? (ready?.path ?? "") : basePath.trim();
+  // 始め方のタブでは Root は作るフォルダ（まだ無い）——広い根の警告・既にある Project の見比べはしない
+  const root = remoteStart ? "" : provider ? (ready?.path ?? "") : basePath.trim();
   // **Module が用意したフォルダにも広い根の警告を出す**（2026-10-03、レビュー）——第三者の Module が `/home/u` や `/` を
   // 返すことはありうる。手元のフォルダと同じ判断（host の `/api/config/root-scope`）で
   const rootScope = useRootScope(root, remoteName);
-  const name = typedName ?? (ready ? (ready.suggestedName ?? ready.path.split("/").pop() ?? "") : "");
+  const name = typedName ?? (ready ? (ready.suggestedName ?? ready.path.split("/").pop() ?? "") : remoteStart ? folder : "");
   // そのフォルダを、もう Project が Root にしているか——core が自分で調べる（Module に聞かない）。
   // **実行場所が違えば、同じパスでも別のフォルダ**（向こうの /home/dev/x と、この機械の同じ文字列は別物）
   const existing = root
@@ -195,15 +248,27 @@ export function NewProjectDialog({
       }
       return;
     }
-    if (!name.trim() || !root) return;
+    if (!name.trim() || (remoteStart ? !folder.trim() || (remoteStart.key === "core:clone" && !cloneUrl.trim()) : !root)) return;
     setSubmitting(true);
     setError(null);
     try {
       const project = await createRealProject({
         name: name.trim(),
-        basePath: root,
+        // 始め方のタブでは置く場所（空なら向こうの home）
+        basePath: remoteStart ? basePath.trim() : root,
         overrides,
         ...(remoteName ? { runtime } : {}),
+        ...(remoteStart
+          ? {
+              start: {
+                folder: folder.trim(),
+                start:
+                  remoteStart.key === "core:clone"
+                    ? { kind: "clone" as const, url: cloneUrl.trim(), ...(accountsAllowed && account ? { account } : {}) }
+                    : { kind: "init" as const },
+              },
+            }
+          : {}),
       });
       onCreated?.();
       onOpenChange(false);
@@ -224,7 +289,7 @@ export function NewProjectDialog({
         if (!next) reset();
       }}
     >
-      <DialogContent className={visibleProviders.length > 0 || (runtimes && runtimes.length > 0) ? "sm:max-w-xl" : "sm:max-w-md"}>
+      <DialogContent className={visibleProviders.length > 0 || remoteName || (runtimes && runtimes.length > 0) ? "sm:max-w-xl" : "sm:max-w-md"}>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>新しい Project</DialogTitle>
@@ -260,7 +325,42 @@ export function NewProjectDialog({
               />
             ) : null}
             {/* 始め方が1つ（手元のフォルダだけ）なら、選ぶものは無い——タブを出さない */}
-            {visibleProviders.length > 0 ? (
+            {remoteName ? (
+              <div className="flex flex-col gap-2">
+                <div
+                  role="tablist"
+                  aria-label="Root にするフォルダ"
+                  data-testid="start-method"
+                  className="grid grid-cols-3 border-b border-border"
+                >
+                  {[{ key: "folder", label: "手元のフォルダ" }, ...REMOTE_START_METHODS].map((m) => {
+                    const active = method === m.key;
+                    const Icon = m.key === "folder" ? FolderOpen : m.key === "core:clone" ? CloudDownload : FolderPlus;
+                    return (
+                      <button
+                        key={m.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        data-testid="start-method-tab"
+                        data-method={m.key}
+                        onClick={() => setMethod(m.key)}
+                        className={cn(
+                          "flex items-center justify-center gap-1.5 rounded-t-md px-1.5 py-2 text-xs transition-colors",
+                          active ? "bg-surface-2 font-medium text-foreground" : "text-ink-3 hover:bg-surface-2/60 hover:text-ink-2",
+                        )}
+                      >
+                        <Icon className="size-3.5 shrink-0" />
+                        <span className="text-center leading-tight">{m.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p data-testid="start-method-description" className="text-xs text-ink-2">
+                  {remoteStart ? remoteStart.description : "あるフォルダを、そのまま使います。"}
+                </p>
+              </div>
+            ) : visibleProviders.length > 0 ? (
               <div className="flex flex-col gap-2">
                 <div
                   role="tablist"
@@ -354,6 +454,56 @@ export function NewProjectDialog({
               </div>
             ) : null}
 
+            {remoteStart ? (
+              <div className="flex flex-col gap-3" data-testid="remote-start-fields">
+                {remoteStart.key === "core:clone" ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="new-project-clone-url">リポジトリの URL</Label>
+                    <Input
+                      id="new-project-clone-url"
+                      data-testid="new-project-clone-url"
+                      value={cloneUrl}
+                      placeholder={remoteRuntime?.mode === "containers" ? "https://github.com/owner/repo.git" : "https://github.com/owner/repo.git・git@host:path"}
+                      onChange={(e) => setCloneUrl(e.target.value)}
+                      autoFocus
+                    />
+                    {remoteRuntime?.mode === "containers" ? (
+                      <p className="text-xs text-ink-3" data-testid="new-project-clone-containers-note">
+                        Project ごとのコンテナでは、まだ https の公開のリポジトリだけ clone できます（ssh の URL と GitHub のアカウントは、コンテナから banto への道ができてから）。
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {accountsAllowed && accounts && accounts.length > 0 ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="new-project-clone-account">GitHub のアカウント</Label>
+                    <Select value={account || "__none"} onValueChange={(v) => setAccount(v === "__none" ? "" : v)}>
+                      <SelectTrigger id="new-project-clone-account" className="h-9 w-full" data-testid="new-project-clone-account">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent position="popper" align="start">
+                        <SelectItem value="__none">使わない（公開のもの）</SelectItem>
+                        {accounts.map((a) => (
+                          <SelectItem key={a} value={a}>
+                            {a}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-ink-3">PAT のアカウントはここでは選べません（AI に頼むと使えます）</p>
+                  </div>
+                ) : null}
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-project-parent">置く場所（{remoteName} の上）</Label>
+                  <PathPicker id="new-project-parent" value={basePath} onChange={setBasePath} source={folderSource} allowNewFolder />
+                  <p className="text-xs text-ink-3">この中に下の名前のフォルダを作り、それを Root にします。空なら向こうの home です。</p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-project-folder">フォルダの名前</Label>
+                  <Input id="new-project-folder" data-testid="new-project-folder" value={folder} onChange={(e) => setFolder(e.target.value)} />
+                </div>
+              </div>
+            ) : null}
             {showProjectStep && existing ? (
               <p data-testid="new-project-existing" className="text-sm text-ink-2">
                 このフォルダは Project「{existing.name}」が Root にしています。新しくは作らず、それを
@@ -371,7 +521,7 @@ export function NewProjectDialog({
                 />
               </div>
             ) : null}
-            {!provider ? (
+            {!provider && !remoteStart ? (
               <div className="flex flex-col gap-1.5">
                 {/* **呼び名は Root にそろえる**（改訂・2026-09-11、ユーザー指摘
                     ——作る画面と設定画面で「Base」「Root」が混ざっていた、規則11） */}
@@ -379,7 +529,7 @@ export function NewProjectDialog({
                 <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} source={folderSource} allowNewFolder />
                 <p className="text-xs text-ink-3">
                   {remoteName
-                    ? "向こうのサーバのフォルダです。この機械には置きません。リポジトリの clone は、Project を作ったあと AI に頼んでください。"
+                    ? "向こうのサーバのフォルダです。この機械には置きません。"
                     : "Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能"}
                 </p>
                 {/* **広い根は止めない。選ぶ前に見せる**（決定・2026-09-11、ユーザー） */}
@@ -519,7 +669,12 @@ export function NewProjectDialog({
             </Button>
             {/* Module の画面を使っているあいだは、次の手は枠の中にある——core の作るボタンは、返ってきてから出す */}
             {showProjectStep ? (
-              <Button type="submit" data-testid="new-project-submit" disabled={submitting || (!existing && (!name.trim() || !root))}>
+              <Button type="submit" data-testid="new-project-submit" disabled={
+                  submitting ||
+                  (!existing &&
+                    (!name.trim() || (remoteStart ? !folder.trim() || (remoteStart.key === "core:clone" && !cloneUrl.trim()) : !root)))
+                }
+              >
                 {submitting ? "作成中…" : existing ? `「${existing.name}」を${existing.status === "closed" ? "再開" : "開く"}` : "作成する"}
               </Button>
             ) : null}

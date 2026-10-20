@@ -74,6 +74,7 @@ import {
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { AuthHttpError, type AuthService } from "../auth/service.js";
 import type { ProjectMover } from "../runtime/project-move.js";
+import { githubAccountAlias, parseStartRequest, type ProjectStarter } from "../runtime/project-start.js";
 import { ProjectSleepError, type ProjectSleep } from "../runtime/project-sleep.js";
 import { AUTO_SLEEP_KEY, autoSleepModeOf, isAutoSleepMode, type ProjectIdle } from "../runtime/project-idle.js";
 import { SshCommandError } from "../runtime/ssh.js";
@@ -374,6 +375,11 @@ export interface AppDeps {
   testOnlyReadOnlyThreads?: boolean;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
   runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
+  /**
+   * **新しい Project の始め方の仕事**（追加・2026-10-20、v4-frontend.md §6.49）。別のサーバに「clone」「新しいリポジトリ」で
+   * 作る。無ければ `start` を渡した作成は 501
+   */
+  projectStart?: Pick<ProjectStarter, "create" | "retry" | "pending">;
   /**
    * **別のサーバへコードを送っている途中のもの**（追加・2026-10-12、Backlog #269）。繋いだ画面に hello で渡す
    * （以後は `code.transfer` で置き換える）
@@ -2022,13 +2028,68 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
       }
+      // **clone のタブの「GitHub のアカウント」**（追加・2026-10-20、v4-frontend.md §6.49 の 4.）。既定の Vault の窓口が引ける
+      // Repositories のブラウザログイン（`repositories-github-<login>`・種別 oauth-token・持ち主が繋がっている Module）だけ。
+      // 持ち主（Repositories）が入っていなければ空——alias が残っていても、持ち主が答えないので渡せない
+      if (url.pathname === "/api/project-start/github-accounts" && req.method === "GET") {
+        try {
+          const owners = new Set(((await deps.resolveInstanceModuleClients?.()) ?? []).map((m) => m.name));
+          const listed = JSON.parse(await callVaultDirectoryAsHuman(deps, "listAliases", {})) as {
+            aliases?: Array<{ name?: unknown; kind?: unknown; owner?: unknown }>;
+          };
+          const prefix = githubAccountAlias("");
+          const accounts = [
+            ...new Set(
+              (listed.aliases ?? []).flatMap((a) =>
+                typeof a.name === "string" &&
+                a.name.startsWith(prefix) &&
+                a.kind === "oauth-token" &&
+                typeof a.owner === "string" &&
+                owners.has(a.owner)
+                  ? [a.name.slice(prefix.length)]
+                  : [],
+              ),
+            ),
+          ].sort();
+          return json(res, 200, { accounts });
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message });
+          throw err;
+        }
+      }
       if (url.pathname === "/api/projects" && req.method === "POST") {
-        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown };
+        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown; start?: unknown; parent?: unknown; folder?: unknown };
         // **どこで動かすか**（決定・2026-10-08、v4-security.md §1）。無いか `host-container` ならこの機械のコンテナ。
         // `remote:<名前>` なら登録した別のサーバで、根は向こうで正規化する。作ったあとは変えない
         const remote = typeof body.runtime === "string" ? remoteNameOf(body.runtime) : undefined;
         if (body.runtime !== undefined && body.runtime !== "host-container" && !remote) {
           return json(res, 400, { error: "runtime は host-container か remote:<名前> で渡してください" });
+        }
+        // **始め方**（追加・2026-10-20、v4-frontend.md §6.49）：別のサーバだけ。置く場所（`parent`）の中に名前（`folder`）の
+        // フォルダを作り、そこを根に Project を作って git init／clone を始める。この機械は Repositories の画面が同じ役
+        if (body.start !== undefined) {
+          if (!remote) {
+            return json(res, 400, { error: "この機械の clone・新しいリポジトリは Repositories の画面で用意してください（start は別のサーバでだけ受けます）" });
+          }
+          if (!deps.projectStart) return json(res, 501, { error: "この banto は別のサーバの始め方を扱えません" });
+          const folder = typeof body.folder === "string" ? body.folder : "";
+          const problem = folderNameProblem(folder);
+          if (problem) return json(res, 400, { error: problem });
+          if (typeof body.name !== "string" || !body.name.trim()) return json(res, 400, { error: "Project の名前が要ります" });
+          try {
+            const project = await deps.projectStart.create({
+              runtime: remote,
+              parent: typeof body.parent === "string" ? body.parent : undefined,
+              folder,
+              name: body.name,
+              start: parseStartRequest(body.start),
+            });
+            return json(res, 201, project);
+          } catch (err) {
+            if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message });
+            if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
+            throw err;
+          }
         }
         try {
           const project = remote
@@ -2693,6 +2754,19 @@ export function createApp(deps: AppDeps) {
         }
       }
 
+      // **新しい Project の始め方の仕事を、もう一度**（追加・2026-10-20、v4-frontend.md §6.49）。失敗した・途中で止まったものを
+      // 同じ中身で流し直す（clone は作業フォルダを片づけて根が空なら）。走っている間は断る
+      const startRetryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/start\/retry$/);
+      if (startRetryMatch && req.method === "POST") {
+        if (!deps.projectStart) return json(res, 501, { error: "この banto は別のサーバの始め方を扱えません" });
+        try {
+          return json(res, 202, await deps.projectStart.retry(startRetryMatch[1]!));
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message });
+          throw err;
+        }
+      }
+
       // 名前を変える（決定・2026-09-11、ユーザー要望）。作るときに付けた名前を
       // 後から直せなかった
       const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
@@ -3153,8 +3227,10 @@ export function createApp(deps: AppDeps) {
         const codeTransfers = deps.codeTransfers?.();
         // **3 分を超えて繋がらない別のサーバ**（追加・2026-10-17、Backlog #383）——以後は runtimes.unreachable で置き換える
         const unreachable = deps.unreachableRuntimes?.();
+        // **新しい Project の始め方の仕事**（追加・2026-10-20、§6.49）——終わっていないもの。以後は project.start.changed で置き換える
+        const projectStarts = deps.projectStart?.pending();
         res.write(
-          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}) })}\n\n`,
+          `data: ${JSON.stringify({ type: "hello", running, background, rateLimitWaits, ...(resources ? { resources } : {}), ...(moving ? { moving } : {}), ...(codeTransfers ? { codeTransfers } : {}), ...(unreachable ? { unreachable } : {}), ...(projectStarts ? { projectStarts } : {}) })}\n\n`,
         );
         const unsubscribe = deps.appEvents.subscribe((event) => res.write(`data: ${JSON.stringify(event)}\n\n`));
         const stopKeepAlive = keepSseAlive(res);

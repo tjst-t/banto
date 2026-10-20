@@ -156,6 +156,28 @@ test("長いコマンドの実行中は、進捗を送り続ける（呼び出�
   }
 });
 
+test("走っている間の進捗に出力の文字数を添える（呼び手が「出力が変わらない」を見るため、v4-frontend.md §6.49）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  const chars: number[] = [];
+  try {
+    await runCommand(
+      { command: "printf abcde; sleep 0.3" },
+      {
+        projectRoot: dir,
+        relayClient: unusedRelayClient(),
+        onProgress: (_note, outputChars) => {
+          if (outputChars !== undefined) chars.push(outputChars);
+        },
+        progressIntervalMs: 50,
+      },
+    );
+    assert.ok(chars.length >= 2, `進捗が足りない: ${JSON.stringify(chars)}`);
+    assert.equal(chars.at(-1), 5);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("コマンドが終わったら進捗も止まる（タイマーを残さない）", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   const notes: string[] = [];

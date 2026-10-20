@@ -25,7 +25,7 @@ test("clone の元を読む——GitHub は owner/name に、外は URL のま�
     assert.deepEqual(parseCloneSource(text, GH), gh("tjst-t", "banto"), text);
   }
   // 行き先を替えた GitHub（偽物）も GitHub と読む
-  assert.deepEqual(parseCloneSource("http://127.0.0.1:4555/a/b.git", { web: "http://127.0.0.1:4555", api: "x" }), gh("a", "b"));
+  assert.deepEqual(parseCloneSource("http://127.0.0.1:4555/a/b.git", { web: "http://127.0.0.1:4555" }), gh("a", "b"));
   assert.deepEqual(parseCloneSource("https://gitlab.com/tjst-t/notes.git", GH), { kind: "elsewhere", url: "https://gitlab.com/tjst-t/notes.git", host: "gitlab.com", name: "notes" });
   assert.deepEqual(parseCloneSource("git@gitlab.com:group/sub/zine.git", GH), { kind: "elsewhere", url: "git@gitlab.com:group/sub/zine.git", host: "gitlab.com", name: "zine" });
   const reason = (text: string) => {
@@ -39,7 +39,7 @@ test("clone の元を読む——GitHub は owner/name に、外は URL のま�
   assert.match(reason("git://github.com/a/b"), /暗号化されない/);
   // http は行き先を替えた GitHub（試験の偽物）だけ
   assert.match(reason("http://gitlab.example.com/a/b.git"), /http:\/\/ は暗号化されないので受けません/);
-  assert.match(reason("ext::sh -c touch% /tmp/pwned"), /URL として読めません/);
+  assert.match(reason("ext::sh -c touch% /tmp/pwned"), /空白・改行・制御文字/);
   assert.match(reason("-uhttps://evil/x"), /URL として読めません/);
   assert.match(reason("https://user:ghp_secret@github.com/a/b"), /資格情報を書かないで/);
   assert.match(reason("https://github.com/only-owner"), /owner\/repo の形/);
