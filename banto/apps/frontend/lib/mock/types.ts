@@ -117,7 +117,7 @@ export interface MockThread {
    *  「何件のやり取りか」はここから出す。中身を取ったら realMessages が正。 */
   realOverview?: { messageCount: number; firstMessage: string | null; lastMessage: string | null };
   /** real:trueのときだけ意味を持つ。「Clear」マーカーの表示復元用（決定・2026-09-04）。 */
-  realMarkers?: readonly { seq: number; kind: "clear" }[];
+  realMarkers?: readonly ({ seq: number; kind: "clear" } | { seq: number; kind: "compact"; reason: "idle" })[];
   /** real:trueのときだけ意味を持つ。F2/F3——ターンごとの文脈使用量（決定・2026-09-04）。
    *  contextUsageはRunnerが返す形をそのまま持つ（規則12）。 */
   realUsage?: readonly { seq: number; contextUsage: unknown; compactionCount: number }[];

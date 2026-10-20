@@ -307,10 +307,14 @@ export interface UiToolCallEntry {
 
 /** 「Clear」——会話を畳む（v4-architecture.md §2.2「会話を畳む」）。次のRunner呼び出しで
  *  resume-pointを渡さない（新規query()）。表示上は横線マーカーとして残す（決定・2026-09-04）。 */
-export interface ThreadMarkerEntry {
-  seq: number;
-  kind: "clear";
-}
+/**
+ * 会話の横線。`clear`＝人が Clear した、`compact`＋`reason: "idle"`＝空いた会話を冷める前に要約した（追加・2026-10-20、
+ * アーキ仕様 §3.1「冷める前の要約」）。SDK の自動の要約は印にしない（観測するだけ、§3）
+ */
+export type ThreadMarkerEntry = { seq: number; kind: "clear" } | { seq: number; kind: "compact"; reason: CompactionReason };
+
+/** 要約の理由（`thread.compacted` の `reason`）。`idle`＝4時間空いた会話を、キャッシュが温かいうちに host が要約した */
+export type CompactionReason = "idle";
 
 /** ターンごとの文脈使用量（F2/F3、決定・2026-09-04）。contextUsageはRunner
  *  （Claude Agent SDK）が返す形をそのまま保存する——中身の構造を中核側で
@@ -628,6 +632,11 @@ export interface ThreadState {
    * 走っていない・この仕組みより前のものは持たない
    */
   lastTurn?: TurnRecord;
+  /**
+   * **走っている冷める前の要約**（`turn.started` の cause が `idle-compaction`、追加・2026-10-20、アーキ仕様 §3.1）。終わりが
+   * 書かれたら消える。起こし直しのあとに残っていれば、切れた要約——続けずに終わりだけ書く（`IdleCompactions.start`）
+   */
+  idleCompactionTurn?: { turnId: string; startedSeq: number; startedAt: string };
   messages: MessageEntry[];
   markers: ThreadMarkerEntry[];
   /**
@@ -742,8 +751,12 @@ export interface MissionState {
   finishedSeq?: number;
 }
 
-/** ターンを始めたもの：人の発言（届いたものも一緒に積んだときを含む）か、届いたものだけで起こしたか */
-export type TurnCause = "human" | "delivery";
+/**
+ * ターンを始めたもの：人の発言（届いたものも一緒に積んだときを含む）か、届いたものだけで起こしたか。`idle-compaction` は
+ * 空いた会話を host が冷める前に要約したターン（追加・2026-10-20、アーキ仕様 §3.1）——`lastTurn` には入れず
+ * `ThreadState.idleCompactionTurn` に畳む（受信箱・上限の待ち・切れたターンの続き・自動化と任務の回を動かさない）
+ */
+export type TurnCause = "human" | "delivery" | "idle-compaction";
 
 /** ターンの終わり方：最後まで行った／人が止めた／失敗した */
 export type TurnOutcome = "completed" | "stopped" | "failed";

@@ -30,6 +30,7 @@ import type {
   MessageOrigin,
   MessageSender,
   TurnCause,
+  CompactionReason,
   TurnContinuation,
   DeliveryAuthor,
   ExternalContent,
@@ -1041,10 +1042,11 @@ export class ProjectThreadStore {
   }
 
   /** 自動の要約（SDK の compact_boundary）が起きたターンを記録する（改訂・2026-10-09、v4-architecture.md §2.2）。
-   *  foldがこれを見て、system promptに入れるMemoryを確定し直す。 */
-  async recordCompaction(threadId: ThreadId, compactionCount: number): Promise<void> {
+   *  foldがこれを見て、system promptに入れるMemoryを確定し直す。`reason: "idle"` は空いた会話の冷める前の要約（§3.1）
+   *  ——会話に印が出る */
+  async recordCompaction(threadId: ThreadId, compactionCount: number, reason?: CompactionReason): Promise<void> {
     if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
-    const event = await this.log.append("thread.compacted", { threadId, compactionCount });
+    const event = await this.log.append("thread.compacted", { threadId, compactionCount, ...(reason ? { reason } : {}) });
     this.projection.applyOne(event);
   }
 

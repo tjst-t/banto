@@ -12,10 +12,15 @@
 // 鍵を持っている間の**ホップ数**もここに置く——そのターンの中で出した返信用の札が、届いたときに何回目の
 // 中継になるかを決める（人が送ったターン＝0）。
 
-export type TurnChange = { type: "started" | "ended"; threadId: string; hop: number };
+/**
+ * `idleCompaction`：空いた会話の冷める前の要約のターン（追加・2026-10-20、アーキ仕様 §3.1）。順番の鍵は同じものを使う（人の発言は
+ * 終わるまで待ち、届いたものは終わってから起こす）が、聞き手は人のターンの扱い（受信箱・画面の「走っている」・任務・判断役）を
+ * しない
+ */
+export type TurnChange = { type: "started" | "ended"; threadId: string; hop: number; idleCompaction?: true };
 
 export class ThreadTurns {
-  private readonly running = new Map<string, { hop: number; startedAt: number }>();
+  private readonly running = new Map<string, { hop: number; startedAt: number; idleCompaction?: true }>();
   private readonly waiting = new Map<string, Array<{ hop: number; grant: (release: () => void) => void }>>();
   private readonly listeners = new Set<(change: TurnChange) => void>();
   /** ターンではない短い仕事のために押さえている Thread（`tryHold`） */
@@ -25,6 +30,17 @@ export class ThreadTurns {
   tryAcquire(threadId: string, hop: number): (() => void) | undefined {
     if (!this.free(threadId)) return undefined;
     return this.start(threadId, hop);
+  }
+
+  /** **冷める前の要約のために鍵を取る**（§3.1）。取れなければ `undefined`（走っているか、人が並んでいる） */
+  tryAcquireForIdleCompaction(threadId: string): (() => void) | undefined {
+    if (!this.free(threadId)) return undefined;
+    return this.start(threadId, 0, true);
+  }
+
+  /** いま走っているのが冷める前の要約か */
+  isIdleCompacting(threadId: string): boolean {
+    return this.running.get(threadId)?.idleCompaction === true;
   }
 
   /**
@@ -104,15 +120,15 @@ export class ThreadTurns {
     return () => this.listeners.delete(listener);
   }
 
-  private start(threadId: string, hop: number): () => void {
-    this.running.set(threadId, { hop, startedAt: Date.now() });
-    this.emit({ type: "started", threadId, hop });
+  private start(threadId: string, hop: number, idleCompaction?: true): () => void {
+    this.running.set(threadId, { hop, startedAt: Date.now(), ...(idleCompaction ? { idleCompaction } : {}) });
+    this.emit({ type: "started", threadId, hop, ...(idleCompaction ? { idleCompaction } : {}) });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.running.delete(threadId);
-      this.emit({ type: "ended", threadId, hop });
+      this.emit({ type: "ended", threadId, hop, ...(idleCompaction ? { idleCompaction } : {}) });
       this.grantNext(threadId);
     };
   }

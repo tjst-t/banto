@@ -158,7 +158,17 @@ export interface RunThreadTurnInput {
    * ——続きのターンの値は待ち行列の続き（`TurnContinuation.attempt`）が持つ。渡せばそれを使う（試験用）
    */
   attempt?: number;
+  /**
+   * **空いた会話の冷める前の要約**（追加・2026-10-20、アーキ仕様 §3.1「冷める前の要約（host）」）。人の発言も届いたものも積まず、
+   * その会話を続きから起こして prompt に `/compact` だけを渡す（段0 6.）。tool・system prompt・モデルはふつうのターンと同じに
+   * 組む——同じセッションの直前のキャッシュに当たるように。cause は `idle-compaction`（`lastTurn` に入らない）、途中経過は
+   * `turnEvents` に流さない、上限で終わっても続けない。`prompt` は使わない
+   */
+  idleCompaction?: true;
 }
+
+/** 冷める前の要約で SDK に渡す prompt（段0 6.——resume した会話に渡すと SDK が要約し、assistant の発言は返らない） */
+export const IDLE_COMPACTION_PROMPT = "/compact";
 
 /**
  * 1ターンを走らせ、イベントを流す。**流したものは `turnEvents` にも覚えさせる**
@@ -167,9 +177,11 @@ export interface RunThreadTurnInput {
  * 覚えるのはここ1箇所（規則3——各 yield の場所に書き足さない）。
  */
 export async function* runThreadTurn(
-  deps: Parameters<typeof runThreadTurnInner>[0],
+  turnDeps: Parameters<typeof runThreadTurnInner>[0],
   input: RunThreadTurnInput,
 ): AsyncGenerator<TurnStreamEvent> {
+  // 冷める前の要約は画面のターンの流れに載せない（開いた画面が繋ぎ直して空の返事を描かない。画面は「要約しています」の帯）
+  const deps = input.idleCompaction ? { ...turnDeps, turnEvents: undefined } : turnDeps;
   deps.turnEvents?.begin(input.threadId, new Date().toISOString());
   // **AI が予約した Fork**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。ターンの終わりに立てる
   // **AI が予約した「この Fork を閉じる」**（決定・2026-10-08、§2.2「AI が自分の Fork を閉じる」）も同じ入れ物に
@@ -210,7 +222,8 @@ export async function* runThreadTurn(
     // 先に書いている（`turn.ended`）——二度は書かない
     if (turn.id !== undefined && !turn.ended) {
       // **Claude の使用量の上限で終わった**（v4-security.md §2 の 9.）——人が止めたのでなければ、終わりに印と続ける時刻を書く
-      const end = turn.rateLimited && outcome !== "stopped" ? await rateLimitEnd(deps, input.threadId, turn.resetsAt) : undefined;
+      // 冷める前の要約は上限で終わっても続けない（失敗はログだけ、§3.1）
+      const end = turn.rateLimited && outcome !== "stopped" && !input.idleCompaction ? await rateLimitEnd(deps, input.threadId, turn.resetsAt) : undefined;
       await deps.projectThread
         .endTurn(input.threadId, turn.id, outcome, end)
         .catch((err: unknown) => console.warn(`[host] ${input.threadId} のターンの終わりを記録できませんでした:`, err));
@@ -437,7 +450,9 @@ async function* runThreadTurnInner(
   // （`fresh`、実測 M2）。その会話を人が Clear で捨てていたら使わない（Thread の今の会話で走る）。**人が送ったターン
   // でも同じ**——続きが待ち行列にあれば（自動で続けるのをやめて留めていた・起き直した直後に人が先に送った）、
   // そのターンが切れた会話を引き継ぐ
-  const continuation = thread.deliveries?.find((d) => d.continues)?.continues;
+  const idle = input.idleCompaction === true;
+  // 冷める前の要約は続きを引き継がない（届いたものは待ち行列に残り、要約のあとのターンが積む）
+  const continuation = idle ? undefined : thread.deliveries?.find((d) => d.continues)?.continues;
   const session =
     continuation?.session &&
     !thread.abandonedSessions.includes("resume" in continuation.session ? continuation.session.resume : continuation.session.fresh)
@@ -445,6 +460,10 @@ async function* runThreadTurnInner(
       : undefined;
   /** このターンが続ける会話（無ければ新しい会話） */
   const resumeFrom = session ? ("resume" in session ? session.resume : undefined) : thread.resumePoint;
+  if (idle && (resumeFrom === undefined || !thread.ownsSession || deps.projectThread.resumePointSharedWithOtherThread(input.threadId))) {
+    yield { type: "error", message: "要約する会話（この会話だけのセッション）がありません" };
+    return;
+  }
   if (resumeFrom === undefined && deps.resolveSessionSkills) {
     try {
       const set = await deps.resolveSessionSkills(input.threadId);
@@ -463,12 +482,12 @@ async function* runThreadTurnInner(
 
   // **届いていたものを先に積む**（決定・2026-09-25、アーキ仕様 §4.2）。届いた順に、送り手の印つきで——人の発言
   // ではない。上限で起こさなかったものも、人が次に送ったこのターンの頭に積まれる（黙って捨てない）
-  const delivered = [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
+  const delivered = idle ? [] : [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
   const images = input.images ?? [];
   const quotes = input.quotes ?? [];
   // 画像だけの発言もある（文を書かずにスクリーンショットだけ貼る）。画面から添えたものだけの発言も
   const hasHumanMessage = input.prompt !== "" || images.length > 0 || quotes.length > 0;
-  if (delivered.length === 0 && !hasHumanMessage) {
+  if (!idle && delivered.length === 0 && !hasHumanMessage) {
     yield { type: "error", message: "このターンに渡すもの（人の発言・届いたもの）がありません" };
     return;
   }
@@ -504,7 +523,7 @@ async function* runThreadTurnInner(
   // 巻き戻しの位置は Thread の resume-point の会話のもの——切れたターンの会話を続けるときは付けない
   const rewindTo = session === undefined && thread.resumePoint !== undefined ? thread.rewindTo : undefined;
   turn.id = await deps.projectThread.startTurn(input.threadId, {
-    cause: hasHumanMessage ? "human" : "delivery",
+    cause: idle ? "idle-compaction" : hasHumanMessage ? "human" : "delivery",
     // 人が送ったターンは続きを引き継いでも 0 から数える（人が見て動かした——§2.5「上限」）
     attempt: input.attempt ?? (hasHumanMessage ? 0 : (continuation?.attempt ?? 0)),
     ...(resumeFrom !== undefined ? { resumePoint: resumeFrom } : {}),
@@ -555,7 +574,7 @@ async function* runThreadTurnInner(
   }
   const prompt = composeTurnPrompt(delivered, composeQuotedPrompt(quotes, input.prompt), images.length);
   // 判断役のターンなら、届いた出来事（答える先）を覚える——答えられるのはこのターンを起こした届けものの中のものだけ
-  deps.turnDecisions?.beginTurn(input.threadId, delivered);
+  if (!idle) deps.turnDecisions?.beginTurn(input.threadId, delivered);
 
   // **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。印は会話に刻まれたもの（`thread.created`）だけを見る——届けものの文や
   // AI の引数では決めない。守りは4か所：SDK の組み込み（`builtinTools`）・core のサーバを読むだけの tool で組む・AI の代理
@@ -704,7 +723,8 @@ async function* runThreadTurnInner(
       ...(rewindTo ? { resumeSessionAt: rewindTo } : {}),
       ...(assignedSessionId ? { sessionId: assignedSessionId } : {}),
       forkSession,
-      prompt: `${turnContext}\n\n${prompt}`,
+      // 要約は `/compact` だけ（前に何か足すと slash command として読まれない）
+      prompt: idle ? IDLE_COMPACTION_PROMPT : `${turnContext}\n\n${prompt}`,
       ...(images.length > 0 ? { images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })) } : {}),
       mcpServers: mcpServers as Options["mcpServers"],
       permissionMode: input.permissionMode,
@@ -757,10 +777,13 @@ async function* runThreadTurnInner(
               readOnlyHookAllows(toolName, readOnlyModuleTools) ? undefined : READ_ONLY_REFUSAL,
             declineElicitations: true,
           }
-        : {}),
+        : idle
+          ? { declineElicitations: true }
+          : {}),
       // **Stop hook は1本**（§4.4「終わり方」）：任務の確かめ（予約も終わりも無い）を先に、まとめの呼び忘れを後に。差し戻すのは
       // 合わせて一度だけ（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
-      ...(turnSummary || deps.missions
+      // 要約のターンは差し戻さない・まとめで終えない（AI の番ではない）
+      ...(!idle && (turnSummary || deps.missions)
         ? {
             onStop: ({ stopHookActive }: { stopHookActive: boolean }) => {
               if (abortTurn.signal.aborted || stopHookActive) return undefined;
@@ -768,7 +791,7 @@ async function* runThreadTurnInner(
             },
           }
         : {}),
-      ...(turnSummary
+      ...(turnSummary && !idle
         ? {
             // まとめを受け付けたらそこで終える（AI をもう一度呼ばない）。作業に数える tool も数える
             onToolUsed: ({ toolName }: { toolName: string }) => {
@@ -863,7 +886,7 @@ async function* runThreadTurnInner(
         // プロセスが起動できなかったときに届いていない差分を失う（規則2）。
         // **AI の返事を待つ**（改訂・2026-10-01）——以前は `system/init` で記録していた。AI が何も出さないうちに
         // 人が止めると、その発言は AI の文脈からも切り落とす（§6.31）ので、添えた差分も届いていない
-        if (!deliveryRecorded && deliveredUpToSeq > 0 && m.type === "assistant") {
+        if (!idle && !deliveryRecorded && deliveredUpToSeq > 0 && m.type === "assistant") {
           deliveryRecorded = true;
           await deps.projectThread.markMemoryDelivered(input.threadId, deliveredUpToSeq);
         }
@@ -873,8 +896,8 @@ async function* runThreadTurnInner(
       } else if (event.type === "approval_requested") {
         // **読むだけの回では人に聞かない**（§4.4）。判断待ちを出さずに断る——「承認をすべて自動で許可する」がオンでも
         // （読むだけの tool は聞かずに通す一覧に載せている。ここに来るのはそれ以外——通す理由が無い）
-        if (readOnly) {
-          event.pending.resolve({ behavior: "deny", message: READ_ONLY_NO_ASK_REFUSAL });
+        if (readOnly || idle) {
+          event.pending.resolve({ behavior: "deny", message: idle ? IDLE_COMPACTION_REFUSAL : READ_ONLY_NO_ASK_REFUSAL });
           pending = settle(gen.next());
           continue;
         }
@@ -916,7 +939,7 @@ async function* runThreadTurnInner(
           toolInput: event.pending.input,
           message: judgment.message,
         };
-      } else if (event.type === "elicitation_requested" && !readOnly) {
+      } else if (event.type === "elicitation_requested" && !readOnly && !idle) {
         // **どの tool 呼び出しの中の質問か**（追加・2026-10-05）。質問の間は台帳がその呼び出しに印を立てている
         // （`ElicitationRouter`）——この会話で1つに決まるときだけ結びつける
         const withinToolCallId = deps.moduleCalls?.elicitingToolUseId(input.threadId);
@@ -994,8 +1017,13 @@ async function* runThreadTurnInner(
     await deps.projectThread.updateResumePoint(input.threadId, sessionId, lastChainUuid(messages));
   }
   await deps.projectThread.recordUsage(input.threadId, contextUsage, compactionCount, apiUsage);
-  // 自動の要約が起きたら、次のターンから途中で足された Memory も system prompt に入れる（改訂・2026-10-09、§2.2）
-  if (compactionCount > 0) await deps.projectThread.recordCompaction(input.threadId, compactionCount);
+  // 自動の要約が起きたら、次のターンから途中で足された Memory も system prompt に入れる（改訂・2026-10-09、§2.2）。冷める前の要約は
+  // 理由 `idle` を付ける——会話に印が出る（§3.1）
+  if (compactionCount > 0) await deps.projectThread.recordCompaction(input.threadId, compactionCount, idle ? "idle" : undefined);
+  if (idle && compactionCount === 0) {
+    yield { type: "error", message: "要約を頼みましたが、SDK が要約しませんでした（compact_boundary が来ませんでした）" };
+    return;
+  }
   // **予約された Fork はここで立てる**——このターンの resume-point と返事を記録したあと。Fork は
   // このターンの会話を最後まで引き継ぐ（§2.2「AI が Fork を立てる」）
   if (forks.reserved.length > 0 && !forks.settled) {
@@ -1008,6 +1036,9 @@ async function* runThreadTurnInner(
   }
   yield { type: "done", sessionId, contextUsage, compactionCount, apiUsage };
 }
+
+/** 冷める前の要約のターンで承認を求められたときの断り（人は見ていない。要約は tool を使わない） */
+const IDLE_COMPACTION_REFUSAL = "banto が空いた会話を要約しているところで、人は見ていません。tool は使えません";
 
 /**
  * 止めたあと、CLI が止まるのを待つ上限。ふつうはすぐ止まる（abort はプロセスを終わらせる）——越えても

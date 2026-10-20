@@ -151,7 +151,20 @@ export interface FakePlan {
    * CLI と同じく `stream: true` で送り、偽の API に `cache_read_input_tokens` をこの値で返させる（見出し `x-e2e-cache-read-tokens`）
    */
   relayCacheReadTokens?: number;
+  /**
+   * **その会話の温め直しを外れさせる**（追加・2026-10-20、#473）。`relayRequests` の要求に見出し `x-e2e-warm-miss` を付ける——中継は
+   * 見出しを覚えて温め直しにも付けるので、偽の API は温め直しだけを外れたふりで返す
+   */
+  relayWarmMiss?: boolean;
 }
+
+/**
+ * **会話ごとの、中継に送った大きな会話の量**（#473）。冷める前の要約（prompt `/compact`）は、本物の CLI と同じく同じセッションの
+ * 要求を1つ中継に送り、直前のキャッシュに当たる——その量をここから引く
+ */
+const relayCacheReads = new Map<string, number>();
+/** 偽の要約にかける時間（画面の「要約しています」を見られるように） */
+const FAKE_COMPACT_MS = 2_000;
 
 /** 会話ごとの、あと何回上限で断るか（`FakePlan.rateLimit`） */
 const rateLimitLeft = new Map<string, { left: number; resetInMs: number }>();
@@ -325,6 +338,16 @@ function toolResultMessage(sessionId: string, toolUseId: string, text: string, i
       content: [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text }], is_error: isError }],
     },
   };
+}
+
+/** 中継が CLI に渡す見出し（`ANTHROPIC_CUSTOM_HEADERS`、1行に1つ） */
+function customHeaders(env: Record<string, string | undefined> | undefined): Record<string, string> {
+  return Object.fromEntries(
+    (env?.ANTHROPIC_CUSTOM_HEADERS ?? "")
+      .split("\n")
+      .map((line) => line.split(/:\s*/, 2))
+      .filter((kv): kv is [string, string] => kv.length === 2 && kv[0] !== ""),
+  );
 }
 
 function resultMessage(sessionId: string, text: string) {
@@ -594,6 +617,43 @@ export async function* runTurn(opts: {
   const instructions = await collectInstructions(servers);
   yield { type: "message", message: initMessage(sessionId, servers) };
 
+  if (opts.prompt === "/compact") {
+    // **冷める前の要約**（#473、段0 6.）：同じセッションの要求を1つ中継へ送り、compacting のあと compact_boundary を出す。
+    // assistant の発言は返さない（要約の本文は synthetic の user の発言）
+    const remembered = relayCacheReads.get(sessionId);
+    const base = opts.env?.ANTHROPIC_BASE_URL;
+    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN;
+    if (remembered !== undefined && base && token) {
+      const res = await fetch(`${base}/v1/messages?beta=true`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-claude-code-session-id": sessionId,
+          "x-e2e-cache-read-tokens": String(remembered),
+          "x-e2e-compact": "1",
+          ...customHeaders(opts.env),
+        },
+        body: JSON.stringify({ model: "claude-fake", max_tokens: 16, stream: true, messages: [{ role: "user", content: "fake-runner compact" }] }),
+      });
+      await res.text();
+      console.warn(`[fake-runner] 要約の要求を中継へ → ${res.status}`);
+      if (!res.ok) throw new Error(`中継が ${res.status} を返しました（要約）`);
+    }
+    yield { type: "message", message: { type: "system", subtype: "status", status: "compacting", session_id: sessionId } };
+    await new Promise((r) => setTimeout(r, FAKE_COMPACT_MS));
+    yield {
+      type: "message",
+      message: { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: remembered ?? 0 }, session_id: sessionId, uuid: `fake-compact-${Date.now()}` },
+    };
+    yield {
+      type: "message",
+      message: { type: "user", isSynthetic: true, uuid: `fake-summary-${Date.now()}`, session_id: sessionId, parent_tool_use_id: null, message: { role: "user", content: "（偽の要約）" } },
+    };
+    yield { type: "message", message: resultMessage(sessionId, "") };
+    return { sessionId, compactionCount: 1 };
+  }
+
   const limit = plan.rateLimit ? { left: plan.rateLimit.times ?? 1, resetInMs: plan.rateLimit.resetInMs } : rateLimitLeft.get(sessionId);
   if (limit && limit.left > 0) {
     limit.left -= 1;
@@ -614,12 +674,8 @@ export async function* runTurn(opts: {
     const base = opts.env?.ANTHROPIC_BASE_URL;
     const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN;
     if (!base || !token) throw new Error("relayRequests：会話の本体の env に ANTHROPIC_BASE_URL・CLAUDE_CODE_OAUTH_TOKEN がありません（中継が取り直せない banto）");
-    const custom = Object.fromEntries(
-      (opts.env?.ANTHROPIC_CUSTOM_HEADERS ?? "")
-        .split("\n")
-        .map((line) => line.split(/:\s*/, 2))
-        .filter((kv): kv is [string, string] => kv.length === 2 && kv[0] !== ""),
-    );
+    const custom = customHeaders(opts.env);
+    if (plan.relayCacheReadTokens !== undefined) relayCacheReads.set(sessionId, plan.relayCacheReadTokens);
     const res = await fetch(`${base}/v1/messages?beta=true`, {
       method: "POST",
       // 本物の CLI と同じく、要求ごとにセッションの印を付ける（均すの固定の鍵、v4-security.md §2「均す」の実測）
@@ -628,6 +684,7 @@ export async function* runTurn(opts: {
         "content-type": "application/json",
         "x-claude-code-session-id": sessionId,
         ...(plan.relayCacheReadTokens !== undefined ? { "x-e2e-cache-read-tokens": String(plan.relayCacheReadTokens) } : {}),
+        ...(plan.relayWarmMiss ? { "x-e2e-warm-miss": "1" } : {}),
         ...custom,
       },
       body: JSON.stringify({

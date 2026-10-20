@@ -6,6 +6,7 @@
 
 import type { AwaitingReply, MissionState, ProjectStart, ThreadClosedBy } from "../project-thread/types.js";
 import type { RuntimeMoveChange } from "../runtime/project-move.js";
+import type { IdleCompactionView } from "../delivery/idle-compaction.js";
 
 /**
  * **バックグラウンドで動いているもの1件**（追加・2026-10-03、v4-frontend.md §6.33）。返事待ちの札（`AwaitingReply`）から
@@ -54,6 +55,9 @@ export type AppEvent =
   // その Thread の任務が変わった（追加・2026-10-20、v4-frontend.md §6.47）。**今の任務を丸ごと**送る（画面は置き換える）。
   // 会話の札と面・サイドバーの1行・受信箱の「枠を延ばす」に使う
   | { type: "mission.changed"; threadId: string; projectId?: string; mission: MissionState }
+  // 空いた会話の冷める前の要約の様子が変わった（追加・2026-10-20、アーキ仕様 §3.1）。`at` があれば予定がある（`noticeAt` から会話に
+  // 「まもなく要約します」の帯）、`compacting` は要約している。`warms`・`warmTokens` は温め直しの回数と読み出しの量（文脈のメーター）
+  | ({ type: "idle_compaction.changed"; threadId: string; projectId?: string } & IdleCompactionView)
   // Thread が閉じた（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。AI が閉じた（`close_fork`）ときも、
   // 人が画面で閉じたときも。開いている画面は飛ばさず帯を出し、サイドバーは開いている一覧から外す
   | { type: "thread.closed"; threadId: string; projectId?: string; by: ThreadClosedBy; reason?: string }

@@ -47,23 +47,27 @@ import { registerQuoteComposer } from "@/lib/canvas-quotes";
 import { useTouchKeyboard } from "@/hooks/use-touch-keyboard";
 import { ProjectCodeTransferLine } from "@/components/banto/shell/code-transfer";
 import { AccountSwitchLine, RateLimitStoppedBand, RateLimitWaitBanner } from "@/components/banto/thread/claude-account-lines";
+import { IdleCompactionBanner, useIdleCompactionReturn } from "@/components/banto/thread/idle-compaction-banner";
 
 export interface ThreadMarker {
   id: string;
   kind: "clear" | "compact";
 }
 
+/** 空いた会話を冷める前に要約した印の文（v4-frontend.md §6.52） */
+export const IDLE_COMPACTION_MARKER_TEXT = "4時間空いたので、続きの費用を抑えるために要約しました";
+
 /** Clear／Compaction が起きたことを示す横線。実際に起きた場所（transcript中）に
  *  差し込む——composerHintに置くと常に入力欄の直上に固定され、リロード後に
  *  どこでClearしたか分からなくなる（指摘・2026-09-04で訂正）。 */
-function MarkerDivider({ kind }: { kind: ThreadMarker["kind"] }) {
+function MarkerDivider({ kind, reason }: { kind: ThreadMarker["kind"]; reason?: "idle" }) {
   return (
     // 印そのものを指せるようにしておく（`data-testid`）——「Clear」という文字は
     // メニュー項目にもあるので、文字だけで探すと**押したメニューの文字**に当たって
     // しまい、横線が出ていなくても通ってしまう（規則14、2026-09-10）
-    <div data-testid="thread-marker" data-kind={kind} className="flex items-center gap-2 text-xs text-ink-3">
+    <div data-testid="thread-marker" data-kind={kind} data-reason={reason} className="flex items-center gap-2 text-xs text-ink-3">
       <div className="h-px flex-1 bg-border" />
-      <span>{kind === "clear" ? "Clear" : "Compaction"}</span>
+      <span className="text-center">{kind === "clear" ? "Clear" : reason === "idle" ? IDLE_COMPACTION_MARKER_TEXT : "Compaction"}</span>
       <div className="h-px flex-1 bg-border" />
     </div>
   );
@@ -187,7 +191,7 @@ export function ThreadPanel({
     };
     // Fork では親の分の横線（Clear 等）は出さない——その発言を描いていない
     for (const marker of forkOwnPart(thread, thread.realMarkers ?? [])) {
-      put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
+      put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} reason={marker.kind === "compact" ? marker.reason : undefined} />);
     }
     // **Claude のアカウントの切り替えの1行**（v4-frontend.md §6.46）——切り替えた要求が出た場所（同じ seq の物差し）
     // 組み直さずに足した印は、そのターンの画面の人の発言の後（`realMarkAnchors`、`latest-state.ts`）
@@ -395,12 +399,16 @@ function ThreadRuntime({
           見回りの会話です。ここで頼んだことも読むだけで動きます
         </p>
       ) : null}
+      {/* 4時間空いた会話の冷める前の要約——5分前から「まもなく要約します」、要約している間は「要約しています」（§6.52） */}
+      <IdleCompactionBanner threadId={threadId} />
       <ThreadMarkers markers={markers} />
     </>
   );
   // **判断待ちのカードが出ている間も止められる**（追加・2026-10-05）——run が host の流れを読み続けている間だけ。
   // 押すと停止ボタンと同じ `cancelRun`（人の停止として host のターンを止める、§6.31）
   const awaitingHuman = useRealRunAwaitingHuman(threadId);
+  // **人が戻った合図**（§6.52）：要約の帯が出ている間に打つ・押すと、要約をやめて温め直しを続ける
+  const idleReturn = useIdleCompactionReturn(threadId);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -410,6 +418,8 @@ function ThreadRuntime({
           toolCallId を持つので、これが無いと画面の持ち主を取り違える */}
       <ThreadIdProvider value={threadId}>
       {CONNECTED_FEATURES.mockCanvasSurfaces && onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
+      {/* 箱を作らない包み（会話の面の形は変えない）。打つ・押すを拾うだけ */}
+      <div className="contents" data-testid="thread-return-watch" {...idleReturn}>
       <Thread
         // **画面のキーボードが出る端末では、入力欄に勝手に焦点を当てない**（2026-10-02、ユーザー要望）。
         // Thread を移るたび（作り直し・切り替え・一番下へ送ったとき）にキーボードが出て会話が隠れていた。
@@ -440,6 +450,7 @@ function ThreadRuntime({
         composerHidden={closed}
         composerBlockedReason={composerBlockedReason}
       />
+      </div>
       </ThreadIdProvider>
       </CanvasOpenerProvider>
     </AssistantRuntimeProvider>
