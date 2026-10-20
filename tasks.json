@@ -10385,6 +10385,33 @@
       "updatedAt": "2026-10-20T08:56:33.410Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "desktop-3-modules",
+      "number": 431,
+      "kind": "story",
+      "title": "デスクトップ版（Windows）段3：残りの Module（Terminal・Browser・Documents・別のサーバ）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "desktop-2-daily"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "desktop"
+      ],
+      "body": "v4-desktop.md §4 の段3。Terminal は tmux から ConPTY へ（ネイティブ依存が増える）。Browser は Xvfb・GStreamer に当たるものが Windows に無いので方針から決め直す。Documents は bubblewrap・LibreOffice の Windows 版か外すか。別のサーバの実行場所は、Windows の ssh.exe が ControlMaster を持たないので作り直しになる。それぞれ着手前に方針を決める。",
+      "doneWhen": "各 Module の E2E が GitHub Actions の Windows のランナーで通る（方針を決めて外したものは、仕様に外したと書いてある）",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-desktop.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T08:56:38.670Z",
+      "updatedAt": "2026-10-20T08:56:38.670Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
