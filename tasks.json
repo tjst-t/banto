@@ -9936,7 +9936,7 @@
       "number": 412,
       "kind": "task",
       "title": "POST /api/admin/update/rollback と設定の「更新」の「前の版に戻す」の画面",
-      "status": "in-progress",
+      "status": "done",
       "parent": "update-rollback",
       "dependsOn": [
         "rollback-history",
@@ -9947,12 +9947,12 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §2.5「戻し方」の host の口（ログイン中の人だけ・step-up・一覧にある commit・走っている更新が無い・request.json に kind rollback）と v4-frontend.md §6.34「前の版に戻す」（一覧・小窓：抜ける／入るコミット・データの注意・自動で戻る安全網・この画面を持たない版の注意・2つのボタン・パスキーは最後、結果の文、ほかのタブの帯を「別の版の画面があります」に）。",
       "doneWhen": "E2E self-update.spec.ts に、記録を seed して本物の update.mjs --from-request で「更新→戻す→最新へ更新」を足し、小窓の抜けるコミットの中身と、戻したあとの一覧まで見て通る。画面の型検査・関係する E2E が通る",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/rollback-api-ui）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-19T22:57:13.582Z",
-      "updatedAt": "2026-10-20T00:04:35.481Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T00:28:54.120Z",
+      "closedAt": "2026-10-20T00:28:54.120Z",
       "extra": {}
     },
     {
