@@ -5,7 +5,7 @@ export type InboxItemId = string;
 
 /** `relay`＝Module 間中継の初回承認（host 自身が発生源、docs/specs/v4-frontend.md
  *  「Module 間中継の承認」）。**発生源が誰かであって、答え方の種類ではない。** */
-export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation" | "memory";
+export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation" | "memory" | "mission";
 
 /** Elicitation由来の判断待ちの3状態（§2.4.1決定）。 */
 export type JudgmentLiveness = "live" | "answered" | "timed_out";
@@ -59,8 +59,26 @@ export interface ReviewItem {
    * カードが前のカードを置き換えたとき、前のカードの `judge`（決めたもの）を写す——人が見る時間がターン1本分で消えないように
    */
   carriedJudge?: ReviewJudge;
+  /**
+   * **任務が人に返ってきた**（追加・2026-10-20、アーキ仕様 §4.4「受信箱」）。終わった・枠を使い切った・止まっている任務の結末。
+   * 返ってきた会話のカードに添える
+   */
+  mission?: ReviewMission;
   acknowledged: boolean;
   createdAt: string;
+}
+
+/** 受信箱のカードに添える任務の結末 */
+export interface ReviewMission {
+  id: string;
+  goal: string;
+  status: "active" | "done" | "gave-up" | "exhausted" | "stalled" | "stopped";
+  /** 起きた回数と上限 */
+  wakes: number;
+  maxWakes: number;
+  until: string;
+  /** AI の結果の文・止めた理由 */
+  result?: string;
 }
 
 /**

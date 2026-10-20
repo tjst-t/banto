@@ -15,6 +15,7 @@ import { buildSystemPrompt } from "../runner/system-prompt.js";
 import type { runTurn } from "../runner/adapter.js";
 import { AUTOMATION_TOOL_NAMES, createForkMcpServer } from "./fork-tool.js";
 import { runThreadTurn } from "./turn-runner.js";
+import { MISSION_CONTINUE_TEXT, MISSION_TOOL_NAMES } from "../mission/missions.js";
 import {
   REPORT_TURN_MISSING_REASON,
   TURN_SUMMARY_LONG_TURN_MS,
@@ -238,6 +239,7 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
         ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
         "mcp__banto-memory__revise_memory",
         "mcp__banto-thread__answer_decision",
+        ...MISSION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
         "mcp__banto-thread__report_turn",
       ],
       "毎ターン承認を求めない",
@@ -258,6 +260,52 @@ test("オンの Project のターンには、tool・プロンプトの節・Stop
       ...AUTOMATION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
       "mcp__banto-memory__revise_memory",
       "mcp__banto-thread__answer_decision",
+      ...MISSION_TOOL_NAMES.map((n) => `mcp__banto-thread__${n}`),
     ]);
+  });
+});
+
+test("Stop hook は1本：任務の確かめ（予約も終わりも無い）を先に、まとめの呼び忘れを後に、差し戻しは合わせて一度。report_turn も任務で断る", async () => {
+  await withStore(async ({ store, threadId, inbox, globalMemory }) => {
+    const seen: Array<Parameters<typeof runTurn>[0]> = [];
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      seen.push(opts);
+      return { sessionId: `s-${seen.length}`, compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    let needsFollowup = true;
+    const missions = {
+      start: async () => ({ ok: true, text: "" }),
+      scheduleFollowup: async () => ({ ok: true, text: "" }),
+      finish: async () => ({ ok: true, text: "" }),
+      reportTurnProblem: (_t: string, decisions: number) => (needsFollowup && decisions === 0 ? MISSION_CONTINUE_TEXT : undefined),
+      stopReason: () => (needsFollowup ? MISSION_CONTINUE_TEXT : undefined),
+    };
+    const deps = { projectThread: store, globalMemory, inbox, pendingApprovals: new PendingApprovalRegistry(), runTurn: fake, missions };
+    // まとめがオフでも、任務の確かめの Stop hook は渡す
+    for await (const _ of runThreadTurn({ ...deps, turnSummaryEnabled: () => false }, { threadId, prompt: "やって", modules: [] })) void _;
+    const off = seen[0]!;
+    assert.equal(off.onStop!({ stopHookActive: false }), MISSION_CONTINUE_TEXT);
+    assert.equal(off.onStop!({ stopHookActive: true }), undefined, "二度目も差し戻した");
+    needsFollowup = false;
+    assert.equal(off.onStop!({ stopHookActive: false }), undefined);
+
+    // まとめがオンなら、任務を先に（同じ一度の差し戻しの中で）
+    needsFollowup = true;
+    for await (const _ of runThreadTurn({ ...deps, turnSummaryEnabled: () => true }, { threadId, prompt: "次", modules: [] })) void _;
+    const on = seen[1]!;
+    on.onToolUsed!({ toolName: "mcp__shell__runCommand" });
+    assert.equal(on.onStop!({ stopHookActive: false }), MISSION_CONTINUE_TEXT, "任務より先にまとめを求めた");
+    needsFollowup = false;
+    assert.equal(on.onStop!({ stopHookActive: false }), REPORT_TURN_MISSING_REASON);
+    assert.equal(on.onStop!({ stopHookActive: true }), undefined);
+
+    // report_turn：予約が無ければ断る。決めることがあれば受け付ける
+    needsFollowup = true;
+    const client = await connect((on.mcpServers as Record<string, never>)["banto-thread"]);
+    const refused = await client.callTool({ name: "report_turn", arguments: { ...good, decisions: [] } });
+    assert.equal(refused.isError, true);
+    assert.match(JSON.stringify(refused.content), /schedule_followup で次を予約するか/);
+    const accepted = await client.callTool({ name: "report_turn", arguments: good });
+    assert.notEqual(accepted.isError, true, JSON.stringify(accepted.content));
   });
 });

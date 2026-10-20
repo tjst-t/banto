@@ -37,6 +37,11 @@ import type {
   ContinuationCancelledBy,
   ProjectSleptBy,
   ProjectWokeCause,
+  MissionFrame,
+  MissionFollowup,
+  MissionStatus,
+  MissionWakeCause,
+  MissionWakeResult,
 } from "./types.js";
 import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -820,6 +825,42 @@ export class ProjectThreadStore {
     this.projection.applyOne(event);
   }
 
+  /** **任務を始める**（追加・2026-10-20、アーキ仕様 §4.4）。確かめる（枠・動いている任務が無いか）のは `mission/missions.ts` */
+  async startMission(
+    threadId: ThreadId,
+    input: { missionId: string; goal: string; doneWhen: string; frame: MissionFrame; by: "ai" | "human" },
+  ): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    this.projection.applyOne(await this.log.append("mission.started", { threadId, ...input }));
+  }
+
+  async updateMissionFrame(threadId: ThreadId, missionId: string, frame: MissionFrame, reactivate = false): Promise<void> {
+    this.projection.applyOne(
+      await this.log.append("mission.updated", { threadId, missionId, frame, ...(reactivate ? { reactivate: true } : {}) }),
+    );
+  }
+
+  async setMissionFollowup(threadId: ThreadId, missionId: string, followup: MissionFollowup | null): Promise<void> {
+    this.projection.applyOne(await this.log.append("mission.followup_set", { threadId, missionId, followup }));
+  }
+
+  async recordMissionWake(
+    threadId: ThreadId,
+    input: { missionId: string; wake: number; cause: MissionWakeCause; scheduledFor?: string },
+  ): Promise<void> {
+    this.projection.applyOne(await this.log.append("mission.woke", { threadId, ...input }));
+  }
+
+  async settleMissionWake(threadId: ThreadId, missionId: string, wake: number, result: MissionWakeResult): Promise<void> {
+    this.projection.applyOne(await this.log.append("mission.wake_settled", { threadId, missionId, wake, result }));
+  }
+
+  async finishMission(threadId: ThreadId, missionId: string, status: Exclude<MissionStatus, "active">, result?: string): Promise<void> {
+    this.projection.applyOne(
+      await this.log.append("mission.finished", { threadId, missionId, status, ...(result ? { result } : {}) }),
+    );
+  }
+
   /**
    * **Thread に届いたものを残す**（決定・2026-09-25、アーキ仕様 §4.2）。会話にはまだ積まない——積むのは
    * ターンを始めるとき（`appendMessage` の origin）。先に残すので、起こす前に host が落ちても消えない
@@ -838,6 +879,8 @@ export class ProjectThreadStore {
     kind?: DeliveryAuthor;
     /** 自動化の1回分（追加・2026-10-15、アーキ仕様 §4.3） */
     automation?: { id: string; runId: string };
+    /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
+    mission?: { id: string; wake: number };
     /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
     external?: ExternalContent[];
   }): Promise<void> {

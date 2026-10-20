@@ -75,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { splitTargets } from "@/lib/relay-targets";
 import { RelayTargetsTable } from "@/components/banto/thread/relay-targets-table";
 import { ElicitationFormView } from "./elicitation-form";
+import { formFieldsOf } from "@/lib/form-fields";
 import { ClaudeAccountsAllOverNotice } from "./claude-accounts-notice";
 import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
 
@@ -506,10 +507,16 @@ function JudgmentBody({ item, onAnswered }: { item: RealInboxJudgment; onAnswere
       ) : (
         <div data-testid="inbox-judgment-answer" className="mt-3">
           <ElicitationFormView
-            elicitation={{ mode: "form", enumOptions: item.choices ?? ["許可する", "拒否する"], allowFreeText: false }}
-            onAnswered={async (answer) => {
+            elicitation={{
+              mode: "form",
+              enumOptions: item.choices ?? ["許可する", "拒否する"],
+              allowFreeText: false,
+              // 答えに添える欄（任務の枠、§6.47）——会話のカードと同じ欄
+              fields: formFieldsOf(item.requestedSchema),
+            }}
+            onAnswered={async (answer, values) => {
               try {
-                await answerRealJudgment(item.id, answer);
+                await answerRealJudgment(item.id, answer, values);
                 setError(null);
                 onAnswered(answer);
               } catch (err) {

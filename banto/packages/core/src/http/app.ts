@@ -90,7 +90,8 @@ import {
 import { TurnStops, type TurnStopHandle } from "./turn-stops.js";
 import { ImageRejectedError, ImageStore, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from "../images/store.js";
 import type { ThreadTurns } from "../delivery/thread-turns.js";
-import type { ThreadDeliveries } from "../delivery/thread-deliveries.js";
+import { timerDriven, type ThreadDeliveries } from "../delivery/thread-deliveries.js";
+import { MissionConflictError, MissionInputError, type MissionStartInput, type Missions } from "../mission/missions.js";
 import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
@@ -223,6 +224,10 @@ export interface AppDeps {
    * 「判断役が見ています」。無ければ tool は断る
    */
   turnDecisions?: Pick<TurnDecisions, "beginTurn" | "answer" | "watching">;
+  /**
+   * **任務**（追加・2026-10-20、アーキ仕様 §4.4）。会話の tool の中身と `/api/threads/:id/mission`。無ければ tool は断り、口は 501
+   */
+  missions?: Missions;
   /**
    * **自動化の Webhook の受け口**（アーキ仕様 §4.3「Webhook」）。`/hooks/<印>` を認証の前で受け、作る・直すときに署名の鍵を
    * Vault から引いて置く。無ければ `/hooks/` は 404、Webhook の自動化は作れない（501）
@@ -1710,7 +1715,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -1740,9 +1745,9 @@ export function createApp(deps: AppDeps) {
     // 届いたもので起こしたターンも、人が画面から止められる（§6.31）
     const stop = turnStops.open(threadId);
     stop.markRunning();
-    // 起こす理由：自動化の届けものだけなら automation、ほかが混ざれば delivery
+    // 起こす理由：自動化・任務の届けものだけなら automation（用事で起きた扱い、§4.4）、ほかが混ざれば delivery
     const pending = deps.projectThread.getThread(threadId)?.deliveries ?? [];
-    const cause: ProjectWokeCause = pending.length > 0 && pending.every((d) => d.kind === "automation") ? "automation" : "delivery";
+    const cause: ProjectWokeCause = pending.length > 0 && pending.every((d) => timerDriven(d.kind)) ? "automation" : "delivery";
     try {
       for await (const event of openTurn(threadId, "", undefined, [], stop, [], cause)) {
         if (event.type === "error") console.warn(`[host] 届いたもので起こした ${threadId} のターンが失敗しました: ${event.message}`);
@@ -2790,6 +2795,36 @@ export function createApp(deps: AppDeps) {
         if (!thread) return json(res, 404, { error: "not found" });
         json(res, 200, toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store));
         return;
+      }
+
+      // **任務**（追加・2026-10-20、アーキ仕様 §4.4「口」）。見る・人が始める・枠を変える／止める・今すぐ起こす
+      const missionMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/mission(\/wake)?$/);
+      if (missionMatch) {
+        const threadId = missionMatch[1]!;
+        const thread = deps.projectThread.getThread(threadId);
+        if (!thread) return json(res, 404, { error: "not found" });
+        if (!deps.missions) return json(res, 501, { error: "この banto では任務を扱えません" });
+        const missions = deps.missions;
+        const respond = async (fn: () => Promise<unknown>, status: number) => {
+          try {
+            json(res, status, { mission: await fn() });
+          } catch (err) {
+            if (err instanceof MissionInputError) return json(res, 400, { error: err.message });
+            if (err instanceof MissionConflictError) return json(res, 409, { error: err.message });
+            throw err;
+          }
+        };
+        if (missionMatch[2] && req.method === "POST") return respond(() => missions.wakeNow(threadId), 200);
+        if (!missionMatch[2] && req.method === "GET") return json(res, 200, { mission: thread.mission ?? null });
+        if (!missionMatch[2] && req.method === "POST") {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          return respond(() => missions.startByHuman(threadId, body as Partial<MissionStartInput>), 201);
+        }
+        if (!missionMatch[2] && req.method === "PATCH") {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          return respond(() => missions.patch(threadId, body), 200);
+        }
+        return json(res, 405, { error: "method not allowed" });
       }
 
       // **この会話で効いている Skill**（決定・2026-09-23、§5.7）。会話の始まりで固定した

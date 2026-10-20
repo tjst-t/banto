@@ -475,6 +475,17 @@ export interface RealUsageWindow {
   resetsAt?: string;
 }
 
+/** 受信箱のカードに添える任務の結末（host の `ReviewMission`） */
+export interface RealReviewMission {
+  id: string;
+  goal: string;
+  status: "active" | "done" | "gave-up" | "exhausted" | "stalled" | "stopped";
+  wakes: number;
+  maxWakes: number;
+  until: string;
+  result?: string;
+}
+
 /** 判断待ち（§2.4）。hostの`JudgmentItem`をそのまま受け取る——ここで形を
  *  作り替えない（規則3・規則12）。 */
 export interface RealInboxJudgment {
@@ -483,7 +494,7 @@ export interface RealInboxJudgment {
   threadId: string;
   /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。
    *  `automation`＝自動化の確認（届ける前に人に聞く）。 */
-  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation" | "memory";
+  source: "elicitation" | "text" | "factory" | "alarm" | "relay" | "message" | "automation" | "memory" | "mission";
   message: string;
   /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
   mode?: "form" | "url";
@@ -535,6 +546,11 @@ export interface RealInboxReview {
   judge?: RealReviewJudge;
   /** 前のカードから引き継いだ判断役の決め（「判断役が〈選択肢〉を選んで進めました」） */
   carriedJudge?: RealReviewJudge;
+  /**
+   * **任務が人に返ってきた**（追加・2026-10-20、アーキ仕様 §4.4「受信箱」）。終わった・枠を使い切った・止まっている任務の結末。
+   * 画面に出すのは v4-frontend.md §6.47 の任務の画面（Backlog #422）
+   */
+  mission?: RealReviewMission;
   /** 判断役の回が動いている間（まだ答えていない）。host が走っている回から添える（記録には無い） */
   judgeWatching?: { id: string; name: string };
 }
@@ -1688,6 +1704,8 @@ export type RealTurnEvent =
       message: string;
       /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
       choices?: string[];
+      /** 答えに添える欄（任務の枠、追加・2026-10-20、v4-frontend.md §6.47） */
+      requestedSchema?: unknown;
     }
   /** 判断待ちに答えがついた（どこで答えても流れに載る——決定・2026-09-26）。`answer` は画面に出す言葉 */
   | { type: "answered"; judgmentId: string; answer: string }

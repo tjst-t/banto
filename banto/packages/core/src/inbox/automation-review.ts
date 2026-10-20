@@ -26,11 +26,11 @@ export function automationRunOfLastTurn(thread: Pick<ThreadState, "messages">): 
 
 /**
  * **ターンが始まったとき、その Thread のレビュー待ちを「見た」にするか**。人が送ったターン（ホップ 0）は人がそこにいる
- * ので「見た」にする。自動化の届けもので起きるターンもホップ 0 だが人はいない——前の回のカードを消さない
+ * ので「見た」にする。自動化・任務の届けもので起きるターンもホップ 0 だが人はいない——前の回のカードを消さない
  */
 export function acknowledgesReviewsOnStart(thread: Pick<ThreadState, "deliveries"> | undefined, hop: number): boolean {
   if (hop !== 0) return false;
-  return !thread?.deliveries?.some((d) => d.automation);
+  return !thread?.deliveries?.some((d) => d.automation || d.mission);
 }
 
 /** 人が見ないといけない回か。失敗（止めた・切れたも）・判断待ち・決めることの順に見る */

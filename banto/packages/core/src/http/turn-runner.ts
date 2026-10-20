@@ -44,6 +44,7 @@ import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
+import { MISSION_TOOL_NAMES, type Missions } from "../mission/missions.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -79,6 +80,11 @@ export type TurnStreamEvent =
       message: string;
       /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
       choices?: string[];
+      /**
+       * **答えに添える欄**（Elicitation の form と同じ形の JSON Schema、追加・2026-10-20、v4-frontend.md §6.47）。任務を始めるカードの
+       * 枠の3つの欄。許すと欄の値が答えの `updatedInput` に載る
+       */
+      requestedSchema?: unknown;
     }
   | {
       type: "done";
@@ -346,6 +352,11 @@ async function* runThreadTurnInner(
      */
     memoryAsk?: AskInThreadDeps;
     /**
+     * **任務**（追加・2026-10-20、§4.4）。tool の中身・`report_turn` の差し戻し・Stop hook の任務の確かめ。渡されなければ tool は断り、
+     * 確かめもしない
+     */
+    missions?: Pick<Missions, "start" | "scheduleFollowup" | "finish" | "reportTurnProblem" | "stopReason">;
+    /**
      * **その Project で「承認をすべて自動で許可する」がオンか**（追加・2026-10-05、v4-frontend.md §6.4）。承認のたびに
      * 引く——保存した時点で、走っているターンにも次の承認から効く。渡されなければ今までどおり人に聞く
      */
@@ -512,6 +523,8 @@ async function* runThreadTurnInner(
       ...(d.sender ? { sender: d.sender } : {}),
       // 自動化の1回分は、その回の結末を書くのに要る（§4.3）
       ...(d.automation ? { automation: d.automation } : {}),
+      // 任務の予約で起こした回は、その回の結果を書くのに要る（§4.4）
+      ...(d.mission ? { mission: d.mission } : {}),
       // 外から来たもの（Webhook の本文）——画面は指示と分けて出す（§4.3）
       ...(d.external && d.external.length > 0 ? { external: d.external } : {}),
     });
@@ -585,6 +598,7 @@ async function* runThreadTurnInner(
     deps.automationTools,
     deps.turnDecisions,
     readOnly,
+    deps.missions,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -709,6 +723,8 @@ async function* runThreadTurnInner(
             `mcp__banto-memory__${REVISE_MEMORY_TOOL_NAME}`,
             // 判断役の答えは聞かずに通す——判断役の会話の承認は必ず聞くが、答えること自体はその会話の仕事（§4.3「守り」）
             `mcp__banto-thread__${ANSWER_DECISION_TOOL_NAME}`,
+            // 任務の tool も通す——始めるのは tool の中で必ず人に聞き、予約・終わりは枠が抑える（§4.4「tool」）
+            ...MISSION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
             ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
           ],
       // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
@@ -721,11 +737,18 @@ async function* runThreadTurnInner(
             declineElicitations: true,
           }
         : {}),
-      // 呼び忘れたら一度だけ差し戻す（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
+      // **Stop hook は1本**（§4.4「終わり方」）：任務の確かめ（予約も終わりも無い）を先に、まとめの呼び忘れを後に。差し戻すのは
+      // 合わせて一度だけ（`stop_hook_active` なら終える）。人が止めたターンは差し戻さない
+      ...(turnSummary || deps.missions
+        ? {
+            onStop: ({ stopHookActive }: { stopHookActive: boolean }) => {
+              if (abortTurn.signal.aborted || stopHookActive) return undefined;
+              return deps.missions?.stopReason(input.threadId) ?? (turnSummary ? turnSummaryStopDecision(turnSummary, false) : undefined);
+            },
+          }
+        : {}),
       ...(turnSummary
         ? {
-            onStop: ({ stopHookActive }: { stopHookActive: boolean }) =>
-              abortTurn.signal.aborted ? undefined : turnSummaryStopDecision(turnSummary, stopHookActive),
             // まとめを受け付けたらそこで終える（AI をもう一度呼ばない）。作業に数える tool も数える
             onToolUsed: ({ toolName }: { toolName: string }) => {
               noteToolUsed(turnSummary, toolName);

@@ -43,6 +43,7 @@ import { getThreadPermissionMode } from "../mock/permission-mode";
 import { appendRealUsage, realThreadExtraOf, updateRealThreadData } from "../mock/threads";
 import type { MockThread } from "../mock/types";
 import { HUMAN_TOOL_NAME } from "../mock/adapter";
+import { formFieldsOf } from "../form-fields";
 
 /** Project をまたぐメッセージの承認で「以後聞かない」を選ぶ答え（host の `MESSAGE_ALLOW_REMEMBER` と同じ言葉） */
 export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project からは聞かない";
@@ -52,7 +53,7 @@ export const MESSAGE_ALLOW_REMEMBER = "許可し、以後この Project から�
  * v4-frontend.md §6.42「AI が作るときのカード」）の「作る」「変える」「再開する」「消す」（host の `AUTOMATION_*_CHOICES` と同じ言葉）。
  * Memory を取り消す・改めるときの確認（アーキ仕様 §2.2）の「変える」も同じ（host の `MEMORY_REVISE_CHOICES`）
  */
-const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する", "消す"]);
+const ALLOW_ANSWERS = new Set(["許可する", "作る", "変える", "再開する", "消す", "始める"]);
 
 /** 判断待ちのカード1枚ぶんのpart。走行中（PartsAccumulator）とリロード後の
  *  復元（restoredJudgmentMessages）で同じものを使う——見た目も答え方も同じ1種類
@@ -69,8 +70,11 @@ function humanToolPart(
     answerable?: boolean;
     /** 答えの選択肢（追加・2026-10-01）。無ければ「許可する／拒否する」 */
     choices?: string[];
+    /** 答えに添える欄（任務の枠、追加・2026-10-20、v4-frontend.md §6.47）。無ければ欄は出さない */
+    requestedSchema?: unknown;
   } = {},
 ): Extract<ThreadAssistantMessagePart, { type: "tool-call" }> {
+  const fields = formFieldsOf(options.requestedSchema);
   return {
     type: "tool-call",
     toolCallId,
@@ -84,6 +88,7 @@ function humanToolPart(
         mode: "form",
         enumOptions: options.choices && options.choices.length > 0 ? options.choices : ["許可する", "拒否する"],
         allowFreeText: false,
+        ...(fields.length > 0 ? { fields } : {}),
       },
     } as unknown as ReadonlyJSONObject,
     argsText: JSON.stringify({ serverName, message, toolInput: options.toolInput }),
@@ -141,7 +146,7 @@ class PartsAccumulator {
     toolCallId: string,
     serverName: string,
     message: string,
-    options?: { toolInput?: unknown; answerable?: boolean; choices?: string[] },
+    options?: { toolInput?: unknown; answerable?: boolean; choices?: string[]; requestedSchema?: unknown },
   ) {
     this.parts.push(humanToolPart(toolCallId, serverName, message, options));
   }
@@ -915,6 +920,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
               // ——答えても届かないので、答える口を出さない
               answerable: event.kind !== "elicitation",
               ...(event.choices ? { choices: event.choices } : {}),
+              ...(event.requestedSchema !== undefined ? { requestedSchema: event.requestedSchema } : {}),
             },
           );
           markAwaitingHuman(thread.id, live.acc.hasPendingHumanTool());
@@ -1108,10 +1114,10 @@ export function applyThreadRecord(threadId: string, record: RealThread): void {
 /** 承認/Elicitationの答えを実hostへ送る。human-tool-card.tsxのonAnsweredから呼ぶ。
  *  **戻り値がtrueなら、ランタイムのaddResultを呼んではいけない**——実Threadの
  *  待ちはhost側にあり、addResultはrunを新しく起こしてpartsを二重にする（上のcontinue参照）。 */
-export async function sendRealAnswer(toolCallId: string, answer: string): Promise<boolean> {
+export async function sendRealAnswer(toolCallId: string, answer: string, values?: Record<string, number>): Promise<boolean> {
   const judgmentId = judgmentIdByToolCallId.get(toolCallId);
   if (!judgmentId) return false;
-  await answerRealJudgment(judgmentId, answer);
+  await answerRealJudgment(judgmentId, answer, values);
   return true;
 }
 
@@ -1119,11 +1125,12 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  * **判断待ちに答える**（会話のカード・受信箱の両方から。受信箱から答えられるようにしたのは 2026-10-05、ユーザー指示）。
  * 答えは選択肢の言葉のまま受け取り、host の形（許可・拒否）にして送る
  */
-export async function answerRealJudgment(judgmentId: string, answer: string): Promise<void> {
-  // 「許可し、以後この Project からは聞かない」（Project をまたぐメッセージの承認、§4.2）は、許可に「覚える」を添える
+export async function answerRealJudgment(judgmentId: string, answer: string, values?: Record<string, number>): Promise<void> {
+  // 「許可し、以後この Project からは聞かない」（Project をまたぐメッセージの承認、§4.2）は、許可に「覚える」を添える。
+  // 欄の値（任務の枠、§6.47）は許可に `updatedInput` として添える
   const permissionResult =
     ALLOW_ANSWERS.has(answer)
-      ? { behavior: "allow" as const }
+      ? { behavior: "allow" as const, ...(values ? { updatedInput: values } : {}) }
       : answer === MESSAGE_ALLOW_REMEMBER
         ? { behavior: "allow" as const, remember: true }
         : { behavior: "deny" as const, message: answer };

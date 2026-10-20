@@ -15,12 +15,23 @@ export interface AwaitedModule {
  * `<出どころ>.<名前>` で、出どころは名乗った Module の宣言の名前（`parseEventDeclarations` が確かめる）なので、名前の頭で引く。
  * 「起こしておく」（§4.3）とスリープの例外（§2.2）がこの1つを使う
  */
-export function awaitingAutomations(automations: readonly Automation[], projectId: string, moduleNames: readonly string[]): AwaitedModule[] {
+export function awaitingAutomations(
+  automations: readonly Automation[],
+  projectId: string,
+  moduleNames: readonly string[],
+  /**
+   * **出来事を待っている任務の予約**（追加・2026-10-20、アーキ仕様 §4.4「予約」——`awaitedModules` が自動化の台帳に加えて引く）。
+   * 待っているものの名前は「任務「…」」
+   */
+  missionWaits: ReadonlyArray<{ missionId: string; label: string; event: string }> = [],
+): AwaitedModule[] {
   const waiting = automations.filter((a) => a.projectId === projectId && !a.paused && a.source.kind === "event");
-  if (waiting.length === 0) return [];
+  if (waiting.length === 0 && missionWaits.length === 0) return [];
   return moduleNames.flatMap((m) => {
-    const by = waiting.filter((a) => a.source.kind === "event" && a.source.event.startsWith(`${m}.`));
-    return by.length > 0 ? [{ module: m, automations: by.map((a) => ({ id: a.id, name: a.name })) }] : [];
+    const by = waiting.filter((a) => a.source.kind === "event" && a.source.event.startsWith(`${m}.`)).map((a) => ({ id: a.id, name: a.name }));
+    const missions = missionWaits.filter((w) => w.event.startsWith(`${m}.`)).map((w) => ({ id: w.missionId, name: w.label }));
+    const all = [...by, ...missions];
+    return all.length > 0 ? [{ module: m, automations: all }] : [];
   });
 }
 

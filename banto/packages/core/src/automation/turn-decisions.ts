@@ -128,7 +128,7 @@ export function decisionsOf(summary: Record<string, unknown> | undefined): TurnD
 }
 
 /** 最後に始めたターンのまとめを持つ AI の発言 */
-function summaryMessageOfLastTurn(thread: Pick<ThreadState, "lastTurn" | "messages">): MessageEntry | undefined {
+export function summaryMessageOfLastTurn(thread: Pick<ThreadState, "lastTurn" | "messages">): MessageEntry | undefined {
   const startedSeq = thread.lastTurn?.startedSeq;
   if (startedSeq === undefined) return undefined;
   return [...thread.messages].reverse().find((m) => m.role === "assistant" && m.seq > startedSeq && m.turnSummary);

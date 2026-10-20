@@ -4157,6 +4157,9 @@ Dots は1体のエージェントが「見る」と「やる」を同じ権限�
 
 #### 任務（mission）
 
+（実装・2026-10-20、Backlog #421：core の仕組み・tool・時計と届け方・差し戻し・受信箱の結末・始めるカードの欄。画面の札・面・サイドバー・
+受信箱の結末の見せ方は #422。コードは `packages/core/src/mission/missions.ts`）
+
 **任務＝会話（Thread）に付ける「目標・終わりの条件・枠」。** 任務を持つ会話の AI は、枠の中で自分を「あとでもう一度」起こす予約ができる。
 人が見ていない間も、Factory の残りを最後まで見る・PR の CI が通るまで直す、のような終わりのある仕事を続けられる。
 
@@ -4218,12 +4221,22 @@ Dots は1体のエージェントが「見る」と「やる」を同じ権限�
   あればそれに結末を添えて更新する。1つの Thread に未確認は1件まで、は今のまま）。
   判断役（§4.3）は任務の回の「決めること」にもそのまま効く
 - **置き場**：Event Store の project-thread の fold（任務は会話の持ち物）。`mission.started`・`mission.updated`（枠を延ばす等）・
-  `mission.followup_set`・`mission.woke`（何回目・きっかけ・結果）・`mission.finished`（`done` / `gave-up` / `exhausted` / `stalled` /
-  `stopped`）。`ThreadState.mission` に今の任務と予約、起きた記録は直近 50 件
+  `mission.followup_set`・`mission.woke`（何回目・きっかけ。数えるのはここ）・`mission.wake_settled`（その回のターンが終わった結果——
+  起こした時点では結果が無いので分けた）・`mission.finished`（`done` / `gave-up` / `exhausted` / `stalled` /
+  `stopped`）。`ThreadState.mission` に今の任務と予約、起きた記録は直近 50 件。終わった任務も次を始めるまで残す（結末を読む）。
+  会話を閉じた・Project を閉じたときは出来事を書かずに fold が `stopped` に畳む（閉じた記録が真実）。出来事が来た予約は banto が
+  `mission.followup_set` で置き直す（来たものと起こす時刻を添える——起き直しても失わない）
+- 受信箱のカードの結末は `ReviewItem.mission`（目標・状態・結果・起きた回数と上限・期限）。時計の刻みで期限を過ぎて止めたときは、
+  開いているカードに `inbox.review_mission_set` で結末を添える（無ければ新しく出す）
 - **tool**：`start_mission`・`schedule_followup`・`finish_mission` は core の会話の tool（`banto-thread`）に足し、3つとも `allowedTools` に入れる
   （`start_mission` は tool の中で聞く）
 - 口：`GET /api/threads/:id/mission`、`POST /api/threads/:id/mission`（人が始める）・`PATCH`（枠を延ばす・止める）・
   `POST /api/threads/:id/mission/wake`（今すぐ起こす。回数に数える）
+  - `PATCH` の本文は `{ maxWakes?, until?, minInterval? }`（枠を変える。起きた回数より少なくはできない。枠を使い切った・止まっている
+    任務は、変えると動いている任務に戻る＝「延ばす」）か `{ stop: true }`（止める）。決まりに合わなければ 400、今できなければ 409
+  - 「今すぐ起こす」は会話が空いていなければ（`deliver` の手前の判断と同じ）409——回数・期限を使い切っていても 409
+- `start_mission` のカードの欄は `maxWakes`（回）・`untilDays`（今から何日）・`minInterval`（分）。答えの `updatedInput` に載り、
+  host が枠に読み直す（`untilDays` は答えた時刻から数える）
 
 #### 見回り（patrol）
 

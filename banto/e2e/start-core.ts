@@ -134,6 +134,8 @@ process.env.BANTO_CONTAINER_PRESSURE_INTERVAL_MS = "2000";
 process.env.BANTO_RESOURCES_INTERVAL_MS = "2000";
 // 自動化の時計（`automation/clock.ts`）は毎分 0 秒の少しあと——試験では2秒ごとに刻む（時刻が来てから待たない）
 process.env.BANTO_AUTOMATION_CLOCK_INTERVAL_MS = "2000";
+// 任務の最短の間隔（`mission/missions.ts`）は 15 分より短くできない——試験では 0 分まで下げる（15 分を待たずに2回目を見る）
+process.env.BANTO_TEST_MISSION_MIN_INTERVAL_MINUTES = "0";
 // サブエージェントの Module は Project のコンテナの中で動き、host の環境を受け継がない——偽物の印だけを
 // 中に渡す（決定・2026-09-25。人の banto では使わない口）
 process.env.BANTO_CONTAINER_ENV_PASSTHROUGH = "BANTO_SUBAGENT_FAKE_AGENT";
