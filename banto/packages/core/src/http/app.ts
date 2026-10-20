@@ -4493,6 +4493,26 @@ export function createApp(deps: AppDeps) {
           throw err;
         }
       }
+      // **特権コンテナにする**（決定・2026-10-20、同 2. の3つ目・4.・5.。#461）。人の画面からだけ。打った名前（`confirmName`）が
+      // Project の名前と同じでなければ断る。コンテナは止めて起こし直すので、先に Module を畳む（次に使うときに起こし直す）
+      const containerPrivilegedMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/privileged$/);
+      if (containerPrivilegedMatch && req.method === "PUT") {
+        const projectId = containerPrivilegedMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        const body = (await readJsonBody(req)) as { enabled?: unknown; confirmName?: unknown };
+        if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+        try {
+          // 名前・許しの確かめは畳む前に（断るときに Module を落とさない）
+          deps.containersVirtualization.checkPrivileged(projectId, { enabled: body.enabled, confirmName: body.confirmName });
+          const released = (await deps.releaseProjectModules?.(projectId)) ?? [];
+          const result = await deps.containersVirtualization.setPrivileged(projectId, { enabled: body.enabled, confirmName: body.confirmName });
+          return json(res, 200, { ...result, released });
+        } catch (err) {
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          throw err;
+        }
+      }
       // **hugepages（2MiB の数）**（決定・2026-10-20、同 2.）。人の画面からだけ。合計がサーバのメモリの半分を越える・使っているのに
       // 減らす、は断る。確保できた数を返し、足りなければ `warnings` で言う
       const containerHugepagesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/hugepages$/);

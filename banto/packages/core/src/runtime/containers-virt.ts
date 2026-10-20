@@ -9,7 +9,16 @@
 // と、core が検証した値だけ。人の画面の口（admin の刻印）からだけ呼ぶ——AI の tool は作らない（同 5.）。
 
 import { runRootCommand, AutoFixError, type RanCommand, type RootCommand } from "./host-autoprep.js";
-import { allowUnixCharCommand, projectNameOf, unsetUnixCharCommand, UNIX_CHAR_KEY, type VmAccess } from "./containers-host.js";
+import {
+  allowPrivilegeCommand,
+  allowUnixCharCommand,
+  PRIVILEGE_KEY,
+  projectNameOf,
+  unsetPrivilegeCommand,
+  unsetUnixCharCommand,
+  UNIX_CHAR_KEY,
+  type VmAccess,
+} from "./containers-host.js";
 import { containerNameFor, DEFAULT_TIMEOUTS, effectiveInsideIds, defaultContainerLimits, ProjectContainers, type ContainerVirtualization } from "@banto/container";
 import { LEGACY_INSIDE_IDS } from "./remote-containers.js";
 import { containerCgroupPath } from "../resources.js";
@@ -29,9 +38,11 @@ export interface ProjectVirtualization {
   modules: string[];
   /** 2MiB の hugepages の数 */
   hugepages: number;
+  /** 特権コンテナにする（`security.privileged=true`。#461——足りないときの逃げ道） */
+  privileged: boolean;
 }
 
-export const NO_VIRTUALIZATION: ProjectVirtualization = { kvm: false, modules: [], hugepages: 0 };
+export const NO_VIRTUALIZATION: ProjectVirtualization = { kvm: false, modules: [], hugepages: 0, privileged: false };
 
 /**
  * Project の設定（host 側の runtime config の Project の層）の鍵。**Project の層だけを読む**——banto 全体の既定から
@@ -42,6 +53,7 @@ export const VIRT_KEYS = {
   /** 空白で区切った名前 */
   modules: "container.kvmModules",
   hugepages: "container.hugepages2M",
+  privileged: "container.privileged",
 } as const;
 
 /** runtime config の Project の層から読む（書くのは値を確かめる人の画面の口だけ） */
@@ -50,6 +62,7 @@ export function readProjectVirtualization(layerValue: (key: string) => unknown):
   const modules = layerValue(VIRT_KEYS.modules);
   const hugepages = layerValue(VIRT_KEYS.hugepages);
   return {
+    privileged: layerValue(VIRT_KEYS.privileged) === true,
     kvm: kvm === true,
     modules: typeof modules === "string" ? modules.split(/\s+/).filter(Boolean) : [],
     hugepages: typeof hugepages === "number" && Number.isInteger(hugepages) && hugepages > 0 ? hugepages : 0,
@@ -58,7 +71,11 @@ export function readProjectVirtualization(layerValue: (key: string) => unknown):
 
 /** 外していない仮想化の設定（人に見せる名前）。空なら何も使っていない */
 export function virtualizationInUse(v: ProjectVirtualization): string[] {
-  return [...(v.kvm ? ["/dev/kvm を見せる"] : []), ...(v.hugepages > 0 ? [`hugepages ${v.hugepages} 個`] : [])];
+  return [
+    ...(v.kvm ? ["/dev/kvm を見せる"] : []),
+    ...(v.hugepages > 0 ? [`hugepages ${v.hugepages} 個`] : []),
+    ...(v.privileged ? ["特権コンテナ"] : []),
+  ];
 }
 
 /** runtime config の Project の層に書く（既定の値は書かずに外す） */
@@ -75,6 +92,7 @@ export async function writeProjectVirtualization(
   await put(VIRT_KEYS.kvm, v.kvm ? true : undefined);
   await put(VIRT_KEYS.modules, v.modules.length ? v.modules.join(" ") : undefined);
   await put(VIRT_KEYS.hugepages, v.hugepages > 0 ? v.hugepages : undefined);
+  await put(VIRT_KEYS.privileged, v.privileged ? true : undefined);
 }
 
 /** /dev/kvm を見せるなら必ず読むモジュール（`/dev/vhost-net` を見せる前にサーバに無ければならない。測った4つの 1.） */
@@ -121,7 +139,7 @@ const MAX_HUGEPAGES = 1 << 20;
 
 /** Project の設定 → コンテナに付けるもの */
 function specOf(v: ProjectVirtualization): ContainerVirtualization {
-  return { kvm: v.kvm, hugepagesBytes: v.hugepages * HUGEPAGE_BYTES };
+  return { kvm: v.kvm, hugepagesBytes: v.hugepages * HUGEPAGE_BYTES, privileged: v.privileged };
 }
 
 /** `/proc/meminfo` から、メモリの全体・hugepages の確保した数・既定の大きさ */
@@ -218,7 +236,7 @@ export class ContainersVirtualization {
       if (allowed) {
         await root(vm, allowUnixCharCommand(vm.uid), ran, "区画に unix-char の装置を許す");
         // 許した実行場所の全コンテナに hugepages の上限 0 を書く（付けないと制限が無い。まだ無いコンテナは作るときに書く）
-        for (const name of containers) await incus.applyVirtualization(name, { kvm: false, hugepagesBytes: 0 });
+        for (const name of containers) await incus.applyVirtualization(name, { kvm: false, hugepagesBytes: 0, privileged: false });
         return;
       }
       // hugepages の上限を外す（どの Project も 0 に戻してある）
@@ -370,14 +388,57 @@ export class ContainersVirtualization {
   }
 
   /** 画面に出す様子（その Project で使えるか・今の設定） */
-  describe(projectId: string): ProjectVirtualization & { available: boolean; reason?: string } {
+  describe(projectId: string): ProjectVirtualization & {
+    available: boolean;
+    reason?: string;
+    /** 同じ実行場所の、ほかの特権の Project（閉じたもの・眠っているものも）——守られていないのはこの Project の側 */
+    privilegedOnServer: Array<{ id: string; name: string }>;
+  } {
     const settings = this.deps.settingsOf(projectId);
+    const runtime = remoteNameOf(this.deps.project(projectId)?.runtime);
+    const privilegedOnServer = runtime
+      ? this.deps.projectsOn(runtimeIdOf(runtime)).filter((p) => p.id !== projectId && this.deps.settingsOf(p.id).privileged)
+      : [];
     try {
       this.mustAllowedProject(projectId);
-      return { ...settings, available: true };
+      return { ...settings, available: true, privilegedOnServer };
     } catch (err) {
-      return { ...settings, available: false, reason: err instanceof Error ? err.message : String(err) };
+      return { ...settings, available: false, reason: err instanceof Error ? err.message : String(err), privilegedOnServer };
     }
+  }
+
+  /**
+   * **Project の「特権コンテナにする」を変える**（人が押した。v4-security.md §1「`containers` で仮想化の実験」の 2. の3つ目・4.・5.）。
+   * `confirmName` が Project の名前と同じでなければ断る（画面で名前を打たせる代わり。比べるだけで、どのコマンドにも入れない）。
+   * オン：実行場所が許していなければ断る。区画に `restricted.containers.privilege=allow` が無ければ `sudo -n` で足す（その実行場所で
+   * 最初の1回）。コンテナがあれば止めて、中の番号がまだ前のものなら先に U に付け替え（#457）、`security.privileged=true` を書いて、
+   * 動いていたなら起こす。オフ：止めて unset して起こし、その実行場所で特権の Project が無くなったら（閉じたもの・眠っているものも
+   * 数える）区画の privilege を unset する。識別子は Project id だけ
+   */
+  async setPrivileged(projectId: string, input: { enabled: boolean; confirmName: unknown }): Promise<VirtualizationResult & { privileged: boolean }> {
+    const runtimeName = this.checkPrivileged(projectId, input);
+    const cur = this.deps.settingsOf(projectId);
+    const next: ProjectVirtualization = { ...cur, privileged: input.enabled };
+    const container = containerNameFor(projectId);
+    const ran: RanCommand[] = [];
+    await this.deps.withVm(runtimeName, async (vm) => {
+      const incus = containersOver(vm);
+      const ids = { uid: vm.uid, gid: vm.gid, inside: { uid: vm.uid, gid: vm.gid }, legacyInside: LEGACY_INSIDE_IDS };
+      if (input.enabled) {
+        const config = await projectConfigOf(vm);
+        if (config[PRIVILEGE_KEY] !== "allow") await root(vm, allowPrivilegeCommand(vm.uid), ran, "区画で特権コンテナを許す");
+        await incus.setPrivileged(container, true, ids);
+        await this.deps.saveSettings(projectId, next);
+        return;
+      }
+      await incus.setPrivileged(container, false, ids);
+      await this.deps.saveSettings(projectId, next);
+      const others = this.deps.projectsOn(runtimeIdOf(runtimeName)).filter((p) => p.id !== projectId && this.deps.settingsOf(p.id).privileged);
+      if (others.length === 0 && (await projectConfigOf(vm))[PRIVILEGE_KEY] !== undefined) {
+        await root(vm, unsetPrivilegeCommand(vm.uid), ran, "区画の特権コンテナの許しを戻す");
+      }
+    });
+    return { warnings: [], ran, privileged: input.enabled };
   }
 
   /** modules-load.d のファイルを、その実行場所の全 Project（閉じたものも）の名前の和で書き直す。空なら消す */
@@ -386,6 +447,28 @@ export class ContainersVirtualization {
     const content = modulesLoadContent([...all, next]);
     if (content === undefined) await root(vm, { args: ["rm", "-f", MODULES_LOAD_FILE] }, ran, "再起動で読むモジュールの一覧を消す");
     else await root(vm, { args: ["tee", MODULES_LOAD_FILE], input: async () => content, display: `sudo tee ${MODULES_LOAD_FILE}（${content.split("\n").filter((l) => l && !l.startsWith("#")).join("・")}）` }, ran, "再起動で読むモジュールの一覧を書く");
+  }
+
+  /**
+   * **「特権コンテナにする」を通してよいか**（向こうに触らずに断る分）。打った名前が違う・オンなのに実行場所が許していない・
+   * containers でない、は断る。オフは、実行場所が許すのをやめていても通す（外すのを止めない）。実行場所の名前を返す
+   */
+  checkPrivileged(projectId: string, input: { enabled: boolean; confirmName: unknown }): string {
+    const project = this.deps.project(projectId);
+    if (!project) throw new RemoteRuntimeError(404, "Project がありません");
+    if (typeof input.confirmName !== "string" || input.confirmName !== project.name) {
+      throw new RemoteRuntimeError(400, "確かめのために打った名前が、この Project の名前と違います", { code: "confirm-name-mismatch" });
+    }
+    return input.enabled ? this.mustAllowedProject(projectId).runtimeName : this.mustContainersProject(projectId);
+  }
+
+  /** `containers` の実行場所の Project か（許しているかは問わない）。実行場所の名前を返す */
+  private mustContainersProject(projectId: string): string {
+    const runtimeName = remoteNameOf(this.deps.project(projectId)?.runtime);
+    if (!runtimeName || this.deps.runtime(runtimeName)?.mode !== "containers") {
+      throw new RemoteRuntimeError(409, "仮想化の実験は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
+    }
+    return runtimeName;
   }
 
   /** 仮想化の実験を許した `containers` の実行場所の Project か（でなければ断る） */

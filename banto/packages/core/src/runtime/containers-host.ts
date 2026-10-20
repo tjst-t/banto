@@ -479,6 +479,18 @@ export function allowUnixCharCommand(uid: number): RootCommand {
   return { args: ["incus", "project", "set", projectNameOf(uid), UNIX_CHAR_ALLOW] };
 }
 
+/** 区画で特権コンテナを許す設定（#461。その実行場所で最初に「特権コンテナにする」が押されたときに足し、特権の Project が無くなったら unset） */
+export const PRIVILEGE_KEY = "restricted.containers.privilege";
+
+export function allowPrivilegeCommand(uid: number): RootCommand {
+  return { args: ["incus", "project", "set", projectNameOf(uid), `${PRIVILEGE_KEY}=allow`] };
+}
+
+/** 区画の privilege を戻す（unset——既定は `block` でなく未設定＝`unprivileged`。V8） */
+export function unsetPrivilegeCommand(uid: number): RootCommand {
+  return { args: ["incus", "project", "unset", projectNameOf(uid), PRIVILEGE_KEY] };
+}
+
 /** 区画の unix-char を戻す（unset——incus-user が作った既定と差分が無い形。`block` は書かない） */
 export function unsetUnixCharCommand(uid: number): RootCommand {
   return { args: ["incus", "project", "unset", projectNameOf(uid), UNIX_CHAR_KEY] };

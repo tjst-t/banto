@@ -47,6 +47,7 @@ export {
   type ContainerTimeouts,
   KVM_DEVICES,
   HUGEPAGES_LIMIT_KEY,
+  PRIVILEGED_KEY,
   hugepagesLimitValue,
   virtualizationDeviceChanges,
   type ContainerVirtualization,

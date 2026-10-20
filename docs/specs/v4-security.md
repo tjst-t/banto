@@ -1111,7 +1111,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#457・#458・#459・#460。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#457・#458・#459・#460・#461。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
 **同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
@@ -1213,6 +1213,19 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
        まだ**（#462 と残り）
    - **「特権コンテナにする」（足りないときの逃げ道）**：`security.privileged=true`。起こし直しが要る（「止めて特権で起こし直します」）。
      画面は強い警告を出し、Project 名を打たせる（下の「警告」）。上の2つで足りない実験が出たとき用
+     - **実装済み（2026-10-20、Backlog #461）**：Project の設定（runtime config の Project の層）の `container.privileged`（真偽）。口は
+       `PUT /api/projects/<id>/container/privileged`（`{ enabled, confirmName }`。画面は #462）。`confirmName` が Project の名前と
+       同じでなければ 400（`code: "confirm-name-mismatch"`。オン・オフとも。比べるだけで、どのコマンドにも入れない）。オンは
+       実行場所が許していない・`containers` でなければ 409、オフは許すのをやめた実行場所でも通す。断る確かめは Module を畳む前に
+       済ませ、通れば Module を畳んでから：オン——区画に `restricted.containers.privilege` が `allow` でなければ
+       `sudo -n incus project set user-<uid> restricted.containers.privilege=allow`（その実行場所で最初の1回）→ コンテナがあれば
+       止める → 中の番号がまだ前のものなら付け替える（#457。止めているこの機会に）→ `security.privileged=true` → 動いていたなら
+       起こす → 設定に書く。オフ——止めて `incus config unset … security.privileged` → 動いていたなら起こす → 設定に書く → その実行場所に
+       特権の Project が残っていなければ（閉じたもの・眠っているものも数える）区画の privilege を `incus project unset`。コンテナを
+       用意するとき（`ensure`）も設定から揃える（違えば止めて書いて起こす。特権にするときは前の番号のコンテナを先に付け替える。
+       許していない実行場所なら外す）。「仮想化の実験を許す」をオフにする断りに特権も入る。様子は `GET /api/projects/<id>/container`
+       の `virtualization.privileged` と、同じ実行場所のほかの特権の Project の一覧 `virtualization.privilegedOnServer`（id と名前）。
+       **まだ**：繋ぐたびの確かめで区画の `privilege` を見ること、移すときに外すかを聞くこと、サイドバーの印と警告の文言（#462）
 3. **中の番号**（V4。未測定・実装の前に測る）：今のコンテナは `raw.idmap` で VM の SSH ユーザー U を中の 1000 に対応させ、見せたフォルダ
    （Project の根・Module の置き場）は VM で U の持ち物。特権コンテナには idmap が無く、中の uid＝VM の uid になるので、**中の 1000 は
    VM の 1000 で、U（例 1001）の持ち物に書けない**（U＝1000 のときだけ偶然揃う）。切り替えのたびに中の `usermod -u` で付け替えると、

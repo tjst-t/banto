@@ -36,6 +36,8 @@ interface FakeVm {
   hugepagesCap: number;
   /** コンテナごとの hugetlb.2MB.current（バイト） */
   hugetlbCurrent: Map<string, number>;
+  /** 止める・起こす・付け替え・特権の書き換えの順 */
+  lifecycle: string[];
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -51,6 +53,7 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     nrHugepages: 0,
     hugepagesCap: Infinity,
     hugetlbCurrent: new Map(),
+    lifecycle: [],
     ...over,
   };
 }
@@ -129,9 +132,32 @@ function incusAsUser(vm: FakeVm, args: string[]): IncusResult {
   }
   // 中から読もうとしたら、中の root が差し替えた値（いつも 0）を返す——VM の cgroup から読まなければ「使っていない」に見える
   if (args[0] === "exec" && args.at(-1) === "/sys/fs/cgroup/hugetlb.2MB.current") return ok("0\n");
+  if (args[0] === "start" || args[0] === "stop") {
+    const c = vm.containers.get(args[1]!);
+    if (!c) return fail("Error: Instance not found");
+    c.status = args[0] === "start" ? "Running" : "Stopped";
+    vm.lifecycle.push(`${args[0]} ${args[1]}`);
+    return ok();
+  }
+  if (args[0] === "file" && args[1] === "pull") return ok("root:x:0:0::/root:/bin/bash\nbanto:x:1000:1000::/home/banto:/bin/bash\n");
+  if (args[0] === "file" && args[1] === "delete") return fail("Error: not found");
+  if (args[0] === "exec") {
+    const c = vm.containers.get(args[1]!);
+    if (c?.status !== "Running") return fail("Error: Instance is not running");
+    if (args.includes("banto-inside")) {
+      vm.lifecycle.push(`migrate ${args[1]}`);
+      return ok();
+    }
+    if (args.at(-1) === "true") return ok();
+  }
+  // 本物の Incus と同じく、区画が特権を許していなければ security.privileged=true を断る
+  if (args[0] === "config" && args[1] === "set" && args[3] === "security.privileged=true" && vm.project["restricted.containers.privilege"] !== "allow") {
+    return fail("Error: Privileged containers are forbidden");
+  }
   if (args[0] === "config" && (args[1] === "set" || args[1] === "unset")) {
     const c = vm.containers.get(args[2]!);
     if (!c) return fail("Error: Instance not found");
+    if (args[3]?.startsWith("security.privileged")) vm.lifecycle.push(`${args[1]} ${args[3]}`);
     for (const kv of args.slice(3)) {
       if (args[1] === "unset") delete c.config[kv];
       else c.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
@@ -236,9 +262,9 @@ test("止める：まだ使っている Project（閉じたもの・眠ってい
       { id: "p-ddd", name: "ほかの実行場所", runtime: "remote:other" },
     ],
   });
-  h.settings.set("p-aaa", { kvm: true, modules: [], hugepages: 0 });
-  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 16 });
-  h.settings.set("p-ddd", { kvm: true, modules: [], hugepages: 0 });
+  h.settings.set("p-aaa", { kvm: true, modules: [], hugepages: 0, privileged: false });
+  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 16, privileged: false });
+  h.settings.set("p-ddd", { kvm: true, modules: [], hugepages: 0, privileged: false });
   await assert.rejects(h.virt.setAllowed("lab", false), (err: unknown) => {
     assert.ok(err instanceof RemoteRuntimeError);
     assert.equal(err.status, 409);
@@ -269,7 +295,7 @@ test("Project の設定は Project の層から読む（壊れた値・無い値
     [VIRT_KEYS.modules, " br_netfilter  dummy "],
     [VIRT_KEYS.hugepages, 32],
   ]);
-  assert.deepEqual(readProjectVirtualization((k) => layer.get(k)), { kvm: true, modules: ["br_netfilter", "dummy"], hugepages: 32 });
+  assert.deepEqual(readProjectVirtualization((k) => layer.get(k)), { kvm: true, modules: ["br_netfilter", "dummy"], hugepages: 32, privileged: false });
   assert.deepEqual(readProjectVirtualization(() => undefined), NO_VIRTUALIZATION);
   assert.deepEqual(readProjectVirtualization((k) => (k === VIRT_KEYS.hugepages ? 1.5 : k === VIRT_KEYS.kvm ? "yes" : undefined)), NO_VIRTUALIZATION);
 });
@@ -287,8 +313,8 @@ test("/dev/kvm を見せる：vhost_net と足したモジュールを読み、m
   const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
   h.vm.containers.set("banto-p-aaa", runningContainer());
   // 閉じた Project も和に入る。ほかの実行場所の Project は入れない
-  h.settings.set("p-bbb", { kvm: true, modules: ["dummy"], hugepages: 0 });
-  h.settings.set("p-ccc", { kvm: true, modules: ["wireguard"], hugepages: 0 });
+  h.settings.set("p-bbb", { kvm: true, modules: ["dummy"], hugepages: 0, privileged: false });
+  h.settings.set("p-ccc", { kvm: true, modules: ["wireguard"], hugepages: 0, privileged: false });
   const result = await h.virt.setKvm("p-aaa", { enabled: true, modules: ["br-netfilter", "vhost-net", "8021q", "8021q"] });
   assert.deepEqual(result.modules, ["br_netfilter", "8021q"], "- を _ に揃え、重ねず、vhost_net は除く");
   assert.deepEqual(h.vm.sudoCalls.slice(0, 3), [
@@ -306,7 +332,7 @@ test("/dev/kvm を見せる：vhost_net と足したモジュールを読み、m
   assert.deepEqual(c.devices["kvm"], { type: "unix-char", path: "/dev/kvm", mode: "0666" });
   assert.deepEqual(c.devices["vhost-net"], { type: "unix-char", path: "/dev/vhost-net", mode: "0666" });
   assert.equal(c.status, "Running");
-  assert.deepEqual(h.settings.get("p-aaa"), { kvm: true, modules: ["br_netfilter", "8021q"], hugepages: 0 });
+  assert.deepEqual(h.settings.get("p-aaa"), { kvm: true, modules: ["br_netfilter", "8021q"], hugepages: 0, privileged: false });
   // 「中で Docker を使う」は変えない（返すだけ）
   assert.equal(result.nesting, false);
   assert.equal(h.nesting.size, 0);
@@ -320,7 +346,7 @@ test("/dev/kvm を外す：先に装置を外し、modules-load を残りの和�
   const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
   h.vm.containers.set("banto-p-aaa", runningContainer());
   await h.virt.setKvm("p-aaa", { enabled: true, modules: ["dummy"] });
-  h.settings.set("p-bbb", { kvm: true, modules: [], hugepages: 0 });
+  h.settings.set("p-bbb", { kvm: true, modules: [], hugepages: 0, privileged: false });
   h.vm.sudoCalls.length = 0;
 
   await h.virt.setKvm("p-aaa", { enabled: false });
@@ -330,7 +356,7 @@ test("/dev/kvm を外す：先に装置を外し、modules-load を残りの和�
   assert.ok(!h.vm.sudoCalls.some((c) => c[0] === "rmmod" || c.includes("-r")), "読み込んだモジュールを抜いた");
   assert.deepEqual(h.vm.files.get(MODULES_LOAD_FILE)!.split("\n").filter((l) => l && !l.startsWith("#")), ["vhost_net"]);
   // 名前の一覧は残す（もう一度入れたときに戻る）
-  assert.deepEqual(h.settings.get("p-aaa"), { kvm: false, modules: ["dummy"], hugepages: 0 });
+  assert.deepEqual(h.settings.get("p-aaa"), { kvm: false, modules: ["dummy"], hugepages: 0, privileged: false });
 
   h.settings.set("p-bbb", NO_VIRTUALIZATION);
   h.vm.sudoCalls.length = 0;
@@ -365,7 +391,7 @@ test("/dev/kvm を見せる：実行場所が許していない・containers で
   // コンテナがまだ無い（次に作るときに付く）
   await h.virt.setKvm("p-aaa", { enabled: true });
   assert.equal(h.settings.get("p-aaa")!.kvm, true);
-  assert.deepEqual(h.virt.containerSpecOf("lab", "p-aaa"), { kvm: true, hugepagesBytes: 0 });
+  assert.deepEqual(h.virt.containerSpecOf("lab", "p-aaa"), { kvm: true, hugepagesBytes: 0, privileged: false });
   assert.equal(notAllowed.virt.containerSpecOf("lab", "p-aaa"), null, "許していない実行場所のコンテナには付けない（付いていれば外す）");
 });
 
@@ -411,8 +437,8 @@ test("hugepages：合計（閉じた Project も）を sysctl と sysctl.d に�
   h.vm.containers.set("banto-p-aaa", runningContainer());
   h.vm.containers.set("banto-p-bbb", { status: "Stopped", config: {}, devices: {} });
   h.vm.containers.set("banto-p-ccc", runningContainer());
-  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 100 });
-  h.settings.set("p-ccc", { kvm: false, modules: [], hugepages: 999 });
+  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 100, privileged: false });
+  h.settings.set("p-ccc", { kvm: false, modules: [], hugepages: 999, privileged: false });
   const result = await h.virt.setHugepages("p-aaa", 412);
   assert.equal(result.total, 512);
   assert.equal(result.allocated, 512);
@@ -423,7 +449,7 @@ test("hugepages：合計（閉じた Project も）を sysctl と sysctl.d に�
   ]);
   assert.match(h.vm.files.get(HUGEPAGES_SYSCTL_FILE)!, /^vm\.nr_hugepages = 512$/m);
   assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.hugepages.2MB"], "824MiB");
-  assert.deepEqual(h.settings.get("p-aaa"), { kvm: false, modules: [], hugepages: 412 });
+  assert.deepEqual(h.settings.get("p-aaa"), { kvm: false, modules: [], hugepages: 412, privileged: false });
   // メモリの上限：16GiB − 512×2MiB（1GiB）− 残す 4GiB = 11GiB。動いているものだけ、ほかの実行場所には触らない
   assert.equal(h.vm.containers.get("banto-p-aaa")!.config["limits.memory"], "11264MiB");
   assert.equal(h.vm.containers.get("banto-p-bbb")!.config["limits.memory"], undefined, "止まっているコンテナ（次に用意するときに付く）");
@@ -449,7 +475,7 @@ test("hugepages：合計（閉じた Project も）を sysctl と sysctl.d に�
 test("hugepages：合計がサーバのメモリの半分を越える・使っているのに減らす・許していない・数がおかしい、は断って何も打たない", async () => {
   const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
   h.vm.containers.set("banto-p-aaa", runningContainer());
-  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 2048 });
+  h.settings.set("p-bbb", { kvm: false, modules: [], hugepages: 2048, privileged: false });
   // 16GiB の半分＝8GiB＝4096 個。閉じた Project の 2048 個と合わせて越える
   await assert.rejects(h.virt.setHugepages("p-aaa", 2049), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && /半分を越えます/.test(err.message));
   assert.deepEqual(h.vm.sudoCalls, []);
@@ -497,4 +523,87 @@ test("hugepages：使っているかは VM の側のコンテナの cgroup か�
   await assert.rejects(h.virt.setHugepages("p-aaa", 0), /lxc\.payload\.user-1001_banto-p-aaa\/hugetlb\.2MB\.current.*読めませんでした|読めませんでした（\/sys\/fs\/cgroup\/lxc\.payload\.user-1001_banto-p-aaa/);
   assert.deepEqual(h.vm.sudoCalls, []);
   assert.equal(h.settings.get("p-aaa")!.hugepages, 32);
+});
+
+const legacyContainer = () => ({ status: "Running", config: { "raw.idmap": "both 1001 1000" } as Record<string, string>, devices: {} as Record<string, Record<string, string>> });
+
+test("特権：打った名前が違えば・実行場所が許していなければ断り、何も打たない（名前は比べるだけ）", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", runningContainer());
+  for (const bad of ["実験 A", "", undefined, 1]) {
+    await assert.rejects(h.virt.setPrivileged("p-aaa", { enabled: true, confirmName: bad }), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 400);
+  }
+  const notAllowed = harness({ projects: LAB_PROJECTS });
+  await assert.rejects(notAllowed.virt.setPrivileged("p-aaa", { enabled: true, confirmName: "実験 A; rm -rf /" }), /許していません/);
+  assert.deepEqual([...h.vm.sudoCalls, ...notAllowed.vm.sudoCalls], []);
+  assert.deepEqual(h.vm.lifecycle, []);
+  assert.equal(h.settings.get("p-aaa"), undefined);
+});
+
+test("特権：最初の1つで区画に privilege=allow を足し、中の番号を先に U に付け替えてから止めて書いて起こす。2つ目では足さない。最後の1つを外すと unset", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  h.vm.containers.set("banto-p-aaa", legacyContainer());
+  h.vm.containers.set("banto-p-bbb", { status: "Stopped", config: { "user.banto.inside": "1001:1001", "raw.idmap": "both 1001 1001" }, devices: {} });
+  const first = await h.virt.setPrivileged("p-aaa", { enabled: true, confirmName: "実験 A; rm -rf /" });
+  assert.equal(first.privileged, true);
+  assert.deepEqual(h.vm.sudoCalls, [["incus", "project", "set", "user-1001", "restricted.containers.privilege=allow"]]);
+  // 止める → （付け替え：起こす → 中の root → 止める）→ 特権を書く → 起こす
+  assert.deepEqual(h.vm.lifecycle, [
+    "stop banto-p-aaa",
+    "start banto-p-aaa",
+    "migrate banto-p-aaa",
+    "stop banto-p-aaa",
+    "set security.privileged=true",
+    "start banto-p-aaa",
+  ]);
+  const a = h.vm.containers.get("banto-p-aaa")!;
+  assert.equal(a.config["security.privileged"], "true");
+  assert.equal(a.config["user.banto.inside"], "1001:1001");
+  assert.equal(a.config["raw.idmap"], "both 1001 1001");
+  assert.equal(a.status, "Running");
+  assert.equal(h.settings.get("p-aaa")!.privileged, true);
+
+  // 2つ目（閉じた Project・止まっている）：区画には足さない。止まっているものは起こさない
+  h.vm.sudoCalls.length = 0;
+  h.vm.lifecycle.length = 0;
+  await h.virt.setPrivileged("p-bbb", { enabled: true, confirmName: "../閉じた" });
+  assert.deepEqual(h.vm.sudoCalls, []);
+  assert.deepEqual(h.vm.lifecycle, ["set security.privileged=true"]);
+
+  // ほかの Project の様子に出る（自分は除く）。ほかの実行場所の Project には出ない
+  assert.deepEqual(h.virt.describe("p-aaa").privilegedOnServer, [{ id: "p-bbb", name: "../閉じた" }]);
+  assert.deepEqual(h.virt.describe("p-bbb").privilegedOnServer, [{ id: "p-aaa", name: "実験 A; rm -rf /" }]);
+  assert.deepEqual(h.virt.describe("p-ccc").privilegedOnServer, []);
+  assert.equal(h.virt.describe("p-aaa").privileged, true);
+  assert.deepEqual(h.virt.containerSpecOf("lab", "p-aaa"), { kvm: false, hugepagesBytes: 0, privileged: true });
+
+  // 「許す」をオフにする断りに特権も入る
+  await assert.rejects(h.virt.setAllowed("lab", false), /「実験 A; rm -rf \/」（特権コンテナ）/);
+
+  // 1つ外しても、閉じた Project が特権のままなら区画は戻さない
+  h.vm.sudoCalls.length = 0;
+  h.vm.lifecycle.length = 0;
+  await h.virt.setPrivileged("p-aaa", { enabled: false, confirmName: "実験 A; rm -rf /" });
+  assert.deepEqual(h.vm.lifecycle, ["stop banto-p-aaa", "unset security.privileged", "start banto-p-aaa"]);
+  assert.deepEqual(h.vm.sudoCalls, []);
+  assert.equal(h.vm.project["restricted.containers.privilege"], "allow");
+  // 最後の1つ：区画の privilege を unset
+  await h.virt.setPrivileged("p-bbb", { enabled: false, confirmName: "../閉じた" });
+  assert.deepEqual(h.vm.sudoCalls, [["incus", "project", "unset", "user-1001", "restricted.containers.privilege"]]);
+  assert.equal(h.vm.project["restricted.containers.privilege"], undefined);
+  assert.equal(h.settings.get("p-bbb")!.privileged, false);
+
+  // 識別子は Project id だけ（打った名前はどのコマンドにも入らない）
+  assert.doesNotMatch(JSON.stringify([...h.vm.sudoCalls, ...h.vm.incusCalls]), /実験|閉じた|rm -rf/);
+});
+
+test("特権：コンテナがまだ無ければ設定と区画だけ（次に作るとき用意で揃える）。許すのをやめた実行場所でも外すのは通す", async () => {
+  const h = harness({ runtime: { virtualization: true }, projects: LAB_PROJECTS });
+  await h.virt.setPrivileged("p-aaa", { enabled: true, confirmName: "実験 A; rm -rf /" });
+  assert.equal(h.settings.get("p-aaa")!.privileged, true);
+  assert.deepEqual(h.vm.lifecycle, []);
+  h.runtimes.set("lab", { ...h.runtimes.get("lab")!, virtualization: false });
+  await h.virt.setPrivileged("p-aaa", { enabled: false, confirmName: "実験 A; rm -rf /" });
+  assert.equal(h.settings.get("p-aaa")!.privileged, false);
+  assert.equal(h.virt.containerSpecOf("lab", "p-aaa"), null);
 });
