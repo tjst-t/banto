@@ -11822,7 +11822,7 @@
       "number": 491,
       "kind": "task",
       "title": "Shell：入口の画面「バックグラウンドのコマンド」（一覧・出力を追う・止める）と画面用の道具",
-      "status": "ready",
+      "status": "backlog",
       "parent": "shell-service",
       "dependsOn": [],
       "milestone": null,
@@ -11834,7 +11834,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:30:06.580Z",
-      "updatedAt": "2026-10-20T20:30:06.580Z",
+      "updatedAt": "2026-10-20T20:30:55.656Z",
       "closedAt": null,
       "extra": {}
     },
