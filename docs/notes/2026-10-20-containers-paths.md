@@ -41,6 +41,16 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
 - **置き場を作る台本に `umask 077` を足した**（machine の転送も通る）。`/run/user/<U>/banto/` の途中のフォルダを `mkdir -p` が
   既定の権限（0755）で作るため。machine の `<置き場>/s` は 0700 の置き場の中なので、振る舞いは変わらない
 
+- **流れの口の VM の待ち受けは `<置き場>/s/st-<印>`**（仕様の条件4の例は `/run/user/<U>/banto/p-<Project>/…`）。`bind=host` の装置は
+  VM の側で**待ち受ける**ので、コンテナを起こすたびに Incus がそのパスで待ち受け直す。`/run/user/<U>` は tmpfs で、VM を起こし直すと
+  `p-<id>/` は無く（linger で作られるのは `/run/user/<U>` まで、それも Incus がコンテナを起こすより後のことがある）、forkproxy は親の
+  フォルダを作らないので、コンテナが起きられなくなる。`<置き場>/s` は VM のディスクにあり、コンテナには見せていない（見せるのは
+  `<置き場>/code` と `<置き場>/modules/<接続名>` だけ）ので、条件4（VM だけの場所）を満たす。トンネル・鍵の窓口は VM の側では
+  **繋ぐ**だけ（繋ぐときにあればよい）なので `/run/user/<U>/…` のまま
+  - 流れの口の装置は外さない（待ち受けの置き場がいつもある。繋ぎ直すたびに同じものを `ensureProxy` で確かめる）
+  - VM には symlink を置かない（machine は `<置き場>/s/st-<印>` に Module の待ち受けへの symlink を置き、sshd が辿る）——containers
+    で sshd（VM のユーザー）に中の置き場を辿らせない
+
 ## 試験
 
 - `packages/container/src/project-container.test.ts`：`proxyDevice` の番号の向き（`instance`/`host`、TCP と UNIX の待ち受け、中の
@@ -49,6 +59,7 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
 - `packages/core/src/runtime/remote-containers.test.ts`（偽の ssh・偽の incus）：住所が中の 127.0.0.1:29839、`banto-relay` の形と
   Project ごとのトンネル（`-O forward -R <p-<id>/t.sock>:127.0.0.1:<その Project の待ち受け>`、2つの Project で別の待ち受け、置き場は
   0700）、鍵の窓口の転送と装置（p2 のコンテナには出ない・置き場の外は断る）、host の窓口が消えたら転送と装置を外し、トンネルは
-  外さない、手放して繋ぎ直すと前の窓口の装置を外しトンネルを同じパスに張り直す
+  外さない、手放して繋ぎ直すと前の窓口の装置を外しトンネルを同じパスに張り直す。流れの口の装置の形（`bind=host`、繋ぐのは中の
+  番号・VM の待ち受けは VM のユーザー）と `-L` の先、VM に symlink を置かない、2回目は張り直さない
 - 直しを外すと落ちることを、組んだ JS を書き換えて確かめた（窓口を閉じても装置を外さない・前の接続の装置を外さない・見張りが
   トンネルも外す、の3つ。最後のは最初の試験では通ってしまったので、トンネルを外していないことを見る行を足した）

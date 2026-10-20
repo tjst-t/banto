@@ -972,13 +972,11 @@ export class RemoteSshRuntime {
    */
   async streamSocketPath(projectId: string, connName: string, remoteSocketRel: string): Promise<string> {
     const conn = this.liveConnection(projectId, "流れの口を繋げ");
-    // containers：転送の先（Module の置き場の中）は中の AI が symlink に差し替えられる——VM のユーザー（incus グループ）として
-    // 辿ると Incus の管理用の口にも届く。中から繋ぐ形（proxy device）は #369 で作る。それまでは繋がない
-    if (conn.runtime.mode === "containers") {
-      throw new Error(`別のサーバ「${conn.runtimeName}」（containers）の流れの口はまだ繋げません（中から繋ぐ形を作っていません）`);
-    }
     const name = `st-${createHash("sha256").update(connName).digest("hex").slice(0, 10)}`;
     const hostPath = this.shortSocketPath(name);
+    // containers：転送の先（Module の置き場の中）は中の AI が symlink に差し替えられる——VM のユーザー（incus グループ）として
+    // 辿ると Incus の管理用の口にも届く。VM では proxy device が待ち受け、中で繋ぐ（`streamIntoContainer`）
+    if (conn.runtime.mode === "containers") return this.streamIntoContainer(conn, name, hostPath, `${conn.base}/modules/${connName}/${remoteSocketRel}`);
     // 向こうの待ち受けは Module の置き場（長い）。短い symlink を置いて、sshd にはそちらへ繋がせる
     await this.addForward(conn, {
       purpose: "stream",
@@ -987,6 +985,23 @@ export class RemoteSshRuntime {
       remotePath: `${conn.base}/s/${name}`,
       remoteTarget: `${conn.base}/modules/${connName}/${remoteSocketRel}`,
     });
+    return hostPath;
+  }
+
+  /**
+   * **containers の流れの口**（v4-security.md §1「道」——**向きが逆**。Module が中で待ち受け、host が繋ぐ。Fable の B3）：VM の
+   * `<置き場>/s/st-<印>`（コンテナに見せていない）で proxy device（`bind=host`）が待ち受け、中の Module の待ち受けへ繋ぐ。`connect` は
+   * **中で辿られる**ので、中の AI が置き場を symlink に差し替えても、繋がるのは中の権限で届く先だけ。host はそこへ `-L` で転送する。
+   * 待ち受けの置き場は VM のディスクにあるので、VM やコンテナを起こし直しても装置はそのまま待ち受けられる——外さない
+   */
+  private async streamIntoContainer(conn: Connection, name: string, hostPath: string, insidePath: string): Promise<string> {
+    const container = await conn.container?.ready;
+    const ids = conn.containerIds;
+    if (!container || !ids) throw new Error(`別のサーバ「${conn.runtimeName}」のコンテナがまだ用意できていません（流れの口を繋げません）`);
+    const vmPath = `${conn.base}/s/${name}`;
+    // 先に置き場を作って転送を張り（`-L` は繋ぐたびに先を引く）、それから VM の待ち受け（装置）を張る
+    await this.addForward(conn, { purpose: "stream", dir: "L", hostPath, remotePath: vmPath });
+    await conn.incus!.ensureProxy(container, `banto-${name}`, { bind: "host", listen: `unix:${vmPath}`, connect: `unix:${insidePath}` }, ids);
     return hostPath;
   }
 

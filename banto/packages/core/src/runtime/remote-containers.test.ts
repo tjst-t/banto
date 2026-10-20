@@ -198,7 +198,8 @@ exec sh -c "$1"
 `;
 
 test("containers の Project：コンテナの中で起こし、置き場はその Project のコンテナにだけ見せ、見せたフォルダには中から書き、symlink を辿らない", async () => {
-  const root = mkdtempSync(join(tmpdir(), "banto-remote-ct-"));
+  // VM の置き場の中のソケット（流れの口の待ち受け）がパスの上限に収まるよう、短い /tmp の下に作る（TMPDIR は長いことがある）
+  const root = mkdtempSync("/tmp/banto-remote-ct-");
   const bin = join(root, "bin");
   const dataDir = join(root, "data");
   const base = join(root, "vm", "base");
@@ -394,8 +395,30 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.ok(controls().some((l) => l.includes(`-O cancel -R ${agentVm}:${agentHost} `)), "窓口が閉じたのに転送を外していない");
     // 外すのは鍵の窓口だけ——トンネル（host の側は TCP の待ち受けでファイルが無い）を、窓口が消えたものとして外さない
     assert.ok(!controls().some((l) => l.includes(`-O cancel -R ${tunnelA}:`)), "鍵の窓口の見張りがトンネルを外した");
-    // 流れの口はまだ繋がない
-    await assert.rejects(rt.streamSocketPath("p1", "shell-p1", "s/stream.sock"), /まだ繋げません/);
+    // 流れの口（向きが逆）：VM の置き場の s（コンテナに見せていない）で装置が待ち受け、中の Module の待ち受けへ繋ぐ。
+    // host はそこへ -L。VM のユーザーは中の置き場の symlink を辿らない（向こうに symlink を置かない）
+    writeFileSync(controlLog, "");
+    const streamHost = await rt.streamSocketPath("p1", "shell-p1", "s/stream.sock");
+    const st = /\/(st-[0-9a-f]{10})$/.exec(streamHost)![1]!;
+    assert.ok(controls().some((l) => l.includes(`-O forward -L ${streamHost}:${base}/s/${st} `)), `流れの口を転送していない：${controls().join("\n")}`);
+    assert.deepEqual(state().instances["banto-p1"]!.devices[`banto-${st}`], {
+      type: "proxy",
+      bind: "host",
+      listen: `unix:${base}/s/${st}`,
+      connect: `unix:${base}/modules/shell-p1/s/stream.sock`,
+      // 繋ぐのは中——中の番号に落とす（宣言から）。VM の待ち受けは VM のユーザー（sshd）のもの
+      "security.uid": String(INSIDE_IDS.uid),
+      "security.gid": String(INSIDE_IDS.gid),
+      uid: String(uid),
+      gid: String(gid),
+      mode: "0600",
+    });
+    assert.ok(!existsSync(`${base}/s/${st}`), "VM に流れの口の symlink を置いた（VM のユーザーが中の置き場を辿る）");
+    assert.equal(statSync(`${base}/s`).mode & 0o777, 0o700);
+    // 2回目は同じもの（張り直さない）
+    writeFileSync(incusLog, "");
+    assert.equal(await rt.streamSocketPath("p1", "shell-p1", "s/stream.sock"), streamHost);
+    assert.ok(!readFileSync(incusLog, "utf8").includes("PATCH"), "同じ流れの口の装置を張り直した");
 
     // 取ってきた配布物：読み取り専用で見せ、**版が変わってフォルダごと差し替えたら付け直す**（付けたままだと中は消された
     // 古いフォルダを見続け、空に見える）。変わっていなければ付け直さない
