@@ -11372,7 +11372,7 @@
       "number": 473,
       "kind": "task",
       "title": "空いた会話のキャッシュ：冷める前の要約（idle compaction）と画面",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "idle-cache",
       "dependsOn": [
         "idle-cache-keepalive"
@@ -11386,7 +11386,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T14:17:56.576Z",
-      "updatedAt": "2026-10-20T20:07:52.177Z",
+      "updatedAt": "2026-10-20T20:08:03.179Z",
       "closedAt": null,
       "extra": {}
     },
