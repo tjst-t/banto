@@ -407,11 +407,19 @@ export class BranchSync {
 
     // **送り先とアカウントが決まったあとの失敗は、すべて引き受けて断る**（`handled: true`。レビュー M2）——投げると頼む側
     // （Backlog）は自分の git（SSH 鍵の道）で送り直そうとし、上限を越えた・壊れた bundle を別の道で通すことになる
+    // 返事は頼んだ側（向こうの Project の中——AI が読める）へ行くので、**この機械の置き場のパスを伏せる**（レビュー L4）
+    let result: BranchSyncResult;
     try {
-      return await this.carry(direction, branch, { git, at, where, url, by, login: account.login }, callId);
+      result = await this.carry(direction, branch, { git, at, where, url, by, login: account.login }, callId);
     } catch (err) {
-      return { handled: true, ok: false, message: `${direction} できませんでした：${(err as Error).message}` };
+      result = { handled: true, ok: false, message: `${direction} できませんでした：${(err as Error).message}` };
     }
+    return "message" in result ? { ...result, message: this.hidePaths(result.message) } : result;
+  }
+
+  /** この Module の置き場のパス（使い捨ての置き場を含む）を伏せる */
+  private hidePaths(text: string): string {
+    return text.split(this.deps.dataDir).join("（Repositories の置き場）");
   }
 
   /** 使い捨ての bare リポジトリを通して運ぶ（送り先とアカウントは決まったもの） */
