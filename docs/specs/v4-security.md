@@ -972,18 +972,19 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   上限（既定はその VM で計算、上書きは実行場所ごとに持つ）・仕事の組（banto-work.slice）・linger の印（#295）・名前と札
   （`user.banto.owner`）・アドレスは覚えず毎回 Incus に聞く（`containerAddress`）も同じ。直すところ：`hostAddress` は VM の
   インターフェースを読む（host のを読まない、F4）・`ensureNode` は VM のコードの置き場の `bin/node` を使う・uid は VM の
-  ユーザーの uid（`userInfo()` でない）で、中のユーザーとの対応（`raw.idmap uid U 1000`）を準備で揃える（F3）
+  ユーザーの uid（`userInfo()` でない）で、中のユーザーとの対応（`raw.idmap uid U U`。#457 で 1000 から改めた）を準備で揃える（F3）
 - **置き場（pool）**（Fable の B1）：`ProjectContainers` は `--storage banto` を決め打ちしている。VM では準備の sudo で
   `incus storage create banto <btrfs>`（この機械の install.sh と同じ選び方——`/` が btrfs ならその中、でなければ大きさを決めた
   ファイル）を作り、区画に使わせる。**subuid・subgid を書き換えたら Incus の起こし直しが要るか、動いているコンテナが残るかを測る**
-  （B2）。`raw.idmap` は `uid U 1000` と `gid G 1000` の両方
+  （B2）。`raw.idmap` は `uid U U` と `gid G G` の両方（#457）
 - **実装済み（2026-10-20、Backlog #368）**——コンテナの作り・置き場と見せ方・Module の起こし方・中から書く（道は #369）：
   - `ProjectContainers` は Incus を接続の上の `incus`（VM の SSH ユーザー）で呼ぶ（`runtime/remote-containers.ts` の `vmIncus`）。
     装置の書き換えを1本ずつ通す決まりのため、`ProjectContainers` は Project の接続ごとに1つ。中から host に届くアドレスの読み手は
     VM の `ip -o -4 addr show`（host のを読まない）。上限は VM の `nproc`・`MemTotal` から既定の決め方で計算する（**実行場所ごとの
     上書きはまだ無い**）。node は VM のコードの置き場の `bin/node` を `incus file push` で中の `/usr/local/bin/node` に置く
     （版が同じなら置き直さない）
-  - 中の番号は 1000（`ProjectContainerSpec.inside`）。中にその番号のユーザーが無ければ `banto`（home は `/home/banto`）を作る
+  - 中の番号は VM の SSH ユーザーと同じ U/G（`ProjectContainerSpec.inside`。#457——#368 では 1000 だった。前のコンテナの扱いは
+    下の「`containers` で仮想化の実験」の 3.）。中にその番号のユーザーが無ければ `banto`（home は `/home/banto`）を作る
     ——土台のイメージ（`images:ubuntu`）には既定のユーザーが居らず、起動役が使うユーザーの systemd が立たない。仕事の組・linger の
     印は中の番号のユーザーで
   - NIC は土台（profile）の NIC を同じ名前の装置で上書きして `security.port_isolation=true`。前から動いているコンテナに付けるときは
@@ -998,8 +999,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     ——フォルダごと差し替える（rename）ので、付けたままだと中は消した古いフォルダを見る。配布物の置き場は同じ VM の全 Project で
     共有なので、**用意するたびに VM のフォルダとコンテナの中から見たフォルダの inode を比べ、違えば装置を外して付け直す**
     （どの Project の接続が置き換えたかに依らない）。Shell の
-    ホームは `incus exec <c> --user 1000` の中で、前に送ったものを中の node で消してから tar を展開する（条件3）
-  - 起こし方：`ssh <VM> exec incus exec <c> --user 1000 --group 1000 --env USER/LOGNAME/HOME -- <版>/bin/node <版>/banto-launcher.mjs <単位>`。
+    ホームは `incus exec <c> --user <中の番号>` の中で、前に送ったものを中の node で消してから tar を展開する（条件3）
+  - 起こし方：`ssh <VM> exec incus exec <c> --user <中の番号> --group <中の番号> --env USER/LOGNAME/HOME -- <版>/bin/node <版>/banto-launcher.mjs <単位>`。
     単位を止めるのも中のユーザーの systemd。中では sudo できるので `BANTO_NO_SUDO` は渡さない
   - 根の重なり：作る・再開するとき、VM で home と置き場の根を正規化して、根が home そのもの・home の外・置き場の根・同じ実行場所の
     ほかの Project の根（閉じたもの・移してくる途中のものも）と重なれば 409（`code: "root-overlap"`）
@@ -1110,7 +1111,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458・#459・#460。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#457・#458・#459・#460。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
 **同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
@@ -1223,8 +1224,21 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
    `groupmod -g G` にし、中の持ち主が 1000 のもの（home・Docker の置き場・Module の置き場等）を U に付け替えてから起こす。付け替えは
    コンテナの札（`user.banto.inside`）に済みと記録し、2回目はしない。途中で失敗したら起こさずに理由を残し、次に止めたときにやり直す
    （付け替えは何度流しても同じ結果になる形で）。付け替える前のコンテナで「特権コンテナにする」を押されたら、先に付け替えると言って
-   から止める。**U に決まったので、上の小節「別のサーバの中のコンテナ」の実装済み（#368）の「中の番号は 1000」と起こし方の
-   `--user 1000 --group 1000` は、実装のコミットで直す**（同じファイルに2つの決まりを残さない）
+   から止める。
+   - **実装済み（2026-10-20、Backlog #457）**：新しいコンテナは `raw.idmap` を `uid U U`・`gid G G`、中のユーザー `banto` も U/G で作り、
+     札 `user.banto.inside=<U>:<G>` を付ける。中の番号は**コンテナごと**に決まる（`effectiveInsideIds`）——札が無く `raw.idmap` が
+     前の対応（U→1000）のままのものは「まだ付け替えていない」として、付け替えるまで 1000 で起こす・展開する・道の装置を付ける。
+     札が無く対応だけ替わったものは「途中」として、用意するときに付け替え直してから起こす。起こし方・Shell のホーム・単位を止める・
+     道の装置（`proxyDevice`）・仕事の組はその番号に従う。移す前に動いているものを数える台本は札から番号を読む（`insideCommandByLabel`）。
+     付け替えは眠らせる・閉じる・移す（`release({ stop })` → `stopAndMigrate`）と、止まっている前のコンテナを用意するとき（起こす前）。
+     順（`ProjectContainers.migrateInsideNow`）：止める → 止まったまま `incus file` で前の番号のユーザーの linger の印を消す（起こしても
+     中のユーザーの systemd・Service が前の番号で立たない）→ `raw.idmap` を替え、道の装置の中の側の番号（`bind=host` の
+     `security.uid/gid`、`bind=instance` の UNIX の待ち受けの `uid/gid`）を替える → 起こし、中の root の台本で前の番号のプロセスを
+     止め `usermod -u`・`groupmod -g`、`find / -xdev` で持ち主・グループが前の番号のものを付け替え、linger の印を戻す → 札を書いて
+     止める。新しい番号をほかのユーザー・グループが使っていれば止める。途中で落ちたら止めて投げ（札は書かない）、次に止めるとき・
+     用意するときにやり直す。外も中も 1000 なら札だけ。**まだ**：本物の Incus で測っていない（`incus file` が止まったコンテナで
+     使えること・idmap を替えたときの rootfs の付け直し）、Docker の置き場が別のファイルシステムなら `-xdev` で付け替えない、
+     ほかの理由で止めるとき（根・NIC の隔てを替える）には付け替えない
 
 4. **警告**（画面の文言は実装で決める。V3・V7）：
    - 実行場所の「仮想化の実験を許す」：「このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project

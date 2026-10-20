@@ -48,12 +48,17 @@ export interface ProjectContainerSpec {
   uid: number;
   gid: number;
   /**
-   * **中の番号**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「コンテナの作りと上限」）。
-   * 無ければ `uid`/`gid` と同じ番号（この機械）。別のサーバでは VM の SSH ユーザーの uid/gid（`uid`/`gid`）を中の 1000 に
-   * 対応させる（`raw.idmap` の `uid U 1000`・`gid G 1000`）。中にその番号のユーザーが無ければ作る（launcher がユーザーの
-   * systemd を使う）
+   * **中の番号**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化の実験」の 3.）。
+   * 無ければ `uid`/`gid` と同じ番号（この機械）。別のサーバでは VM の SSH ユーザーの uid/gid（U/G）をそのまま中の U/G に対応させる
+   * （`raw.idmap` の `uid U U`・`gid G G`）。中にその番号のユーザーが無ければ作る（launcher がユーザーの systemd を使う）
    */
   inside?: { uid: number; gid: number };
+  /**
+   * **前の中の番号**（追加・2026-10-20、#457）。これがあれば、札 `user.banto.inside` の無い既存のコンテナはこの番号で作ったもの
+   * （#368 の 1000）として扱い、`inside` へは次に止めるときに付け替える（`stop` の `migrateInside`）。付け替えの途中で止まった
+   * コンテナは、用意するときに付け替え直してから起こす
+   */
+  legacyInside?: { uid: number; gid: number };
   /**
    * **NIC に `security.port_isolation=true` を付ける**（追加・2026-10-20、別のサーバの `containers`。同じブリッジの
    * コンテナどうしが直に届かないようにする——v4-security.md §1「コンテナどうしのネットワーク」）
@@ -381,6 +386,96 @@ export function idmapFor(uid: number, gid: number, inside: { uid: number; gid: n
   return uid === gid && inside.uid === inside.gid ? `both ${uid} ${inside.uid}` : `uid ${uid} ${inside.uid}\ngid ${gid} ${inside.gid}`;
 }
 
+/** 中の番号の札（済み——`<uid>:<gid>`） */
+export const INSIDE_LABEL = "user.banto.inside";
+export function insideLabel(ids: { uid: number; gid: number }): string {
+  return `${ids.uid}:${ids.gid}`;
+}
+
+/**
+ * **そのコンテナの中の番号の様子**（#457）：`current` は札が今の番号、`legacy` は札が無く前の番号の対応のまま（まだ付け替えて
+ * いない）、`partial` はそれ以外（付け替えの途中で止まった——対応だけ替わった等）
+ */
+export function insideStatus(
+  config: Record<string, string>,
+  spec: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">,
+): "current" | "legacy" | "partial" {
+  const target = insideIds(spec);
+  if (config[INSIDE_LABEL] === insideLabel(target)) return "current";
+  if (spec.legacyInside && config[INSIDE_LABEL] === undefined && sameIdmap(config["raw.idmap"], idmapFor(spec.uid, spec.gid, spec.legacyInside))) return "legacy";
+  return "partial";
+}
+
+/** `raw.idmap` が同じ対応か（`both U X` と `uid U X`＋`gid U X` を同じとみなす。行の順・空白に依らない） */
+export function sameIdmap(a: string | undefined, b: string): boolean {
+  const norm = (text: string) =>
+    text
+      .split("\n")
+      .map((l) => l.trim().split(/\s+/))
+      .filter((f) => f.length === 3)
+      .flatMap(([kind, host, inside]) => (kind === "both" ? [`uid ${host} ${inside}`, `gid ${host} ${inside}`] : [`${kind} ${host} ${inside}`]))
+      .sort()
+      .join("\n");
+  return a !== undefined && norm(a) === norm(b);
+}
+
+/** いまそのコンテナで使う中の番号（まだ付け替えていなければ前の番号） */
+export function effectiveInsideIds(
+  config: Record<string, string> | undefined,
+  spec: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">,
+): { uid: number; gid: number } {
+  return config && spec.legacyInside && insideStatus(config, spec) === "legacy" ? spec.legacyInside : insideIds(spec);
+}
+
+/** `/etc/passwd` の中で、その uid のユーザーの名前 */
+export function usersWithUid(passwd: string, uid: number): string[] {
+  return passwd
+    .split("\n")
+    .map((l) => l.split(":"))
+    .filter((f) => f.length >= 3 && f[2] === String(uid) && /^[a-z_][a-z0-9_-]*\$?$/.test(f[0]!))
+    .map((f) => f[0]!);
+}
+
+/**
+ * 道の装置の、中の側の番号を前の番号から新しい番号へ（`proxyDevice` と同じ向きの決まり：`instance` は待ち受けの持ち主
+ * `uid`/`gid`、`host` は繋ぐ番号 `security.uid/gid`）。変えるものが無ければ undefined
+ */
+export function moveProxyInsideIds(d: Device, from: { uid: number; gid: number }, to: { uid: number; gid: number }): Device | undefined {
+  const [uidKey, gidKey] = d["bind"] === "host" ? ["security.uid", "security.gid"] : ["uid", "gid"];
+  const next = { ...d };
+  if (next[uidKey!] === String(from.uid)) next[uidKey!] = String(to.uid);
+  if (next[gidKey!] === String(from.gid)) next[gidKey!] = String(to.gid);
+  return sameDevice(d, next) ? undefined : next;
+}
+
+/**
+ * **中の root で番号を付け替える台本**（引数：前の uid・gid、新しい uid・gid）。何度流しても同じ：済んだユーザー・グループは
+ * 触らず、持ち主の付け替えは前の番号のものだけ。新しい番号をほかのユーザー・グループが使っていれば止める（3）。`find -xdev` で
+ * `/` と同じファイルシステムだけ——見せたフォルダ（VM の U の持ち物）は新しい対応ですでに U に見える
+ */
+export const INSIDE_MIGRATION_SCRIPT = [
+  "set -eu",
+  'old=$1 oldg=$2 new=$3 newg=$4',
+  'name=$(getent passwd "$old" | cut -d: -f1 || true)',
+  '[ -n "$name" ] || name=$(getent passwd "$new" | cut -d: -f1 || true)',
+  'holder=$(getent passwd "$new" | cut -d: -f1 || true)',
+  'if [ -n "$holder" ] && [ "$holder" != "$name" ]; then echo "中の番号 $new はユーザー $holder が使っています" >&2; exit 3; fi',
+  'gname=$(getent group "$oldg" | cut -d: -f1 || true)',
+  'gholder=$(getent group "$newg" | cut -d: -f1 || true)',
+  'if [ -n "$gname" ] && [ -n "$gholder" ] && [ "$gholder" != "$gname" ]; then echo "中のグループの番号 $newg はグループ $gholder が使っています" >&2; exit 3; fi',
+  'if [ -n "$name" ] && [ "$(id -u "$name")" = "$old" ]; then',
+  '  systemctl stop "user@$old.service" >/dev/null 2>&1 || true',
+  '  pkill -KILL -u "$old" >/dev/null 2>&1 || true',
+  '  usermod -u "$new" "$name"',
+  "fi",
+  'if [ -n "$gname" ]; then groupmod -g "$newg" "$gname"; fi',
+  'if [ -n "$name" ] && [ "$(id -g "$name")" != "$newg" ]; then usermod -g "$newg" "$name"; fi',
+  'find / -xdev -uid "$old" -exec chown -h "$new" {} +',
+  'find / -xdev -gid "$oldg" -exec chgrp -h "$newg" {} +',
+  'if [ -n "$name" ]; then mkdir -p /var/lib/systemd/linger && touch "/var/lib/systemd/linger/$name"; fi',
+  "",
+].join("\n");
+
 /** 中で使う番号（`inside` が無ければ外と同じ） */
 export function insideIds(spec: Pick<ProjectContainerSpec, "uid" | "gid" | "inside">): { uid: number; gid: number } {
   return spec.inside ?? { uid: spec.uid, gid: spec.gid };
@@ -498,14 +593,28 @@ export class ProjectContainers {
    * 無ければ作り、設定を宣言に合わせ、起こして中でコマンドが通るまで待つ。**道具を入れた状態は残す**
    * （作り直さない）。返すのはコンテナの名前
    */
-  async ensure(spec: ProjectContainerSpec): Promise<{ name: string; created: boolean }> {
+  async ensure(spec: ProjectContainerSpec): Promise<{ name: string; created: boolean; inside: { uid: number; gid: number } }> {
     const name = containerNameFor(spec.projectId);
     return this.serialize(name, () => this.ensureNow(name, spec));
   }
 
-  private async ensureNow(name: string, spec: ProjectContainerSpec): Promise<{ name: string; created: boolean }> {
+  private async ensureNow(name: string, given: ProjectContainerSpec): Promise<{ name: string; created: boolean; inside: { uid: number; gid: number } }> {
     let st = await this.state(name);
     const created = st === undefined;
+    let spec = given;
+    if (st && given.legacyInside) {
+      const status = insideStatus(st.config, given);
+      // 付け替えの途中で止まった——Module・Service を起こす前に付け替え直す（何度流しても同じ）。まだ付け替えていないコンテナが
+      // 止まっている（眠らせた・止めたまま banto が新しくなった）なら、起こす前のここが「止まっている間」——付け替えてから起こす
+      if (status === "partial" || (status === "legacy" && st.status !== "Running")) {
+        await this.migrateInsideNow(name, given);
+        st = await this.state(name);
+        if (!st) throw new Error(`コンテナ ${name} が付け替えのあとに見つかりません`);
+      } else if (status === "legacy") {
+        // まだ付け替えていない（次に止めるときに）——それまでは前の番号のまま使う
+        spec = { ...given, inside: given.legacyInside };
+      }
+    }
     if (!st) {
       await this.incus(
         [
@@ -514,6 +623,7 @@ export class ProjectContainers {
           "-c", `security.nesting=${spec.nesting}`,
           "-c", `user.banto.project=${spec.projectId}`,
           "-c", `user.banto.owner=${spec.owner}`,
+          ...(spec.legacyInside ? ["-c", `${INSIDE_LABEL}=${insideLabel(insideIds(spec))}`] : []),
         ],
         `コンテナ ${name} を作るの`,
       );
@@ -595,7 +705,64 @@ export class ProjectContainers {
     await this.ensureNode(name, spec);
     if (spec.inside) await this.ensureUser(name, spec.inside);
     await this.ensureWorkSlices(name, insideIds(spec).uid, spec.limits);
-    return { name, created };
+    return { name, created, inside: insideIds(spec) };
+  }
+
+  /**
+   * **中の番号を付け替える**（#457、v4-security.md §1「`containers` で仮想化の実験」の 3.「既存のコンテナ」）。札が済みなら何もしない。
+   * 順（中のユーザーの systemd・Service が前の番号で動き出さないように）：
+   *   1. 止める
+   *   2. 止まったまま、前の番号のユーザーの linger の印を消す（`incus file`——起こしても中のユーザーの systemd が立たない）
+   *   3. `raw.idmap` を新しい対応にし、道の装置の中の側の番号を新しい番号にする
+   *   4. 起こし、中の root で：前の番号のプロセスを止め、`usermod -u`・`groupmod -g`、持ち主が前の番号のもの（`/` から同じ
+   *      ファイルシステムの中——home・Docker の置き場等）を付け替え、linger の印を戻す
+   *   5. 札 `user.banto.inside` に済みを書き、止める（呼び手が止めたかったもの）
+   * 途中で失敗したら止めて投げる（札は書かない——次に止めるとき・用意するときにやり直す。どの段も何度流しても同じ）
+   */
+  private async migrateInsideNow(name: string, spec: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">): Promise<void> {
+    const target = insideIds(spec);
+    const legacy = spec.legacyInside!;
+    let st = await this.state(name);
+    if (!st || insideStatus(st.config, spec) === "current") return;
+    await this.stop(name);
+    const label = `${INSIDE_LABEL}=${insideLabel(target)}`;
+    if (target.uid === legacy.uid && target.gid === legacy.gid) {
+      await this.incus(["config", "set", name, label], "中の番号の札を付けるの");
+      return;
+    }
+    try {
+      // 2. 前の番号のユーザーの linger の印を消す（止まったコンテナでも incus file は使える）
+      const passwd = await this.incus(["file", "pull", `${name}/etc/passwd`, "-"], "中のユーザーの一覧を読むの");
+      for (const user of usersWithUid(passwd, legacy.uid)) {
+        const r = await this.run(["file", "delete", `${name}/var/lib/systemd/linger/${user}`], { timeoutMs: this.timeouts.operationMs });
+        if (r.code !== 0 && !/not found|no such file/i.test(r.stderr)) throw new Error(`linger の印を消すのに失敗しました：${r.stderr.trim()}`);
+      }
+      // 3. 番号の対応と道の装置
+      await this.incus(["config", "set", name, `raw.idmap=${idmapFor(spec.uid, spec.gid, target)}`], "中の番号の対応を替えるの");
+      st = (await this.state(name))!;
+      const proxies: Record<string, Device> = {};
+      for (const [device, d] of Object.entries(st.devices)) {
+        if (d["type"] !== "proxy") continue;
+        const moved = moveProxyInsideIds(d, legacy, target);
+        if (moved) proxies[device] = moved;
+      }
+      for (const device of Object.keys(proxies)) await this.incus(["config", "device", "remove", name, device], `道（${device}）を付け直すの`);
+      await this.addDevices(name, proxies, "道の中の番号を付け替えるの");
+      // 4. 起こして中の root で付け替える
+      await this.incus(["start", name], `コンテナ ${name} を起こすの`);
+      await this.waitReady(name);
+      await this.incus(
+        ["exec", name, "--", "/bin/sh", "-c", INSIDE_MIGRATION_SCRIPT, "banto-inside", ...[legacy.uid, legacy.gid, target.uid, target.gid].map(String)],
+        "中のユーザーの番号と持ち主を付け替えるの",
+        this.timeouts.operationMs * 5,
+      );
+      // 5. 済みを書いて止める
+      await this.incus(["config", "set", name, label], "中の番号の札を付けるの");
+      await this.stop(name);
+    } catch (err) {
+      await this.stop(name).catch(() => undefined);
+      throw new Error(`コンテナ ${name} の中の番号を ${legacy.uid} から ${target.uid} に付け替えられませんでした（Module・Service は起こさず、次に止めるとき・用意するときにやり直します）：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
@@ -916,6 +1083,17 @@ export class ProjectContainers {
     const r = await this.run(["exec", name, "--", "cat", "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/pids.events"], { timeoutMs: 10_000 });
     if (r.code !== 0) return undefined;
     return parseResourceEvents(r.stdout);
+  }
+
+  /**
+   * 止める。`migrateInside` を渡すと、止めたあと（もともと止まっていても）中の番号がまだ前のものなら1回だけ付け替える
+   * （`migrateInsideNow`。付け替えたあとも止まったまま）
+   */
+  async stopAndMigrate(name: string, migrateInside: Pick<ProjectContainerSpec, "uid" | "gid" | "inside" | "legacyInside">): Promise<void> {
+    await this.serialize(name, async () => {
+      await this.stop(name);
+      await this.migrateInsideNow(name, migrateInside);
+    });
   }
 
   /** 穏やかに止め、上限を過ぎたら強制停止する。無い・止まっているなら何もしない */

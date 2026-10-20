@@ -47,7 +47,7 @@ import type { ProjectLocation, ProjectState, RuntimeMoveCreated } from "../proje
 import { RemoteRuntimeError, remoteNameOf, type RemoteRuntimes } from "./remote-runtimes.js";
 import { HOST_CONTAINER_RUNTIME } from "./remote-store.js";
 import { remoteOwnerDirName } from "./remote-ssh.js";
-import { INSIDE_BUS_ENV, insideCommand } from "./remote-containers.js";
+import { insideCommandByLabel } from "./remote-containers.js";
 import { containerNameFor } from "@banto/container";
 import { remotePathExpr, shq, sshArgs, sshEnv, SshCommandError, type SshResult } from "./ssh.js";
 
@@ -223,7 +223,8 @@ export function runningInContainerScript(container: string): string {
   return [
     `st=$(incus list ${shq(`^${container}$`)} -c s -f csv 2>/dev/null) || exit 5`,
     `[ "$st" = RUNNING ] || exit 0`,
-    `${insideCommand(container, ["/bin/sh", "-c", RUNNING_SCRIPT], INSIDE_BUS_ENV)}`,
+    // 中の番号は札から（まだ付け替えていないコンテナは前の番号）。バスは台本が `id -u` から組む
+    insideCommandByLabel(container, ["/bin/sh", "-c", RUNNING_SCRIPT]),
     "",
   ].join("\n");
 }

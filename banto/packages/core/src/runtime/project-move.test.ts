@@ -138,18 +138,24 @@ test("containers：動いているものはコンテナの中のユーザーで�
     // 偽の incus：list はコンテナの様子（$STATE）、exec は中で流す台本を受けて、Service が1つ動いているように答える
     writeFileSync(
       join(dir, "incus"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$1" in\n  list) [ "$STATE" = fail ] && exit 1; [ -n "$STATE" ] && echo "$STATE"; exit 0 ;;\n  exec) echo unit=banto-web.service; echo unit=banto-mod-shell-x.service; echo tmux=main ;;\nesac\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$1" in\n  list) [ "$STATE" = fail ] && exit 1; [ -n "$STATE" ] && echo "$STATE"; exit 0 ;;\n  config) echo "$INSIDE"; exit 0 ;;\n  exec) echo unit=banto-web.service; echo unit=banto-mod-shell-x.service; echo tmux=main ;;\nesac\n`,
     );
     chmodSync(join(dir, "incus"), 0o755);
-    const run = (state: string) =>
-      spawnSync("sh", ["-c", runningInContainerScript("banto-p1")], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, STATE: state } });
+    const run = (state: string, inside = "1001:1002") =>
+      spawnSync("sh", ["-c", runningInContainerScript("banto-p1")], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, STATE: state, INSIDE: inside } });
     const up = run("RUNNING");
     assert.equal(up.status, 0, up.stderr);
     assert.deepEqual(parseRunning(up.stdout).map((r) => r.kind), ["service", "terminal"]);
     const calls = readFileSync(log, "utf8").trim().split("\n");
     assert.match(calls[0]!, /^list \^banto-p1\$ -c s -f csv$/);
-    // 中のユーザーで（VM の SSH ユーザーではない）、中のユーザーの systemd のバスを渡して
-    assert.match(calls[1]!, /^exec banto-p1 --user \d+ --group \d+ .*--env XDG_RUNTIME_DIR=\/run\/user\/\d+ .*-- \/bin\/sh -c /);
+    // 中のユーザーで（VM の SSH ユーザーではない）。番号はコンテナの札から（中のユーザーの systemd のバスは台本が id -u から組む）
+    assert.match(calls[1]!, /^config get banto-p1 user\.banto\.inside$/);
+    assert.match(calls[2]!, /^exec banto-p1 --user 1001 --group 1002 .*-- \/bin\/sh -c /);
+    // 札の無い（まだ付け替えていない）コンテナは前の番号 1000
+    writeFileSync(log, "");
+    assert.equal(run("RUNNING", "").status, 0);
+    assert.match(readFileSync(log, "utf8").trim().split("\n")[2]!, /^exec banto-p1 --user 1000 --group 1000 /);
+    for (const bad of ["a;b:1", "1:", ":2", "1:2:3"]) assert.notEqual(run("RUNNING", bad).status, 0, `形の違う札（${bad}）で流した`);
     writeFileSync(log, "");
     for (const st of ["STOPPED", ""]) {
       const r = run(st);
