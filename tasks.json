@@ -11063,7 +11063,7 @@
       "number": 458,
       "kind": "task",
       "title": "実行場所の「仮想化の実験を許す」（区画に unix-char、前提の確かめに入れ子の KVM の表示）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "containers-virtualization",
       "dependsOn": [],
       "milestone": null,
@@ -11071,7 +11071,7 @@
       "labels": [],
       "body": "仕様の 1.。containers の実行場所の設定（既定オフ、人の画面の口だけ）。オンで core が sudo -n incus project set user-<uid> restricted.devices.unix-char=allow。オフは全 Project（閉じたもの・眠っているものも）が3つの設定を外してからで unset、modules-load.d・sysctl.d の banto のファイルも消す。繋ぐたびの確かめで崩れていれば言う（sudo しない）。前提の確かめに kvm_intel/kvm_amd の nested を表示。lowlevel は開けない。\n\n実装（2026-10-20、GitHub の main）：記録の virtualization、PUT /api/runtimes/<名前>/virtualization {allowed}、オフにできなければ 409 virtualization-in-use、準備の項目 incus-unix-char、前提の一覧 nested-kvm（表示だけ）。本体 runtime/containers-virt.ts。単体試験は通過。残り：ベアメタルでの確かめ（完了条件）。繋ぐたびの確かめは区画の unix-char だけ（崩れていても断らず注意）。",
       "doneWhen": "単体試験で足す・unset・断る条件を確かめ、ベアメタルで押すと区画に unix-char が入り、オフで既定の YAML と差分が無くなる。",
-      "resolution": null,
+      "resolution": "2026-10-20/21 ベアメタルで banto を通して確かめた：「仮想化（KVM）を許す」で区画に unix-char が入り（privilege・lowlevel は開かない）、許した実行場所の全コンテナに limits.hugepages.2MB=0 が書かれた。オフで unset するのは単体試験だけ（本物は使い続けるため未確認、別の項目に積んだ）。",
       "refs": [],
       "threads": [
         {
@@ -11080,8 +11080,8 @@
         }
       ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T10:37:57.279Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:03:08.986Z",
+      "closedAt": "2026-10-20T20:03:08.986Z",
       "extra": {}
     },
     {
