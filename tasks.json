@@ -11529,6 +11529,27 @@
       "updatedAt": "2026-10-20T15:47:18.012Z",
       "closedAt": "2026-10-20T15:47:18.012Z",
       "extra": {}
+    },
+    {
+      "id": "e2e-patrol-spec-spec",
+      "number": 479,
+      "kind": "bug",
+      "title": "E2E patrol.spec がほかの spec と並べて流すとたまに落ちる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [],
+      "body": "2026-10-20、#423（ストーリー #419）を main に入れる前の確かめ（054e8e14 の版）。patrol・read-only-runs・repositories-github-read・mission・inbox-page を4並列で流すと patrol.spec:53 が1回落ちた（44秒、失敗の中身はログに残らなかった）。単独で2回・同じ組で1回流し直すと通った（4回中1回）。原因は未確定——負荷で待ちの上限に当たった可能性。",
+      "doneWhen": "原因を突き止めて直し、patrol.spec を同じ組で並べて10回流して落ちない",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T15:49:34.599Z",
+      "updatedAt": "2026-10-20T15:49:34.599Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
