@@ -1731,10 +1731,12 @@ access token は会話の履歴・claude.ai のコネクタ（人の Gmail・Dri
 
 **実測（2026-10-20、Agent SDK 0.3.281、`tmp/claude-paths-probe/probe3.mjs`・`log3-runner.jsonl`、本物の上流）**：
 - **セッションの印**：会話の本体（SDK）は `/v1/messages` の要求ごとに見出し `x-claude-code-session-id: <セッションの id>` を
-  付ける。resume・`/compact` のあとも同じ id、別の会話（新しい `query()`）は別の id。**コンテナの中の claude-agent-acp と
-  Shell から打つ `claude -p` は測れていない**（`claude -p` はこの試しで返事が来なかった）——同じ SDK・CLI なので付くはずだが、
-  実装の最初に確かめる。あわせて、**core が `sessionId` を渡した新しい会話・`forkSession`＋`sessionId` の Fork で、見出しの id が
-  渡した値と一致するか**も確かめる（一致しなければ Runner の要求が Project ごとの鍵に落ち、Fork の継承と契約の種類の env が効かない）
+  付ける。resume・`/compact` のあとも同じ id、別の会話（新しい `query()`）は別の id。**Shell から打つ `claude -p`
+  （CLI 2.1.281）も付け**、`--continue` は同じ id・別の `-p` は別の id。**コンテナの中の claude-agent-acp（同梱の SDK 0.3.280）も
+  付け**、`session/new` ごとに別の id・同じセッションの2回目の prompt は同じ id で、ACP の `sessionId` と一致する。**core が
+  `sessionId` を渡した新しい会話と、`forkSession`＋`sessionId` の Fork は、見出しの id が渡した値と一致する**（Fork は最初の
+  要求から親ではなく自分の id。その後の resume も同じ id）。本文の `metadata.user_id.session_id` もどれも同じ値。
+  → 決めたこと 2.・3. はこの形のまま成り立つ（2026-10-20、#416、`tmp/claude-paths-probe/probe4.mjs`・偽の API で見出しを記録）
 - **キャッシュの寿命は 1 時間**：要求の `cache_control` は `{"type":"ephemeral","ttl":"1h"}`、返事の
   `usage.cache_creation.ephemeral_1h_input_tokens` に書かれる。`/compact` の要求だけ5分（`ttl` 無し）
 - **キャッシュは同じアカウントの別のセッションでも効く**：新しいセッションの最初の要求が、前のセッションが書いた前置き
