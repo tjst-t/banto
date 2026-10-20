@@ -1020,10 +1020,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     nftables を足し banto の host からだけに絞るのは任意、後で）
 - **コンテナどうしのネットワーク**（Fable の S5）：同じブリッジのコンテナどうしは直に届くので、**その VM の banto のコンテナは全部
   NIC に `security.port_isolation=true` を付ける**（制限された区画で付けられ、隔てたものどうしは届かないことを測った——上の4.）
-- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：区画の `restricted.devices.unix-char`（`/dev/kvm`）と特権の扱いを
-  開けるのは**人の画面からだけ**（admin の刻印、AI の tool からは変えられない。Fable の A4）。core が sudo を流すのは「登録のとき」と
-  「人がこれを押したとき」の2つだけ。区画はその VM の全 Project で共有する。開けた VM の Project は、ほかの Project から見て
-  root 相当になりうるので、その VM に置くかを人が決める。物理サーバを組むときに測って決める（未決）
+- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：下の「`containers` で仮想化の実験——/dev/kvm と特権」（決定・
+  2026-10-20）。開けるのは**人の画面からだけ**（admin の刻印、AI の tool からは変えられない。Fable の A4）
 - **畳んだとき**：接続を閉じても、コンテナと中の Service は動いたまま（この機械と同じ）。中継の口はトンネルのソケットが無いので
   「繋がらない」で返るだけ。準備は登録のときと、繋ぐたびに「何もしないことを確かめる」（Incus の更新・人の手の変更を拾う）
 - **他の仕組みとの関係**：移す（`runtimeUnavailableReason` の「1つに1つ」は `containers` では外す・動いているものはコンテナの中で
@@ -1035,6 +1033,122 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   AI のもの」は `machine` の話と明記する
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
+
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。未実装。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+
+**同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
+ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
+ある」。`machine`（サーバ丸ごと1 Project）なら今でもベアメタルと同じに使えるが、1台に1つしか置けない。
+
+**実測（2026-10-20、ベアメタル：Ubuntu 26.04・Intel・カーネル 7.0・Incus 7.5.1、SSH ユーザーの区画 `user-1001`。試したものは全部戻した）**：
+
+- incus-user が作る区画の既定は `nesting`・`disk`（home の下）・`gpu`・`proxy`・`idmap` を許し、**unix-char の装置・特権・低い層の設定
+  （`linux.kernel_modules`・`raw.lxc` 等）は断る**（それぞれ forbidden）
+- **特権無しで、区画に `restricted.devices.unix-char=allow` だけを足して `/dev/kvm`・`/dev/vhost-net` を見せると足りた**：中の qemu が
+  KVM で動く（init まで KVM 0.92 秒・KVM 無し 2.54 秒）、ブリッジ・tap・VXLAN・macvlan・veth を作れ VM の NIC が tap＋vhost-net で動く
+  （`/dev/net/tun` は既定で見える）、Docker（`security.nesting`）と containerlab が動きノードどうしが繋がる、Docker の `--privileged` の
+  中の qemu も KVM で動く（containerlab の VM のノード＝vrnetlab の形）
+- **特権無しで足りないもの**：カーネルモジュール（中に `/lib/modules` が無い）→区画の `restricted.containers.lowlevel=allow` と
+  コンテナの `linux.kernel_modules` で、起こすときにサーバが読み込む（仕様ではこの道は使わない——下の「形」の 1.）。hugepages（sysctl は効かず hugetlbfs のマウントも拒否）→サーバで
+  確保して hugetlbfs を home の下にマウントし、disk device で中の `/dev/hugepages` に見せると qemu の `-mem-path` で使えた
+- **特権にしても、この2つは中からはできない**（hugetlbfs のマウントだけ通る。hugepages の数・modprobe は変わらない）。今回の範囲では
+  特権でないと動かないものは見つからなかった
+
+**形**（Fable のレビュー（2026-10-20）V1〜V10 を反映）：
+
+1. **実行場所の「仮想化の実験を許す」**（`containers` の実行場所の設定。既定オフ）：人が押すと、core が `sudo -n` で区画に
+   `restricted.devices.unix-char=allow` を足す。`restricted.containers.privilege=allow` は、その実行場所で**最初に「特権コンテナにする」が
+   押されたときに**足し、特権の Project が無くなったら unset する。**`restricted.containers.lowlevel` は開けない**（V1）——開けると
+   `linux.kernel_modules` だけでなく `raw.lxc`（`lxc.mount.entry` で home の縛りを素通りしてサーバの任意の場所を見せられる）・
+   `raw.apparmor`・`raw.seccomp`・`raw.idmap`（uid 0 も）・`linux.sysctl.*` 等も通り、「コンテナの設定を書くのは core だけ」に加えて
+   区画が持っていた最後の守りを外すことになる。カーネルモジュールは下の 2. のとおりサーバで読む。
+   - core が sudo を流すのは「登録のとき」「人が確かめ直すとき」と「人がこれらを押したとき」だけ（上の決まりの範囲）
+   - オフにするのは、その実行場所の Project が**全部（閉じたもの・眠っているものも）**下の3つを外してから。残っていれば名指しして断る
+     （Incus も装置・特権を使うコンテナが残っていれば区画の set を断る）。戻すときは足した項目を **unset する**（incus-user が作った
+     既定の YAML と差分が無い状態。`privilege` の既定は `block` でなく未設定＝`unprivileged`。V8）
+   - 区画はその実行場所の全 Project で共有——許すかは実行場所の単位でしか決められない
+   - 繋ぐたびの確かめ（sudo しない）で見る項目：区画の `unix-char`・`privilege`、`/etc/modules-load.d/banto.conf` と読み込み、
+     hugepages の確保（下）。崩れていれば「確かめ直す」で整えると言う
+   - 前提の確かめに、入れ子の KVM（`/sys/module/kvm_intel/parameters/nested` か `kvm_amd`）を表示だけ足す——Proxmox を VM で立てて
+     その中で VM を作るには要る（V9）
+2. **Project ごとの3つの設定**（Project の設定「一般」の実行場所の下。その実行場所が許していなければ出さず、`containers` の Project
+   だけ。**3つとも既定はオフ**——「既定は特権無し＋/dev/kvm」は勧める順のことで、自動では入れない。V10。人だけが変えられる——AI の
+   tool も Module からの中継も無い。置き場は host 側の Project の設定（Project の根＝AI が書ける場所には置かない））。
+   識別子は Project id（`containerNameFor` と同じ）だけを使い、Project の名前や AI・Module 由来の文字列からパス・単位名・sudo の引数を
+   組まない。**core が足す装置の path は固定の2つ（`/dev/kvm`・`/dev/vhost-net`）で、設定に path は持たない**（区画の `unix-char=allow`
+   は `/dev/mem` を含む任意の path を許すため。V5）：
+   - **「/dev/kvm を見せる」**：unix-char で `/dev/kvm` と `/dev/vhost-net`（`mode=0666`。そのコンテナは丸ごとその Project のもの）。
+     カーネルモジュールは**人が押したときに core が `sudo -n modprobe <名前>` で読み、`/etc/modules-load.d/banto.conf` に書いて再起動
+     でも戻す**（V1。先に `vhost_net` を読むので `/dev/vhost-net` がサーバに無くて装置を足せない、が起きない——V9）。既定の組は
+     「サーバで読まれていなければ要るもの」に絞る：`vhost_net` は要る。tun・bridge・veth・vxlan・macvlan は実測では読ませずに作れた
+     ——**既定の組は実装の前に、まっさらなサーバで測って決める**。人は名前（`[a-z0-9_-]+`、`-` と `_` は同じ扱い）を足せる。読み込んだ
+     モジュールはサーバ全体に効き、外しても抜かない（同じサーバのほかの Project が使っているかもしれない）。
+     `/etc/modules-load.d/banto.conf` はその実行場所の全 Project（閉じたものも）の名前の和で、Project が名前を外す・閉じたまま設定を
+     消す・移すたびに書き直す（空になれば消す。`sysctl.d` の hugepages のファイルも同じ）。「仮想化を許す」をオフにしたら両方を消す
+     （読み込み済みのモジュール・確保済みの hugepages は抜かない——次の再起動で戻らなくなるだけ）。`br_netfilter` はサーバの
+     ブリッジ全部の通り方を変えるので既定に入れず、足すときに注意を出す。containerlab には Docker が要るので、オンにするとき
+     「中で Docker を使う」（`container.nesting`＝`security.nesting`）が切れていれば一緒に入れるか聞く。装置は動いているコンテナに
+     足せる（起こし直さない）。**特権コンテナにしても /dev/kvm は装置を足さないと見えない**（実測）——特権だけでは KVM は使えない
+   - **hugepages（2MiB の数、既定 0）**：Project ごとの上限は **hugetlb の cgroup（Incus の `limits.hugepages.2MB`。lowlevel は要らない）
+     で縛る**——hugetlbfs の `size=` はそのマウント経由の確保しか縛らず、`mmap(MAP_HUGETLB)` や qemu の `memory-backend-memfd,hugetlb=on`
+     はマウント無しでサーバ全体の確保から取れる（V2）。**仮想化を許した実行場所の全コンテナに書く**（設定の無い Project は 0、有る
+     Project は N×2MiB。許したあとに作る Project・移してくる Project も作るときに 0 を書く。オフにしたら外す）。サーバの `vm.nr_hugepages` は人が押したときに core が `sudo -n` でその実行場所の合計に揃え
+     （`/etc/sysctl.d/90-banto-hugepages.conf` にも書く）、合計がサーバのメモリの半分を越えるなら断る。中で使う道は、memfd で足りれば
+     マウントを置かない（qemu は `-object memory-backend-memfd,hugetlb=on`）。hugetlbfs が要るなら Project id のフォルダ
+     （`<home>/.banto-hugepages/<Project id>`、`uid=<U>,gid=<G>,mode=0770`、systemd の `.mount` 単位で再起動でも戻す）を disk device で
+     `/dev/hugepages` に見せる。**実装の前に測る**：区画で `limits.hugepages.2MB` が効く（越えた確保が断られる）か、memfd で足りるか。
+     運用（V6）：
+     - 使っている間（qemu が動いている）は外せない（umount が EBUSY）。0 に戻す・移す・オフにするとき、使っていれば「止めてから」と
+       断る
+     - `nr_hugepages` を下げても使用中の分は減らず、再起動のあとは断片化で揃わないことがある——確かめで「確保できたのは N 個」を出す
+     - 眠らせても外さない。**閉じるときは確かめの画面で「hugepages を N 個持っています——外す／持ったまま」を選ばせる**（既定は外す）。
+       外したあとも設定の N は残し、人が再開するときに確保し直す（人の操作なので sudo の決まりの範囲）。断片化で足りなければ、
+       確保できた数を言って「hugepages が足りません」で再開を止めずにコンテナを起こし、設定の画面に注意を出す
+     - hugepages はメモリの cgroup に数えないので、コンテナのメモリの上限の計算から、その実行場所で確保した合計を引く——合計が
+       変わると、同じ実行場所の動いている全 Project のメモリの上限を引き直す（sudo は要らない。変えた Project 以外の上限も動く）
+     - 2ソケットのサーバでは NUMA のノードに分けて確保される（1つの VM がノードの持ち分を越えると足りない。注記だけ）
+   - **「特権コンテナにする」（足りないときの逃げ道）**：`security.privileged=true`。起こし直しが要る（「止めて特権で起こし直します」）。
+     画面は強い警告を出し、Project 名を打たせる（下の「警告」）。上の2つで足りない実験が出たとき用
+3. **中の番号**（V4。未測定・実装の前に測る）：今のコンテナは `raw.idmap` で VM の SSH ユーザー U を中の 1000 に対応させ、見せたフォルダ
+   （Project の根・Module の置き場）は VM で U の持ち物。特権コンテナには idmap が無く、中の uid＝VM の uid になるので、**中の 1000 は
+   VM の 1000 で、U（例 1001）の持ち物に書けない**（U＝1000 のときだけ偶然揃う）。切り替えのたびに中の `usermod -u` で付け替えると、
+   Docker の overlay 層・Module の置き場・Shell のホームなど中の持ち物全部が要り、往復のたびに崩れる。**第一候補：`containers` の
+   Project は最初から中の番号を U にする**（`raw.idmap uid U U`・`gid G G`、`ProjectContainerSpec.inside` を U に）——特権への切り替えで
+   付け替えが要らず、hugetlbfs の `uid=U` とも揃う。測ること：制限された区画で `uid U U` を付けられるか、特権の往復で Incus が rootfs
+   を付け直す時間（実測で特権のコンテナを作るのが 300 秒を越えた——これの疑い）、中の Service・Module の置き場の持ち主が崩れないか。
+   **決めること**：#368 で `inside=1000` で作った既存のコンテナを U に移すか（移すなら止めている間に1回だけ付け替える）。
+   **U に決まったら、上の小節「別のサーバの中のコンテナ」の実装済み（#368）の「中の番号は 1000」と起こし方の `--user 1000 --group
+   1000` を同じコミットで直す**（同じファイルに2つの決まりを残さない）
+4. **警告**（画面の文言は実装で決める。V3・V7）：
+   - 実行場所の「仮想化の実験を許す」：「このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project
+     ごとに選びます」
+   - 「/dev/kvm を見せる」：「この Project の AI はサーバのカーネルの KVM と vhost-net を直に使います。同じサーバのほかの Project を
+     守るのは、カーネルのこの部分の堅さだけになります。読み込んだモジュールはサーバ全体に効きます」
+   - 「特権コンテナにする」：**「この Project の AI はこのサーバの root になれます。同じサーバの全 Project が動かす banto のコードと
+     土台のイメージを書き換えられ、ほかの Project のコンテナの中身（合言葉・Claude のログイン・環境変数）と鍵の窓口・トンネルの
+     ソケットにも届きます」**。押すたびに Project 名を打たせる。オンの Project の設定とサイドバーの行に印を出し、**同じ実行場所の
+     ほかの Project の設定にも「このサーバには特権の Project があります（名前）」と出す**（守られていないのはそちら）
+5. **AI からは変えられない**：設定は人の画面の口（admin の刻印）だけ。コンテナの設定を変えられるのは VM の SSH ユーザー（core）だけで、
+   特権無しのコンテナの中からは Incus の口に届かない（proxy device は `security.uid` つきで VM だけの場所に繋ぐ——上の条件4。
+   **特権無しのコンテナで実装の前に測る**）。区画で特権を許しても、特権のコンテナを作れるのは core だけ。**特権のコンテナには境界が
+   無い**（中の root は VM の root 相当で、Incus の口・VM の SSH ユーザーの sudo にも届きうる）——測っても保証にならないので測らず、
+   画面で言う（ユーザーが承知した弱まり）
+6. **sudo の形**（V5）：準備の項目と同じく、項目ごとの固定のコマンド（`sh -c` の台本は使わない、ファイルは `tee` に標準入力）で、
+   引数は core が検証した Project id・数・モジュール名だけ（上の「足りないものは banto が入れる」と同じ書き方）。sudoers を準備の
+   コマンドだけに絞る形（上の「VM は banto 専用」の勧め）にするなら、ここで足したコマンドも同じ一覧に入れる
+7. **ほかの仕組みとの関係**：
+   - 眠らせる：コンテナを止めるだけ。hugepages は持ったまま（上）
+   - 移す：移す先が `containers` で仮想化を許していなければ、3つの設定を外してから移すかを聞く。`machine`・この機械へは設定を外して
+     移す（`machine` は丸ごとその Project のもので、/dev/kvm はそのまま使える）。hugepages は元のサーバで外す（使っていれば断る）
+   - 閉じる：設定はそのまま残し、再開で戻す。hugepages は閉じる画面で選ぶ（上）
+   - この機械のコンテナ・`machine` には出さない（この機械は同居の決まりから、`machine` は要らない）
+8. **試験**：偽の `RunIncus`・偽の sudo で単体（区画の項目を足す・unset する、装置と `limits.hugepages.2MB` を書く、modprobe と
+   modules-load の書き方、中の番号、hugepages の合計・断る条件、識別子に名前を使わない）。本物はベアメタルで、KVM の VM・containerlab・
+   hugepages の上限・特権の切り替えを確かめる
+
+**実装の前に決める・測る**（V1〜V5・V8、Fable の区別）：既定のモジュールの組／`limits.hugepages.2MB` が区画で効くか・memfd で足りるか／
+中の番号を U にできるか・既存のコンテナを移すか・付け直しの時間／特権無しのコンテナから Incus の口に届かないこと。**決めずに残して
+よい**：警告の文言、1GiB の hugepages、NUMA の扱い。
 
 #### Project を別の実行場所へ移す（決定・2026-10-11、ユーザー。Fable のレビュー（2026-10-11）を受けて改めた。本体は実装・2026-10-11、Backlog `runtime-move-core`。画面は `runtime-move-ui`）
 
