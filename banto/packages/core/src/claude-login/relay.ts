@@ -26,9 +26,10 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform, type TransformCallback } from "node:stream";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
-import { HOST_ACCOUNT_ID, usageFromUsageApi, type ClaudeAccountStore } from "./accounts.js";
+import { freshUsage, HOST_ACCOUNT_ID, usageFromUsageApi, type AccountUsage, type ClaudeAccountStore } from "./accounts.js";
+import { CacheKeepAlive, usageFromJson, type CacheUsage, type MarginCheck, type WarmOutcome, type WarmRequest } from "./keep-alive.js";
 import { blockedBy, chooseAccount, chooseBalanced, earliestRecovery, type Blocked, type Choice } from "./select.js";
 
 const UPSTREAM = "https://api.anthropic.com";
@@ -64,6 +65,16 @@ export const CLAUDE_LOGIN_ENABLED_KEY = "claudeLogin.enabled";
  * 送り込みまで触れる広さを持つ——コンテナに要るのは推論だけなので、他は断る
  */
 const ALLOWED_PATH = /^\/v1\/messages(\/count_tokens)?(\?|$)/;
+/** 推論の要求（温め直しの候補になるもの。`count_tokens` は除く） */
+const MESSAGES_PATH = /^\/v1\/messages(\?|$)/;
+/** 温め直しは固定のアカウントの使用率が閾値よりこれだけ下のときだけ（温め直しで閾値を越えさせない、§3.1「上限」の (a)） */
+const KEEP_ALIVE_MARGIN = 0.15;
+/** 率の引き算の丸めの誤差（0.95 - 0.15 は 0.8 より小さくなる） */
+const RATE_EPSILON = 1e-9;
+/** 温め直し1回の待ちの上限 */
+const KEEP_ALIVE_TIMEOUT_MS = 120_000;
+/** 応答の usage を読むために見る量の上限（stream の `message_start` は頭に来る。stream でない応答は全体） */
+const USAGE_SNIFF_LIMIT = 4 * 1024 * 1024;
 /** 上限の見出し（`allowed`・`allowed_warning`・`rejected`）。429 でこれが rejected なら、並びの次へ送り直す */
 const RATELIMIT_STATUS_HEADER = "anthropic-ratelimit-unified-status";
 /** 全部越えのカードを閉じに行くのは、一番早いリセットの少しあと */
@@ -274,6 +285,13 @@ export interface ClaudeLoginRelayDeps {
   usageWaitMs?: number;
   /** 中継が取り直すか（既定はする。切れば今までどおり読むだけ） */
   refreshEnabled?: boolean;
+  /**
+   * **空いた会話の温め直しを送る前に、まだ温めてよいか**（host が持つ。§3.1「止める」）。ターンが走っていない・閉じていない・
+   * 眠っていない・スイッチがオン・モデル／effort／Module の集合／resume-point が覚えたときと同じ。渡されなければ確かめない
+   */
+  keepAliveWarmable?(threadId: string, fingerprint: string): boolean;
+  /** 温め直しの時刻の1分（E2E だけが縮める） */
+  keepAliveMinuteMs?: number;
   now?: () => Date;
 }
 
@@ -316,10 +334,23 @@ export class ClaudeLoginRelay {
   /** アカウントごとの、走っている読み直し（同時に来た選びは同じものを待つ） */
   private readonly usageReads = new Map<string, Promise<void>>();
 
+  /**
+   * **空いた会話の温め直し**（§3.1「温め直し（中継）」）。本体の要求の usage を見て候補を覚え、host がターンの始まり・終わりを
+   * 知らせる（`turnStarted`・`turnEnded`）
+   */
+  readonly keepAlive: CacheKeepAlive;
+
   constructor(private readonly deps: ClaudeLoginRelayDeps) {
     this.upstream = deps.upstream ?? UPSTREAM;
     this.now = deps.now ?? (() => new Date());
     this.secrets = new Map(Object.entries(loadSecrets(deps.secretsPath)));
+    this.keepAlive = new CacheKeepAlive({
+      send: (req) => this.sendWarm(req),
+      margin: (accountId) => this.warmMargin(accountId),
+      ...(deps.keepAliveWarmable ? { stillWarmable: (threadId, fp) => deps.keepAliveWarmable!(threadId, fp) } : {}),
+      now: () => this.now().getTime(),
+      ...(deps.keepAliveMinuteMs !== undefined ? { minuteMs: deps.keepAliveMinuteMs } : {}),
+    });
   }
 
   /**
@@ -666,6 +697,62 @@ export class ClaudeLoginRelay {
   close(): void {
     for (const t of this.recoveryTimers.values()) clearTimeout(t);
     this.recoveryTimers.clear();
+    this.keepAlive.close();
+  }
+
+  /**
+   * **温め直しを1回送る**（§3.1「送り直さない」）。覚えたアカウントへだけ、取り直しが要れば取り直して1回。429・401・5xx・
+   * 通信の失敗のどれでも送り直さず、固定を移さず、切り替えの記録の種にもしない。使用率は台帳に覚える（次の選びが古い値に
+   * ならないように）。通ったら固定の寿命を延ばす（「上流へ送った」に数える）
+   */
+  private async sendWarm(req: WarmRequest): Promise<WarmOutcome> {
+    const fresh = await this.refresherFor(req.accountId).ensureFresh();
+    if (!fresh.accessToken) return { kind: "failed", reason: fresh.kind === "failed" ? fresh.reason : "トークンがありません" };
+    let res: Response;
+    try {
+      res = await fetch(`${this.upstream}${req.path}`, {
+        method: "POST",
+        // 長さは fetch が本文から付け直す。Thread の印は覚えた見出しに入っていない（上流へ付けない）
+        headers: { ...req.headers, authorization: `Bearer ${fresh.accessToken}` },
+        body: req.body,
+        signal: AbortSignal.timeout(KEEP_ALIVE_TIMEOUT_MS),
+      } as RequestInit);
+    } catch (err) {
+      return { kind: "failed", reason: `上流に届きませんでした（${err instanceof Error ? err.message : String(err)}）` };
+    }
+    this.deps.accounts.recordUsage(req.accountId, res.headers);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { kind: "failed", reason: `上流が ${res.status} を返しました` };
+    }
+    let usage: CacheUsage | undefined;
+    try {
+      usage = usageFromJson(((await res.json()) as { usage?: unknown }).usage);
+    } catch {
+      usage = undefined;
+    }
+    if (!usage) return { kind: "failed", reason: "応答の usage が読めません" };
+    const pin = this.livePin(req.key);
+    if (pin && pin.accountId === req.accountId) pin.lastAt = this.now().getTime();
+    return { kind: "ok", usage, utilization: utilizationText(this.deps.accounts.usageOf(req.accountId), this.now()) };
+  }
+
+  /**
+   * **余白**（§3.1「上限」の (a)）：固定のアカウントの5時間・週の使用率が、それぞれの閾値より 15 ポイント以上下で、上限で
+   * 断られていない。分からない窓（読んでいない・リセットを過ぎた）は余白がある扱い（`select.ts` と同じ——使えば見出しで分かる）
+   */
+  private warmMargin(accountId: string): MarginCheck {
+    const u = this.deps.accounts.usageOf(accountId);
+    const fresh = u ? freshUsage(u, this.now()) : undefined;
+    const th = this.deps.accounts.thresholds();
+    if (fresh?.status === "rejected") return { ok: false, reason: "上限で断られています" };
+    if (fresh?.fiveHour && fresh.fiveHour.utilization > th.fiveHour - KEEP_ALIVE_MARGIN + RATE_EPSILON) {
+      return { ok: false, reason: `5時間 ${Math.round(fresh.fiveHour.utilization * 100)}%` };
+    }
+    if (fresh?.sevenDay && fresh.sevenDay.utilization > th.sevenDay - KEEP_ALIVE_MARGIN + RATE_EPSILON) {
+      return { ok: false, reason: `週 ${Math.round(fresh.sevenDay.utilization * 100)}%` };
+    }
+    return { ok: true };
   }
 
   /**
@@ -785,7 +872,8 @@ export class ClaudeLoginRelay {
     /** 本文を持てた（または本文が無い）——401 の試し直し・429 の送り直しができる */
     const resendable = !hasBody || body.buffered !== undefined;
     // 上流へ送る時刻が、固定の寿命の基準
-    if (pinned) pinned.pin.lastAt = this.now().getTime();
+    const startedAt = this.now().getTime();
+    if (pinned) pinned.pin.lastAt = startedAt;
     /** 送り直しの次の候補：使い方に従う（均すなら残りから余裕の比の小さい順） */
     const nextCandidate = (tried: ReadonlySet<string>) => (balance ? this.chooseBalanced(order, tried) : this.choose(projectId, tried));
     const send = (bearer: string) =>
@@ -864,8 +952,28 @@ export class ClaudeLoginRelay {
     // たびに並びの全部へ送り直して、要求が倍々になるのを防ぐ）。本文を持てず送り直さなかったときは付けない
     if (exhausted && upstreamRes.status === 429) headers["x-should-retry"] = "false";
     res.writeHead(upstreamRes.status, headers);
-    if (upstreamRes.body) Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream).pipe(res);
-    else res.end();
+    // **本体の推論の要求は、温め直しのために usage を読む**（§3.1「覚えるもの」）。Thread の分かる要求だけ
+    const observe =
+      caller.kind === "runner" && threadId && MESSAGES_PATH.test(path)
+        ? (usage: CacheUsage | undefined) =>
+            this.keepAlive.observe({
+              projectId,
+              threadId,
+              key,
+              sessionId: typeof sessionHeader === "string" && sessionHeader ? sessionHeader : undefined,
+              path,
+              accountId,
+              startedAt,
+              ...(usage ? { usage } : {}),
+              ...(body.buffered !== undefined ? { body: body.buffered, headers: forwardedHeaders(req) } : {}),
+            })
+        : undefined;
+    if (observe && (!upstreamRes.ok || !upstreamRes.body)) observe(undefined);
+    if (upstreamRes.body) {
+      const piped = Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream);
+      if (observe && upstreamRes.ok) piped.pipe(new UsageTap((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), observe)).pipe(res);
+      else piped.pipe(res);
+    } else res.end();
   }
 
   /**
@@ -1121,4 +1229,81 @@ function forwardedHeaders(req: IncomingMessage): Record<string, string> {
     out[k] = Array.isArray(v) ? v.join(", ") : v;
   }
   return out;
+}
+
+/** 台帳の使用率をログの1行に（率だけ。分からない窓は「?」） */
+function utilizationText(usage: AccountUsage | undefined, now: Date): string {
+  const fresh = usage ? freshUsage(usage, now) : undefined;
+  const pct = (w: { utilization: number } | undefined) => (w ? `${Math.round(w.utilization * 100)}%` : "?");
+  return `5h=${pct(fresh?.fiveHour)} 7d=${pct(fresh?.sevenDay)}`;
+}
+
+/**
+ * **流しながら応答の usage を読む**（中身は変えずにそのまま通す）。stream なら最初の `message_start` の `message.usage`、
+ * stream でなければ全体の `usage`。見る量には上限があり、読めなければ usage 無しで1回だけ知らせる
+ */
+class UsageTap extends Transform {
+  private text = "";
+  private done = false;
+
+  constructor(
+    private readonly sse: boolean,
+    private readonly report: (usage: CacheUsage | undefined) => void,
+  ) {
+    super();
+  }
+
+  override _transform(chunk: Buffer, _enc: BufferEncoding, cb: TransformCallback): void {
+    if (!this.done) {
+      this.text += chunk.toString("utf8");
+      if (this.sse) this.scanEvents();
+      if (!this.done && this.text.length > USAGE_SNIFF_LIMIT) this.finish(undefined);
+    }
+    cb(null, chunk);
+  }
+
+  override _flush(cb: TransformCallback): void {
+    if (!this.done) {
+      if (this.sse) this.finish(undefined);
+      else {
+        let usage: CacheUsage | undefined;
+        try {
+          usage = usageFromJson((JSON.parse(this.text) as { usage?: unknown }).usage);
+        } catch {
+          usage = undefined;
+        }
+        this.finish(usage);
+      }
+    }
+    cb();
+  }
+
+  /** 揃った行から `message_start` を探す（最初の出来事なので、見つからないまま別の出来事が来たら諦める） */
+  private scanEvents(): void {
+    for (;;) {
+      const nl = this.text.indexOf("\n");
+      if (nl === -1) return;
+      const line = this.text.slice(0, nl).trim();
+      this.text = this.text.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      let data: { type?: string; message?: { usage?: unknown } };
+      try {
+        data = JSON.parse(line.slice("data:".length)) as typeof data;
+      } catch {
+        continue;
+      }
+      if (data.type === "message_start") return this.finish(usageFromJson(data.message?.usage));
+      if (data.type !== "ping") return this.finish(undefined);
+    }
+  }
+
+  private finish(usage: CacheUsage | undefined): void {
+    this.done = true;
+    this.text = "";
+    try {
+      this.report(usage);
+    } catch (err) {
+      console.warn("[claude-login] 温め直しの候補を覚えられませんでした:", err);
+    }
+  }
 }

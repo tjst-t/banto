@@ -13,6 +13,8 @@
 //     `/api/oauth/profile` でそのトークンのメールアドレスを返す
 //   - **使用率の読み直し**（§2 の 7.）：`/api/oauth/usage` で、そのトークンの `setLimit` の値を本物の形（率は 0〜100、
 //     使っていない窓は `resets_at: null`）で返す
+//   - **キャッシュに当たった大きな会話のふり**（アーキ仕様 §3.1「温め直し」）：見出し `x-e2e-cache-read-tokens` があれば、usage の
+//     `cache_read_input_tokens` をその値にする（中継が覚えた見出しを温め直しにも付けるので、温め直しも当たる）
 import { createServer, type Server } from "node:http";
 
 export interface ApiRequest {
@@ -48,8 +50,11 @@ export interface FakeAnthropic {
   url: string;
   requests: ApiRequest[];
   seen: string[];
-  /** `/v1/messages` に来た要求の、トークン（Bearer の後ろ）と返した状態（会話でない要求も・断ったものも） */
-  replies: Array<{ token: string; status: number; path: string; session: string | null }>;
+  /**
+   * `/v1/messages` に来た要求の、トークン（Bearer の後ろ）と返した状態（会話でない要求も・断ったものも）。`maxTokens`・`stream`・
+   * `threadHeader` は本文と見出しのまま（温め直しは max_tokens 0・stream 無し・Thread の印無し）。`at` は受けた時刻（ミリ秒）
+   */
+  replies: Array<{ token: string; status: number; path: string; session: string | null; maxTokens?: number; stream?: boolean; threadHeader: string | null; at: number }>;
   /** そのトークンの使用率を決める（undefined で見出しを付けない） */
   setLimit: (token: string, limit: FakeLimit | undefined) => void;
   /** そのコードを交換すると、そのトークン・メールアドレスのアカウントになる */
@@ -86,7 +91,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
-      let body: { model?: string; stream?: boolean; messages?: Array<{ role: string; content: unknown }>; grant_type?: string; code?: string } = {};
+      let body: { model?: string; stream?: boolean; max_tokens?: number; messages?: Array<{ role: string; content: unknown }>; grant_type?: string; code?: string } = {};
       try {
         body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as typeof body;
       } catch {
@@ -129,15 +134,26 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
         return;
       }
       const rateHeaders = limit ? limitHeaders(limit) : {};
+      const threadHeaderRaw = req.headers["x-banto-thread-id"];
+      const reply = (status: number) => ({
+        token,
+        status,
+        path,
+        session,
+        ...(body.max_tokens !== undefined ? { maxTokens: body.max_tokens } : {}),
+        ...(body.stream !== undefined ? { stream: body.stream } : {}),
+        threadHeader: typeof threadHeaderRaw === "string" ? threadHeaderRaw : null,
+        at: Date.now(),
+      });
       if (path.startsWith("/v1/messages") && limit?.rejected) {
-        replies.push({ token, status: 429, path, session });
+        replies.push(reply(429));
         res
           .writeHead(429, { "content-type": "application/json", ...rateHeaders })
           .end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "fake: usage limit reached" } }));
         return;
       }
       const forced = req.headers["x-e2e-upstream-status"];
-      if (path.startsWith("/v1/messages")) replies.push({ token, status: Number(forced ?? 200), path, session });
+      if (path.startsWith("/v1/messages")) replies.push(reply(Number(forced ?? 200)));
       if (path.startsWith("/v1/messages") && (forced !== undefined || !Array.isArray(body.messages))) {
         res.writeHead(Number(forced ?? 200), { "content-type": "application/json", ...rateHeaders }).end(JSON.stringify({ fakeUpstream: true, path, auth }));
         return;
@@ -158,7 +174,8 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       const said = /合言葉は ([a-z]+-\d+)/.exec(lastUser)?.[1];
       const text = said ? `覚えました：${said}` : `ack(${messages.length})`;
       const id = `msg_fake_${n}`;
-      const usage = { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+      const cacheRead = Number(req.headers["x-e2e-cache-read-tokens"] ?? 0);
+      const usage = { input_tokens: 100, output_tokens: body.max_tokens === 0 ? 0 : 10, cache_creation_input_tokens: 0, cache_read_input_tokens: cacheRead };
       if (!body.stream) {
         res.writeHead(200, { "content-type": "application/json", ...rateHeaders }).end(
           JSON.stringify({ id, type: "message", role: "assistant", model: body.model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage }),
