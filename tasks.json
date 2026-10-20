@@ -10379,7 +10379,7 @@
       "number": 434,
       "kind": "task",
       "title": "Windows の実機で Job Object の起動役と名前付きパイプを実測する（§9 の3・4）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-0-measure",
       "dependsOn": [],
       "milestone": null,
@@ -10391,7 +10391,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T08:56:56.683Z",
+      "updatedAt": "2026-10-20T08:57:54.338Z",
       "closedAt": null,
       "extra": {}
     },
