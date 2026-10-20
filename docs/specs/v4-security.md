@@ -602,9 +602,17 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
      起こし直さず、注意「ユーザーの systemd が古いグループのままです。この実行場所の Project を全部閉じてから確かめ直してください」
    - 以降は前からの準備（区画の proxy・idmap と subuid／subgid・置き場 `banto`・linger）
 5. **入れないもの**（今どおり打つコマンドを見せて断る・注意する）：CPU の種類と libc、ログインしたときに何か出す（人の
-   `~/.bashrc` 等——banto は人の設定ファイルを書き換えない。この2つが断られていれば、ほかの項目も入れない）、Docker（「中で Docker を
-   使う」Project だけが要り、`docker` グループは実質 root——要る Project で人が入れる）、置き場を作るディスクの空きが足りない、apt の
-   無い OS・Zabbly の無い Ubuntu の版、sudo -n が通らない
+   `~/.bashrc` 等——banto は人の設定ファイルを書き換えない。この2つが断られていれば、ほかの項目も入れない）、Docker（登録では
+   入れない——下の 5a.）、置き場を作るディスクの空きが足りない、apt の無い OS・Zabbly の無い Ubuntu の版、sudo -n が通らない
+5a. **Docker は使う Project ができたときだけ入れる**（決定・2026-10-20、ユーザー。未実装、Backlog に積んだ）：使わない VM で dockerd が
+   動き続けて資源を使わないよう、登録では入れない。**`machine`**：その実行場所で「中で Docker を使う」を入れた Project を作る・開く
+   とき（人が押した・人が送ったで起きるとき——自動化や届いたもので起きたときは入れず、今どおり理由を添えて断る）に、Docker が無い・
+   このユーザーで使えないなら、`sudo -n` で `apt-get install docker.io`（4. と同じ apt の手順）と `usermod -aG docker <ユーザー>`、
+   グループを替えたらユーザーの systemd を起こし直す（4. の「グループを替えたあとの繋ぎ直し」と同じ。その実行場所の Project はその
+   1つだけなので、開く途中なら起こし直してよい）。`docker` グループは実質 root だが、`sudo -n` が通る相手なら AI はもともと root に
+   なれる（9.）。`sudo -n` が通らなければ今どおり打つコマンドを添えて断る。入れたことは Project を開く画面と受信箱には出さず、
+   banto のログと実行場所の確かめの一覧（「banto が向こうで行ったこと」）に残す。**`containers`**：Docker は Project のコンテナの
+   中で動く（VM には入れない）——コンテナを作るところ（Backlog #368）で、その Project が「中で Docker を使う」ならコンテナに入れる
 6. **順番**：`machine` は道具 → 置き場の根 → sshd → linger とユーザーの systemd を続けて打ち、終わってから1回だけ引き直す（互いに
    独立なので）。`containers` は共通の項目（道具・置き場の根・sshd）を打って引き直したあと、Incus → グループ（incus-admin を外す・
    incus に入れる・incus-user の口）→ user@ の起こし直し → 区画の proxy → idmap → 置き場 `banto` → linger を、1項目ごとに引き直し
