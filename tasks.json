@@ -10860,7 +10860,7 @@
       "number": 452,
       "kind": "task",
       "title": "Terminal を ConPTY で作り直す（Windows）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-3-modules",
       "dependsOn": [],
       "milestone": null,
@@ -10872,7 +10872,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:37.881Z",
-      "updatedAt": "2026-10-20T08:57:37.881Z",
+      "updatedAt": "2026-10-20T08:59:31.055Z",
       "closedAt": null,
       "extra": {}
     },
