@@ -12,6 +12,7 @@ import { onRealAppEvent, startRealAppEvents } from "@/lib/backend/app-events";
 import { wireRunningThreads } from "@/lib/backend/running-threads";
 import { wireBackgroundWork } from "@/lib/backend/background-work";
 import { wireRateLimitWaits } from "@/lib/backend/rate-limit-waits";
+import { wireMissions } from "@/lib/backend/missions";
 import { wireResourcesBusy } from "@/lib/backend/resources-busy";
 import { wireUnreachableRuntimes } from "@/lib/backend/unreachable-runtimes";
 import { wireRuntimeMoves } from "@/lib/backend/runtime-moves";
@@ -32,6 +33,8 @@ export function RealProjectsBootstrap() {
     wireBackgroundWork();
     // 上限が戻るのを待っている Thread（§6.46）。同じ理由で読み始める前に
     wireRateLimitWaits();
+    // 会話の任務（§6.47）。同じ理由で読み始める前に
+    wireMissions();
     // 混んでいる Project とこの機械（§6.36）。同じ理由で読み始める前に
     wireResourcesBusy();
     // 繋がらない別のサーバ（Backlog #383）。同じ理由で読み始める前に

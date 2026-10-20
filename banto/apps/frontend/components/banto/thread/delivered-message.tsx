@@ -12,7 +12,7 @@
 
 import { useState } from "react";
 import { MessagePrimitive, useAuiState } from "@assistant-ui/react";
-import { ChevronDown, ChevronRight, Inbox, Webhook } from "lucide-react";
+import { ChevronDown, ChevronRight, Inbox, Target, Webhook } from "lucide-react";
 import type { RealMessageOrigin } from "@/lib/backend/client";
 
 function parsed(text: string): unknown {
@@ -42,6 +42,7 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
   const [open, setOpen] = useState(false);
   const value = parsed(text);
   const summary = value === undefined ? text : summaryOf(value);
+  if (origin.mission) return <MissionWakeLine origin={origin} mission={origin.mission} text={text} />;
 
   return (
     <MessagePrimitive.Root
@@ -87,6 +88,49 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
           ) : null}
           {origin.external && origin.external.length > 0 ? <ExternalContents items={origin.external} /> : null}
         </div>
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+/**
+ * **任務の予約で起きた回**（追加・2026-10-20、v4-frontend.md §6.47）。届いたもののカードではなく、発言の頭に薄い1行
+ * 「任務で起きました（3/20 回目）——前の予約：〈note〉」。AI に届けた文（目標・枠・きっかけ）と待っていた出来事は開いて見る
+ */
+function MissionWakeLine({
+  origin,
+  mission,
+  text,
+}: {
+  origin: RealMessageOrigin;
+  mission: NonNullable<RealMessageOrigin["mission"]>;
+  text: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const count = mission.maxWakes !== undefined ? `${mission.wake}/${mission.maxWakes} 回目` : `${mission.wake} 回目`;
+  return (
+    <MessagePrimitive.Root data-role="delivered" data-testid="mission-wake-line" data-from={origin.from} className="px-2">
+      <div className="my-1 flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex items-center gap-1.5 self-start rounded-md text-left text-xs text-ink-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <Target className="size-3.5 shrink-0" />
+          <span className="line-clamp-2" data-testid="mission-wake-text">
+            任務で起きました（{count}）{mission.note ? `——前の予約：${mission.note}` : ""}
+          </span>
+          {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+        </button>
+        {open ? (
+          <div className="flex flex-col gap-1.5 pl-5">
+            <pre className="max-h-80 overflow-auto rounded-md bg-surface-2 p-2 text-xs whitespace-pre-wrap text-ink-2" data-testid="delivered-body">
+              {text}
+            </pre>
+            {origin.external && origin.external.length > 0 ? <ExternalContents items={origin.external} /> : null}
+          </div>
+        ) : null}
       </div>
     </MessagePrimitive.Root>
   );

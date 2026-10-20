@@ -320,6 +320,11 @@ export interface RealMessageOrigin {
     /** まとめた1本が大きすぎて本文を省いた */
     bodyOmitted?: true;
   }[];
+  /**
+   * **任務の予約で起こした回**（追加・2026-10-20、v4-frontend.md §6.47）。会話には届いたもののカードではなく薄い1行で出す。
+   * `maxWakes`・`note` は起こした時点の上限と前の予約のメモ（この仕組みより前の記録には無い）
+   */
+  mission?: { id: string; wake: number; maxWakes?: number; note?: string };
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -844,6 +849,72 @@ export async function clearRealThread(threadId: string): Promise<void> {
 /** **上限の待ちを今すぐ続ける**（追加・2026-10-18、v4-frontend.md §6.46）。待っていなければ host が断る（409） */
 export async function continueRealRateLimitWait(threadId: string): Promise<void> {
   await request(`/api/threads/${threadId}/rate-limit-wait/continue`, { method: "POST" });
+}
+
+/**
+ * **会話の任務**（追加・2026-10-20、アーキ仕様 §4.4「任務」・v4-frontend.md §6.47）。host の `MissionState` をそのまま受け取る
+ * ——ここで形を作り替えない（規則3）
+ */
+export interface RealMission {
+  id: string;
+  goal: string;
+  doneWhen: string;
+  frame: { maxWakes: number; until: string; minIntervalMinutes: number };
+  startedBy: "ai" | "human";
+  startedAt: string;
+  /** `active` 以外は人に返っている。`exhausted`＝枠を使い切った・`stalled`＝止まっている・`stopped`＝人が止めた／閉じた */
+  status: "active" | "done" | "gave-up" | "exhausted" | "stalled" | "stopped";
+  wakes: number;
+  lastWakeAt?: string;
+  /** 次の予約（時刻か待っている出来事。出来事が来たら時刻と `received` が付く） */
+  followup?: {
+    note: string;
+    setAt: string;
+    at?: string;
+    event?: { name: string; title?: string; until: string };
+    received?: { at: string; title: string };
+  };
+  /** 起きた記録（新しい順） */
+  history: Array<{
+    wake: number;
+    at: string;
+    cause: "time" | "event" | "event-timeout" | "human";
+    scheduledFor?: string;
+    result?: "done" | "decisions" | "waiting" | "failed";
+  }>;
+  result?: string;
+  finishedAt?: string;
+}
+
+/** 任務の枠の欄（人が変える分だけ。省けば今のまま） */
+export interface RealMissionFramePatch {
+  maxWakes?: number;
+  /** ISO */
+  until?: string;
+  minInterval?: number;
+}
+
+/** 今の任務と、この会話で任務を始められない理由（始められれば無い） */
+export async function getRealMission(threadId: string): Promise<{ mission: RealMission | null; startRefused?: string }> {
+  return request(`/api/threads/${threadId}/mission`);
+}
+
+/** **人が任務を始める**（「…」の「任務にする」）。人が押しているので host は聞かない */
+export async function startRealMission(
+  threadId: string,
+  input: { goal: string; doneWhen: string } & RealMissionFramePatch,
+): Promise<RealMission> {
+  return (await request<{ mission: RealMission }>(`/api/threads/${threadId}/mission`, { method: "POST", body: JSON.stringify(input) })).mission;
+}
+
+/** **枠を延ばす**（枠を使い切った・止まっている任務は動いている任務に戻る）か、**止める**（`stop`） */
+export async function patchRealMission(threadId: string, patch: RealMissionFramePatch | { stop: true }): Promise<RealMission> {
+  return (await request<{ mission: RealMission }>(`/api/threads/${threadId}/mission`, { method: "PATCH", body: JSON.stringify(patch) })).mission;
+}
+
+/** **今すぐ起こす**（最短の間隔に縛られない。回数には数える）。会話が空いていなければ host が断る（409） */
+export async function wakeRealMission(threadId: string): Promise<RealMission> {
+  return (await request<{ mission: RealMission }>(`/api/threads/${threadId}/mission/wake`, { method: "POST" })).mission;
 }
 
 /** **上限の待ちをやめる**（追加・2026-10-18、§6.46）。自動では続けない——人が送れば、その発言で始まる */

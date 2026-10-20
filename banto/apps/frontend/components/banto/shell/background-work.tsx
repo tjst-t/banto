@@ -14,7 +14,9 @@
 // 行は「人を待っている」が上、「バックグラウンド」が下の2行まで。Project の行の数は、人を待っているものがあれば人の番の色。
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Hand, Hourglass } from "lucide-react";
+import { Hand, Hourglass, Target } from "lucide-react";
+import { MissionPanel } from "@/components/banto/thread/mission-panel";
+import { useThreadMission } from "@/lib/backend/missions";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useBackgroundByThread, useThreadBackground, type BackgroundItem } from "@/lib/backend/background-work";
 import { distinctDescription } from "@/lib/card-text";
@@ -216,6 +218,10 @@ export function ThreadBackgroundLine({
   className?: string;
 }) {
   const items = useThreadBackground(thread.id);
+  // **任務が動いていて裏の仕事もあれば、裏の仕事の行を「任務・バックグラウンドで n 件」にまとめる**（追加・2026-10-20、
+  // v4-frontend.md §6.47）。開くと任務の面と裏の仕事の一覧。任務の1行は出さない（`ThreadMissionLine`）
+  const mission = useThreadMission(thread.id);
+  const withMission = mission?.status === "active" ? mission : undefined;
   const [open, setOpen] = useState<Kind | null>(null);
   if (items.length === 0) return null;
   const groups = [{ thread, items }];
@@ -225,14 +231,16 @@ export function ThreadBackgroundLine({
       {(["human", "work"] as const).map((kind) => {
         const mine = parts[kind][0]?.items ?? [];
         if (mine.length === 0) return null;
-        const Icon = kind === "human" ? Hand : Hourglass;
+        const merged = kind === "work" && withMission !== undefined;
+        const Icon = kind === "human" ? Hand : merged ? Target : Hourglass;
         return (
           <Popover key={kind} open={open === kind} onOpenChange={(next) => setOpen(next ? kind : null)}>
             <PopoverTrigger asChild>
               <button
                 type="button"
-                aria-label={label(mine.length, thread.title, kind)}
+                aria-label={merged ? `${thread.title}の任務とバックグラウンドで動いているもの（${mine.length}件）を見る` : label(mine.length, thread.title, kind)}
                 data-testid={kind === "human" ? "thread-waiting-human" : "thread-background"}
+                data-mission={merged ? "" : undefined}
                 className={cn(
                   "flex w-full items-center gap-1 truncate rounded-md py-0.5 pr-1 pl-8 text-left text-xs hover:bg-sidebar-accent",
                   kind === "human" ? "font-medium text-turn" : "text-ink-3 hover:text-foreground",
@@ -240,10 +248,17 @@ export function ThreadBackgroundLine({
                 )}
               >
                 <Icon className="size-3 shrink-0" />
-                <span className="truncate">{mine.length === 1 ? titleOf(mine[0]!) : KINDS[kind].line(mine.length)}</span>
+                <span className="truncate">
+                  {merged ? `任務・バックグラウンドで ${mine.length} 件` : mine.length === 1 ? titleOf(mine[0]!) : KINDS[kind].line(mine.length)}
+                </span>
               </button>
             </PopoverTrigger>
-            <PopoverContent side="right" align="start" className="w-72 p-1.5">
+            <PopoverContent side="right" align="start" className={cn("p-1.5", merged ? "w-96" : "w-72")}>
+              {merged ? (
+                <div className="border-b border-border p-1.5 pb-3">
+                  <MissionPanel threadId={thread.id} mission={withMission} />
+                </div>
+              ) : null}
               <BackgroundList projectId={projectId} groups={groups} showThread={false} onPicked={() => setOpen(null)} />
             </PopoverContent>
           </Popover>

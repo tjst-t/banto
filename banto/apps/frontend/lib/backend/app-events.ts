@@ -12,7 +12,7 @@
 // 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。黙って止まった接続も見切る
 // （`readSse`）——携帯で別アプリから戻ったとき、知らせが止まったままにならない。
 
-import { getBackendConfig, hostFetch, readSse, type RealProjectStart, type RealThreadClosedBy } from "./client";
+import { getBackendConfig, hostFetch, readSse, type RealMission, type RealProjectStart, type RealThreadClosedBy } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 import { noteJudgmentAnswered } from "./judgment-answers";
 
@@ -47,6 +47,8 @@ export type RealAppEvent =
       background?: Array<{ threadId: string; projectId?: string; items: RealBackgroundItem[] }>;
       /** 上限が戻るのを待っている Thread（追加・2026-10-18、v4-frontend.md §6.46）。古い host は付けない */
       rateLimitWaits?: Array<{ threadId: string; projectId?: string; continueAt: string }>;
+      /** 任務を持つ Thread（追加・2026-10-20、v4-frontend.md §6.47）。古い host は付けない */
+      missions?: Array<{ threadId: string; projectId?: string; mission: RealMission }>;
       /** 混んでいる Project とこの機械（追加・2026-10-09、§6.36）。古い host は付けない */
       resources?: RealResourcesBusy;
       /** 別の実行場所へ移している Project（追加・2026-10-12、Backlog #270）。古い host は付けない */
@@ -92,6 +94,8 @@ export type RealAppEvent =
   | { type: "rate_limit_wait.changed"; threadId: string; projectId?: string; continueAt?: string }
   | { type: "turn.started"; threadId: string; projectId?: string; cause?: "human" | "delivery" }
   | { type: "turn.ended"; threadId: string; projectId?: string }
+  /** その Thread の任務が変わった（追加・2026-10-20、v4-frontend.md §6.47）。今の任務を丸ごと（画面は置き換える） */
+  | { type: "mission.changed"; threadId: string; projectId?: string; mission: RealMission }
   | { type: "inbox.changed" }
   /**
    * 判断待ちに答えが付いた（追加・2026-10-05）——どの道で答えても（受信箱・別の画面・host が畳んだ）。ターンの流れが
