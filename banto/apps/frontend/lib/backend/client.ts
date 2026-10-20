@@ -653,6 +653,8 @@ export interface RealInboxFinding {
   urgent: boolean;
   /** 「やって」の宛先にする Base（host が添える） */
   baseThreadId?: string;
+  /** 見回りの Fork の種類（host が知っていれば添える。行き先は他のカードと同じ、§2.4） */
+  threadKind?: "base" | "fork";
   closed?: { how: "acted" | "mission" | "muted" | "dismissed"; threadId?: string; at: string };
   createdAt: string;
 }

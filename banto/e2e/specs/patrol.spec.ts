@@ -119,7 +119,12 @@ test("見回り：notify で気づきを出し、同じ key は出し直さず�
   const details = row.getByTestId("automation-details");
   await expect(details.getByTestId("automation-review-policy")).toContainText("見回りの回は出しません");
   await expect(details.getByTestId("patrol-notebook-empty")).toBeVisible();
-  await details.getByTestId("automation-run-now").click();
+  // 見回りの Fork を先に開き、帯の「今すぐ動かす」で回を流しながら見る——終わったターンの tool のカードは記録に残らず、
+  // 画面が流れに乗っている間にだけ出る（あとから開くと本文しか出ない）
+  await page.goto(`/p/${projectId}?fork=${forkId}`);
+  await expect(page.getByTestId("patrol-thread-band")).toHaveText("見回りの会話です。ここで頼んだことも読むだけで動きます", { timeout: 30_000 });
+  await expect(page.getByTestId("automation-band")).toContainText(`見回り「${PATROL_NAME}」で動く会話です`);
+  await page.getByTestId("automation-band-run").click();
   await runsDone(1);
   expect((await patrol()).runs[0]!.result).toBe("done");
   await expect.poll(async () => (await findings()).map((f) => f.key), { message: "気づきが受信箱に出ない" }).toEqual([FIRST.key]);
@@ -128,10 +133,8 @@ test("見回り：notify で気づきを出し、同じ key は出し直さず�
   expect(inbox.filter((i) => i.kind === "review" && i.threadId === forkId), "見回りの回が返ってきた会話として出た").toEqual([]);
   expect(inbox.filter((i) => i.kind === "judgment"), "見回りの回で判断待ちが出た").toEqual([]);
 
-  // 見回りの Fork を開く：帯と、断った tool のカード
-  await page.goto(`/p/${projectId}?fork=${forkId}`);
-  await expect(page.getByTestId("patrol-thread-band")).toHaveText("見回りの会話です。ここで頼んだことも読むだけで動きます", { timeout: 30_000 });
-  await expect(page.getByTestId("automation-band")).toContainText(`見回り「${PATROL_NAME}」で動く会話です`);
+  // 断った tool のカードと、出した気づきのカード
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "見回りおわり。" })).toBeVisible({ timeout: 60_000 });
   await expect(await toolCard(page, "mcp__shell__runCommand")).toContainText(REFUSAL);
   await expect(await toolCard(page, "mcp__banto-thread__notify")).toContainText("受信箱に気づき");
 

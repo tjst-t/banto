@@ -1,5 +1,5 @@
 // アーキ仕様 §4.4「見回り（patrol）」——mode・notify の上限と手帳・届ける文・読むだけの Fork・閾値越えで飛ばす
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,12 +31,14 @@ interface Ctx {
   patrols: Patrols;
   projectId: string;
   over: { value: boolean };
-  now: { value: Date };
+  /** 時計を進める（Event Store の ts と notify の「今」は同じ時計——Date を差し替える） */
+  setNow(at: Date): void;
   delivered: string[];
 }
 
 async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-patrol-"));
+  mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-20T01:00:00Z") });
   try {
     const log = new EventLog(dir);
     await log.init();
@@ -57,7 +59,6 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       return true;
     });
     const over = { value: false };
-    const now = { value: new Date("2026-10-20T01:00:00Z") };
     const runner = new AutomationRunner({
       projectThread: store,
       automations,
@@ -67,9 +68,11 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       notify: async () => {},
       allAccountsOver: () => over.value,
     });
-    const patrols = new Patrols({ automations, inbox, projectThread: store, now: () => now.value });
-    await fn({ store, automations, inbox, runner, patrols, projectId: project.id, over, now, delivered });
+    const patrols = new Patrols({ automations, inbox, projectThread: store });
+    const setNow = (at: Date) => mock.timers.setTime(at.getTime());
+    await fn({ store, automations, inbox, runner, patrols, projectId: project.id, over, setNow, delivered });
   } finally {
+    mock.timers.reset();
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -198,7 +201,7 @@ test("notify：受信箱に気づきを出し、同じ key は7日の間出し�
       },
     );
     // 同じ key：出し直さない（最後に見た時刻だけ進む）
-    ctx.now.value = new Date("2026-10-21T01:00:00Z");
+    ctx.setNow(new Date("2026-10-21T01:00:00Z"));
     const again = await ctx.patrols.notify(forkId, notifyArgs("pr-1"), turn);
     assert.equal(again.ok, true);
     assert.match(again.text, /前に知らせ済み/);
@@ -207,12 +210,12 @@ test("notify：受信箱に気づきを出し、同じ key は7日の間出し�
     assert.equal(note.status, "notified");
     assert.ok(note.lastSeenAt > note.notifiedAt!, "最後に見た時刻が進まない");
     // 7日を過ぎたら出し直す
-    ctx.now.value = new Date("2026-10-28T02:00:00Z");
+    ctx.setNow(new Date("2026-10-28T02:00:00Z"));
     assert.match((await ctx.patrols.notify(forkId, notifyArgs("pr-1"), { notified: 0 })).text, /受信箱に気づき/);
     assert.equal(ctx.inbox.listOpen().filter((i) => i.kind === "finding").length, 2);
     // 知らせないにした key は、7日を過ぎても出さない
     await ctx.patrols.noteHuman({ patrol: { id: a.id, name: a.name }, key: "pr-1" }, "muted");
-    ctx.now.value = new Date("2026-11-10T02:00:00Z");
+    ctx.setNow(new Date("2026-11-10T02:00:00Z"));
     const muted = await ctx.patrols.notify(forkId, notifyArgs("pr-1"), { notified: 0 });
     assert.match(muted.text, /今後知らせない/);
     assert.equal(ctx.inbox.listOpen().filter((i) => i.kind === "finding").length, 2);
@@ -227,7 +230,7 @@ test("notify：1回に5件・1日の上限（自動化のタイムゾーンで�
     const a = await createPatrol(ctx, { ...patrolFields, dailyFindingLimit: 7 });
     const forkId = a.target.threadId!;
     // 東京の 10/20 の朝（UTC では 10/19 の夜）
-    ctx.now.value = new Date("2026-10-19T23:30:00Z");
+    ctx.setNow(new Date("2026-10-19T23:30:00Z"));
     const turn = { notified: 0 };
     for (let i = 0; i < PATROL_NOTIFY_PER_RUN; i++) assert.equal((await ctx.patrols.notify(forkId, notifyArgs(`k${i}`), turn)).ok, true);
     const sixth = await ctx.patrols.notify(forkId, notifyArgs("k5"), turn);
@@ -241,7 +244,7 @@ test("notify：1回に5件・1日の上限（自動化のタイムゾーンで�
     assert.equal(over.ok, false);
     assert.match(over.text, /今日もう 7 件/);
     // 東京の日付が変わったら出せる（UTC ではまだ 10/20）
-    ctx.now.value = new Date("2026-10-20T15:30:00Z");
+    ctx.setNow(new Date("2026-10-20T15:30:00Z"));
     assert.equal((await ctx.patrols.notify(forkId, notifyArgs("k7"), { notified: 0 })).ok, true);
 
     assert.equal((await ctx.patrols.notify(forkId, { key: "空白 は だめ", title: "t", finding: "f" }, { notified: 0 })).ok, false);
@@ -288,9 +291,14 @@ test("受信箱：気づきは返ってきた会話の次に並び、急ぎが�
   await setup(async (ctx) => {
     const a = await createPatrol(ctx);
     const forkId = a.target.threadId!;
+    // 出した順に時刻を進める（並びは新しいものが先）
+    ctx.setNow(new Date("2026-10-20T01:01:00Z"));
     await ctx.patrols.notify(forkId, notifyArgs("plain"), { notified: 0 });
+    ctx.setNow(new Date("2026-10-20T01:02:00Z"));
     await ctx.patrols.notify(forkId, notifyArgs("hot", { urgent: true }), { notified: 0 });
+    ctx.setNow(new Date("2026-10-20T01:03:00Z"));
     await ctx.patrols.notify(forkId, notifyArgs("later"), { notified: 0 });
+    ctx.setNow(new Date("2026-10-20T01:04:00Z"));
     const base = ctx.store.listThreadsForProject(ctx.projectId).find((t) => t.kind === "base")!;
     await ctx.inbox.raiseReview({ threadId: base.id, summary: "終わりました" });
     const open = ctx.inbox.listOpen();
