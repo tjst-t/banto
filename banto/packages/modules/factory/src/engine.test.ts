@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Factory, longOf, ReplyBox, type RunItem, type FactoryPorts, type Procedure, type RunRecord, type TaskSnapshot } from "./engine.js";
 import { deliverTask } from "./procedure.js";
-import { execCommand } from "./server.js";
+import { execCommand, FACTORY_GIT_IDENT } from "./server.js";
 import { DEFAULT_SETTINGS, type FactorySettings } from "./settings.js";
 
 const git = (cwd: string, ...args: string[]) =>
@@ -178,7 +178,10 @@ test("実装役が途中で落ちたら、作業ツリーの未コミットの�
   });
   // git の名前の設定が無い機械（コンテナ・別のサーバ）にする（#478）——ホームと機械全体の設定を読ませず、
   // 名前を推し量らせない（useConfigOnly）。Factory は自分で名乗ってコミットする
-  const env = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
+  // 名前の環境変数も消す（あると Factory の名乗りより勝つ）
+  const names = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
+  const env = Object.fromEntries(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", ...names].map((k) => [k, process.env[k]]));
+  for (const k of names) delete process.env[k];
   process.env.GIT_CONFIG_GLOBAL = "/dev/null";
   process.env.GIT_CONFIG_NOSYSTEM = "1";
   try {
@@ -193,7 +196,9 @@ test("実装役が途中で落ちたら、作業ツリーの未コミットの�
     assert.deepEqual(git(wt, "show", "--name-only", "--format=", "HEAD").split("\n").sort(), ["README", "half.txt"]);
     assert.equal(git(wt, "status", "--porcelain"), "", "作業ツリーに変更が残っている");
     assert.equal(git(wt, "show", "HEAD:half.txt"), "半分");
-    assert.equal(git(wt, "log", "-1", "--format=%an <%ae>"), "banto Factory <factory@banto.invalid>");
+    const ident = `${FACTORY_GIT_IDENT.name} <${FACTORY_GIT_IDENT.email}>`;
+    assert.equal(git(wt, "log", "-1", "--format=%an <%ae>"), ident, "作者が Factory でない");
+    assert.equal(git(wt, "log", "-1", "--format=%cn <%ce>"), ident, "コミットした者が Factory でない");
     // 頼み直すと、wip コミットの上で続く
     s.factory.answer(run.id, "w", { action: "retry" });
     await until(() => s.fake.finished.length === 1, "頼み直したのに終わらない");

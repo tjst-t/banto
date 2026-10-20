@@ -268,12 +268,6 @@ export function longOf(item: RunItem, settings: FactorySettings, nowMs = Date.no
   const over = nowMs - Date.parse(item.stageSince) - (item.stagePausedMs ?? 0) - limitMs;
   return over >= 0 ? { long: true, since: new Date(nowMs - over).toISOString() } : { long: false };
 }
-/**
- * Factory が自分で作るコミット（wip・rebase で付け直すコミット）の名乗り。リポジトリやホームの git の設定に頼らない
- * ——コンテナや別のサーバでは user.email が無く、「unable to auto-detect email address」で落ちる（2026-10-20、#478）
- */
-const FACTORY_IDENT = ["-c", "user.name=banto Factory", "-c", "user.email=factory@banto.invalid"];
-
 const tail = (s: string, max = 6000) => (s.length > max ? `…${s.slice(-max)}` : s);
 
 // ---- 本体 --------------------------------------------------------------------------------------------------
@@ -786,7 +780,7 @@ class ItemPass implements ProcedureContext {
     const added = await this.git(["add", "-A"]);
     const committed =
       added.code === 0
-        ? await this.git([...FACTORY_IDENT, "commit", "-q", "--no-verify", "-m", `wip: 実装役が途中で止まった時点の未コミットの変更（Factory が残した。${this.task.title}）`])
+        ? await this.git(["commit", "-q", "--no-verify", "-m", `wip: 実装役が途中で止まった時点の未コミットの変更（Factory が残した。${this.task.title}）`])
         : added;
     if (committed.code !== 0) {
       return `（未コミットの変更を wip コミットにできませんでした——変更は作業ツリー ${this.worktree} に残っています：${tail(committed.out, 300)}）`;
@@ -1033,7 +1027,7 @@ class ItemPass implements ProcedureContext {
       let conflicts = 0;
       for (let attempt = 0; ; attempt++) {
         const rebased = await this.step<{ ok: boolean; out: string }>("rebase", async () => {
-          const r = await this.git([...FACTORY_IDENT, "rebase", target]);
+          const r = await this.git(["rebase", target]);
           if (r.code === 0) return { ok: true, out: "" };
           await this.git(["rebase", "--abort"]);
           return { ok: false, out: tail(r.out, 2000) };
