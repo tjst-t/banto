@@ -176,10 +176,13 @@ test("実装役が途中で落ちたら、作業ツリーの未コミットの�
     },
     implementFails: (n) => (n === 1 ? "エージェントが終了しました（code=1 signal=null）。stderr: Error: write EPIPE" : undefined),
   });
+  // git の名前の設定が無い機械（コンテナ・別のサーバ）にする（#478）——ホームと機械全体の設定を読ませず、
+  // 名前を推し量らせない（useConfigOnly）。Factory は自分で名乗ってコミットする
+  const env = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
   try {
-    // Factory のコミットは、その機械の git の名前で（試験の機械には無いことがあるので、この repo に置く）
-    git(s.project, "config", "user.name", "t");
-    git(s.project, "config", "user.email", "t@t");
+    git(s.project, "config", "user.useConfigOnly", "true");
     const run = s.factory.start({ tasks: [task("w")], settings: s.settings });
     await until(() => s.fake.stopped.length === 1, "止まらない");
     const wt = join(s.project, ".worktrees", "factory-w");
@@ -190,12 +193,17 @@ test("実装役が途中で落ちたら、作業ツリーの未コミットの�
     assert.deepEqual(git(wt, "show", "--name-only", "--format=", "HEAD").split("\n").sort(), ["README", "half.txt"]);
     assert.equal(git(wt, "status", "--porcelain"), "", "作業ツリーに変更が残っている");
     assert.equal(git(wt, "show", "HEAD:half.txt"), "半分");
+    assert.equal(git(wt, "log", "-1", "--format=%an <%ae>"), "banto Factory <factory@banto.invalid>");
     // 頼み直すと、wip コミットの上で続く
     s.factory.answer(run.id, "w", { action: "retry" });
     await until(() => s.fake.finished.length === 1, "頼み直したのに終わらない");
     assert.equal(run.items[0]!.status, "done");
     assert.ok(existsSync(join(s.project, "half.txt")), "wip コミットの変更が main に入っていない");
   } finally {
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     s.cleanup();
   }
 });
