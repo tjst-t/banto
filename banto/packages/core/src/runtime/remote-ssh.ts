@@ -1536,8 +1536,10 @@ export class RemoteSshRuntime {
           if (existsSync(packageDir) && statSync(packageDir).isDirectory()) {
             // 配布物は読み取り専用で見せる——中から書き換えられないので、VM のユーザーで置き換えてよい
             const remote = base.pathInside(packageDir);
-            await self.syncPackageDir(conn, packageDir, remote);
-            disks.push(incus.ensureDisk(container, diskName(remote), remote, { readonly: true }));
+            // **置き換えたら付け直す**：フォルダごと差し替える（rename）ので、付いたままの装置は消した古いフォルダを指し続け、
+            // 中からは空に見える（Module が起きられない）
+            const replaced = await self.syncPackageDir(conn, packageDir, remote);
+            disks.push(incus.ensureDisk(container, diskName(remote), remote, { readonly: true, remount: replaced }));
           }
           await Promise.all(disks);
         })();
@@ -1592,11 +1594,12 @@ export class RemoteSshRuntime {
   }
 
   /** registry から取ってきた配布物を送る（中身が違えば置き換える） */
-  private async syncPackageDir(conn: Connection, hostDir: string, remoteDir: string): Promise<void> {
+  /** 置き換えたら true（中身が同じなら何もせず false） */
+  private async syncPackageDir(conn: Connection, hostDir: string, remoteDir: string): Promise<boolean> {
     const entries = collectTreeEntries(hostDir);
     const digest = await bundleDigest(entries, this.hashes);
     const now = await this.run(conn, `[ -d ${shq(remoteDir)} ] && printf '%s\\n' "$(${remoteDigestCommand(shq(remoteDir))})"\nexit 0\n`, { timeoutMs: 120_000 });
-    if (now.stdout.trim() === digest) return;
+    if (now.stdout.trim() === digest) return false;
     const staging = `${remoteDir}.incoming-${randomBytes(4).toString("hex")}`;
     const tar = spawn("tar", ["-C", hostDir, "--null", "--no-recursion", "-cf", "-", "-T", "-"], { stdio: ["pipe", "pipe", "inherit"] });
     tar.stdin.end(entries.map((e) => `${e.rel}\0`).join(""));
@@ -1604,6 +1607,7 @@ export class RemoteSshRuntime {
       stdin: tar.stdout,
       timeoutMs: 600_000,
     });
+    return true;
   }
 
   /**

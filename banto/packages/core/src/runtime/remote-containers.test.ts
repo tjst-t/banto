@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -124,7 +124,11 @@ if (cmd === "project") out("user-1001\n");
 if (cmd === "query") {
   if (rest[0] === "-X") {
     const name = /instances\/([^?]+)/.exec(rest[2])[1];
-    Object.assign(st.instances[name].devices, JSON.parse(rest[rest.indexOf("--data") + 1]).devices);
+    const added = JSON.parse(rest[rest.indexOf("--data") + 1]).devices;
+    Object.assign(st.instances[name].devices, added);
+    // 本物の bind mount と同じく、付けたときのフォルダ（inode）を見続ける
+    st.mounted = st.mounted || {};
+    for (const [dev, d] of Object.entries(added)) if (d.type === "disk") st.mounted[name + "/" + dev] = fs.statSync(d.source).ino;
     out("");
   }
   if (/^\/1\.0\/images\/aliases\//.test(rest[0])) out("{}");
@@ -140,6 +144,11 @@ if (cmd === "init") {
   const config = {};
   for (let i = 0; i < rest.length; i++) if (rest[i] === "-c") { const kv = rest[i + 1]; config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); }
   st.instances[rest[1]] = { status: "Stopped", config, devices: {}, image: rest[0], storage: rest[rest.indexOf("--storage") + 1] };
+  out("");
+}
+if (cmd === "config" && rest[0] === "device" && rest[1] === "remove") {
+  delete st.instances[rest[2]].devices[rest[3]];
+  if (st.mounted) delete st.mounted[rest[2] + "/" + rest[3]];
   out("");
 }
 if (cmd === "config" && rest[0] === "set") { for (const kv of rest.slice(2)) st.instances[rest[1]].config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); out(""); }
@@ -239,6 +248,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
   const state = () =>
     JSON.parse(readFileSync(join(root, "incus.json"), "utf8")) as {
       instances: Record<string, { config: Record<string, string>; devices: Record<string, Record<string, string>>; storage: string; status: string }>;
+      mounted: Record<string, number>;
     };
   try {
     const rootA = join(root, "vm", "work", "a");
@@ -308,6 +318,36 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     // 鍵の窓口・流れの口はまだ繋がない（#369）
     await assert.rejects(a.socketPathInside!(join(dataDir, "modules", "shell-p1", "s", "agent.sock")), /まだ見せられません/);
     await assert.rejects(rt.streamSocketPath("p1", "shell-p1", "s/stream.sock"), /まだ繋げません/);
+
+    // 取ってきた配布物：読み取り専用で見せ、**版が変わってフォルダごと差し替えたら付け直す**（付けたままだと中は消された
+    // 古いフォルダを見続け、空に見える）。変わっていなければ付け直さない
+    const pkgHost = join(dataDir, "module-packages", "ext-a");
+    mkdirSync(pkgHost, { recursive: true });
+    writeFileSync(join(pkgHost, "server.js"), "v1\n");
+    const pkgVm = `${base}/module-packages/ext-a`;
+    const modExt = join(dataDir, "modules", "ext-a-p1");
+    const pkgDevice = () =>
+      Object.entries(state().instances["banto-p1"]!.devices).find(([, d]) => d["source"] === pkgVm);
+    const mountedIsCurrent = () => {
+      const [dev] = pkgDevice()!;
+      return state().mounted[`banto-p1/${dev}`] === statSync(pkgVm).ino;
+    };
+    await a.prepareModuleDirs({ dataDir: modExt, packageDir: pkgHost });
+    assert.equal(readFileSync(join(pkgVm, "server.js"), "utf8"), "v1\n");
+    assert.deepEqual(pkgDevice()?.[1], { type: "disk", source: pkgVm, path: pkgVm, readonly: "true" });
+    assert.ok(mountedIsCurrent());
+    // 同じ版：付け直さない
+    writeFileSync(incusLog, "");
+    await a.prepareModuleDirs({ dataDir: modExt, packageDir: pkgHost });
+    assert.ok(!readFileSync(incusLog, "utf8").includes("remove"), "版が同じなのに付け直した");
+    // 版を上げた：VM でフォルダごと差し替わる → 付け直して、新しいフォルダを見る
+    writeFileSync(join(pkgHost, "server.js"), "v2\n");
+    const inoBefore = statSync(pkgVm).ino;
+    await a.prepareModuleDirs({ dataDir: modExt, packageDir: pkgHost });
+    assert.equal(readFileSync(join(pkgVm, "server.js"), "utf8"), "v2\n");
+    assert.notEqual(statSync(pkgVm).ino, inoBefore, "試験の前提：フォルダごと差し替わっていない");
+    assert.ok(mountedIsCurrent(), "差し替えたあと、コンテナは消した古いフォルダを見ている（付け直していない）");
+    assert.equal(pkgDevice()?.[1]["readonly"], "true");
 
     // 2回目の用意では作り直さない
     writeFileSync(incusLog, "");
