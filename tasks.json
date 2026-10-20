@@ -9794,7 +9794,7 @@
       ],
       "body": "## 何が起きたか（ansible-nas の Base Thread c04700af-a68e-4d91-871a-8a29de6e7e91 からの報告、2026-10-18）\nShell の envSecrets で `repositories-github-tjst-t`（oauth-token、持ち主 repositories）を受け取り git push に使うと、8時間を過ぎたあとは期限の切れた access token が渡り GitHub に断られた。JSON には refresh token も入っていた。\n\n## 原因\nRepositories の tokenFor は自分で GitHub を使うときだけ取り直す。vault-kit の resolveAlias／resolveAliases は置いてある値をそのまま返す。\n\n## 決めた直し方（仕様 main 947e2fb0、Fable のレビュー4回で「入れてよい」）\n- vault-kit は oauth-token を持ち主でない呼び元に渡すとき、今の値を添えて持ち主の presentOwnedSecret を中継で呼び、返った値を渡す。持ち主自身と host の直接の呼び出し（刻印なし）は丸ごと。作れなければ・持ち主がいない・記録が無いなら断る（置いてある値に落とさない）。\n- Repositories は最後に置いた組をメモリに持ち、残り30分を切っていれば取り直して access token の文字列だけを返す。\n- host：dev.banto/presentsOwnedSecret の口への中継は、呼び元が同梱・役割 vault・banto 本体・banto 全体のときだけ、依存の確かめ（Project の縛りは残す）と承認を外す。Vault に中継の合言葉を渡す。\n- 窓口の Vault をまたぐ移動の読みは新しい exportOwnedSecret（assertHuman、oauth-token だけ）。${secret:…} は oauth-token を差し込まない（resolveSecretPlaceholders でだけ見る）。\n- 細部と経緯は refs の仕様とノート。\n\n## 当面の回避\nRepositories の設定で「確かめる」を押すと取り直した組が Vault に書き戻される（約8時間使える）。\n\n## 直ったら\nansible-nas の Base Thread に知らせる（未 push のコミット 733d940 があり、向こうで push して確かめる）。使い方が JSON から access token の文字列に変わることも伝える。",
       "doneWhen": "(1) 期限の切れた（か残り30分を切った）GitHub のブラウザログインの alias を Shell の envSecrets で渡すと、Repositories が取り直して Vault に書き戻し、access token の文字列だけが渡る。(2) 持ち主が取り直せない・外されている・持ち主の記録が無いときは値を渡さず理由つきで断る。(3) Repositories 自身・リモート MCP のログイン・Vault をまたぐ移動（exportOwnedSecret）・Backlog の push_branch は今どおり動く。(4) ${secret:…} は oauth-token を差し込まない。(5) Vault が resolveAliases の途中で持ち主を待つ間に持ち主が同じ Vault へ putSecret で書き戻せ、GitHub の往復を含めて中継の上限に収まる。以上を単体テストと E2E（偽の GitHub）で確かめる。入れる前に本番の Vault で持ち主の無い oauth-token の行を数えて仕様に書く。",
-      "resolution": "Factory が取り込みました（factory/oauth-token-envsecrets-accesstoken-githu）",
+      "resolution": "main 81e326a0・a37ff801、release 8e0e9b5b。host に反映後、ansible-nas で本物の GitHub に fetch・push が通った（2026-10-20、2日前に切れたログインを取り直して文字列で渡し、ユーザー名 x-access-token で 733d940 を push）。",
       "refs": [
         "docs/specs/v4-modules.md §2.1「banto が置く秘密は、持ち主が作った値で渡す」・§2.4「最後に置いた組」",
         "docs/specs/v4-architecture.md §2.5「持ち主が、自分の置いた秘密から渡す値を作る口」",
@@ -9804,7 +9804,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-18T11:54:54.340Z",
-      "updatedAt": "2026-10-18T14:30:54.225Z",
+      "updatedAt": "2026-10-20T05:27:38.606Z",
       "closedAt": "2026-10-18T14:30:54.225Z",
       "extra": {}
     },
