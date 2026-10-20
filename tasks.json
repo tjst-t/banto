@@ -10536,7 +10536,7 @@
       "number": 440,
       "kind": "task",
       "title": "実行場所「この PC」（local-machine）を Runtime の口に足す",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-1-core",
       "dependsOn": [
         "desktop-kill-tree"
@@ -10550,7 +10550,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:24.907Z",
-      "updatedAt": "2026-10-20T08:57:24.907Z",
+      "updatedAt": "2026-10-20T08:58:26.687Z",
       "closedAt": null,
       "extra": {}
     },
