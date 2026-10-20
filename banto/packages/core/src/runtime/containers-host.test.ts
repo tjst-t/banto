@@ -7,6 +7,7 @@ import {
   inspectContainersHost,
   prepareContainersHost,
   probeContainersPrerequisites,
+  reachableProject,
   sameGroups,
   zabblyKeyOk,
   type VmAccess,
@@ -78,9 +79,13 @@ function accessOf(vm: FakeVm): VmAccess {
     if (!asRoot && !vm.admin && vm.socketDown) return fail("Error: Failed to connect to the user socket");
     const [cmd, ...rest] = args;
     if (cmd === "query" && rest[0] === "/1.0") {
-      // incus-user は最初に繋いだときに区画を作る（制限つき・idmap はそのユーザーだけ）
+      // incus-user は最初に繋いだときに区画を作る（制限つき・idmap はそのユーザーだけ）。区画を指定しない問い合わせでは、制限つきの
+      // 証明書でも environment.project は default（本物の Incus と同じ——2026-10-20 に banto-ct-test で実測）
       if (!vm.admin && !vm.project) vm.project = { restricted: "true", "restricted.idmap.uid": "1000", "restricted.idmap.gid": "1001" };
-      return ok(JSON.stringify({ environment: { server_version: vm.version, project: vm.admin ? "default" : "user-1000" } }));
+      return ok(JSON.stringify({ environment: { server_version: vm.version, project: "default" } }));
+    }
+    if (cmd === "query" && rest[0] === "/1.0/projects") {
+      return ok(JSON.stringify(vm.admin ? ["/1.0/projects/default", "/1.0/projects/user-1000"] : vm.project ? ["/1.0/projects/user-1000"] : []));
     }
     if (cmd === "query" && rest[0] === "/1.0/projects/user-1000") return vm.project ? ok(JSON.stringify({ config: vm.project })) : fail("not found");
     if (cmd === "query" && rest[0] === "/1.0/storage-pools/banto") return vm.pools.has("banto") ? ok("{}") : fail("not found");
@@ -452,6 +457,18 @@ test("probeContainersPrerequisites（登録）：共通の項目（道具）を�
   assert.equal(prepared.length, 1);
   assert.match(prepared[0]!.detail!, /sudo apt-get install --no-install-recommends tar[\s\S]*sudo gpasswd -d banto incus-admin/);
   assert.ok(r.checks.filter((c) => c.id !== "prepared").every((c) => c.status === "ok"), JSON.stringify(r.checks.filter((c) => c.status !== "ok")));
+});
+
+test("reachableProject：environment.project ではなく見える区画の一覧で決める（banto-ct-test：incus-user 経由でも /1.0 は default を返す）", async () => {
+  const at = (stdout: string, code = 0): VmAccess => ({ user: "banto", uid: 1000, gid: 1001, run: async () => ({ code, stdout, stderr: "" }) });
+  assert.equal(await reachableProject(at('["/1.0/projects/user-1000"]')), "user-1000");
+  assert.equal(await reachableProject(at('["/1.0/projects/default","/1.0/projects/user-1000"]')), "default");
+  assert.equal(await reachableProject(at("[]")), "");
+  assert.equal(await reachableProject(at("", 1)), "");
+  // banto-ct-test と同じ形（制限つきの証明書・incus-admin 無し）は、繋がる
+  const vm = fakeVm({ inGroup: true });
+  const checks = await evaluateContainersHost(await inspectContainersHost(accessOf(vm)), accessOf(vm), "check");
+  assert.equal(checks.find((c) => c.id === "incus-project")!.status, "ok");
 });
 
 test("sameGroups：主のグループの有無に左右されず、補助のグループの組で比べる", () => {
