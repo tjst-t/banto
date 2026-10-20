@@ -104,30 +104,46 @@ export interface SystemPromptInput {
   turnSummary?: boolean;
 }
 
+/** 土台の指示の節の種類。右上の文脈のメーターで Memory の割合を出すのに使う（v4-frontend.md §6.50） */
+export type SystemPromptPartKind =
+  | "core"
+  | "global-memory"
+  | "boundary"
+  | "project"
+  | "model"
+  | "project-memory"
+  | "turn-summary"
+  | "instruction";
+
+export interface SystemPromptPart {
+  kind: SystemPromptPartKind;
+  text: string;
+}
+
 /**
- * `query({ options: { systemPrompt } })` にそのまま渡せる配列を作る。
- *
- * 配列で渡すのは、静的な前半（骨格＋Global Memory）を
- * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で区切るため——前半は全 Project で
- * 前方一致し、キャッシュが Project をまたいで効く（§3・§2.3）。
+ * 土台の指示を、節の種類つきで組み立てる。`buildSystemPrompt` はこの文だけを並べたもの——組み立ては
+ * ここに1つだけ置く（規則3）。メーターの按分（`GET /api/threads/:id/prompt-footprint`）も同じ節から数える
  */
-export function buildSystemPrompt(input: SystemPromptInput): string[] {
-  const blocks: string[] = [BANTO_SYSTEM_PROMPT_CORE];
+export function buildSystemPromptParts(input: SystemPromptInput): SystemPromptPart[] {
+  const parts: SystemPromptPart[] = [{ kind: "core", text: BANTO_SYSTEM_PROMPT_CORE }];
 
   const globalMemory = (input.globalMemory ?? []).filter((t) => t.trim().length > 0);
   if (globalMemory.length > 0) {
-    blocks.push(`# banto 全体で覚えていること（Global Memory）\n\n${globalMemory.map((t) => `- ${t}`).join("\n")}`);
+    parts.push({
+      kind: "global-memory",
+      text: `# banto 全体で覚えていること（Global Memory）\n\n${globalMemory.map((t) => `- ${t}`).join("\n")}`,
+    });
   }
 
-  blocks.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+  parts.push({ kind: "boundary", text: SYSTEM_PROMPT_DYNAMIC_BOUNDARY });
 
   const runtimeLine = input.project.remoteRuntime
     ? `\n- 実行場所：別のサーバ「${input.project.remoteRuntime}」（root はそのサーバのパス。Module はそのサーバで動く）`
     : "";
-  blocks.push(`# いまの Project\n\n- 名前：${input.project.name}\n- root：${input.project.root}${runtimeLine}`);
+  parts.push({ kind: "project", text: `# いまの Project\n\n- 名前：${input.project.name}\n- root：${input.project.root}${runtimeLine}` });
 
   if (input.model) {
-    blocks.push(`# あなたを動かしているモデル\n\nあなたは ${input.model.name} で動いている。モデル ID は ${input.model.id}。`);
+    parts.push({ kind: "model", text: `# あなたを動かしているモデル\n\nあなたは ${input.model.name} で動いている。モデル ID は ${input.model.id}。` });
   }
 
   // **取り消した行は入れない**（改訂・2026-10-15、§2.2「取り消した行は AI に渡さない」）。以前は「~~…~~（取り消し済み）」で
@@ -136,15 +152,26 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
   const memory = input.memory.filter((m) => !m.invalidated);
   if (memory.length > 0) {
     const lines = memory.map((m) => `- [#${m.seq}] ${m.text}`);
-    blocks.push(`# この Project で決まったこと（Memory）\n\n${lines.join("\n")}`);
+    parts.push({ kind: "project-memory", text: `# この Project で決まったこと（Memory）\n\n${lines.join("\n")}` });
   }
 
-  if (input.turnSummary) blocks.push(TURN_SUMMARY_PROMPT_SECTION);
+  if (input.turnSummary) parts.push({ kind: "turn-summary", text: TURN_SUMMARY_PROMPT_SECTION });
 
   const instruction = input.projectInstruction?.trim();
   if (instruction) {
-    blocks.push(`# この Project 固有の指示\n\n${instruction}`);
+    parts.push({ kind: "instruction", text: `# この Project 固有の指示\n\n${instruction}` });
   }
 
-  return blocks;
+  return parts;
+}
+
+/**
+ * `query({ options: { systemPrompt } })` にそのまま渡せる配列を作る。
+ *
+ * 配列で渡すのは、静的な前半（骨格＋Global Memory）を
+ * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で区切るため——前半は全 Project で
+ * 前方一致し、キャッシュが Project をまたいで効く（§3・§2.3）。
+ */
+export function buildSystemPrompt(input: SystemPromptInput): string[] {
+  return buildSystemPromptParts(input).map((p) => p.text);
 }

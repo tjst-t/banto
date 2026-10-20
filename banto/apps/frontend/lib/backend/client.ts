@@ -1145,6 +1145,20 @@ export async function getRealThreadSkills(threadId: string): Promise<RealThreadS
 }
 
 /**
+ * **土台の指示の節ごとの文字数**（追加・2026-10-20、v4-frontend.md §6.50）。右上の文脈のメーターが SDK の「System prompt」を
+ * Memory とそれ以外に按分するのに使う。数えるのはその会話で確定した Memory（会話の始まりの時点の行）
+ */
+export interface RealPromptFootprint {
+  parts: { kind: string; chars: number }[];
+  totalChars: number;
+  projectMemoryLines: number;
+}
+
+export async function getRealPromptFootprint(threadId: string): Promise<RealPromptFootprint> {
+  return request<RealPromptFootprint>(`/api/threads/${threadId}/prompt-footprint`);
+}
+
+/**
  * **Shell 専用のホームに写すもの**（決定・2026-09-23、ユーザー）。人のホームからの相対パス。
  * `lastSync` は最後に写したときの結果（Shell がまだ1本も立っていなければ `null`）。
  */
