@@ -33,6 +33,13 @@ export interface BranchRemote {
 export type RelayCall = (name: string, args: Record<string, unknown>, callId?: string) => Promise<{ text: string; isError: boolean }>;
 
 const REPOSITORIES_ROLE = "repositories";
+
+/** Repositories の `branch_target` の答え（別のサーバの Project の送り先とアカウント） */
+type BranchTarget =
+  | { remote: false }
+  | { remote: true; handled: false; reason?: string; ok?: undefined }
+  | { remote: true; handled: true; ok: false; message?: string }
+  | { remote: true; repository: string; account: string; pinned: boolean; handled?: undefined; ok?: undefined };
 const VAULT_DIRECTORY_ROLE = "vault-directory";
 
 /** git が言ったことの最後の数行（長すぎるものは切る） */
@@ -188,9 +195,19 @@ export class RelayingRemote implements BranchRemote {
       try {
         const target = await moduleWithRole(this.relay, REPOSITORIES_ROLE, callId);
         if (target) {
-          const r = await this.relay("relayCallTool", { targetModule: target, name: tool, arguments: { branch } }, callId);
-          if (r.isError) throw new Error(r.text || `${target} の ${tool} が失敗しました`);
-          const answer = JSON.parse(r.text) as { handled: boolean; ok?: boolean; absent?: boolean; message?: string; reason?: string };
+          // **別のサーバの Project は、先に送り先とアカウントを引いて名乗る**（§2.4「別のサーバの Project」）——名乗った引数が
+          // 承認のカードに出る。引き受けない・断ると分かれば、送る口は呼ばない（場所の無いカードを出さない）
+          const where = await relayJson<BranchTarget>(this.relay, "relayCallTool", { targetModule: target, name: "branch_target", arguments: {} }, callId, `${target} の branch_target`);
+          let decided: { handled: boolean; ok?: boolean; absent?: boolean; message?: string; reason?: string } | undefined;
+          if (where.remote && where.handled === false) decided = { handled: false, ...(where.reason ? { reason: where.reason } : {}) };
+          else if (where.remote && where.ok === false) decided = { handled: true, ok: false, ...(where.message ? { message: where.message } : {}) };
+          else {
+            const args = { branch, ...(where.remote ? { repository: where.repository, account: where.account } : {}) };
+            const r = await this.relay("relayCallTool", { targetModule: target, name: tool, arguments: args }, callId);
+            if (r.isError) throw new Error(r.text || `${target} の ${tool} が失敗しました`);
+            decided = JSON.parse(r.text) as typeof decided;
+          }
+          const answer = decided!;
           if (answer.handled) {
             return answer.ok
               ? { ok: true, via: "repositories", ...(answer.absent ? { absent: true } : {}) }

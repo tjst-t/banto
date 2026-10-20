@@ -10,9 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { AUDIT_ARGS_META_KEY, CALLER_META_KEY, CALL_ID_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
+import { AUDIT_ARGS_META_KEY, CALLER_META_KEY, CALL_ID_META_KEY, VALUE_FREE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { GithubAccounts } from "./accounts.js";
-import { BranchSync, accountForRemote, type ProjectGitAccess } from "./branch-sync.js";
+import { BranchSync, accountForRemote, repositoryLabel, type ProjectGitAccess } from "./branch-sync.js";
 import { PROJECT_GIT_BUNDLE_MAX_BYTES, isSafeBranchName, type ProjectGitOrigin } from "@banto/module-contract";
 import { GIT_ENV } from "./git.js";
 import { httpGithub } from "./github.js";
@@ -282,7 +282,8 @@ test("口は中継からだけ（可視性 module・ブランチ名を識別子�
     for (const n of ["push_branch", "fetch_branch"]) {
       const t = tools.find((x) => x.name === n)!;
       assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], "module", n);
-      assert.deepEqual((t._meta as Record<string, unknown>)[AUDIT_ARGS_META_KEY], ["branch"], n);
+      // repository・account は別のサーバの Project のときだけ載る（載れば承認のカードと鍵に入る）
+      assert.deepEqual((t._meta as Record<string, unknown>)[AUDIT_ARGS_META_KEY], ["branch", "repository", "account"], n);
     }
     // 刻印が無い・banto 全体のため——断る（host に聞きにも行かない）
     for (const meta of [{}, { [CALLER_META_KEY]: { instance: true } }, { [CALLER_META_KEY]: { admin: true } }]) {
@@ -302,6 +303,20 @@ test("口は中継からだけ（可視性 module・ブランチ名を識別子�
     // 人が Project の画面から押した（admin + forProject）も Project のための呼び出し
     const human = await call("fetch_branch", { [CALLER_META_KEY]: { admin: true, forProject: "p1" }, [CALL_ID_META_KEY]: "call-11" });
     assert.equal(human.isError, undefined);
+    // 送り先を引く口：値を返さない（場所と login だけ）。この機械の Project は {remote: false}、別のサーバは決まり方を返す
+    const bt = tools.find((x) => x.name === "branch_target")!;
+    assert.equal((bt._meta as Record<string, unknown>)[VISIBILITY_META_KEY], "module");
+    assert.equal((bt._meta as Record<string, unknown>)[VALUE_FREE_META_KEY], true);
+    const hostTarget = await call("branch_target", { [CALLER_META_KEY]: { project: "p1" }, [CALL_ID_META_KEY]: "call-12" });
+    assert.deepEqual(JSON.parse(hostTarget.content[0]!.text), { remote: false });
+    answer = { id: "p1", name: "ノート", root: "/home/dev/x", status: "active", runtime: "remote:lab" };
+    const farTarget = await call("branch_target", { [CALLER_META_KEY]: { project: "p1" }, [CALL_ID_META_KEY]: "call-13" });
+    assert.deepEqual(JSON.parse(farTarget.content[0]!.text), {
+      remote: true,
+      handled: false,
+      reason: "この Repositories は別のサーバの Project の git に届く口を持っていません",
+    });
+    assert.match((await call("branch_target", {})).content[0]!.text, /Project のための呼び出しからだけ/);
     // host が決められない——理由をそのまま返す
     answer = new Error("どの Project のための呼び出しか決められません");
     const unknown = await call("push_branch", { [CALLER_META_KEY]: { project: "p1" } });
@@ -391,6 +406,17 @@ async function farClone(w: World): Promise<{ far: FarRepo; sync: BranchSync; pro
   return { far, sync, project: { id: "p9", name: "向こうのノート", root: "/home/dev/notes", status: "active", runtime: "remote:lab" } };
 }
 
+/**
+ * Backlog と同じ頼み方：先に送り先とアカウントを引き（`branch_target`）、引き受けるならそれを名乗って送る・取ってくる
+ * （承認のカードに出るのは名乗りのほう）
+ */
+async function asBacklog(sync: BranchSync, direction: "push" | "fetch", branch: string, project: ProjectSummary, callId = "c") {
+  const d = await sync.remoteTarget(project, callId);
+  if (d.kind === "not-handled") return { handled: false as const, reason: d.reason };
+  if (d.kind === "refused") return { handled: true as const, ok: false as const, message: d.message };
+  return sync.sync(direction, branch, project, callId, { repository: repositoryLabel(d.at), account: d.login });
+}
+
 test("別のサーバの Project：clone したときのアカウントで、向こうの中身を host から送り、取ってくる。資格情報は向こうへ出ない", async () => {
   await withWorld(async (w) => {
     await addAccount(w, "alice", TOKEN);
@@ -399,13 +425,19 @@ test("別のサーバの Project：clone したときのアカウントで、向
     const mainBefore = bareHead(w.gh, "main");
     const local = commitOnBranch(far.dir, "backlog", '{"format":"banto-backlog/1","items":[]}\n');
 
-    const pushed = await sync.sync("push", "backlog", project, "c");
-    assert.deepEqual(pushed, { handled: true, ok: true, message: "backlog を github.com/alice/notes に送りました（@alice、clone したときのアカウント）" });
+    const pushed = await asBacklog(sync, "push", "backlog", project, "c");
+    // 最初に引き受けたときに、この Project の送り先として覚える
+    assert.deepEqual(pushed, {
+      handled: true,
+      ok: true,
+      message: "backlog を github.com/alice/notes に送りました（@alice、clone したときのアカウント。この Project の送り先として覚えました）",
+    });
     assert.equal(bareHead(w.gh, "backlog"), local);
     assert.equal(bareHead(w.gh, "main"), mainBefore, "ほかのブランチが動いた");
     // 向こうの追跡の ref も進む（Backlog はこれで「まだ送っていない」を数える）
     assert.equal(git(far.dir, "rev-parse", "refs/remotes/origin/backlog").trim(), local);
-    assert.deepEqual(far.calls, ["origin", "bundle backlog", "track backlog"]);
+    // origin は2回読む（送り先を引くときと、送る直前に確かめるとき）
+    assert.deepEqual(far.calls, ["origin", "origin", "bundle backlog", "track backlog"]);
     assert.ok(w.gh.gitRequests.some((r) => r.authorization !== undefined), "資格情報を渡していない");
     // トークンは向こうのどこにも書かれない。使い捨ての置き場は残らない
     assert.ok(!readFileSync(join(far.dir, ".git", "config"), "utf8").includes(TOKEN));
@@ -414,28 +446,28 @@ test("別のサーバの Project：clone したときのアカウントで、向
     // origin 側で進んだもの（別の手元から送られた）を取ってくる——向こうの追跡の ref だけ。手元のブランチには触らない
     const remote = commitOnBranch("", "backlog", '{"format":"banto-backlog/1","items":[],"x":1}\n', join(w.gh.gitRoot, "alice", "notes.git"));
     far.calls.length = 0;
-    const fetched = await sync.sync("fetch", "backlog", project, "c");
+    const fetched = await asBacklog(sync, "fetch", "backlog", project, "c");
     assert.deepEqual(fetched, { handled: true, ok: true, message: "github.com/alice/notes の backlog を取ってきました（@alice、clone したときのアカウント）" });
-    assert.deepEqual(far.calls, ["origin", "unbundle backlog"]);
+    assert.deepEqual(far.calls, ["origin", "origin", "unbundle backlog"]);
     assert.equal(git(far.dir, "rev-parse", "refs/remotes/origin/backlog").trim(), remote);
     assert.equal(git(far.dir, "rev-parse", "refs/heads/backlog").trim(), local);
 
     // 先を越されたまま送る——force しないので断られ、理由を言う。向こうの追跡の ref は動かさない
     commitOnBranch(far.dir, "backlog", '{"format":"banto-backlog/1","items":[],"y":1}\n');
-    const rejected = await sync.sync("push", "backlog", project, "c");
+    const rejected = await asBacklog(sync, "push", "backlog", project, "c");
     assert.equal(rejected.handled && rejected.ok, false);
     assert.match((rejected as { message: string }).message, /origin のブランチが先に進んでいます/);
     assert.equal(bareHead(w.gh, "backlog"), remote, "force で上書きした");
     assert.equal(git(far.dir, "rev-parse", "refs/remotes/origin/backlog").trim(), remote);
 
     // origin にまだ無いブランチを取ってくる——失敗ではなく「まだ無い」。向こうに無いブランチは送れない
-    assert.deepEqual(await sync.sync("fetch", "nothing-here", project, "c"), {
+    assert.deepEqual(await asBacklog(sync, "fetch", "nothing-here", project, "c"), {
       handled: true,
       ok: true,
       absent: true,
       message: "github.com/alice/notes にはまだ nothing-here がありません",
     });
-    assert.deepEqual(await sync.sync("push", "nothing-here", project, "c"), {
+    assert.deepEqual(await asBacklog(sync, "push", "nothing-here", project, "c"), {
       handled: true,
       ok: false,
       message: "この Project のリポジトリに nothing-here がありません",
@@ -458,7 +490,7 @@ test("別のサーバの Project：送り先は向こうの origin の GitHub �
     ] as const) {
       git(far.dir, "config", key, value);
       for (const d of ["push", "fetch"] as const) {
-        const r = await sync.sync(d, "backlog", project, "c");
+        const r = await asBacklog(sync, d, "backlog", project, "c");
         assert.equal(r.handled && !r.ok, true, `${key} ${d}`);
         assert.match((r as { message: string }).message, new RegExp(`送り先を変える設定があります（${key.toLowerCase().replace(/[.]/g, "\\.")}）`), key);
       }
@@ -466,21 +498,25 @@ test("別のサーバの Project：送り先は向こうの origin の GitHub �
     }
     // origin が2つ
     git(far.dir, "remote", "set-url", "--add", "origin", `${w.gh.endpoints.web}/alice/other.git`);
-    assert.match((await sync.sync("push", "backlog", project, "c") as { message: string }).message, /origin の URL が1つではない/);
+    assert.match((await asBacklog(sync, "push", "backlog", project, "c") as { message: string }).message, /origin の URL が1つではない/);
     assert.equal(w.gh.gitRequests.length, before, "断ったのに GitHub に話しかけた");
     // GitHub の外——引き受けない（頼んだ側が自分の git で試す）
     git(far.dir, "remote", "set-url", "--delete", "origin", "other");
     git(far.dir, "remote", "set-url", "origin", "https://gitlab.example.com/a/b.git");
-    assert.deepEqual(await sync.sync("push", "backlog", project, "c"), { handled: false, reason: "origin が GitHub の外です（https://gitlab.example.com/a/b.git）" });
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", project, "c"), { handled: false, reason: "origin が GitHub の外です（https://gitlab.example.com/a/b.git）" });
     git(far.dir, "remote", "remove", "origin");
-    assert.deepEqual(await sync.sync("push", "backlog", project, "c"), { handled: false, reason: "origin がありません" });
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", project, "c"), { handled: false, reason: "origin がありません" });
     const plain = new FarRepo(join(w.home, "far"));
     const plainSync = new BranchSync({ store: w.store, accounts: w.accounts, vault: w.vault, dataDir: join(w.home, ".data"), endpoints: w.gh.endpoints, projectGit: plain });
-    assert.deepEqual(await plainSync.sync("fetch", "backlog", project, "c"), { handled: false, reason: "この Project の根は git のリポジトリではありません" });
+    assert.deepEqual(await asBacklog(plainSync, "fetch", "backlog", project, "c"), { handled: false, reason: "この Project の根は git のリポジトリではありません" });
     // 方式は向こうの URL ではなくアカウントで決める（ssh の URL でも、トークンのアカウントなら https で送る）
     git(far.dir, "remote", "add", "origin", `ssh://git@${new URL(w.gh.endpoints.web).host}/alice/notes.git`);
-    const r = await sync.sync("push", "backlog", project, "c");
-    assert.deepEqual(r, { handled: true, ok: true, message: "backlog を github.com/alice/notes に送りました（@alice、持ち主と同じアカウント）" });
+    const r = await asBacklog(sync, "push", "backlog", project, "c");
+    assert.deepEqual(r, {
+      handled: true,
+      ok: true,
+      message: "backlog を github.com/alice/notes に送りました（@alice、持ち主と同じアカウント。この Project の送り先として覚えました）",
+    });
   });
 });
 
@@ -488,21 +524,21 @@ test("別のサーバの Project：アカウントが決まらない・登録が
   await withWorld(async (w) => {
     const { far, sync, project } = await farClone(w);
     commitOnBranch(far.dir, "backlog", "{}\n");
-    assert.deepEqual(await sync.sync("push", "backlog", project, "c"), {
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", project, "c"), {
       handled: false,
       reason: "github.com/alice/notes を扱うアカウントが決まっていません（clone したときの記録・リポジトリの一覧・持ち主と同じ login のどれも無い）",
     });
     const cloned = { ...project, clonedFrom: { url: `${w.gh.endpoints.web}/alice/notes.git`, account: "bob" } };
-    assert.deepEqual(await sync.sync("push", "backlog", cloned, "c"), { handled: false, reason: "@bob（clone したときのアカウント）は登録が外れています" });
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", cloned, "c"), { handled: false, reason: "@bob（clone したときのアカウント）は登録が外れています" });
     await addAccount(w, "alice", TOKEN);
     // 向こうが上限を越える bundle を返した——送らない
     far.forgedBundle = Buffer.alloc(PROJECT_GIT_BUNDLE_MAX_BYTES + 1);
-    const big = await sync.sync("push", "backlog", project, "c");
+    const big = await asBacklog(sync, "push", "backlog", project, "c");
     assert.equal(big.handled && !big.ok, true);
     assert.match((big as { message: string }).message, /backlog が大きすぎて、別のサーバとの間で運べません/);
     // 壊れた bundle——取り込めずに理由つきで止まる（中身を確かめる）
     far.forgedBundle = Buffer.from("# v2 git bundle\n0000000000000000000000000000000000000000 refs/heads/backlog\n\nPACKgarbage");
-    await assert.rejects(() => sync.sync("push", "backlog", project, "c"), /向こうから来た backlog を取り込めませんでした/);
+    await assert.rejects(() => asBacklog(sync, "push", "backlog", project, "c"), /向こうから来た backlog を取り込めませんでした/);
     assert.equal(bareHead(w.gh, "backlog"), undefined);
     assert.ok(!existsSync(join(w.home, ".data", "branch-sync")) || readdirSync(join(w.home, ".data", "branch-sync")).length === 0);
   });
@@ -514,9 +550,11 @@ test("別のサーバの Project のアカウント：clone の記録 → 台帳
   const cloned = { ...base, clonedFrom: { url: "https://github.com/org/app.git", account: "carol" } };
   const ledger = [{ path: "/a", github: { owner: "org", name: "App" }, account: "dave" }];
   assert.deepEqual(accountForRemote(cloned, at, ledger, ["org"]), { login: "carol", via: "clone したときのアカウント" });
-  // clone した URL が別の場所なら使わない（origin を変えたあと）
+  // clone した場所と origin が違えば断る——次の段（台帳・持ち主と同じ login）へは進まない（origin の書き換えでアカウントを選ばせない）
   const elsewhere = { ...base, clonedFrom: { url: "https://github.com/org/other.git", account: "carol" } };
-  assert.deepEqual(accountForRemote(elsewhere, at, ledger, ["org"]), { login: "dave", via: "リポジトリの一覧のアカウント" });
+  assert.match((accountForRemote(elsewhere, at, ledger, ["org"]) as { refused: string }).refused, /github\.com\/org\/other から clone しましたが、origin が github\.com\/Org\/app/);
+  // アカウントを選ばずに clone した（公開のもの）——場所が同じなら次の段へ
+  assert.deepEqual(accountForRemote({ ...base, clonedFrom: { url: "https://github.com/org/app.git" } }, at, ledger, ["org"]), { login: "dave", via: "リポジトリの一覧のアカウント" });
   // 台帳の行どうしで違えば決めない
   const torn = [...ledger, { path: "/b", github: { owner: "org", name: "app" }, account: "erin" }];
   assert.match((accountForRemote(base, at, torn, []) as { reason: string }).reason, /1つに決まりません（@dave・@erin）/);
@@ -525,4 +563,54 @@ test("別のサーバの Project のアカウント：clone の記録 → 台帳
   // 台帳に無ければ、持ち主と同じ login
   assert.deepEqual(accountForRemote(base, at, [{ path: "/x", github: at }], ["ORG"]), { login: "ORG", via: "持ち主と同じアカウント" });
   assert.ok("reason" in accountForRemote(base, at, [], ["someone"]));
+});
+
+test("別のサーバの Project：最初に引き受けた送り先とアカウントを覚え、origin を書き換えても選び替えない。名乗りが違えば断る", async () => {
+  await withWorld(async (w) => {
+    await addAccount(w, "alice", TOKEN);
+    await addAccount(w, "bob", "ghp_bob_secret_token_44");
+    w.gh.addRepo("bob", "secrets", { private: true, readers: ["bob"], writers: ["bob"] });
+    const { far, sync, project } = await farClone(w);
+    commitOnBranch(far.dir, "backlog", "{}\n");
+    const toBob = () => w.gh.gitRequests.filter((r) => r.path.includes("/bob/secrets")).length;
+
+    // 名乗らない・違う名乗りは断る（覚えない）——中の AI が送る口を直に呼んでも、カードに出ていない場所へは送らない
+    assert.match((await sync.sync("push", "backlog", project, "c") as { message: string }).message, /送り先とアカウントを名乗っていない呼び出しです（github\.com\/alice\/notes・@alice）/);
+    const wrong = await sync.sync("push", "backlog", project, "c", { repository: "github.com/bob/secrets", account: "bob" });
+    assert.match((wrong as { message: string }).message, /名乗った送り先（github\.com\/bob\/secrets・@bob）が、いま決まる送り先（github\.com\/alice\/notes・@alice）と違う/);
+    assert.deepEqual([...(await w.store.remoteTargets()).keys()], []);
+
+    // 引き受けたら覚える
+    const first = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(first.handled && first.ok, true, JSON.stringify(first));
+    const pinned = (await w.store.remoteTargets()).get("p9");
+    assert.deepEqual({ ...pinned, at: undefined }, { github: { owner: "alice", name: "notes" }, account: "alice", via: "持ち主と同じアカウント", at: undefined });
+
+    // origin を bob/secrets に書き換える——持ち主と同じ login の bob は選ばれず、送りも取ってきもしない
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/bob/secrets.git`);
+    for (const d of ["push", "fetch"] as const) {
+      const r = await asBacklog(sync, d, "backlog", project);
+      assert.equal(r.handled && !r.ok, true, d);
+      assert.match((r as { message: string }).message, /送り先は github\.com\/alice\/notes（@alice）に決めてあります.*origin が github\.com\/bob\/secrets になっている/);
+      // 名乗りを bob/secrets にしても同じ
+      const named = await sync.sync(d, "backlog", project, "c", { repository: "github.com/bob/secrets", account: "bob" });
+      assert.match((named as { message: string }).message, /決めてあります/);
+    }
+    // GitHub の外に書き換えても、引き受けないで自分の git に任せる（＝別の道で送らせる）のではなく断る
+    git(far.dir, "remote", "set-url", "origin", "https://gitlab.example.com/a/b.git");
+    assert.match((await asBacklog(sync, "push", "backlog", project) as { message: string }).message, /決めてあります/);
+    assert.equal(toBob(), 0, "書き換えた先に話しかけた");
+    // 戻せばまた送れる（覚えたアカウントで）
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/alice/notes.git`);
+    commitOnBranch(far.dir, "backlog", '{"a":1}\n');
+    assert.deepEqual(await asBacklog(sync, "push", "backlog", project), { handled: true, ok: true, message: "backlog を github.com/alice/notes に送りました（@alice、持ち主と同じアカウント）" });
+
+    // clone の記録があるのに origin が別の場所——最初から断る（覚えていない別の Project）
+    const other = { ...project, id: "p10", clonedFrom: { url: `${w.gh.endpoints.web}/alice/notes.git`, account: "alice" } };
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/bob/secrets.git`);
+    const refused = await asBacklog(sync, "fetch", "backlog", other);
+    assert.match((refused as { message: string }).message, /github\.com\/alice\/notes から clone しましたが、origin が github\.com\/bob\/secrets/);
+    assert.equal((await w.store.remoteTargets()).has("p10"), false);
+    assert.equal(toBob(), 0);
+  });
 });

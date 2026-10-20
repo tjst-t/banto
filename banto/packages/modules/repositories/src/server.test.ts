@@ -55,9 +55,9 @@ test("道具はどれも人の画面からだけ——可視性は admin、刻�
   await withServer({ listProjects: async (id) => (seen.push(id), []) }, async (client, w) => {
     const { tools } = await client.listTools();
     assert.ok(tools.length > 0);
-    // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口（branch-sync.test.ts）と、Vault が中継で呼ぶ
+    // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口と送り先を引く口（branch-sync.test.ts）と、Vault が中継で呼ぶ
     // 持ち主の口（presentOwnedSecret、2026-10-18——accounts.test.ts）
-    const fromRelay = ["push_branch", "fetch_branch", "presentOwnedSecret"];
+    const fromRelay = ["push_branch", "fetch_branch", "branch_target", "presentOwnedSecret"];
     for (const t of tools) {
       const expected = fromRelay.includes(t.name) ? "module" : "admin";
       assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], expected, t.name);

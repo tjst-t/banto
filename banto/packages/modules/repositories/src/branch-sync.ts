@@ -17,7 +17,12 @@
 // 無い。**資格情報は向こうへ出さない**——core の口（`ProjectGitAccess`。実行場所の接続の上で、向こうの中のユーザーの git が
 // bundle を作る・取り込む）で中身だけを運び、ここの使い捨ての bare リポジトリから、host で決めた GitHub の URL へ送る・取ってくる。
 // 送り先は向こうの `remote.origin.url`（申告）から GitHub の場所を読んで決め、アカウントは clone の記録 → 台帳の同じ場所の行 →
-// 持ち主と同じ login の順に決める（`accountForRemote`）。
+// 持ち主と同じ login の順に決める（`accountForRemote`）。**最初に引き受けたときに、場所とアカウントを Project ごとに覚え**
+// （`LedgerStore.pinRemoteTarget`）、以降は origin がその場所と違えば断る——中の AI は origin も中継の合言葉も書ける・読めるので、
+// origin の書き換えで別のリポジトリ・別のアカウントを選ばせない。頼む側（Backlog）は先に `branch_target` で送り先と
+// アカウントを引き、`push_branch`・`fetch_branch` の引数（`repository`・`account`）に載せる——中継のゲートが名乗った引数として
+// 承認のカードに出し、承認の鍵にも入れる（違う場所・違うアカウントは聞き直す）。ここはその名乗りが、いま決まる送り先と同じとき
+// だけ引き受ける
 
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -74,12 +79,19 @@ export interface BranchSyncDeps {
   projectGit?: ProjectGitAccess;
 }
 
-/** 別のサーバの Project で、どのアカウントで送るか（決めた理由つき——返事の文言に出す） */
-type RemoteAccount = { login: string; via: string } | { reason: string };
+/** 別のサーバの Project で、どのアカウントで送るか（決めた理由つき——返事の文言に出す）。`refused` は引き受けて断る */
+type RemoteAccount = { login: string; via: string } | { reason: string } | { refused: string };
+
+/** 承認のカードに出す送り先の書き方（`branch_target` が返し、Backlog が `repository` に載せる） */
+export function repositoryLabel(at: GithubLocation): string {
+  return `github.com/${at.owner}/${at.name}`;
+}
 
 /**
- * **別のサーバの Project のブランチを扱うアカウント**。向こうのリポジトリは台帳に無いので、人が決めたものから順に引く：
- * 1. その Project を core の「clone」のタブで作ったときに選んだアカウント（clone した URL が origin と同じ GitHub の場所のとき）
+ * **別のサーバの Project のブランチを扱うアカウント**（まだ覚えていないとき）。向こうのリポジトリは台帳に無いので、人が決めた
+ * ものから順に引く：
+ * 1. その Project を core の「clone」のタブで作ったときに選んだアカウント。**clone した場所と origin が違えば断る**——次の段へ
+ *    進むと、origin を書き換えるだけで持ち主と同じ login のアカウントが選ばれる
  * 2. 台帳で同じ GitHub の場所を扱うアカウント（この機械に同じリポジトリを置いている。行どうしで違えば決めない）
  * 3. 登録したアカウントのうち、origin の持ち主と同じ login（Import のときと同じ決まり）
  */
@@ -90,13 +102,18 @@ export function accountForRemote(
   logins: readonly string[],
 ): RemoteAccount {
   const cloned = project.clonedFrom;
-  if (cloned?.account) {
+  if (cloned) {
     const from = parseRemoteUrl(cloned.url);
-    if (from.kind === "github" && sameGithubLocation(from, at)) return { login: cloned.account, via: "clone したときのアカウント" };
+    if (from.kind !== "github" || !sameGithubLocation(from, at)) {
+      return {
+        refused: `この Project は ${from.kind === "github" ? repositoryLabel(from) : cloned.url} から clone しましたが、origin が ${repositoryLabel(at)} になっています——clone した場所でないリポジトリへは、Repositories は送りません`,
+      };
+    }
+    if (cloned.account) return { login: cloned.account, via: "clone したときのアカウント" };
   }
   const inLedger = [...new Set(entries.filter((e) => e.account && sameGithubLocation(e.github, at)).map((e) => e.account!.toLowerCase()))];
   if (inLedger.length > 1) {
-    return { reason: `リポジトリの一覧で github.com/${at.owner}/${at.name} を扱うアカウントが1つに決まりません（${inLedger.map((l) => `@${l}`).join("・")}）` };
+    return { reason: `リポジトリの一覧で ${repositoryLabel(at)} を扱うアカウントが1つに決まりません（${inLedger.map((l) => `@${l}`).join("・")}）` };
   }
   if (inLedger.length === 1) {
     const login = entries.find((e) => e.account?.toLowerCase() === inLedger[0])!.account!;
@@ -104,7 +121,22 @@ export function accountForRemote(
   }
   const owner = logins.find((l) => l.toLowerCase() === at.owner.toLowerCase());
   if (owner) return { login: owner, via: "持ち主と同じアカウント" };
-  return { reason: `github.com/${at.owner}/${at.name} を扱うアカウントが決まっていません（clone したときの記録・リポジトリの一覧・持ち主と同じ login のどれも無い）` };
+  return { reason: `${repositoryLabel(at)} を扱うアカウントが決まっていません（clone したときの記録・リポジトリの一覧・持ち主と同じ login のどれも無い）` };
+}
+
+/**
+ * 別のサーバの Project の送り先の決まり方。`target` は引き受ける（`pinned`——もう覚えている）、`refused` は引き受けて断る、
+ * `not-handled` は引き受けない
+ */
+export type RemoteTargetDecision =
+  | { kind: "not-handled"; reason: string }
+  | { kind: "refused"; message: string }
+  | { kind: "target"; at: GithubLocation; login: string; via: string; pinned: boolean; ssh: boolean };
+
+/** `push_branch`・`fetch_branch` に頼む側が名乗った送り先（`branch_target` で引いたもの） */
+export interface ClaimedTarget {
+  repository?: string;
+  account?: string;
 }
 
 /** URL の方式が ssh か（`git@host:o/n`・`ssh://…`） */
@@ -123,6 +155,11 @@ function explain(direction: "push" | "fetch", own: string): string {
     return "origin のブランチが先に進んでいます（取り込んでから送り直します）";
   }
   return "";
+}
+
+/** 別のサーバの Project か（根は向こうのパス） */
+export function isRemote(project: ProjectSummary): boolean {
+  return project.runtime !== undefined && project.runtime !== "host-container";
 }
 
 /** 運べる大きさを越えた */
@@ -156,10 +193,16 @@ export class BranchSync {
    * そのブランチを送る（`push`）か取ってくる（`fetch`）。**リポジトリは呼び出し元の Project の根で決まる**
    * ——引数で選べるのはブランチ名だけ
    */
-  async sync(direction: "push" | "fetch", branch: string, project: ProjectSummary, callId?: string): Promise<BranchSyncResult> {
+  async sync(
+    direction: "push" | "fetch",
+    branch: string,
+    project: ProjectSummary,
+    callId?: string,
+    claimed: ClaimedTarget = {},
+  ): Promise<BranchSyncResult> {
     if (!isSafeBranchName(branch)) throw new Error(`ブランチ名として受け付けられない形です：${JSON.stringify(branch.slice(0, 80))}`);
     // **別のサーバの Project**——根は向こうのパスで、この機械の同じ文字列のフォルダは別物。core の口で中身だけを運ぶ
-    if (project.runtime !== undefined && project.runtime !== "host-container") return this.syncRemote(direction, branch, project, callId);
+    if (isRemote(project)) return this.syncRemote(direction, branch, project, callId, claimed);
     const entry = await this.entryFor(project);
     if ("reason" in entry) return { handled: false, reason: entry.reason };
 
@@ -223,38 +266,99 @@ export class BranchSync {
   }
 
   /**
-   * **別のサーバの Project**（v4-modules.md §2.4「別のサーバの Project」）。向こうの origin の設定を読み、送り先（GitHub の場所）と
-   * アカウントを host で決め、使い捨ての bare リポジトリを通して運ぶ
+   * **別のサーバの Project の送り先とアカウントを決める**（`branch_target` と、送る・取ってくるの両方が通る——決め方を2つ
+   * 持たない）。向こうの origin の設定を読み、覚えた送り先があればそれと突き合わせ、無ければ `accountForRemote` で決める
    */
-  private async syncRemote(direction: "push" | "fetch", branch: string, project: ProjectSummary, callId?: string): Promise<BranchSyncResult> {
+  async remoteTarget(project: ProjectSummary, callId?: string): Promise<RemoteTargetDecision> {
     const git = this.deps.projectGit;
-    if (!git) return { handled: false, reason: "この Repositories は別のサーバの Project の git に届く口を持っていません" };
+    if (!git) return { kind: "not-handled", reason: "この Repositories は別のサーバの Project の git に届く口を持っていません" };
     const origin = await git.origin(callId);
-    if (origin.kind === "not-repo") return { handled: false, reason: "この Project の根は git のリポジトリではありません" };
-    if (origin.urls.length === 0) return { handled: false, reason: "origin がありません" };
+    if (origin.kind === "not-repo") return { kind: "not-handled", reason: "この Project の根は git のリポジトリではありません" };
+    if (origin.urls.length === 0) return { kind: "not-handled", reason: "origin がありません" };
     // **送り先を変える設定があれば、どちらもしない**——向こうの git が送る先と、ここが送る先（url の GitHub の場所）が食い違う。
     // どちらが正しいかは決められない（この機械の Project と同じ線。向こうの http.* 等は、ここの git が読まないので見ない）
     if (origin.redirects.length > 0) {
       return {
-        handled: true,
-        ok: false,
-        message: `リポジトリの設定に、送り先を変える設定があります（${origin.redirects.join("・")}）——どこへ${direction === "push" ? "送る" : "取ってくる"}のが正しいか決められないので、Repositories は ${direction} しません`,
+        kind: "refused",
+        message: `リポジトリの設定に、送り先を変える設定があります（${origin.redirects.join("・")}）——どこへ送る・どこから取ってくるのが正しいか決められないので、Repositories は送りも取ってきもしません`,
       };
     }
-    if (origin.urls.length !== 1) {
-      return { handled: true, ok: false, message: `origin の URL が1つではない（${origin.urls.join("・")}）ので、${direction} しません` };
-    }
+    if (origin.urls.length !== 1) return { kind: "refused", message: `origin の URL が1つではない（${origin.urls.join("・")}）ので、Repositories は送りも取ってきもしません` };
     const at = parseRemoteUrl(origin.urls[0]!);
-    if (at.kind !== "github") return { handled: false, reason: `origin が GitHub の外です（${origin.urls[0]}）` };
-    const where = `github.com/${at.owner}/${at.name}`;
+    const pinned = (await this.deps.store.remoteTargets()).get(project.id);
+    if (pinned) {
+      // **覚えた送り先と違えば断る**——次の段（台帳・持ち主と同じ login）へは進まない
+      if (at.kind !== "github" || !sameGithubLocation(at, pinned.github)) {
+        return {
+          kind: "refused",
+          message:
+            `この Project の Backlog の送り先は ${repositoryLabel(pinned.github)}（@${pinned.account}）に決めてあります（${pinned.at.slice(0, 10)}）が、` +
+            `origin が ${at.kind === "github" ? repositoryLabel(at) : origin.urls[0]} になっているので、Repositories は送りも取ってきもしません——origin を戻してください`,
+        };
+      }
+    }
+    if (at.kind !== "github") return { kind: "not-handled", reason: `origin が GitHub の外です（${origin.urls[0]}）` };
     const registered = (await this.deps.accounts.list()).accounts;
-    const chosen = accountForRemote(project, at, await this.deps.store.entries(), registered.map((a) => a.login));
-    if ("reason" in chosen) return { handled: false, reason: chosen.reason };
+    let chosen: { login: string; via: string };
+    if (pinned) chosen = { login: pinned.account, via: pinned.via };
+    else {
+      const decided = accountForRemote(project, at, await this.deps.store.entries(), registered.map((a) => a.login));
+      if ("refused" in decided) return { kind: "refused", message: decided.refused };
+      if ("reason" in decided) return { kind: "not-handled", reason: decided.reason };
+      chosen = decided;
+    }
     const account = registered.find((a) => a.login.toLowerCase() === chosen.login.toLowerCase());
-    if (!account) return { handled: false, reason: `@${chosen.login}（${chosen.via}）は登録が外れています` };
+    if (!account) return { kind: "not-handled", reason: `@${chosen.login}（${chosen.via}）は登録が外れています` };
+    return { kind: "target", at, login: account.login, via: chosen.via, pinned: !!pinned, ssh: !!account.ssh };
+  }
+
+  /**
+   * **別のサーバの Project**（v4-modules.md §2.4「別のサーバの Project」）。送り先とアカウントを決め、頼む側の名乗り
+   * （`repository`・`account`——承認のカードに出たもの）と同じときだけ、使い捨ての bare リポジトリを通して運ぶ。最初に引き受けた
+   * ときに送り先を覚える
+   */
+  private async syncRemote(
+    direction: "push" | "fetch",
+    branch: string,
+    project: ProjectSummary,
+    callId: string | undefined,
+    claimed: ClaimedTarget,
+  ): Promise<BranchSyncResult> {
+    const decided = await this.remoteTarget(project, callId);
+    if (decided.kind === "not-handled") return { handled: false, reason: decided.reason };
+    if (decided.kind === "refused") return { handled: true, ok: false, message: decided.message };
+    const { at } = decided;
+    const where = repositoryLabel(at);
+    // **名乗りが、いま決まる送り先と同じときだけ**——人が承認のカードで見たのは名乗りのほう
+    if (claimed.repository === undefined || claimed.account === undefined) {
+      return { handled: true, ok: false, message: `送り先とアカウントを名乗っていない呼び出しです（${where}・@${decided.login}）——branch_target で引いて、repository と account に載せてください` };
+    }
+    if (claimed.repository.toLowerCase() !== where.toLowerCase() || claimed.account.toLowerCase() !== decided.login.toLowerCase()) {
+      return {
+        handled: true,
+        ok: false,
+        message: `名乗った送り先（${claimed.repository}・@${claimed.account}）が、いま決まる送り先（${where}・@${decided.login}）と違うので、Repositories は ${direction} しません`,
+      };
+    }
+    let via = decided.via;
+    if (!decided.pinned) {
+      const kept = await this.deps.store.pinRemoteTarget(project.id, {
+        github: { owner: at.owner, name: at.name },
+        account: decided.login,
+        via: decided.via,
+        at: new Date().toISOString(),
+      });
+      // 同時に別の呼び出しが先に覚えていた——そちらと違えば断る
+      if (!sameGithubLocation(kept.github, at) || kept.account.toLowerCase() !== decided.login.toLowerCase()) {
+        return { handled: true, ok: false, message: `この Project の送り先は、いま ${repositoryLabel(kept.github)}（@${kept.account}）に決まりました——${where}・@${decided.login} へは送りません` };
+      }
+      via = `${decided.via}。この Project の送り先として覚えました`;
+    }
+    const git = this.deps.projectGit!;
+    const account = { login: decided.login, ssh: decided.ssh };
     // 送り先は host で組む（方式はアカウントに合わせる——向こうの URL の方式は見ない。トークンは GitHub の host にしか渡らない）
-    const url = githubRemoteUrl(this.deps.endpoints, !!account.ssh, at.owner, at.name);
-    const by = `@${account.login}、${chosen.via}`;
+    const url = githubRemoteUrl(this.deps.endpoints, account.ssh, at.owner, at.name);
+    const by = `@${account.login}、${via}`;
 
     const parent = join(this.deps.dataDir, "branch-sync");
     await mkdir(parent, { recursive: true, mode: 0o700 });
