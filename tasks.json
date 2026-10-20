@@ -11145,7 +11145,7 @@
       "number": 461,
       "kind": "task",
       "title": "Project ごとの「特権コンテナにする」（逃げ道。区画の privilege は最初に押されたときだけ、強い警告と印）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "containers-virtualization",
       "dependsOn": [
         "containers-inside-uid-u",
@@ -11156,7 +11156,7 @@
       "labels": [],
       "body": "仕様の 2. の3つ目・4.・5.。security.privileged=true、止めて起こし直す。区画の restricted.containers.privilege=allow は最初に押されたときに足し、特権の Project が無くなったら unset。押すたびに Project 名を打たせ、警告、オンの Project の設定とサイドバーに印、同じ実行場所のほかの Project の設定に「このサーバには特権の Project があります（名前）」。中の番号が U に付け替わる前なら先に付け替える。\n\n実装（2026-10-20、GitHub の main 84bb388f）：container.privileged、PUT /api/projects/<id>/container/privileged {enabled, confirmName}（名前違いは 400 confirm-name-mismatch、コマンドには入れない）、様子に privileged・privilegedOnServer、ensure でも揃える、「許す」のオフの断りに特権も。単体試験は通過。残り：ベアメタルでの確かめ（完了条件）、繋ぐたびの確かめで区画の privilege を見ること、移すときに外すか聞くこと。",
       "doneWhen": "ベアメタルで押すと特権で起き中の U で根に書け、戻すと特権無しに戻る。ほかの Project の設定に注意が出る。",
-      "resolution": null,
+      "resolution": "2026-10-21 ベアメタルで確かめた：qemu-bmc で名前を打ってオンにすると、区画に privilege=allow が足され、特権で起き直し（uid_map 0 0 4294967295）、Module 8本は 1001、中の 1001 で根に書け /dev/kvm も使えた。sakutei の設定に注意が出た。オフで特権無しに戻り（1001→1001）、最後の1つなので区画の privilege が unset され、注意が消えた。Module は切り替えで畳まれ、次に会話を使ったとき起き直した。",
       "refs": [],
       "threads": [
         {
@@ -11165,8 +11165,8 @@
         }
       ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T12:23:00.262Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:03:33.046Z",
+      "closedAt": "2026-10-20T20:03:33.046Z",
       "extra": {}
     },
     {
