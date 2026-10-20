@@ -3,6 +3,8 @@
 // - `settings.json`——人が設定画面で決める、この Caddy の繋ぎ方（admin の場所・基のドメイン・届く範囲）
 // - `routes.json`——公開の**マスター**。Caddy のルートはここから作り直せる写し（Service の systemd の定義と同じ関係）。
 //   Basic 認証は bcrypt のハッシュだけを持つので 0600 で書く
+// - `releases.json`——**host に外させ損ねた公開の道**（追加・2026-10-20、別のサーバの Project ごとのコンテナの VM のポート）。
+//   突き合わせで外し直し、外せたら消す
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,6 +19,13 @@ export interface CaddySettings {
   serverName?: string;
   /** その URL がどこまで届くか。**分からなければ一番広い「インターネット」を見せる**（狭く見せるほうが危ない） */
   reach: Reach;
+}
+
+/** host に外させ損ねた公開の道1件（外させようとした時刻つき） */
+export interface PendingRelease {
+  projectId: string;
+  port: number;
+  since: string;
 }
 
 export const DEFAULT_SETTINGS: CaddySettings = { adminUrl: "http://127.0.0.1:2019", reach: "internet" };
@@ -87,5 +96,16 @@ export class PublishStore {
   async setRoutes(routes: RouteRecord[]): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     await writeJson(join(this.dir, "routes.json"), { routes }, 0o600);
+  }
+
+  /** host に外させ損ねた公開の道（Project とサービスのポート） */
+  async pendingReleases(): Promise<PendingRelease[]> {
+    const raw = await readJson(join(this.dir, "releases.json"));
+    return raw === undefined ? [] : ((raw as { pending: PendingRelease[] }).pending ?? []);
+  }
+
+  async setPendingReleases(pending: PendingRelease[]): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    await writeJson(join(this.dir, "releases.json"), { pending }, 0o600);
   }
 }

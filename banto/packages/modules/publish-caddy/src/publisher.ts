@@ -109,8 +109,16 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * host に外させ損ねた道を、突き合わせで外し直す間隔（追加・2026-10-20）。外し直すには host が別のサーバに繋ぐので、繋がらない間に
+ * 15 秒ごとに繋ぎに行かない
+ */
+const RELEASE_RETRY_MS = 5 * 60_000;
+
 export class CaddyPublisher {
   private readonly prefix: string;
+  /** 外させ損ねた道を最後に外し直そうとした時刻（`<Project>:<ポート>` ごと、メモリだけ） */
+  private readonly lastReleaseTry = new Map<string, number>();
   private running: Promise<RouteStatus[]> | undefined;
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -173,48 +181,120 @@ export class CaddyPublisher {
         throw new PublishError(`公開先のアドレスを確かめられません（しばらくしてからもう一度）：${errText(err)}`);
       }
       if (!("address" in found)) throw new PublishError(`公開先に届きません：${found.unavailable}`);
-      const upstream = { address: found.address, port: found.port ?? t.port };
-      if (!(await this.deps.probe(upstream.address, upstream.port))) {
-        throw new PublishError(
-          found.port !== undefined
-            ? // 別のサーバの Project ごとのコンテナ：VM のポートからコンテナの中の 127.0.0.1 へ繋いでいる（中では 127.0.0.1 で待ち受けてよい）
-              `host から別のサーバの ${upstream.address}:${upstream.port}（コンテナの中の ${t.port} へ繋ぐ口）に届きません。別のサーバが host と同じ LAN にあり、` +
-                `向こうのファイアウォールがそのポートを通しているか、サービスがコンテナの中で ${t.port} を待ち受けているか確かめてください`
-            : found.exposedOnLan
-              ? `host から別のサーバの ${upstream.address}:${t.port} に届きません。別のサーバが host と同じ LAN にあり、サービスが 0.0.0.0` +
-                  "（すべてのアドレス）で待ち受けていて、向こうのファイアウォールがそのポートを通しているか確かめてください" +
-                  "——127.0.0.1（localhost）だけで待っていると向こうの外から届きません（Vite なら --host）"
-              : `host から ${upstream.address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
-                  "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
-        );
-      }
-
-      const caddy = this.deps.caddyFor(s);
-      const server = await resolveServer(caddy, s);
-      const routes = await readRoutes(caddy, server);
-      const taken = routes.find((r) => !String(r["@id"] ?? "").startsWith(this.prefix) && hostsOf(r).includes(hostname));
-      if (taken) throw new PublishError(`${hostname} は Caddy の別の設定がもう使っています`);
-
-      const rec: RouteRecord = {
-        ...t,
-        hostname,
-        auth: await authRecordOf(config.auth),
-        createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
-      };
-      const id = routeIdFor(this.prefix, t);
-      // **前に差し込む**——Caddyfile の `*.<ドメイン>` のようなまとめたルートより後ろに置くと、そちらが先に当たる
-      await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, upstream, this.deps.bantoUpstream));
       try {
-        await this.deps.store.setRoutes([...records, rec]);
+        return await this.establish(t, s, config, records, hostname, found);
       } catch (err) {
-        // 覚えられなかった公開を Caddy に残さない。消せなければ、自分の印の余りとして次の突き合わせで消える
-        await deleteRoute(caddy, id).catch((e: unknown) =>
-          console.error(`[publish-caddy] 覚えられなかった公開のルートを消せませんでした（次の突き合わせで消します）：${errText(e)}`),
-        );
+        // **host が用意した道を残さない**（レビュー M1）：別の番号で届く（host がこの公開のために道を張った）のに公開できなかったら、
+        // 外させる——残すと記録の無い道が LAN に 0.0.0.0 で待ち受けたまま、認証なしで届き続ける。同じ Project の同じポートの公開が
+        // 残っていれば、そちらが使っているので外さない
+        if (found.port !== undefined && !records.some((r) => r.projectId === t.projectId && r.port === t.port)) {
+          await this.releaseOrQueue(t.projectId, t.port);
+        }
         throw err;
       }
-      return { url: urlOf(hostname), hostname, reach: s.reach };
     });
+  }
+
+  /** 公開の後半（届くかを確かめ、Caddy に道を張り、記録する）。失敗したら投げる——host が張った道は呼び元が外させる */
+  private async establish(
+    t: PublishTarget,
+    s: CaddySettings & { baseDomain: string },
+    config: ReturnType<typeof parseConfig>,
+    records: RouteRecord[],
+    hostname: string,
+    found: { address: string; port?: number; exposedOnLan?: true },
+  ): Promise<{ url: string; hostname: string; reach: Reach }> {
+    const upstream = { address: found.address, port: found.port ?? t.port };
+    if (!(await this.deps.probe(upstream.address, upstream.port))) {
+      throw new PublishError(
+        found.port !== undefined
+          ? // 別のサーバの Project ごとのコンテナ：VM のポートからコンテナの中の 127.0.0.1 へ繋いでいる（中では 127.0.0.1 で待ち受けてよい）
+            `host から別のサーバの ${upstream.address}:${upstream.port}（コンテナの中の ${t.port} へ繋ぐ口）に届きません。別のサーバが host と同じ LAN にあり、` +
+              `向こうのファイアウォールがそのポートを通しているか、サービスがコンテナの中で ${t.port} を待ち受けているか確かめてください`
+          : found.exposedOnLan
+            ? `host から別のサーバの ${upstream.address}:${t.port} に届きません。別のサーバが host と同じ LAN にあり、サービスが 0.0.0.0` +
+                "（すべてのアドレス）で待ち受けていて、向こうのファイアウォールがそのポートを通しているか確かめてください" +
+                "——127.0.0.1（localhost）だけで待っていると向こうの外から届きません（Vite なら --host）"
+            : `host から ${upstream.address}:${t.port} に届きません。サービスが 0.0.0.0（すべてのアドレス）で待ち受けているか確かめてください` +
+                "——127.0.0.1（localhost）だけで待っているとコンテナの外から届きません（Vite なら --host）",
+      );
+    }
+
+    const caddy = this.deps.caddyFor(s);
+    const server = await resolveServer(caddy, s);
+    const routes = await readRoutes(caddy, server);
+    const taken = routes.find((r) => !String(r["@id"] ?? "").startsWith(this.prefix) && hostsOf(r).includes(hostname));
+    if (taken) throw new PublishError(`${hostname} は Caddy の別の設定がもう使っています`);
+
+    const rec: RouteRecord = {
+      ...t,
+      hostname,
+      auth: await authRecordOf(config.auth),
+      createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
+    };
+    const id = routeIdFor(this.prefix, t);
+    // **前に差し込む**——Caddyfile の `*.<ドメイン>` のようなまとめたルートより後ろに置くと、そちらが先に当たる
+    await caddy.put(`${routesPath(server)}/0`, buildRoute(id, rec, upstream, this.deps.bantoUpstream));
+    try {
+      await this.deps.store.setRoutes([...records, rec]);
+    } catch (err) {
+      // 覚えられなかった公開を Caddy に残さない。消せなければ、自分の印の余りとして次の突き合わせで消える
+      await deleteRoute(caddy, id).catch((e: unknown) =>
+        console.error(`[publish-caddy] 覚えられなかった公開のルートを消せませんでした（次の突き合わせで消します）：${errText(e)}`),
+      );
+      throw err;
+    }
+    return { url: urlOf(hostname), hostname, reach: s.reach };
+  }
+
+  /**
+   * host に道を外させる。外せなければ「外させ損ねた道」に記録し、突き合わせで外し直す（レビュー M1——記録が消えて道だけ残ると、
+   * LAN から認証なしで届き続ける）。返すのは外せなかった理由（外せたら undefined）
+   */
+  private async releaseOrQueue(projectId: string, port: number): Promise<string | undefined> {
+    if (!this.deps.releasePort) return undefined;
+    try {
+      await this.deps.releasePort(projectId, port);
+      return undefined;
+    } catch (err) {
+      const pending = await this.deps.store.pendingReleases();
+      if (!pending.some((p) => p.projectId === projectId && p.port === port)) {
+        await this.deps.store.setPendingReleases([...pending, { projectId, port, since: (this.deps.now?.() ?? new Date()).toISOString() }]);
+      }
+      console.error(`[publish-caddy] 公開先の道（${projectId} のポート ${port}）を外させられませんでした（突き合わせで外し直します）：${errText(err)}`);
+      return errText(err);
+    }
+  }
+
+  /**
+   * **外させ損ねた道を外し直す**（突き合わせのたびに。同じものは `RELEASE_RETRY_MS` に1回）。同じ Project の同じポートがまた公開されて
+   * いれば、その公開が使っているので外さずに記録から消す
+   */
+  private async retryPendingReleases(records: RouteRecord[]): Promise<void> {
+    const release = this.deps.releasePort;
+    if (!release) return;
+    const pending = await this.deps.store.pendingReleases();
+    if (pending.length === 0) return;
+    const now = Date.now();
+    const keep: typeof pending = [];
+    for (const p of pending) {
+      if (records.some((r) => r.projectId === p.projectId && r.port === p.port)) continue;
+      const key = `${p.projectId}:${p.port}`;
+      const last = this.lastReleaseTry.get(key);
+      if (last !== undefined && now - last < RELEASE_RETRY_MS) {
+        keep.push(p);
+        continue;
+      }
+      this.lastReleaseTry.set(key, now);
+      try {
+        await release(p.projectId, p.port);
+        this.lastReleaseTry.delete(key);
+      } catch (err) {
+        keep.push(p);
+        console.error(`[publish-caddy] 公開先の道（${key}）をまだ外させられません：${errText(err)}`);
+      }
+    }
+    if (keep.length !== pending.length) await this.deps.store.setPendingReleases(keep);
   }
 
   /** やめる。**マスターから消し、Caddy のルートも消す**。Caddy に届かなければ、届いたときの突き合わせで消える */
@@ -236,11 +316,8 @@ export class CaddyPublisher {
       // 道は Project とサービスのポートで決まる——同じ Project の別の Service が同じポートで公開されていれば、そちらが使うので外さない
       const stillUsed = records.some((r) => r !== rec && r.projectId === t.projectId && r.port === t.port);
       if (!stillUsed) {
-        try {
-          await this.deps.releasePort?.(t.projectId, t.port);
-        } catch (err) {
-          notes.push(`公開先の道（別のサーバのポート）はまだ外せていません：${errText(err)}`);
-        }
+        const why = await this.releaseOrQueue(t.projectId, t.port);
+        if (why) notes.push(`公開先の道（別のサーバのポート）はまだ外せていません（突き合わせで外し直します）：${why}`);
       }
       return { removed: true, url: urlOf(rec.hostname), ...(notes.length > 0 ? { note: notes.join("／") } : {}) };
     });
@@ -265,6 +342,8 @@ export class CaddyPublisher {
   private async reconcileNow(): Promise<RouteStatus[]> {
     const s = await this.deps.store.settings();
     const records = await this.deps.store.routes();
+    // host に外させ損ねた道を外し直す（Caddy の設定に依らない——道は別のサーバの LAN に出ている）
+    await this.retryPendingReleases(records);
     const status = (rec: RouteRecord, state: RouteState, problem?: string): RouteStatus => ({
       projectId: rec.projectId,
       service: rec.service,
