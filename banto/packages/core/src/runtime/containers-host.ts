@@ -92,6 +92,25 @@ export function sameGroups(statusText: string, idG: string): boolean {
   return a.size === b.size && [...a].every((g) => b.has(g));
 }
 
+/**
+ * **そのユーザーが Incus のどの区画に繋がるか**。`/1.0` の `environment.project` は、区画を指定しない問い合わせでは incus-user の
+ * 制限つきの証明書でも `default` を返す（2026-10-20、banto-ct-test で実測——これを見て誤って断っていた）。代わりに、見える区画の
+ * 一覧（`/1.0/projects`。制限つきの証明書には許された区画だけが返る）で決める：自分の区画だけが見えるなら `user-<uid>`、
+ * `default` が見えるなら制限の無い口（`default`）、読めなければ空
+ */
+export async function reachableProject(vm: VmAccess): Promise<string> {
+  const r = await vm.run(["incus", "query", "/1.0/projects"]);
+  if (r.code !== 0) return "";
+  let names: string[];
+  try {
+    names = (JSON.parse(r.stdout) as unknown[]).filter((x): x is string => typeof x === "string").map((u) => decodeURIComponent(u.split("/").pop() ?? ""));
+  } catch {
+    return "";
+  }
+  if (names.includes("default")) return "default";
+  return names.length === 1 && names[0] === projectNameOf(vm.uid) ? names[0] : "";
+}
+
 /** 向こうの様子を引く（sudo は「通るか」と、ユーザーから見えない置き場を root で見るのにだけ使う。変えない） */
 export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHostState> {
   // 同時に張る SSH の接続は5本まで（sshd の MaxStartups の既定 10 から確率で断り始める——ほかの接続と重なっても誤判定しない）
@@ -113,8 +132,8 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
   else if (info.code !== 0) incus = { status: "unreachable", message: info.stderr.trim() || `終了コード ${info.code}` };
   else {
     try {
-      const body = JSON.parse(info.stdout) as { environment?: { server_version?: string; project?: string } };
-      incus = { status: "ok", version: body.environment?.server_version ?? "", project: body.environment?.project ?? "" };
+      const body = JSON.parse(info.stdout) as { environment?: { server_version?: string } };
+      incus = { status: "ok", version: body.environment?.server_version ?? "", project: await reachableProject(vm) };
     } catch {
       incus = { status: "unreachable", message: `incus query /1.0 の答えを読めませんでした：${info.stdout.slice(0, 120)}` };
     }
