@@ -19,6 +19,13 @@ import { makeTlsCert, MemoryVault, RecordingNotices, startFakeGithub, type FakeG
 
 const GH: GithubEndpoints = { web: "https://github.com", api: "https://api.github.com", ssh: "github.com" };
 
+// **資格情報の窓口の置き場を、この試験のプロセスだけのものにする**（2026-10-20、Backlog #466）。窓口が残っていないかは置き場の
+// 前後の差で見るが、`node --test` は試験のファイルを別のプロセスで並べて走らせ、branch-sync・publish の試験も同じ置き場
+// （`XDG_RUNTIME_DIR`）に窓口を開く——その間に開いたほかのプロセスの窓口を「残った」と数えて、12 回中 4 回落ちた（規則6）。
+// 置き場は短いパスにする（unix socket のパスは 108 字まで）
+process.env.XDG_RUNTIME_DIR = mkdtempSync("/tmp/banto-cred-");
+process.on("exit", () => rmSync(process.env.XDG_RUNTIME_DIR!, { recursive: true, force: true }));
+
 test("clone の元を読む——GitHub は owner/name に、外は URL のまま。手元・file・git・ext・資格情報入りの URL は断る", () => {
   const gh = (owner: string, name: string) => ({ kind: "github", owner, name });
   for (const text of ["tjst-t/banto", "github.com/tjst-t/banto", "https://github.com/tjst-t/banto.git", "https://github.com/tjst-t/banto/", "git@github.com:tjst-t/banto.git", "ssh://git@github.com/tjst-t/banto.git"]) {
