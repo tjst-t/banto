@@ -207,7 +207,17 @@ function tooLarge(branch: string, bytes: number): string {
 }
 
 export class BranchSync {
-  constructor(private readonly deps: BranchSyncDeps) {}
+  /**
+   * **前の回が残した使い捨ての置き場を消す**（レビュー L5）——途中で落ちると `branch-sync/w-*` が残る。この Module を起こすたびに
+   * 置き場ごと消す（同じ置き場を使う Repositories は1つだけ）。運ぶ前にこれを待つので、消すのは前の回のものだけ
+   */
+  readonly leftoversCleared: Promise<void>;
+
+  constructor(private readonly deps: BranchSyncDeps) {
+    this.leftoversCleared = rm(join(deps.dataDir, "branch-sync"), { recursive: true, force: true }).catch((err: unknown) => {
+      console.error(`[repositories] 前の回の使い捨ての置き場を消せませんでした：${(err as Error).message}`);
+    });
+  }
 
   /**
    * 呼び出し元の Project の根から、台帳の行を決める。**根の一番上**（根がリポジトリの下のフォルダでも、worktree でも、
@@ -430,6 +440,7 @@ export class BranchSync {
     callId: string | undefined,
   ): Promise<BranchSyncResult> {
     const { git, where, url, by } = t;
+    await this.leftoversCleared;
     const parent = join(this.deps.dataDir, "branch-sync");
     await mkdir(parent, { recursive: true, mode: 0o700 });
     const work = await mkdtemp(join(parent, "w-"));
