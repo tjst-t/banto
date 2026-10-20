@@ -8,7 +8,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RemoteProjectGit, parseOriginConfig, type ProjectRun, type RunInProject } from "./remote-git.js";
+import { readdirSync, utimesSync } from "node:fs";
+import { RemoteProjectGit, UNBUNDLE_SCRIPT, parseOriginConfig, type ProjectRun, type RunInProject } from "./remote-git.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...args], {
@@ -18,10 +19,15 @@ function git(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
-/** 箱の中で流す代わり：argv をこの機械でそのまま流す（標準入出力はバイトのまま、上限つき） */
-const localRun: RunInProject = (_projectId, argv, opts) =>
+/**
+ * 箱の中で流す代わり：argv をこの機械でそのまま流す（標準入出力はバイトのまま、上限つき）。**こちらでは時間で切らない**——
+ * 向こうの git が自分の上限で止まることを見るため。`env` で PATH・TMPDIR を差し替えられる
+ */
+const runWith =
+  (env: Record<string, string> = {}): RunInProject =>
+  (_projectId, argv, opts) =>
   new Promise<ProjectRun>((resolve) => {
-    const child = spawn(argv[0]!, argv.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/" } });
+    const child = spawn(argv[0]!, argv.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "/", ...env } });
     const chunks: Buffer[] = [];
     let size = 0;
     let overflow = false;
@@ -38,6 +44,7 @@ const localRun: RunInProject = (_projectId, argv, opts) =>
     child.stdin.on("error", () => undefined);
     child.stdin.end(opts.stdin ?? Buffer.alloc(0));
   });
+const localRun = runWith();
 
 function world(): { dir: string; repo: string; pg: RemoteProjectGit; roots: Map<string, string>; done(): void } {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "banto-remote-git-")));
@@ -170,4 +177,50 @@ test("origin の設定の出力（--null）を読む", () => {
     urls: ["a", "b"],
     redirects: ["url.x.insteadof"],
   });
+});
+
+test("向こうの git は自分の上限で止まる（core が線を切っても走り切らない）。取り込む一時ファイルは止められても残さず、前の回の残りも消す（レビュー L3）", async () => {
+  const w = world();
+  try {
+    commitOn(w.repo, "backlog", "{}\n");
+    // bundle を作る git が答えないまま居座る向こう
+    const bin = join(w.dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a; do [ "$a" = bundle ] && exec sleep 30; done\nexec ${execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim()} "$@"\n`);
+    chmodSync(join(bin, "git"), 0o755);
+    const hung = new RemoteProjectGit({ remoteRootOf: () => w.repo, run: runWith({ PATH: `${bin}:${process.env.PATH}` }), timeoutMs: 2000 });
+    const started = Date.now();
+    await assert.rejects(() => hung.bundle("p1", "backlog"), /bundle にできませんでした/);
+    assert.ok(Date.now() - started < 6000, `向こうの git が上限で止まらない（${Date.now() - started}ms）`);
+
+    // 前の回の残り（1時間前）は消し、今の回の一時ファイルも残さない
+    const tmp = join(w.dir, "tmp");
+    mkdirSync(tmp);
+    const stale = join(tmp, "banto-unbundle.OLD123");
+    writeFileSync(stale, "x");
+    utimesSync(stale, new Date(Date.now() - 3600_000), new Date(Date.now() - 3600_000));
+    const fresh = join(tmp, "banto-unbundle.NOW456");
+    writeFileSync(fresh, "y");
+    const pg = new RemoteProjectGit({ remoteRootOf: () => w.repo, run: runWith({ TMPDIR: tmp }) });
+    const bundle = execFileSync("git", ["-C", w.repo, "bundle", "create", "-q", "-", "refs/heads/backlog"]);
+    await pg.unbundle("p1", "backlog", bundle);
+    assert.deepEqual(readdirSync(tmp), ["banto-unbundle.NOW456"], "前の回の残りを消していない・今の回のものが残った・走っているかもしれない新しいものを消した");
+
+    // 受けている途中で止められた（線が切れた）——一時ファイルを消してから終わる
+    const child = spawn("env", ["BANTO_GIT_LIMIT=10", "/bin/sh", "-c", UNBUNDLE_SCRIPT, "banto-git", w.repo, "backlog"], {
+      stdio: ["pipe", "ignore", "ignore"],
+      env: { PATH: process.env.PATH ?? "", TMPDIR: tmp },
+    });
+    child.stdin.write(bundle.subarray(0, 10));
+    const until = Date.now() + 5000;
+    while (readdirSync(tmp).length < 2 && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(readdirSync(tmp).length, 2, "一時ファイルができていない");
+    const closed = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+    child.kill("SIGTERM");
+    child.stdin.end();
+    assert.notEqual(await closed, 0);
+    assert.deepEqual(readdirSync(tmp), ["banto-unbundle.NOW456"], "止められたあとに一時ファイルが残った");
+  } finally {
+    w.done();
+  }
 });
