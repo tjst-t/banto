@@ -24,7 +24,7 @@
 // 承認のカードに出し、承認の鍵にも入れる（違う場所・違うアカウントは聞き直す）。ここはその名乗りが、いま決まる送り先と同じとき
 // だけ引き受ける
 
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PROJECT_GIT_BUNDLE_MAX_BYTES, isSafeBranchName, type ProjectGitOrigin } from "@banto/module-contract";
 import type { GithubAccounts } from "./accounts.js";
@@ -160,6 +160,44 @@ function explain(direction: "push" | "fetch", own: string): string {
 /** 別のサーバの Project か（根は向こうのパス） */
 export function isRemote(project: ProjectSummary): boolean {
   return project.runtime !== undefined && project.runtime !== "host-container";
+}
+
+/**
+ * 取ってくる向きで、使い捨ての置き場がこれを越えたら止める（bundle にする前の pack と索引。bundle の上限に余白を見た大きさ。
+ * レビュー L1——取ってきてから大きさを見ると、上限を越えるものも全部取ってきてしまう）
+ */
+const FETCH_DIR_MAX_BYTES = 2 * PROJECT_GIT_BUNDLE_MAX_BYTES;
+/** 置き場の大きさを見る間隔 */
+const FETCH_WATCH_MS = 250;
+
+/** フォルダの中のファイルの大きさの和（symlink は辿らない） */
+async function dirBytes(dir: string): Promise<number> {
+  let total = 0;
+  for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) total += await dirBytes(p);
+    else if (e.isFile()) total += (await lstat(p).catch(() => ({ size: 0 }))).size;
+  }
+  return total;
+}
+
+/** フォルダの大きさを見張り、上限を越えたら `signal` を立てる（`stop` で見張りをやめる） */
+export function watchDirSize(dir: string, maxBytes: number, everyMs = FETCH_WATCH_MS): { signal: AbortSignal; seen(): number; stop(): void } {
+  const exceeded = new AbortController();
+  let seen = 0;
+  let busy = false;
+  const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
+    void dirBytes(dir)
+      .then((n) => {
+        seen = n;
+        if (n > maxBytes) exceeded.abort();
+      })
+      .finally(() => (busy = false));
+  }, everyMs);
+  timer.unref();
+  return { signal: exceeded.signal, seen: () => seen, stop: () => clearInterval(timer) };
 }
 
 /** 運べる大きさを越えた */
@@ -401,14 +439,18 @@ export class BranchSync {
       }
       const c = await gitCredentialFor(this.deps, t.login, callId);
       let result: CloneResult;
+      // 取ってくる向きは、置き場が上限を越えたらその場でやめる（終わってから大きさを見ない）
+      const watch = direction === "fetch" ? watchDirSize(repo, FETCH_DIR_MAX_BYTES) : undefined;
       try {
         result =
           direction === "push"
             ? await gitPushBranch({ path: repo, branch, credential: c.credential, remote: url })
-            : await gitFetchBranch({ path: repo, branch, credential: c.credential, remote: url });
+            : await gitFetchBranch({ path: repo, branch, credential: c.credential, remote: url, ...(watch ? { signal: watch.signal } : {}) });
       } finally {
+        watch?.stop();
         await c.window?.close().catch(() => undefined);
       }
+      if (watch?.signal.aborted) return { handled: true, ok: false, message: tooLarge(branch, watch.seen()) };
       if (!result.ok) {
         if (direction === "fetch" && result.kind === "failed" && /couldn't find remote ref|could not find remote ref/i.test(result.own ?? "")) {
           return { handled: true, ok: true, absent: true, message: `${where} にはまだ ${branch} がありません` };

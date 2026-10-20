@@ -841,7 +841,7 @@ export function gitPushBranch(input: { path: string; branch: string; credential:
  * 書き換えられていても写しは origin に合わせる。手元のブランチには触らない）。タグ・submodule は取らない。
  * `remote` を渡すと、その URL から `refs/heads/<b>` へ（別のサーバの Project の使い捨ての置き場——bundle にして運ぶ）
  */
-export function gitFetchBranch(input: { path: string; branch: string; credential: GitCredential; remote?: string }): Promise<CloneResult> {
+export function gitFetchBranch(input: { path: string; branch: string; credential: GitCredential; remote?: string; signal?: AbortSignal }): Promise<CloneResult> {
   const into = input.remote === undefined ? `refs/remotes/origin/${input.branch}` : `refs/heads/${input.branch}`;
   return streamGit({
     args: [
@@ -854,6 +854,7 @@ export function gitFetchBranch(input: { path: string; branch: string; credential
     ],
     cwd: input.path,
     credential: input.credential,
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 }
 

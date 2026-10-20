@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { AUDIT_ARGS_META_KEY, CALLER_META_KEY, CALL_ID_META_KEY, VALUE_FREE_META_KEY, VISIBILITY_META_KEY } from "@banto/module-contract";
 import { GithubAccounts } from "./accounts.js";
-import { BranchSync, accountForRemote, repositoryLabel, type ProjectGitAccess } from "./branch-sync.js";
+import { BranchSync, accountForRemote, repositoryLabel, watchDirSize, type ProjectGitAccess } from "./branch-sync.js";
 import { PROJECT_GIT_BUNDLE_MAX_BYTES, isSafeBranchName, type ProjectGitOrigin } from "@banto/module-contract";
 import { GIT_ENV } from "./git.js";
 import { httpGithub } from "./github.js";
@@ -705,4 +706,40 @@ test("遅い線：ブランチを送る口を処理している間は進み具�
     await client.close();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("取ってくる向きは大きさを見張る：置き場が上限を越えたらその場でやめる。大きすぎるブランチは向こうへ運ばない（レビュー L1）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "banto-repositories-watch-"));
+  try {
+    const w = watchDirSize(dir, 1000, 5);
+    mkdirSync(join(dir, "objects"));
+    writeFileSync(join(dir, "objects", "a"), Buffer.alloc(600));
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(w.signal.aborted, false, "上限の手前で止めた");
+    writeFileSync(join(dir, "objects", "b"), Buffer.alloc(600));
+    const started = Date.now();
+    while (!w.signal.aborted && Date.now() - started < 2000) await new Promise((r) => setTimeout(r, 5));
+    w.stop();
+    assert.equal(w.signal.aborted, true, "上限を越えても止めない");
+    assert.equal(w.seen(), 1200);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  await withWorld(async (w) => {
+    await addAccount(w, "alice", TOKEN);
+    const { far, sync, project } = await farClone(w);
+    // GitHub の側に、上限（6MB）を越えるブランチ（縮まない中身）
+    const big = join(w.home, "big");
+    execFileSync("git", ["init", "-q", big]);
+    writeFileSync(join(big, "blob.bin"), randomBytes(PROJECT_GIT_BUNDLE_MAX_BYTES + 1024 * 1024));
+    git(big, "add", "blob.bin");
+    git(big, "commit", "-q", "-m", "big");
+    git(big, "push", "-q", join(w.gh.gitRoot, "alice", "notes.git"), "HEAD:refs/heads/big");
+    far.calls.length = 0;
+    const r = await asBacklog(sync, "fetch", "big", project);
+    assert.equal(r.handled && !r.ok, true, JSON.stringify(r));
+    assert.match((r as { message: string }).message, /big が大きすぎて、別のサーバとの間で運べません/);
+    assert.deepEqual(far.calls, ["origin", "origin"], "大きすぎるものを向こうへ運んだ");
+    assert.deepEqual(readdirSync(join(w.home, ".data", "branch-sync")), []);
+  });
 });
