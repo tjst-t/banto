@@ -10094,6 +10094,31 @@
       "updatedAt": "2026-10-20T05:11:21.638Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "missions-patrols",
+      "number": 419,
+      "kind": "story",
+      "title": "任務と見回り——会話をやめても進む・自分から調べる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "ChatGPT の Dots の「会話をやめても進む」「頼まれていなくても自分から調べる」を banto の形で取り入れる（決定・2026-10-20、ユーザー）。\n\n- 土台：tool の読むだけの印 `dev.banto/effect` と、host が強いる読むだけの回（守りは4か所：SDK の `tools`・core の in-process のサーバを読むだけの tool で組む・agent-proxy・PreToolUse、中継先も読むだけ、人に聞かずに断る、書いた URL はリンクにしない）\n- 任務：会話に目標・終わりの条件・枠（回数・期限・最短の間隔）。`start_mission` は必ず人に聞き、枠の中の `schedule_followup` は聞かずに通す。`finish_mission` で終える\n- 見回り：自動化の `mode: \"patrol\"`。専用の Fork はどの起こし方でも読むだけ。`notify` で受信箱の「気づき」に出し、人が「やって」「任務にする」でつなぐ\n\n仕様：v4-architecture.md §4.4・§2.4 の 4.、v4-frontend.md §6.47・§6.41・§6.4。経緯とレビュー：docs/notes/2026-10-20-missions-patrols.md（Fable のレビュー3回、最後は「main に入れてよい」）。GitHub の main cdd4605c〜3e4b4c5b。",
+      "doneWhen": "タスクが全部 done になり、本物のモデルで次の2つが確かめられていること。(1) 任務を1つ始め、人が見ていない間に schedule_followup で2回以上起きて finish_mission で終わる。(2) 見回りが外の文を読んで気づきを1件出し、その回で読むだけでない tool（Shell の runCommand・WebFetch・create_automation）が断られる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md#44",
+        "docs/specs/v4-frontend.md#647",
+        "docs/notes/2026-10-20-missions-patrols.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T05:39:44.841Z",
+      "updatedAt": "2026-10-20T05:39:44.841Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
