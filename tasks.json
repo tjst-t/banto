@@ -11089,7 +11089,7 @@
       "number": 459,
       "kind": "task",
       "title": "Project ごとの「/dev/kvm を見せる」（/dev/kvm・/dev/vhost-net、vhost_net と足したモジュールを core が modprobe）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "containers-virtualization",
       "dependsOn": [
         "runtime-allow-virtualization"
@@ -11099,7 +11099,7 @@
       "labels": [],
       "body": "仕様の 2. の1つ目。unix-char で /dev/kvm と /dev/vhost-net（mode=0666、path は固定の2つ）。人が押したとき core が sudo -n modprobe vhost_net（と人が足した名前 [a-z0-9_-]+）、/etc/modules-load.d/banto.conf をその実行場所の全 Project の和で書き直す（tee）。br_netfilter は注意つき。「中で Docker を使う」が切れていれば一緒に入れるか聞く。設定の置き場は host 側の Project の設定、識別子は Project id だけ。\n\n実装（2026-10-20、GitHub の main）：Project の設定 container.kvm・container.kvmModules、PUT /api/projects/<id>/container/kvm {enabled, modules?}、GET /api/projects/<id>/container の virtualization、許していなければ 409 virtualization-not-allowed。単体試験は通過。残り：ベアメタルでの確かめ（完了条件）、Docker を一緒に入れるか聞くのは #462。小さな残り：装置の付け外しは人が押したときの SSH の道と、ensure の道の2本（どちらも設定から同じ形に揃える）。",
       "doneWhen": "ベアメタルで押した Project の中で qemu -accel kvm が KVM で動き、containerlab が動く。押していない Project には /dev/kvm が無い。",
-      "resolution": null,
+      "resolution": "2026-10-20/21 ベアメタルで確かめた：オンで /dev/kvm・/dev/vhost-net が付き vhost_net を読み modules-load.d を書く。qemu-bmc の中で cirros が KVM で起動（Hypervisor detected: KVM）、containerlab の2ノードで ping が通った。sakutei でオフにすると装置が外れ中から見えなくなり、modules-load.d は残る Project の和（vhost_net）で書き直された。",
       "refs": [],
       "threads": [
         {
@@ -11108,8 +11108,8 @@
         }
       ],
       "createdAt": "2026-10-20T09:21:20.427Z",
-      "updatedAt": "2026-10-20T10:38:02.449Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T20:03:17.212Z",
+      "closedAt": "2026-10-20T20:03:17.212Z",
       "extra": {}
     },
     {
