@@ -221,7 +221,7 @@ function harness(opts: { vm?: Partial<FakeVm>; runtime?: Partial<RemoteRuntime>;
   return { virt, vm, runtimes, settings, projects, nesting };
 }
 
-test("仮想化の実験を許す：区画に unix-char を sudo -n で足して記録する（項目ごとの固定のコマンド）", async () => {
+test("仮想化（KVM）を許す：区画に unix-char を sudo -n で足して記録する（項目ごとの固定のコマンド）", async () => {
   const h = harness();
   const result = await h.virt.setAllowed("lab", true);
   assert.deepEqual(h.vm.sudoCalls, [["incus", "project", "set", "user-1001", "restricted.devices.unix-char=allow"]]);

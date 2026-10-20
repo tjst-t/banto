@@ -141,7 +141,7 @@ export interface RealProject {
   idle?: { days: number; suggestSleep: true };
   /** 新しい Project の始め方の仕事（別のサーバの clone・新しいリポジトリ、§6.49）。そう作ったものだけ */
   start?: RealProjectStart;
-  /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化の実験」の 4.。サイドバーの行に印）。そうでなければ無い */
+  /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化（KVM）」の 4.。サイドバーの行に印）。そうでなければ無い */
   privileged?: true;
   createdAt: string;
 }
@@ -962,12 +962,12 @@ export interface RealRemoteRuntime extends RealRuntimeInput {
   usedBy: Array<{ id: string; name: string }>;
   /** 新しい Project で選べない理由（選べるなら無し） */
   unavailableReason?: string;
-  /** 仮想化の実験を許している（containers だけ。v4-security.md §1「`containers` で仮想化の実験」の 1.）。許していなければ無い */
+  /** 仮想化（KVM）を許している（containers だけ。v4-security.md §1「`containers` で仮想化（KVM）」の 1.）。許していなければ無い */
   virtualization?: boolean;
 }
 
 /**
- * **実行場所の「仮想化の実験を許す」**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 1.、Backlog 458 番）。
+ * **実行場所の「仮想化（KVM）を許す」**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）」の 1.、Backlog 458 番）。
  * 止めるときに、まだ使っている Project（閉じたもの・眠っているものも）があれば host が名指しして断る
  */
 export async function setRealRuntimeVirtualization(name: string, allowed: boolean): Promise<{ warnings: string[]; runtime: RealRemoteRuntime }> {
@@ -1278,12 +1278,12 @@ export interface RealProjectContainer {
   container: { name: string; status: string } | null;
   /** 資源の上限（2026-10-02）。host がコンテナを使っていなければ null */
   limits: RealContainerLimits | null;
-  /** 仮想化の実験（2026-10-20）。host が扱えなければ null */
+  /** 仮想化（KVM）（2026-10-20）。host が扱えなければ null */
   virtualization: RealProjectVirtualization | null;
 }
 
 /**
- * **Project ごとの仮想化の実験**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 2.。host の
+ * **Project ごとの仮想化（KVM）**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）」の 2.。host の
  * `ContainersVirtualization.describe`）。`available` はその Project で使えるか（containers の実行場所で、許しているか）
  */
 export interface RealProjectVirtualization {

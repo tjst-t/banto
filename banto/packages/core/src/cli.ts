@@ -489,7 +489,7 @@ async function main(): Promise<void> {
         .map((p) => ({ id: p.id, name: p.name, root: p.runtime === rt ? p.root : (p.move?.to.root ?? p.root) })),
   });
   /**
-   * **`containers` の仮想化の実験**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験——/dev/kvm と特権」）。
+   * **`containers` の仮想化（KVM）**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）——/dev/kvm と特権」）。
    * 人の画面の口からだけ変える。Project ごとの設定は host 側の Project の設定（runtime config の Project の層）
    */
   const containersVirtualization = new ContainersVirtualization({

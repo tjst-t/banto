@@ -1,7 +1,7 @@
-// **`containers` で仮想化の実験——/dev/kvm と特権**（決定・2026-10-20、ユーザー。`docs/specs/v4-security.md` §1「`containers` で
-// 仮想化の実験——/dev/kvm と特権」、Backlog #458）。
+// **`containers` で仮想化（KVM）——/dev/kvm と特権**（決定・2026-10-20、ユーザー。`docs/specs/v4-security.md` §1「`containers` で
+// 仮想化（KVM）——/dev/kvm と特権」、Backlog #458）。
 //
-// 実行場所の「仮想化の実験を許す」（既定オフ）を、人が押したときにだけ変える。オンで core が `sudo -n` で区画に
+// 実行場所の「仮想化（KVM）を許す」（既定オフ）を、人が押したときにだけ変える。オンで core が `sudo -n` で区画に
 // `restricted.devices.unix-char=allow` を足し、オフで unset する（incus-user が作った既定と差分が無い形に戻す）。オフにするのは、
 // その実行場所の Project が全部（閉じたもの・眠っているものも）仮想化の設定を外してから。
 //
@@ -126,7 +126,7 @@ export function modulesLoadContent(settings: ProjectVirtualization[]): string | 
   for (const v of settings) if (v.kvm) for (const m of [...ALWAYS_MODULES, ...v.modules]) names.add(m);
   if (names.size === 0) return undefined;
   return [
-    "# banto が書く（仮想化の実験。この実行場所の Project が /dev/kvm を見せるときに読むモジュール）。手で変えても次に書き直す",
+    "# banto が書く（仮想化（KVM）。この実行場所の Project が /dev/kvm を見せるときに読むモジュール）。手で変えても次に書き直す",
     ...[...names].sort(),
     "",
   ].join("\n");
@@ -172,7 +172,7 @@ async function hugepagesInUse(incus: ProjectContainers, vm: VmAccess, container:
   return Number(r.stdout.trim());
 }
 
-/** VM のユーザーとして Incus を呼ぶ（仮想化の実験の装置を付け外す） */
+/** VM のユーザーとして Incus を呼ぶ（仮想化（KVM）の装置を付け外す） */
 function containersOver(vm: VmAccess): ProjectContainers {
   return new ProjectContainers((args, opts) => vm.run(["incus", ...args], opts), DEFAULT_TIMEOUTS);
 }
@@ -207,7 +207,7 @@ export class ContainersVirtualization {
   constructor(private readonly deps: ContainersVirtualizationDeps) {}
 
   /**
-   * **実行場所の「仮想化の実験を許す」を変える**（人が押した）。オン：区画に `restricted.devices.unix-char=allow`。オフ：その実行場所の
+   * **実行場所の「仮想化（KVM）を許す」を変える**（人が押した）。オン：区画に `restricted.devices.unix-char=allow`。オフ：その実行場所の
    * 全 Project が仮想化の設定を外していなければ名指しして断り、区画の項目を unset し、modules-load と sysctl のファイルを消す
    * （読み込み済みのモジュール・確保済みの hugepages は抜かない——次の再起動で戻らなくなるだけ）
    */
@@ -223,7 +223,7 @@ export class ContainersVirtualization {
       if (using.length > 0) {
         throw new RemoteRuntimeError(
           409,
-          `実行場所「${runtimeName}」の仮想化の実験を止められません——まだ使っている Project があります（閉じたもの・眠っているものも含む）：` +
+          `実行場所「${runtimeName}」の仮想化（KVM）を止められません——まだ使っている Project があります（閉じたもの・眠っているものも含む）：` +
             `${using.join("、")}。それぞれの設定で外してから止めてください`,
           { code: "virtualization-in-use" },
         );
@@ -251,7 +251,7 @@ export class ContainersVirtualization {
   }
 
   /**
-   * **Project の「/dev/kvm を見せる」を変える**（人が押した。v4-security.md §1「`containers` で仮想化の実験」の 2.）。オン：
+   * **Project の「/dev/kvm を見せる」を変える**（人が押した。v4-security.md §1「`containers` で仮想化（KVM）」の 2.）。オン：
    * `sudo -n modprobe vhost_net` と人が足したモジュールを読み、`/etc/modules-load.d/banto.conf` をその実行場所の全 Project（閉じた
    * ものも）の名前の和で書き直し（`tee` に標準入力、空なら消す）、コンテナに /dev/kvm と /dev/vhost-net を足す（動いていても
    * 起こし直さない）。オフ：装置を外してから書き直す（読み込んだモジュールは抜かない——ほかの Project が使っているかもしれない）。
@@ -294,7 +294,7 @@ export class ContainersVirtualization {
 
   /**
    * **その実行場所で確保した hugepages の合計（バイト）**。hugepages はメモリの cgroup に数えないので、コンテナのメモリの上限の
-   * 計算からこれを引く（v4-security.md §1「`containers` で仮想化の実験」の 2. の運用）。許していなければ 0
+   * 計算からこれを引く（v4-security.md §1「`containers` で仮想化（KVM）」の 2. の運用）。許していなければ 0
    */
   hugepagesReservedBytes(runtimeName: string): number {
     if (!this.deps.runtime(runtimeName)?.virtualization) return 0;
@@ -348,7 +348,7 @@ export class ContainersVirtualization {
       }
       await root(vm, { args: ["sysctl", "-w", `vm.nr_hugepages=${total}`] }, ran, "サーバの hugepages を合計に揃える");
       if (total > 0) {
-        const content = `# banto が書く（仮想化の実験。この実行場所の Project の hugepages の合計）。手で変えても次に書き直す\nvm.nr_hugepages = ${total}\n`;
+        const content = `# banto が書く（仮想化（KVM）。この実行場所の Project の hugepages の合計）。手で変えても次に書き直す\nvm.nr_hugepages = ${total}\n`;
         await root(vm, { args: ["tee", HUGEPAGES_SYSCTL_FILE], input: async () => content, display: `sudo tee ${HUGEPAGES_SYSCTL_FILE}（vm.nr_hugepages = ${total}）` }, ran, "再起動でも hugepages を戻す");
       } else {
         await root(vm, { args: ["rm", "-f", HUGEPAGES_SYSCTL_FILE] }, ran, "再起動で hugepages を戻す設定を消す");
@@ -387,7 +387,7 @@ export class ContainersVirtualization {
     }
   }
 
-  /** 特権コンテナにする設定か（Project の一覧の印。v4-security.md §1「`containers` で仮想化の実験」の 4.） */
+  /** 特権コンテナにする設定か（Project の一覧の印。v4-security.md §1「`containers` で仮想化（KVM）」の 4.） */
   privileged(projectId: string): boolean {
     return this.deps.settingsOf(projectId).privileged;
   }
@@ -413,7 +413,7 @@ export class ContainersVirtualization {
   }
 
   /**
-   * **Project の「特権コンテナにする」を変える**（人が押した。v4-security.md §1「`containers` で仮想化の実験」の 2. の3つ目・4.・5.）。
+   * **Project の「特権コンテナにする」を変える**（人が押した。v4-security.md §1「`containers` で仮想化（KVM）」の 2. の3つ目・4.・5.）。
    * `confirmName` が Project の名前と同じでなければ断る（画面で名前を打たせる代わり。比べるだけで、どのコマンドにも入れない）。
    * オン：実行場所が許していなければ断る。区画に `restricted.containers.privilege=allow` が無ければ `sudo -n` で足す（その実行場所で
    * 最初の1回）。コンテナがあれば止めて、中の番号がまだ前のものなら先に U に付け替え（#457）、`security.privileged=true` を書いて、
@@ -471,22 +471,22 @@ export class ContainersVirtualization {
   private mustContainersProject(projectId: string): string {
     const runtimeName = remoteNameOf(this.deps.project(projectId)?.runtime);
     if (!runtimeName || this.deps.runtime(runtimeName)?.mode !== "containers") {
-      throw new RemoteRuntimeError(409, "仮想化の実験は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
+      throw new RemoteRuntimeError(409, "仮想化（KVM）は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
     }
     return runtimeName;
   }
 
-  /** 仮想化の実験を許した `containers` の実行場所の Project か（でなければ断る） */
+  /** 仮想化（KVM）を許した `containers` の実行場所の Project か（でなければ断る） */
   private mustAllowedProject(projectId: string): { runtimeName: string } {
     const project = this.deps.project(projectId);
     if (!project) throw new RemoteRuntimeError(404, "Project がありません");
     const runtimeName = remoteNameOf(project.runtime);
     const r = runtimeName ? this.deps.runtime(runtimeName) : undefined;
     if (!runtimeName || !r || r.mode !== "containers") {
-      throw new RemoteRuntimeError(409, "仮想化の実験は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
+      throw new RemoteRuntimeError(409, "仮想化（KVM）は、別のサーバの Project ごとのコンテナ（containers）の Project だけです");
     }
     if (!r.virtualization) {
-      throw new RemoteRuntimeError(409, `実行場所「${runtimeName}」は仮想化の実験を許していません——先に実行場所の設定で許してください`, {
+      throw new RemoteRuntimeError(409, `実行場所「${runtimeName}」は仮想化（KVM）を許していません——先に実行場所の設定で許してください`, {
         code: "virtualization-not-allowed",
       });
     }
@@ -497,7 +497,7 @@ export class ContainersVirtualization {
     const r = this.deps.runtime(runtimeName);
     if (!r) throw new RemoteRuntimeError(404, `実行場所「${runtimeName}」はありません`);
     if (r.mode !== "containers") {
-      throw new RemoteRuntimeError(409, `実行場所「${runtimeName}」は Project ごとのコンテナ（containers）ではありません——仮想化の実験は containers だけです`);
+      throw new RemoteRuntimeError(409, `実行場所「${runtimeName}」は Project ごとのコンテナ（containers）ではありません——仮想化（KVM）は containers だけです`);
     }
     return r;
   }
@@ -513,7 +513,7 @@ async function projectConfigOf(vm: VmAccess): Promise<Record<string, string>> {
 /** sudo -n で1つ打つ（落ちたら、打ったものを添えて断る） */
 async function root(vm: VmAccess, c: RootCommand, ran: RanCommand[], what: string): Promise<void> {
   try {
-    await runRootCommand(vm.run, c, ran, { what: `仮想化の実験の「${what}」で `, ...(vm.log ? { log: vm.log } : {}) });
+    await runRootCommand(vm.run, c, ran, { what: `仮想化（KVM）の「${what}」で `, ...(vm.log ? { log: vm.log } : {}) });
   } catch (err) {
     if (err instanceof AutoFixError) throw new RemoteRuntimeError(502, err.message);
     throw err;

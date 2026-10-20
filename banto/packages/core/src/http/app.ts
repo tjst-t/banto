@@ -361,7 +361,7 @@ export interface AppDeps {
   projectContainerStatus?(projectId: string): Promise<{ name: string; status: string } | undefined>;
   /** **登録した別のサーバ**（決定・2026-10-08、v4-security.md §1「登録と選び方」）。無ければ実行場所はこの機械だけ */
   remoteRuntimes?: RemoteRuntimes;
-  /** `containers` の仮想化の実験（実行場所の「許す」・Project ごとの設定。人の画面からだけ） */
+  /** `containers` の仮想化（KVM）（実行場所の「許す」・Project ごとの設定。人の画面からだけ） */
   containersVirtualization?: ContainersVirtualization;
   /**
    * **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・止まるもの・起こす口（`modules/prepare` と
@@ -1913,7 +1913,7 @@ export function createApp(deps: AppDeps) {
           deps.projectThread.listProjects().map((p) => {
             const partlyAwake = p.sleep ? deps.projectSleep?.partlyAwake(p.id) : undefined;
             const mark = idle?.idleOf(p.id);
-            // 特権コンテナにした Project（サイドバーの行の印。v4-security.md §1「`containers` で仮想化の実験」の 4.）
+            // 特権コンテナにした Project（サイドバーの行の印。v4-security.md §1「`containers` で仮想化（KVM）」の 4.）
             const privileged = deps.containersVirtualization?.privileged(p.id) === true;
             return {
               ...p,
@@ -2221,10 +2221,10 @@ export function createApp(deps: AppDeps) {
               void deps.runtimeKeys?.check().catch((err: unknown) => console.warn("[host] 実行場所の鍵の置き場を確かめられませんでした:", err));
               return json(res, 200, view);
             }
-            // **仮想化の実験を許す**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 1.）。人の画面からだけ
+            // **仮想化（KVM）を許す**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）」の 1.）。人の画面からだけ
             // （AI の tool は無い）。オンで区画に unix-char を足し、オフは全 Project が外してから
             if (action === "/virtualization" && req.method === "PUT") {
-              if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+              if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化（KVM）を扱えません" });
               const body = (await readJsonBody(req)) as { allowed?: unknown };
               if (typeof body.allowed !== "boolean") return json(res, 400, { error: "allowed は true か false で渡してください" });
               const result = await deps.containersVirtualization.setAllowed(name, body.allowed);
@@ -4449,7 +4449,7 @@ export function createApp(deps: AppDeps) {
           nesting: deps.runtimeConfig?.resolve(CONTAINER_NESTING_KEY, projectId) === true,
           container: (await deps.projectContainerStatus?.(projectId)) ?? null,
           limits: deps.containerLimits?.describe(projectId) ?? null,
-          // 仮想化の実験（containers の Project だけ。使えないなら理由つき）
+          // 仮想化（KVM）（containers の Project だけ。使えないなら理由つき）
           virtualization: deps.containersVirtualization?.describe(projectId) ?? null,
         });
         return;
@@ -4494,13 +4494,13 @@ export function createApp(deps: AppDeps) {
         json(res, 200, deps.containerLimits.describe());
         return;
       }
-      // **/dev/kvm を見せる**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」の 2.）。人の画面からだけ（AI の
+      // **/dev/kvm を見せる**（決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）」の 2.）。人の画面からだけ（AI の
       // tool も Module からの中継も無い）。その実行場所が許していなければ断る。「中で Docker を使う」は変えない（返すだけ）
       const containerKvmMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/container\/kvm$/);
       if (containerKvmMatch && req.method === "PUT") {
         const projectId = containerKvmMatch[1]!;
         if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
-        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化（KVM）を扱えません" });
         const body = (await readJsonBody(req)) as { enabled?: unknown; modules?: unknown };
         if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
         try {
@@ -4516,7 +4516,7 @@ export function createApp(deps: AppDeps) {
       if (containerPrivilegedMatch && req.method === "PUT") {
         const projectId = containerPrivilegedMatch[1]!;
         if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
-        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化（KVM）を扱えません" });
         const body = (await readJsonBody(req)) as { enabled?: unknown; confirmName?: unknown };
         if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
         try {
@@ -4536,7 +4536,7 @@ export function createApp(deps: AppDeps) {
       if (containerHugepagesMatch && req.method === "PUT") {
         const projectId = containerHugepagesMatch[1]!;
         if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
-        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化の実験を扱えません" });
+        if (!deps.containersVirtualization) return json(res, 501, { error: "この banto は仮想化（KVM）を扱えません" });
         const body = (await readJsonBody(req)) as { count?: unknown };
         try {
           return json(res, 200, await deps.containersVirtualization.setHugepages(projectId, body.count));

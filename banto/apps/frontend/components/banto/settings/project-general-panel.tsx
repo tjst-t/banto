@@ -113,7 +113,7 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
         </div>
 
         {CONNECTED_FEATURES.remoteRuntimes ? <ProjectRuntimeSection projectId={project.id} runtime={project.runtime} /> : null}
-        {/* 仮想化の実験（Backlog 462 番）。実行場所が containers で許しているときだけ（同じサーバの特権の Project の注意は許していなくても）。
+        {/* 仮想化（KVM）（Backlog 462 番）。実行場所が containers で許しているときだけ（同じサーバの特権の Project の注意は許していなくても）。
             移して実行場所が変わったら読み直す */}
         {CONNECTED_FEATURES.remoteRuntimes ? (
           <ProjectVirtualizationSection key={`${project.id}\n${project.runtime ?? ""}`} projectId={project.id} projectName={project.name} />

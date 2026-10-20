@@ -49,7 +49,7 @@ export interface RemoteRuntime extends RemoteRuntimeInput {
   checkedAt: string;
   registeredAt: string;
   /**
-   * **仮想化の実験を許す**（`containers` だけ。既定オフ——決定・2026-10-20、v4-security.md §1「`containers` で仮想化の実験
+   * **仮想化（KVM）を許す**（`containers` だけ。既定オフ——決定・2026-10-20、v4-security.md §1「`containers` で仮想化（KVM）
    * ——/dev/kvm と特権」の 1.）。オンの間、区画に `restricted.devices.unix-char=allow` を足してある。人の画面からだけ変える
    */
   virtualization?: boolean;

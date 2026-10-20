@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { includesBrNetfilter, parseModuleNames, sameModuleNames } from "./virtualization.ts";
 
-// 決定・2026-10-20（v4-security.md §1「`containers` で仮想化の実験」の 2.）：名前は空白で区切り、`[a-z0-9_-]+`
+// 決定・2026-10-20（v4-security.md §1「`containers` で仮想化（KVM）」の 2.）：名前は空白で区切り、`[a-z0-9_-]+`
 test("parseModuleNames：空白（改行・続けた空白も）で分け、形の違うものを分ける", () => {
   assert.deepEqual(parseModuleNames("  kvm_intel\tbr-netfilter\n 8021q "), { names: ["kvm_intel", "br-netfilter", "8021q"], invalid: [] });
   assert.deepEqual(parseModuleNames(""), { names: [], invalid: [] });

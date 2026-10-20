@@ -48,7 +48,7 @@ export interface ProjectContainerSpec {
   uid: number;
   gid: number;
   /**
-   * **中の番号**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化の実験」の 3.）。
+   * **中の番号**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化（KVM）」の 3.）。
    * 無ければ `uid`/`gid` と同じ番号（この機械）。別のサーバでは VM の SSH ユーザーの uid/gid（U/G）をそのまま中の U/G に対応させる
    * （`raw.idmap` の `uid U U`・`gid G G`）。中にその番号のユーザーが無ければ作る（launcher がユーザーの systemd を使う）
    */
@@ -72,13 +72,13 @@ export interface ProjectContainerSpec {
   /** 資源の上限（`defaultContainerLimits()`）。動いているコンテナにもそのまま効く（起こし直さない） */
   limits: ContainerLimits;
   /**
-   * **仮想化の実験**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化の実験」）。
+   * **仮想化（KVM）**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化（KVM）」）。
    * 実行場所が許していればその Project の設定、許していなければ `null`（付いていれば外す）。この機械のコンテナには無い（触らない）
    */
   virtualization?: ContainerVirtualization | null;
 }
 
-/** コンテナに付ける仮想化の実験の設定 */
+/** コンテナに付ける仮想化（KVM）の設定 */
 export interface ContainerVirtualization {
   /** `/dev/kvm` と `/dev/vhost-net` を unix-char で見せる（`mode=0666`。path は固定の2つ） */
   kvm: boolean;
@@ -120,7 +120,7 @@ export const KVM_DEVICES: Readonly<Record<string, Readonly<Record<string, string
   "vhost-net": { type: "unix-char", path: "/dev/vhost-net", mode: "0666" },
 };
 
-/** 今の装置から、仮想化の実験の設定に合わせるための足すもの・外すもの */
+/** 今の装置から、仮想化（KVM）の設定に合わせるための足すもの・外すもの */
 export function virtualizationDeviceChanges(
   devices: Record<string, Record<string, string>>,
   v: ContainerVirtualization | null,
@@ -700,7 +700,7 @@ export class ProjectContainers {
         ? `banto のコードと Project の根のマウントと、道（${proxyNames.map((d) => `${d}：${toAdd[d]!["listen"]} → ${toAdd[d]!["connect"]}`).join("・")}）を足すの`
         : "banto のコードと Project の根をマウントするの",
     );
-    // 仮想化の実験の装置（/dev/kvm）は道とは別の PATCH で、あとから足す——区画が unix-char を許していない等で断られても、中から
+    // 仮想化（KVM）の装置（/dev/kvm）は道とは別の PATCH で、あとから足す——区画が unix-char を許していない等で断られても、中から
     // banto への道（上で足した）は残り、断りの文もそれぞれのものになる
     if (spec.virtualization !== undefined) await this.applyVirtualizationNow(name, st, spec.virtualization);
     // 特権（#461）：違えば止めて書く（起こすのは下）。入れ子と同じく起こし直さないと効かない
@@ -733,7 +733,7 @@ export class ProjectContainers {
   }
 
   /**
-   * **中の番号を付け替える**（#457、v4-security.md §1「`containers` で仮想化の実験」の 3.「既存のコンテナ」）。札が済みなら何もしない。
+   * **中の番号を付け替える**（#457、v4-security.md §1「`containers` で仮想化（KVM）」の 3.「既存のコンテナ」）。札が済みなら何もしない。
    * 順（中のユーザーの systemd・Service が前の番号で動き出さないように）：
    *   1. 止める
    *   2. 止まったまま、前の番号のユーザーの linger の印を消す（`incus file`——起こしても中のユーザーの systemd が立たない）
@@ -1056,7 +1056,7 @@ export class ProjectContainers {
   }
 
   /**
-   * **仮想化の実験の設定をコンテナに合わせる**（追加・2026-10-20、人が Project の設定を変えたとき）。装置は動いているコンテナにも
+   * **仮想化（KVM）の設定をコンテナに合わせる**（追加・2026-10-20、人が Project の設定を変えたとき）。装置は動いているコンテナにも
    * そのまま足せる（起こし直さない）。無ければ何もしない（次に作るとき `ensure` が付ける）。合わせたら true
    */
   async applyVirtualization(name: string, v: ContainerVirtualization | null): Promise<boolean> {

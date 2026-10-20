@@ -984,7 +984,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     上書きはまだ無い**）。node は VM のコードの置き場の `bin/node` を `incus file push` で中の `/usr/local/bin/node` に置く
     （版が同じなら置き直さない）
   - 中の番号は VM の SSH ユーザーと同じ U/G（`ProjectContainerSpec.inside`。#457——#368 では 1000 だった。前のコンテナの扱いは
-    下の「`containers` で仮想化の実験」の 3.）。中にその番号のユーザーが無ければ `banto`（home は `/home/banto`）を作る
+    下の「`containers` で仮想化（KVM）」の 3.）。中にその番号のユーザーが無ければ `banto`（home は `/home/banto`）を作る
     ——土台のイメージ（`images:ubuntu`）には既定のユーザーが居らず、起動役が使うユーザーの systemd が立たない。仕事の組・linger の
     印は中の番号のユーザーで
   - NIC は土台（profile）の NIC を同じ名前の装置で上書きして `security.port_isolation=true`。前から動いているコンテナに付けるときは
@@ -1074,7 +1074,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   NIC に `security.port_isolation=true` を付ける**（制限された区画で付けられ、隔てたものどうしは届かないことを測った——上の4.）。
   #368 で全コンテナに付けている（測った結果のまま。#369 では変えていない）。中から banto への道・鍵の窓口は中の 127.0.0.1・`/run` に
   しか出ないので、ほかのコンテナから届くのは公開した VM のポート（LAN と同じ扱い）だけ
-- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：下の「`containers` で仮想化の実験——/dev/kvm と特権」（決定・
+- **入れ子の仮想化**（本来の目的、Proxmox・containerlab）：下の「`containers` で仮想化（KVM）——/dev/kvm と特権」（決定・
   2026-10-20）。開けるのは**人の画面からだけ**（admin の刻印、AI の tool からは変えられない。Fable の A4）
 - **畳んだとき**：接続を閉じても、コンテナと中の Service は動いたまま（この機械と同じ）。中継の口はトンネルのソケットが無いので
   「繋がらない」で返るだけ。準備は登録のときと、繋ぐたびに「何もしないことを確かめる」（Incus の更新・人の手の変更を拾う）
@@ -1111,9 +1111,11 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#457・#458・#459・#460・#461・#462。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化（KVM）——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#457・#458・#459・#460・#461・#462。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
-**同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
+（名前は 2026-10-20 にユーザーの指示で「仮想化の実験」から「仮想化（KVM）」に改めた——画面の文言も同じ）
+
+**同じサーバに置いた複数の Project が、それぞれ仮想化（KVM）（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
 ある」。`machine`（サーバ丸ごと1 Project）なら今でもベアメタルと同じに使えるが、1台に1つしか置けない。
 
@@ -1133,7 +1135,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 
 **形**（Fable のレビュー（2026-10-20）V1〜V10 を反映）：
 
-1. **実行場所の「仮想化の実験を許す」**（`containers` の実行場所の設定。既定オフ）：人が押すと、core が `sudo -n` で区画に
+1. **実行場所の「仮想化（KVM）を許す」**（`containers` の実行場所の設定。既定オフ）：人が押すと、core が `sudo -n` で区画に
    `restricted.devices.unix-char=allow` を足す。`restricted.containers.privilege=allow` は、その実行場所で**最初に「特権コンテナにする」が
    押されたときに**足し、特権の Project が無くなったら unset する。**`restricted.containers.lowlevel` は開けない**（V1）——開けると
    `linux.kernel_modules` だけでなく `raw.lxc`（`lxc.mount.entry` で home の縛りを素通りしてサーバの任意の場所を見せられる）・
@@ -1223,7 +1225,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
        起こす → 設定に書く。オフ——止めて `incus config unset … security.privileged` → 動いていたなら起こす → 設定に書く → その実行場所に
        特権の Project が残っていなければ（閉じたもの・眠っているものも数える）区画の privilege を `incus project unset`。コンテナを
        用意するとき（`ensure`）も設定から揃える（違えば止めて書いて起こす。特権にするときは前の番号のコンテナを先に付け替える。
-       許していない実行場所なら外す）。「仮想化の実験を許す」をオフにする断りに特権も入る。様子は `GET /api/projects/<id>/container`
+       許していない実行場所なら外す）。「仮想化（KVM）を許す」をオフにする断りに特権も入る。様子は `GET /api/projects/<id>/container`
        の `virtualization.privileged` と、同じ実行場所のほかの特権の Project の一覧 `virtualization.privilegedOnServer`（id と名前）。
        **まだ**：繋ぐたびの確かめで区画の `privilege` を見ること、移すときに外すかを聞くこと
 3. **中の番号**（V4。未測定・実装の前に測る）：今のコンテナは `raw.idmap` で VM の SSH ユーザー U を中の 1000 に対応させ、見せたフォルダ
@@ -1256,7 +1258,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      ほかの理由で止めるとき（根・NIC の隔てを替える）には付け替えない
 
 4. **警告**（画面の文言は実装で決める。V3・V7）：
-   - 実行場所の「仮想化の実験を許す」：「このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project
+   - 実行場所の「仮想化（KVM）を許す」：「このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project
      ごとに選びます」
    - 「/dev/kvm を見せる」：「この Project の AI はサーバのカーネルの KVM と vhost-net を直に使います。同じサーバのほかの Project を
      守るのは、カーネルのこの部分の堅さだけになります。読み込んだモジュールはサーバ全体に効きます」
@@ -1264,8 +1266,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      土台のイメージを書き換えられ、ほかの Project のコンテナの中身（合言葉・Claude のログイン・環境変数）と鍵の窓口・トンネルの
      ソケットにも届きます」**。押すたびに Project 名を打たせる。オンの Project の設定とサイドバーの行に印を出し、**同じ実行場所の
      ほかの Project の設定にも「このサーバには特権の Project があります（名前）」と出す**（守られていないのはそちら）
-   - **実装済み（2026-10-20、Backlog #462）**：画面。実行場所の containers の行に「仮想化の実験を許す」のスイッチ（断られたら host の理由を
-     その下に。`runtimes-panel.tsx`）、Project の設定「一般」の実行場所の下に「仮想化の実験」の節（`project-virtualization-section.tsx`。
+   - **実装済み（2026-10-20、Backlog #462）**：画面。実行場所の containers の行に「仮想化（KVM）を許す」のスイッチ（断られたら host の理由を
+     その下に。`runtimes-panel.tsx`）、Project の設定「一般」の実行場所の下に「仮想化（KVM）」の節（`project-virtualization-section.tsx`。
      `virtualization.available` のときだけ3つ、`privilegedOnServer` があれば許していなくても上に注意。「/dev/kvm を見せる」は名前の
      欄と br_netfilter の注意、「中で Docker を使う」が切れていれば一緒に入れるか小窓で聞く。特権は打った名前が一致するまで押せない）、
      サイドバーの行の印は `GET /api/projects` の `privileged`（広いサイドバー・携帯の Drawer。畳んだレールには出さない）

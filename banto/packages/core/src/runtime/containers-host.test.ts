@@ -516,7 +516,7 @@ test("区画の idmap の許しに足すときは、今の値を残して足す"
   assert.equal(idRangesInclude(undefined, 1000), false);
 });
 
-test("仮想化の実験を許した実行場所：区画の unix-char も準備の項目に入り、登録・確かめ直しで sudo -n で足す。崩れても繋ぐたびは注意だけ", async () => {
+test("仮想化（KVM）を許した実行場所：区画の unix-char も準備の項目に入り、登録・確かめ直しで sudo -n で足す。崩れても繋ぐたびは注意だけ", async () => {
   const vm = fakeVm({ inGroup: true, linger: true, pools: new Set(["banto"]), subuid: "root:1000:1\n", subgid: "root:1001:1\n" });
   vm.project = { restricted: "true", "restricted.devices.proxy": "allow", "restricted.idmap.uid": "1000", "restricted.idmap.gid": "1001" };
   const access = accessOf(vm);

@@ -1,4 +1,4 @@
-// **仮想化の実験の画面**（Backlog 462 番、`docs/specs/v4-security.md` §1「`containers` で仮想化の実験——/dev/kvm と特権」の 1.・2.・4.）。
+// **仮想化（KVM）の画面**（Backlog 462 番、`docs/specs/v4-security.md` §1「`containers` で仮想化（KVM）——/dev/kvm と特権」の 1.・2.・4.）。
 //
 // 相手の作り方：仮想化を許した `containers` の実行場所は、Incus と sudo -n が通るサーバが無いと作れない（E2E の SSH の相手
 // `ssh-host.ts` には Incus も sudo も無い——`remote-runtime-containers-register.spec.ts`）。そこで **host の返事を `page.route` で
@@ -7,13 +7,13 @@
 // core の側（区画・装置・hugepages・特権の切り替えと断り）は偽の Incus・偽の sudo の単体試験（`containers-virt.test.ts`）が見る。
 //
 // 見るもの（規則14——押せたで終わらせず、画面が出している値と、送った中身まで）：
-//   1. 許していない（本物の返事：この機械の Project）では「仮想化の実験」の節が出ない
+//   1. 許していない（本物の返事：この機械の Project）では「仮想化（KVM）」の節が出ない
 //   2. 許すと3つ（/dev/kvm・hugepages・特権）が出て、仕様の警告の文言と「このサーバには特権の Project があります（名前）」が出る
 //   3. /dev/kvm：形の違う名前は止める・br_netfilter で注意・「中で Docker を使う」が切れていれば小窓で聞き、両方を送る
 //   4. hugepages：断られたら理由、通れば確保できた数
 //   5. 特権：小窓の警告・止めて起こし直すこと。名前を打たないと押せない（違う名前でも押せない）。押すと打った名前を送り、
 //      設定に「特権コンテナです」、サイドバーの行に印
-//   6. 実行場所の「仮想化の実験を許す」：説明の文言・断られたら残っている Project の名前・許すとスイッチが入る
+//   6. 実行場所の「仮想化（KVM）を許す」：説明の文言・断られたら残っている Project の名前・許すとスイッチが入る
 import { test, expect, type Page, type Route } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,7 +48,7 @@ async function openGeneral(page: Page, projectId: string): Promise<void> {
   await loaded;
 }
 
-test("仮想化の実験：許していなければ出ず、許すと3つが出て、特権は名前を打たないと押せない", async ({ page }) => {
+test("仮想化（KVM）：許していなければ出ず、許すと3つが出て、特権は名前を打たないと押せない", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
@@ -139,7 +139,7 @@ test("仮想化の実験：許していなければ出ず、許すと3つが出�
   await openGeneral(page, project.id);
   const section = page.getByTestId("project-virtualization");
   await expect(section).toBeVisible({ timeout: 30_000 });
-  await expect(section.getByRole("heading", { name: "仮想化の実験" })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "仮想化（KVM）" })).toBeVisible();
   await expect(page.getByTestId("project-virt-privileged-on-server")).toContainText("このサーバには特権の Project があります（ほかの実験）");
   const kvm = section.getByTestId("project-virt-kvm");
   const huge = section.getByTestId("project-virt-hugepages");
@@ -232,7 +232,7 @@ test("仮想化の実験：許していなければ出ず、許すと3つが出�
   await dialog.getByRole("button", { name: "やめる" }).click();
   expect(sent.privileged).toHaveLength(1);
 
-  // ---- 6. 実行場所の「仮想化の実験を許す」 ------------------------------------------------------------------------------------
+  // ---- 6. 実行場所の「仮想化（KVM）を許す」 ------------------------------------------------------------------------------------
   const rt = {
     name: "virt-e2e",
     host: "192.0.2.10",
@@ -258,7 +258,7 @@ test("仮想化の実験：許していなければ出ず、許すと3つが出�
     allowSent.push(body);
     if (!body.allowed) {
       return json(route, 409, {
-        error: `実行場所「virt-e2e」の仮想化の実験を止められません——まだ使っている Project があります（閉じたもの・眠っているものも含む）：「${PROJECT}」（/dev/kvm）`,
+        error: `実行場所「virt-e2e」の仮想化（KVM）を止められません——まだ使っている Project があります（閉じたもの・眠っているものも含む）：「${PROJECT}」（/dev/kvm）`,
         code: "virtualization-in-use",
       });
     }
@@ -269,7 +269,7 @@ test("仮想化の実験：許していなければ出ず、許すと3つが出�
   const rtRow = page.getByTestId("runtime-virt-e2e");
   await rtRow.getByRole("button").first().click();
   const virt = rtRow.getByTestId("runtime-virtualization");
-  await expect(virt).toContainText("仮想化の実験を許す");
+  await expect(virt).toContainText("仮想化（KVM）を許す");
   await expect(virt).toContainText("このサーバの Project に /dev/kvm や特権を与えられるようにします。どれに与えるかは Project ごとに選びます。");
   await expect(rtRow.locator('[data-check="nested-kvm"]')).toContainText("入れ子の KVM");
   const sw = virt.getByTestId("runtime-virtualization-switch");

@@ -1,6 +1,6 @@
-# containers で仮想化の実験——実測（2026-10-20）
+# containers で仮想化（KVM）——実測（2026-10-20）
 
-仕様：`docs/specs/v4-security.md` §1「`containers` で仮想化の実験——/dev/kvm と特権」。
+仕様：`docs/specs/v4-security.md` §1「`containers` で仮想化（KVM）——/dev/kvm と特権」。
 
 ## 場所
 

@@ -1,9 +1,9 @@
 "use client";
 
-// **この Project の仮想化の実験**（決定・2026-10-20、ユーザー。`docs/specs/v4-security.md` §1「`containers` で仮想化の実験——
+// **この Project の仮想化（KVM）**（決定・2026-10-20、ユーザー。`docs/specs/v4-security.md` §1「`containers` で仮想化（KVM）——
 // /dev/kvm と特権」の 2.・4.、Backlog 462 番）。Project の設定「一般」の実行場所の下に置く。
 //
-// - 出すのは、その実行場所が `containers` で、仮想化の実験を許しているときだけ（判断は host の `available`）
+// - 出すのは、その実行場所が `containers` で、仮想化（KVM）を許しているときだけ（判断は host の `available`）
 // - 3つ：「/dev/kvm を見せる」（足すモジュールの名前つき）・hugepages の数・「特権コンテナにする」。3つとも既定はオフで、
 //   人が押したときだけ変わる（AI の tool は無い）
 // - 同じ実行場所にほかの特権の Project があれば、許していなくても上に出す——守られていないのはこの Project の側
@@ -58,7 +58,7 @@ export function ProjectVirtualizationSection({ projectId, projectName }: { proje
   const reload = useCallback(async () => {
     const c = await fetchRealProjectContainer(projectId);
     if (!c.virtualization) {
-      setLoaded({ projectId, error: "この banto は仮想化の実験を扱えません" });
+      setLoaded({ projectId, error: "この banto は仮想化（KVM）を扱えません" });
       return;
     }
     setLoaded({ projectId, value: { virtualization: c.virtualization, nesting: c.nesting } });
@@ -84,7 +84,7 @@ export function ProjectVirtualizationSection({ projectId, projectName }: { proje
   if ("error" in current) {
     return (
       <p data-testid="project-virtualization-error" className="text-xs text-stop">
-        仮想化の実験の様子を読めませんでした：{current.error}
+        仮想化（KVM）の様子を読めませんでした：{current.error}
       </p>
     );
   }
@@ -109,9 +109,9 @@ export function ProjectVirtualizationSection({ projectId, projectName }: { proje
       {v.available ? (
         <section data-testid="project-virtualization" className="flex flex-col gap-3 rounded-md border border-border p-3">
           <div>
-            <h2 className="text-sm font-semibold text-foreground">仮想化の実験</h2>
+            <h2 className="text-sm font-semibold text-foreground">仮想化（KVM）</h2>
             <p className="text-xs text-ink-3">
-              {"この実行場所は仮想化の実験を許しています。KVM の VM・containerlab などを、この Project のコンテナの中で動かせます。" +
+              {"この実行場所は仮想化（KVM）を許しています。KVM の VM・containerlab などを、この Project のコンテナの中で動かせます。" +
                 "3つとも既定はオフで、要るものだけ入れてください。"}
             </p>
           </div>
@@ -149,7 +149,7 @@ function KvmSetting({ projectId, state, onChanged }: { projectId: string; state:
     } finally {
       setSaving(false);
       // 失敗しても読み直す——途中まで進んだかもしれない
-      await onChanged().catch((err: unknown) => reportFailure("仮想化の実験の様子を読み直せませんでした", err));
+      await onChanged().catch((err: unknown) => reportFailure("仮想化（KVM）の様子を読み直せませんでした", err));
     }
   }
 
@@ -288,7 +288,7 @@ function HugepagesSetting({ projectId, count, onChanged }: { projectId: string; 
       setError(describeFailure(err));
     } finally {
       setSaving(false);
-      await onChanged().catch((err: unknown) => reportFailure("仮想化の実験の様子を読み直せませんでした", err));
+      await onChanged().catch((err: unknown) => reportFailure("仮想化（KVM）の様子を読み直せませんでした", err));
     }
   }
 
@@ -368,7 +368,7 @@ function PrivilegedSetting({
       setError(describeFailure(err));
     } finally {
       setSaving(false);
-      await onChanged().catch((err: unknown) => reportFailure("仮想化の実験の様子を読み直せませんでした", err));
+      await onChanged().catch((err: unknown) => reportFailure("仮想化（KVM）の様子を読み直せませんでした", err));
       // サイドバーの行の印（host の一覧の `privileged`）
       await syncRealProjects().catch((err: unknown) => reportFailure("Project の一覧を読み直せませんでした", err));
     }
