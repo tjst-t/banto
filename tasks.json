@@ -10027,6 +10027,73 @@
       "updatedAt": "2026-10-20T05:10:31.916Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "balance-probe",
+      "number": 416,
+      "kind": "task",
+      "title": "均すの実装の前の実測（acp と claude -p のセッションの印・渡した sessionId が見出しに出るか）",
+      "status": "ready",
+      "parent": "claude-accounts-balance",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-security.md §2「均す」の実測の未確かめ：(1) コンテナの中の claude-agent-acp と Shell から打つ claude -p の /v1/messages に x-claude-code-session-id が付くか・仕事ごとに変わるか。(2) core が sessionId を渡した新しい会話と forkSession＋sessionId の Fork で、見出しの id が渡した値と一致するか。台本は tmp/claude-paths-probe/probe3.mjs（claude -p は返事が来なかった——原因も見る）。",
+      "doneWhen": "結果が仕様の実測の節に書かれ main に入っている。一致しないものがあれば仕様の形を直してある",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T05:11:21.638Z",
+      "updatedAt": "2026-10-20T05:11:21.638Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "balance-core",
+      "number": 417,
+      "kind": "task",
+      "title": "均すの本体（mode・固定の表と寿命・選び方・Runner の固定と Fork の継承・読み直しの歯止め・送り直し・切り替えの記録・口）",
+      "status": "ready",
+      "parent": "claude-accounts-balance",
+      "dependsOn": [
+        "balance-probe"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-security.md §2「均す」1.〜9.。台帳と Project の mode（loadLedger の検査）、口（GET/PUT の mode・effectiveMode、GET /api/threads/:id/claude-account、usedBy を固定の表から）、中継の固定の表（Project＋セッション、最後の要求から1時間の寿命、同期に登録、外したアカウントの固定を捨てる）、選び方（r と同時の重み 0.01）、runnerEnvFor(projectId, threadId, sessionId, inheritFrom?) で固定し契約の種類の env をその固定先で、Fork は親を継ぐ、使用率の読み直し（30分より古いものだけ・試みた時刻で歯止め・3秒で切る）、429 の送り直しは使い方に従い通ったものに固定を移す、切り替えの記録は固定の鍵ごと（ordered は今のまま）。",
+      "doneWhen": "単体テスト（選び方・寿命・並びから外れた・外した・Fork の継承・読み直しの歯止め・送り直し・記録が鍵ごと）と、偽の上流の E2E（2つの会話が別のアカウントに固定・同じ会話は同じアカウント・閾値越えで移る・切り替えの1行が選び直しでは出ない）が通る。既存の claude-accounts-* と rate-limit-continue の E2E が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T05:11:21.638Z",
+      "updatedAt": "2026-10-20T05:11:21.638Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
+      "id": "balance-ui",
+      "number": 418,
+      "kind": "task",
+      "title": "画面：使い方の2択（banto 全体と Project）・説明文・右上のメーターをその会話の固定先に・直近1時間に使った Project",
+      "status": "ready",
+      "parent": "claude-accounts-balance",
+      "dependsOn": [
+        "balance-core"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-frontend.md §6.46「使い方『均す』『上から順に』」と「右上の文脈のメーター」。呼び名は「並び」のまま、説明文だけ使い方で変える。均すときの右上のメーターは GET /api/threads/:id/claude-account（固定が無ければ何も出さない）。設定の「いま使っている Project」は均すとき「直近1時間に使った Project」。",
+      "doneWhen": "E2E で、使い方の保存（banto 全体・Project）、説明文の切り替わり、均すとき2つの会話の右上のメーターがそれぞれの固定先を出す、が通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T05:11:21.638Z",
+      "updatedAt": "2026-10-20T05:11:21.638Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
