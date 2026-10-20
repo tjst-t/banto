@@ -10421,7 +10421,7 @@
       "number": 436,
       "kind": "task",
       "title": "会社の PC と同じ条件でインストーラが入るかを実測する（§9 の7）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-0-measure",
       "dependsOn": [],
       "milestone": null,
@@ -10433,7 +10433,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:56:56.683Z",
-      "updatedAt": "2026-10-20T08:56:56.683Z",
+      "updatedAt": "2026-10-20T08:58:04.784Z",
       "closedAt": null,
       "extra": {}
     },
