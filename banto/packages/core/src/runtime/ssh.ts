@@ -624,6 +624,16 @@ export async function createRemoteDirectory(t: SshTarget, files: SshFiles, hostK
 }
 
 /**
+ * **向こうの空のフォルダを1つ消す**（追加・2026-10-20、v4-frontend.md §6.49）。新しい Project の始め方で作ったフォルダに
+ * Project を作れなかったときの片づけ。`rmdir` なので空でなければ消えない（自分が作ったものだけを消す）。無ければ何もしない
+ */
+export async function removeRemoteEmptyDirectory(t: SshTarget, files: SshFiles, hostKeyType: string, path: string): Promise<void> {
+  const script = [`p=${shq(path)}`, `[ -d "$p" ] || exit 0`, `rmdir -- "$p"`, ""].join("\n");
+  const r = await runRemoteScript(t, files, hostKeyType, script);
+  if (r.code !== 0) throw new SshCommandError("向こうに作ったフォルダを片づけられませんでした", r);
+}
+
+/**
  * **その根が、向こうの banto の置き場を含むか**（v4-security.md §1「登録と選び方」——広すぎる根の警告は、向こうの banto の
  * 置き場の根を含むかで判断する）。どちらも向こうで正規化して比べる。根がまだ無い（打っている途中）なら含まない
  */

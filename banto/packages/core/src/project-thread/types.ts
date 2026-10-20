@@ -333,6 +333,11 @@ export interface ProjectState {
    * 届いたものは留める
    */
   move?: RuntimeMoveInProgress;
+  /**
+   * **始め方の仕事**（追加・2026-10-20、v4-frontend.md §6.49）。別のサーバに「clone」「新しいリポジトリ」で作った Project だけが
+   * 持つ。`project.start_changed` で丸ごと置き換える（終わっても残す——帯を出すかは `status` で決まる）
+   */
+  start?: ProjectStart;
   /** **前にいた場所**（移したもの。古い順）。元は消さずに残すので、設定の画面に出して人が消す */
   previousLocations?: ProjectLocation[];
   status: "active" | "closed";
@@ -431,6 +436,20 @@ export interface RuntimeMoveInProgress {
   /** 移す先に banto が作ったもの・退かせたもの（片づけに使う） */
   created: RuntimeMoveCreated;
   startedAt: string;
+}
+
+/**
+ * **新しい Project の始め方の仕事**（追加・2026-10-20、v4-frontend.md §6.49）。その Project の Shell で `git init`・`git clone` を
+ * 流す。1つの Project に同時に1本。`account` は GitHub の login（Vault の `repositories-github-<login>` を Shell に渡す）
+ */
+export interface ProjectStart {
+  kind: "init" | "clone";
+  url?: string;
+  account?: string;
+  startedAt: string;
+  /** waking：Shell を起こしている（containers の最初の1回は土台のイメージを作るので数分）／running：git を流している */
+  status: "waking" | "running" | "done" | "failed" | "interrupted";
+  error?: string;
 }
 
 export interface RuntimeMoveCreated {

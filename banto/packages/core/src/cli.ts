@@ -60,6 +60,7 @@ import { RemoteRuntimes, isRemoteUnreachable, remoteNameOf, runtimeIdOf } from "
 import { RemoteSshRuntime } from "./runtime/remote-ssh.js";
 import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
+import { ProjectStarter, type ShellRun } from "./runtime/project-start.js";
 import { errandLeftoversOf, ProjectSleep } from "./runtime/project-sleep.js";
 import { autoSleepModeOf, lastHumanMessages, ProjectActivity, ProjectIdle } from "./runtime/project-idle.js";
 import { collectActivity } from "./http/activity.js";
@@ -120,6 +121,7 @@ import {
   assertVisibilityValues,
   classifyMetaDifference,
   CALLER_META_KEY,
+  CALL_ID_META_KEY,
   RUNTIME_KEYS_GROUP,
   RESUME_AFTER_RESTART_TOOL,
   SOCKET_DIR_META_KEY,
@@ -628,6 +630,7 @@ async function main(): Promise<void> {
   let recovery: RestartRecovery | undefined;
   /** 別の実行場所へ移す（下で作る。移している途中の Project の Module は、Service を止めておく間だけ起こす） */
   let projectMover: ProjectMover | undefined;
+  let projectStarter: ProjectStarter | undefined;
   /** Project のスリープ（下で作る。用事で起きた Project を、ターンの終わり・札が閉じたときに眠りに戻す） */
   let projectSleep: ProjectSleep | undefined;
   /** **用が済んだら眠りに戻す**（アーキ仕様 §2.2「眠りに戻す」）。ほかの聞き手（受信箱・届いたものの続き）が終えてから見る */
@@ -2889,6 +2892,8 @@ async function main(): Promise<void> {
       ...mine(a.awaitingReplies).map((r): RunningItem => ({ kind: "reply", label: `裏の仕事の返事を待っています（${r.module}・${where(r)}）` })),
       ...mine(a.moduleReplies).map((r): RunningItem => ({ kind: "moduleReply", label: `${r.caller} が ${r.module} の返事を待っています` })),
       ...mine(a.moduleCalls).map((c): RunningItem => ({ kind: "call", label: `Module の呼び出しが走っています（${c.connName}）` })),
+      // 新しい Project の始め方の仕事（Shell を起こしている間も。v4-frontend.md §6.49——走っている間は眠らせない・移さない）
+      ...(projectStarter?.isRunning(projectId) ? [{ kind: "call" as const, label: "新しい Project の始め方（git）が走っています" }] : []),
     ];
   }
   /** 別のサーバの Project を閉じる・眠らせる前に（v4-security.md §1「閉じた Project は数えない」） */
@@ -2924,6 +2929,73 @@ async function main(): Promise<void> {
       ? { throttleBytesPerSec: Number(process.env.BANTO_TEST_RUNTIME_MOVE_BYTES_PER_SEC) }
       : {}),
   });
+  /**
+   * **別のサーバでの新しい Project の始め方**（決定・2026-10-20、`docs/specs/v4-frontend.md` §6.49）。git はその Project の Shell の
+   * `runCommand` を人の印で呼んで流す（containers ならコンテナの中、machine なら VM のユーザーで）
+   */
+  projectStarter = new ProjectStarter({
+    projectThread,
+    remote: {
+      modeOf: (name) => remoteRuntimes.get(name)?.mode,
+      createDirectory: (name, parent, folder) => remoteRuntimes.createDirectory(name, parent, folder),
+      removeEmptyDirectory: (name, path) => remoteRuntimes.removeEmptyDirectory(name, path),
+      createProject: (name, projectName, root) =>
+        remoteRuntimes.createProjectOn(name, root, (resolved, runtime) => projectThread.createProject(projectName, resolved, { runtime })),
+    },
+    // Repositories と同じ行き先（試験だけが偽の GitHub に替える——`BANTO_REPOSITORIES_GITHUB_URL`）
+    github: { web: process.env.BANTO_REPOSITORIES_GITHUB_URL ?? "https://github.com", ssh: "github.com" },
+    wakeShell: async (projectId) => {
+      const project = projectThread.getProject(projectId);
+      if (!project) throw new Error("Project がありません");
+      const declaration = loadModuleDeclarations(runtimeConfig, projectId).find(
+        (d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("shell"),
+      );
+      if (!declaration) throw new Error("この Project に Shell の Module がありません（git を流せません）");
+      const connName = await connectDeclaredModule(declaration, project);
+      const client = connName ? connectedModules.get(connName) : undefined;
+      if (!connName || !client) throw new Error(`${declaration.name} に繋げないので、git を流せません`);
+      return {
+        async run(args, opts): Promise<ShellRun> {
+          // 人が押した呼び出しとして台帳に置く（Vault の alias を引く中継が人の画面の操作として通る・眠らせない）
+          const call = moduleCalls.beginCall(connName, undefined, "canvas", projectId);
+          try {
+            const r = (await client.callTool(
+              {
+                name: "runCommand",
+                arguments: { command: args.command, timeout: args.timeoutSec, ...(args.envSecrets ? { envSecrets: args.envSecrets } : {}) },
+                _meta: { [CALLER_META_KEY]: { admin: true, forProject: projectId }, [CALL_ID_META_KEY]: call.id },
+              },
+              undefined,
+              {
+                signal: opts.signal,
+                // Shell は走っている間 10 秒ごとに進み具合を送る（progress は出力の文字数）
+                timeout: 120_000,
+                resetTimeoutOnProgress: true,
+                maxTotalTimeout: (args.timeoutSec + 600) * 1000,
+                onprogress: (p) => opts.onProgress(p.progress),
+              },
+            )) as { content?: Array<{ text?: string }> };
+            const text = r.content?.[0]?.text ?? "";
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(text);
+            } catch {
+              parsed = undefined;
+            }
+            // 結果の形でなければ Shell が断った（Vault が承認を求める等）——その理由をそのまま
+            if (!parsed || typeof parsed !== "object" || !("exitCode" in parsed)) throw new Error(text || "Shell が断りました");
+            return parsed as ShellRun;
+          } finally {
+            call.end();
+          }
+        },
+      };
+    },
+    onChange: (projectId, start) => appEvents.publish({ type: "project.start.changed", projectId, start }),
+    log: (line) => console.warn(line),
+  });
+  // 起き直したら、走っていた始め方の仕事は途中で止まっている（git は Shell との接続が閉じたときに止まる）
+  void projectStarter.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった始め方の仕事を記録できませんでした:", err));
   /** **Project のスリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。眠らせる・起こす口・止まるもの */
   /** その Project の、いま繋がっている Project ごとの Module（宣言の名前） */
   const connectedProjectModules = (projectId: string): string[] => {
@@ -3090,6 +3162,7 @@ async function main(): Promise<void> {
     awaitRestartRecovery: (threadId) => recovery!.waitFor(threadId),
     remoteRuntimes,
     runtimeMove: projectMover,
+    projectStart: projectStarter,
     listSshIdentities: sshIdentitiesThroughVault,
     runtimeKeys: runtimeKeyPlace,
     // 別のサーバの Project にはこの機械のコンテナは無い（あれば前の名残——聞かない）

@@ -81,6 +81,11 @@ export function registerQuoteComposer(threadId: string, composer: ThreadComposer
   };
 }
 
+/** 開いている会話の入力欄（無ければ undefined） */
+export function openComposerOf(threadId: string): ThreadComposerRuntime | undefined {
+  return composers.get(threadId);
+}
+
 /** その入力欄から、同じ画面から来た前の塊を外す */
 async function removeSameSlot(composer: ThreadComposerRuntime, slot: string): Promise<void> {
   const attachments = composer.getState().attachments;

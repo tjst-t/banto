@@ -4,3 +4,4 @@ export * from "./stream.js";
 export * from "./work-scope.js";
 export * from "./events.js";
 export * from "./outbox.js";
+export * from "./clone-source.js";

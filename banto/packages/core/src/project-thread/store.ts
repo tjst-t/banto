@@ -10,6 +10,7 @@ import { splitMemory, type MemorySplit } from "./memory-split.js";
 import type {
   ProjectLocation,
   RuntimeMoveCreated,
+  ProjectStart,
   MemoryEntry,
   ProjectId,
   ProjectState,
@@ -274,6 +275,17 @@ export class ProjectThreadStore {
     if (!project?.move) throw new RuntimeMoveConflictError(`project ${id} は移している途中ではありません`);
     const event = await this.log.append("project.runtime_move_failed", { id, reason });
     this.projection.applyOne(event);
+  }
+
+  /**
+   * **始め方の仕事の記録を置き換える**（追加・2026-10-20、v4-frontend.md §6.49）。中身の確かめ（1本ずつ・流す順）は呼び手
+   * （`runtime/project-start.ts`）
+   */
+  async setProjectStart(id: ProjectId, start: ProjectStart): Promise<ProjectState> {
+    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const event = await this.log.append("project.start_changed", { id, start });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
   }
 
   async renameThread(id: ThreadId, title: string): Promise<ThreadState> {

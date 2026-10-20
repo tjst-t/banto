@@ -139,6 +139,8 @@ export interface RealProject {
    * `projects.autoSleep` が `ask` で、host の時計が候補に決めたものだけ。何日開いていないか
    */
   idle?: { days: number; suggestSleep: true };
+  /** 新しい Project の始め方の仕事（別のサーバの clone・新しいリポジトリ、§6.49）。そう作ったものだけ */
+  start?: RealProjectStart;
   createdAt: string;
 }
 
@@ -609,11 +611,46 @@ export interface RealInboxNotice {
 
 export type RealInboxItem = RealInboxJudgment | RealInboxReview | RealInboxNotice;
 
-export async function createRealProject(name: string, root: string, runtime?: string): Promise<RealProject> {
+export async function createRealProject(
+  name: string,
+  root: string,
+  runtime?: string,
+  /** **始め方**（別のサーバだけ、v4-frontend.md §6.49）。`root` は置く場所、`folder` はその中に作るフォルダの名前 */
+  start?: { start: RealProjectStartRequest; folder: string },
+): Promise<RealProject> {
   return request<RealProject>("/api/projects", {
     method: "POST",
-    body: JSON.stringify({ name, root, ...(runtime ? { runtime } : {}) }),
+    body: JSON.stringify(
+      start
+        ? { name, runtime, start: start.start, parent: root, folder: start.folder }
+        : { name, root, ...(runtime ? { runtime } : {}) },
+    ),
   });
+}
+
+/** 新しい Project の始め方（別のサーバの clone・新しいリポジトリ、§6.49） */
+export type RealProjectStartRequest = { kind: "init" } | { kind: "clone"; url: string; account?: string };
+
+/** 始め方の仕事の記録（host の `ProjectStart` と同じ形） */
+export interface RealProjectStart {
+  kind: "init" | "clone";
+  url?: string;
+  account?: string;
+  startedAt: string;
+  status: "waking" | "running" | "done" | "failed" | "interrupted";
+  error?: string;
+}
+
+/** 始め方の仕事を、もう一度（失敗した・途中で止まったもの） */
+export async function retryRealProjectStart(projectId: string): Promise<void> {
+  await request(`/api/projects/${projectId}/start/retry`, { method: "POST" });
+}
+
+/**
+ * clone のタブで選べる GitHub のアカウント（Repositories のブラウザログイン。login だけ）。Repositories が入っていなければ空
+ */
+export async function listRealStartGithubAccounts(): Promise<string[]> {
+  return (await request<{ accounts: string[] }>("/api/project-start/github-accounts")).accounts;
 }
 
 export async function listRealProjects(): Promise<RealProject[]> {

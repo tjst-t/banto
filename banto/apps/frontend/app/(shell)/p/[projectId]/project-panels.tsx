@@ -34,6 +34,7 @@ import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confir
 import { ForkClosedBanner } from "@/components/banto/thread/fork-closed-banner";
 import { RUNTIME_MOVE_COMPOSER_REASON, RuntimeMoveBanner } from "@/components/banto/thread/runtime-move-banner";
 import { ProjectSleepBanner } from "@/components/banto/thread/project-sleep-banner";
+import { ProjectStartBanner } from "@/components/banto/thread/project-start-banner";
 import { useProjectMoving } from "@/lib/backend/runtime-moves";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import {
@@ -446,6 +447,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           <RuntimeMoveBanner projectId={project.id} />
           {/* 眠っている・起こしている（追加・2026-10-16、§6.43） */}
           <ProjectSleepBanner projectId={project.id} />
+          {/* 別のサーバの clone・新しいリポジトリ（追加・2026-10-20、§6.49） */}
+          <ProjectStartBanner projectId={project.id} threadId={project.baseThreadId} root={project.basePath} />
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}
@@ -511,6 +514,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             {automation && !closed ? <AutomationBand automation={automation} threadId={threadId} /> : null}
             <RuntimeMoveBanner projectId={project.id} />
             <ProjectSleepBanner projectId={project.id} />
+            <ProjectStartBanner projectId={project.id} threadId={threadId} root={project.basePath} />
             <div className="min-h-0 flex-1">
               <ThreadPanel
                 threadId={threadId}

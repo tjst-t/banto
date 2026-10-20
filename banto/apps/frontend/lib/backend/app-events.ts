@@ -12,7 +12,7 @@
 // 繋ぎ直す——**繋がっていない間も人は止めない**（開き直せば記録から見える）。黙って止まった接続も見切る
 // （`readSse`）——携帯で別アプリから戻ったとき、知らせが止まったままにならない。
 
-import { getBackendConfig, hostFetch, readSse, type RealThreadClosedBy } from "./client";
+import { getBackendConfig, hostFetch, readSse, type RealProjectStart, type RealThreadClosedBy } from "./client";
 import { refreshRealInbox } from "./real-inbox";
 import { noteJudgmentAnswered } from "./judgment-answers";
 
@@ -55,7 +55,11 @@ export type RealAppEvent =
       codeTransfers?: RealCodeTransfer[];
       /** 3 分を超えて繋がらない別のサーバ（追加・2026-10-17、Backlog #383）。古い host は付けない */
       unreachable?: RealRuntimeUnreachable[];
+      /** 新しい Project の始め方の仕事で終わっていないもの（追加・2026-10-20、§6.49）。古い host は付けない */
+      projectStarts?: Array<{ projectId: string; start: RealProjectStart }>;
     }
+  /** 新しい Project の始め方の仕事が変わった（別のサーバの clone・新しいリポジトリ、§6.49）。記録を丸ごと */
+  | { type: "project.start.changed"; projectId: string; start: RealProjectStart }
   /**
    * 別のサーバへコードを送っている（追加・2026-10-12、Backlog #269）。送り始め・進むたび・終わったとき（`transfer` 無し）。
    * その実行場所の分を丸ごと
