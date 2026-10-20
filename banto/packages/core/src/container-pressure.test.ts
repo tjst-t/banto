@@ -43,3 +43,27 @@ test("コンテナを起こし直して数えが戻ったら、その値を新�
   await watch.tick(T);
   assert.equal(notices.length, 1);
 });
+
+test("上げ方の1文はその Project で替えられる（別のサーバの containers は、この機械の設定では変わらない）", async () => {
+  const counts = new Map<string, PressureCounts | undefined>();
+  const notices: PressureNotice[] = [];
+  const watch = new ContainerPressureWatch({
+    read: async (name) => counts.get(name),
+    report: async (n) => notices.push(n),
+    describeLimits: () => "メモリ 1 GiB",
+    remedy: (projectId) => (projectId === "r1" ? "VM の資源から決めています。" : undefined),
+  });
+  const targets = [
+    { containerName: "banto-r1", projectId: "r1" },
+    { containerName: "banto-p1", projectId: "p1" },
+  ];
+  counts.set("banto-r1", { oomKills: 0, pidsMax: 0 });
+  counts.set("banto-p1", { oomKills: 0, pidsMax: 0 });
+  await watch.tick(targets);
+  counts.set("banto-r1", { oomKills: 1, pidsMax: 0 });
+  counts.set("banto-p1", { oomKills: 1, pidsMax: 0 });
+  await watch.tick(targets);
+  assert.match(notices.find((n) => n.projectId === "r1")!.detail, /VM の資源から決めています。$/);
+  assert.doesNotMatch(notices.find((n) => n.projectId === "r1")!.detail, /banto 全体の設定/);
+  assert.match(notices.find((n) => n.projectId === "p1")!.detail, /banto 全体の設定「コンテナ」/);
+});

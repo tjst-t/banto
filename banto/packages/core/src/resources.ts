@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parsePressure, parseMeminfo, type Pressure } from "./host-health.js";
 import type { Stall } from "./host-stall.js";
-import { remoteResourcesOf, type RemoteProbe, type RemoteResources } from "./remote-resources.js";
+import { remoteContainerCounts, remoteResourcesOf, type RemoteContainerCounts, type RemoteProbe, type RemoteResources } from "./remote-resources.js";
 
 // ---------------------------------------------------------------------------------------------------------------
 // 読み方（試験では差し替える）
@@ -420,10 +420,11 @@ export interface ResourceWatchOptions {
   stalls: () => readonly Stall[];
   now?: () => number;
   /**
-   * 別のサーバを読む（追加・2026-10-14）。繋いでいる実行場所だけを読み、`projects` はその実行場所で動く閉じていない Project。
-   * 無ければ別のサーバは出さない（試験の最小構成）
+   * 別のサーバを読む（追加・2026-10-14）。繋いでいる実行場所だけを読み、`projects` はその実行場所で動く閉じていない Project
+   * （`containerName` は containers の Project のコンテナの名前——中の単位をその Project に数える）。無ければ別のサーバは出さない
+   * （試験の最小構成）
    */
-  remotes?: () => Promise<Array<RemoteProbe & { projects: Array<{ projectId: string; name: string }> }>>;
+  remotes?: () => Promise<Array<RemoteProbe & { projects: Array<{ projectId: string; name: string; containerName?: string }> }>>;
   /** 眠っている Project（閉じていないもの）。無ければ眠っているものは無い */
   sleeping?: () => Array<{ projectId: string; name: string }>;
 }
@@ -445,6 +446,8 @@ export class ResourceWatch {
   private readonly now: () => number;
   /** 別のサーバの前の回の CPU（実行場所の名前ごと） */
   private readonly remoteCpu = new Map<string, { busy: number; total: number }>();
+  /** 別のサーバの containers のコンテナの、最後に読めた上限に当たった数え（コンテナの名前ごと。読めなかった回は消える） */
+  private remoteCounts = new Map<string, RemoteContainerCounts>();
 
   constructor(private readonly opts: ResourceWatchOptions) {
     this.fs = opts.fs ?? realFs;
@@ -570,11 +573,14 @@ export class ResourceWatch {
     const hostReason = busyReason(hostPressure, undefined, meminfo.available);
     // 別のサーバ。読めなくても手元の分は出す
     const remotes: RemoteResources[] = [];
+    const counts = new Map<string, RemoteContainerCounts>();
     for (const probe of (await this.opts.remotes?.().catch(() => [])) ?? []) {
       const { resources, cpu } = remoteResourcesOf(probe, probe.projects, this.remoteCpu.get(probe.runtime));
       if (cpu) this.remoteCpu.set(probe.runtime, cpu);
       remotes.push(resources);
+      for (const [name, c] of remoteContainerCounts(probe.raw)) counts.set(name, c);
     }
+    this.remoteCounts = counts;
     const stallHorizon = now - 10 * 60_000;
     this.latest = {
       measuredAt: new Date(now).toISOString(),
@@ -659,12 +665,23 @@ export class ResourceWatch {
     return [...head, ...rest];
   }
 
-  /** 上限に当たった数え（受信箱で知らせる見張り `container-pressure.ts` が使う）。読めなければ undefined */
+  /**
+   * 上限に当たった数え（受信箱で知らせる見張り `container-pressure.ts` が使う）。読めなければ undefined。この機械に無いコンテナ
+   * （別のサーバの containers）は、最後に読めた別のサーバの読み取りから（Project の id から決まる名前なので、この機械のものと重ならない）
+   */
   async readEvents(containerName: string): Promise<{ oomKills: number; pidsMax: number } | undefined> {
     const incusProject = (await this.opts.incusProject().catch(() => undefined)) ?? "";
     const root = containerCgroupPath(incusProject, containerName, this.cgroupRoot);
     const events = kv(this.fs.read(join(root, "memory.events")));
-    if (!events.has("oom_kill")) return undefined;
+    if (!events.has("oom_kill")) {
+      const remote = this.remoteCounts.get(containerName);
+      return remote ? { oomKills: remote.oomKills, pidsMax: remote.pidsMax } : undefined;
+    }
     return { oomKills: events.get("oom_kill")!, pidsMax: kv(this.fs.read(join(root, "pids.events"))).get("max") ?? 0 };
+  }
+
+  /** 別のサーバの containers のコンテナの上限（最後に読めた回の `memory.max`・`pids.max`）。読めていなければ undefined */
+  remoteLimits(containerName: string): RemoteContainerCounts["limits"] | undefined {
+    return this.remoteCounts.get(containerName)?.limits;
   }
 }

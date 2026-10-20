@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpuJiffies, remoteResourcesOf, remoteUnitKind } from "./remote-resources.js";
+import { REMOTE_RESOURCE_PROBE, cpuJiffies, remoteContainerCounts, remoteResourcesOf, remoteUnitKind } from "./remote-resources.js";
+import { spawnSync } from "node:child_process";
 
 const MB = 1024 * 1024;
 const P = "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89";
@@ -59,4 +60,58 @@ test("1回の読み取りを形にする：機械の全体・banto の分とそ�
 test("読めなかった実行場所は理由だけを出す", () => {
   const { resources } = remoteResourcesOf({ runtime: "vm", address: "ubuntu@vm", unavailable: "繋いでいません" }, [], undefined);
   assert.deepEqual(resources, { runtime: "vm", address: "ubuntu@vm", projects: [], groups: [], busy: false, unavailable: "繋いでいません" });
+});
+
+test("containers：Project のコンテナの中の単位を Project の名前を添えて数え、banto の分にコンテナの分を足す。ほかの banto のコンテナは数えない", () => {
+  const Q = "0b6e8c2a-1f3d-4e5a-9b7c-123456789abc";
+  const unit = (u: string, mb: number, cmd: string[] = []) => ({ unit: u, stat: `anon ${mb * MB}\n`, cmd });
+  const raw = {
+    meminfo: `MemTotal: ${32000 * 1024} kB\nMemAvailable: ${20000 * 1024} kB\n`,
+    pressure: {},
+    cores: 8,
+    stat: "cpu 100 0 0 900 0 0 0 0 0 0",
+    user: `anon ${10 * MB}\n`,
+    units: [],
+    containers: [
+      {
+        name: `banto-${P}`,
+        stat: `anon ${3000 * MB}\nkernel ${100 * MB}\n`,
+        events: "low 0\nhigh 0\nmax 4\noom 1\noom_kill 2\n",
+        pidsEvents: "max 3\n",
+        memoryMax: `${8 * 1024 ** 3}\n`,
+        pidsMax: "8192\n",
+        units: [unit(`banto-mod-shell-${P}.service`, 80), unit("banto-shell-c3a89b55.scope", 900, ["/bin/sh", "-c", "…", "banto-work", "/bin/sh", "-c", "npm test"]), unit("init.scope", 30)],
+      },
+      { name: `banto-${Q}`, stat: `anon ${500 * MB}\n`, events: "oom_kill 0\n", pidsEvents: "max 0\n", memoryMax: "max\n", pidsMax: "max\n", units: [unit(`banto-mod-files-${Q}.service`, 40)] },
+      // 同じ VM のほかの banto（別のデータの置き場）のコンテナ——この banto の Project ではない
+      { name: "banto-zzzz", stat: `anon ${7000 * MB}\n`, units: [unit("banto-mod-x-zzzz.service", 70)] },
+    ],
+  };
+  const projects = [
+    { projectId: P, name: "A", containerName: `banto-${P}` },
+    { projectId: Q, name: "B", containerName: `banto-${Q}` },
+  ];
+  const { resources: r } = remoteResourcesOf({ runtime: "vm", address: "u@vm", raw }, projects, undefined);
+  assert.deepEqual(r.projects, [{ projectId: P, name: "A" }, { projectId: Q, name: "B" }], "画面に返す Project にコンテナの名前を混ぜた");
+  assert.equal(r.bantoBytes, 10 * MB + 3100 * MB + 500 * MB, "コンテナの分を banto の分に数えていない（ほかの banto のコンテナを数えた）");
+  assert.deepEqual(
+    r.groups.map((g) => [g.id, g.items.map((i) => [i.name, i.detail ?? null])]),
+    [
+      ["modules", [["shell（A）", null], ["files（B）", null]]],
+      ["commands", [["コマンド（A）", "npm test"]]],
+    ],
+  );
+  // 上限に当たった数えと上限（見張りが使う）。max（無制限）は上限に入れない。数えの無いものは入れない
+  const counts = remoteContainerCounts(raw);
+  assert.deepEqual(counts.get(`banto-${P}`), { oomKills: 2, pidsMax: 3, limits: { memoryBytes: 8 * 1024 ** 3, processes: 8192 } });
+  assert.deepEqual(counts.get(`banto-${Q}`), { oomKills: 0, pidsMax: 0, limits: {} });
+  assert.equal(counts.has("banto-zzzz"), false);
+});
+
+test("向こうの読み取りの台本は、この機械の node でも JSON を返す（コンテナが無ければ containers は空）", () => {
+  const r = spawnSync(process.execPath, ["-"], { input: REMOTE_RESOURCE_PROBE, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout) as { containers?: unknown[]; units: unknown[] };
+  assert.ok(Array.isArray(out.containers));
+  assert.ok(Array.isArray(out.units));
 });

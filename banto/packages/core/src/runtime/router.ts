@@ -2,8 +2,9 @@
 // core の中の差し替え口」）。Project の記録の `runtime` が `remote:<名前>` なら別のサーバ（`remote-ssh.ts`）、それ以外
 // （既定・banto 全体用の箱）はこの host のコンテナ（`host-container.ts`）。
 //
-// 別のサーバで作らないもの（v4-security.md §1「最初は作らないもの」）：資源の上限と上限に当たった知らせ（向こうの持ち主の
-// 責任）。
+// `machine` で作らないもの（v4-security.md §1「最初は作らないもの」）：資源の上限と上限に当たった知らせ（向こうの持ち主の
+// 責任）。`containers` はコンテナに上限を付け（`remote-ssh.ts`）、上限に当たった知らせは別のサーバの読み取りから
+// （`remote-resources.ts`）——この口の `applyLimits`・`resourceTargets` はこの機械のコンテナだけ。
 
 import type { RemoteSshRuntime } from "./remote-ssh.js";
 import type { PlaceAddress, PreparedPlace, Runtime, RuntimePlace, ToolsInstallStatus } from "./runtime.js";
