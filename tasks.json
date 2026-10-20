@@ -10358,6 +10358,33 @@
       "updatedAt": "2026-10-20T08:56:28.219Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "desktop-2-daily",
+      "number": 430,
+      "kind": "story",
+      "title": "デスクトップ版（Windows）段2：毎日使える（Service・待たない形のコマンド・通知とトレイ・アプリの更新・プロキシ）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "desktop-1-core"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "desktop"
+      ],
+      "body": "v4-desktop.md §8 の段2。§4 の Service・Shell の待たない形・Vault（Infisical）、§6 の Windows との繋ぎ、§7 の更新。",
+      "doneWhen": "窓を閉じても走行と Service が続き、受信箱に来たものが Windows の通知とタスクバーの件数に出る。新しい版を GitHub の Releases に出すと、アプリの「更新して再起動」で入る",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-desktop.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T08:56:33.410Z",
+      "updatedAt": "2026-10-20T08:56:33.410Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
