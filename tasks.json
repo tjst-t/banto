@@ -11749,7 +11749,7 @@
       "number": 489,
       "kind": "task",
       "title": "host：札の手がかりを Module があとから足す口（relayUpdateBackgroundWork）と、結果で名乗る画面（dev.banto/view）・サイドバーの要約の1行",
-      "status": "ready",
+      "status": "backlog",
       "parent": "item-3",
       "dependsOn": [],
       "milestone": null,
@@ -11761,7 +11761,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-20T20:29:58.745Z",
+      "updatedAt": "2026-10-20T20:30:40.862Z",
       "closedAt": null,
       "extra": {}
     },
