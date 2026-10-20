@@ -989,8 +989,8 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     単位を止めるのも中のユーザーの systemd。中では sudo できるので `BANTO_NO_SUDO` は渡さない
   - 根の重なり：作る・再開するとき、VM で home と置き場の根を正規化して、根が home そのもの・home の外・置き場の根・同じ実行場所の
     ほかの Project の根（閉じたもの・移してくる途中のものも）と重なれば 409（`code: "root-overlap"`）
-  - 中から banto への道・鍵の窓口は #369 で入った（下の「道」の「実装済み」）。**まだ繋がないもの**：流れの口（`streamSocketPath` は
-    断る。VM のユーザーで中の置き場の symlink を辿ることになるため）・公開。**`containers` との間で移すのも断る**（移す手順は向こうで VM のユーザーとして展開・rsync・`git worktree repair` を
+  - 中から banto への道・鍵の窓口・流れの口は #369 で入った（下の「道」の「実装済み」）。**まだ繋がないもの**：公開。
+    **`containers` との間で移すのも断る**（移す手順は向こうで VM のユーザーとして展開・rsync・`git worktree repair` を
     するので、条件3を満たす形にするまで）
 - **VM は banto 専用**（Fable の A5）：`containers` の VM にはほかのユーザー・サービスを置かない（中の root は U の持ち物に setuid を
   付けられ、ほかの誰かが動かすと U＝sudo できるユーザーになる）。Project のフォルダの置き場を `nosuid` でマウントできるかは任意で測る。
@@ -1029,6 +1029,11 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
       UNIX ソケットの持ち主（`uid`/`gid`/`mode`）を付ける（Incus の `cmd/incusd/main_forkproxy.go`——どちらもその側の user namespace に
       入ってから）。`bind=instance` は `security.uid/gid`＝VM のユーザー（U/G）・待ち受けの持ち主＝中の番号、`bind=host` はその逆。
       中の番号はコンテナの宣言（`ProjectContainerSpec.inside`）から取り、決め打ちしない。UNIX の待ち受けは `mode=0600`
+  - **実装済み（2026-10-20、Backlog #369）——流れの口**：VM の `<置き場>/s/st-<印>` で装置 `banto-st-<印>`（`bind=host
+    listen=unix:<そこ> connect=unix:<置き場>/modules/<接続名>/s/stream.sock`）が待ち受け、host はそこへ `-L` で転送する（VM には
+    symlink を置かない）。印は接続名の hash。**待ち受けの置き場は `/run/user/<U>/…` でなく VM のディスクの `<置き場>/s`**（コンテナに
+    見せていない）——`/run/user/<U>` は VM を起こし直すと空になり、forkproxy は親のフォルダを作らないので、Incus がコンテナを
+    起こすときに待ち受けられない。待ち受けの置き場がいつもあるので、装置は外さない（Module を起こし直しても、繋ぎ直しても同じ）
   - 公開：Publish のたびに VM のポートを選んで `bind=host` の device を足す。選ぶときは止まっているものも含め全コンテナの device に
     書かれたポートを避ける。**取り消し・Service を消す・移す・閉じるときだけ外し、眠らせても外さない**（止まったコンテナの device は
     待ち受けない。外すと眠っている間にほかの Project に番号を取られる、Fable の B4）。同じ VM の Project が同じ Service のポートで
