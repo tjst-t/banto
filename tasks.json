@@ -11770,7 +11770,7 @@
       "number": 490,
       "kind": "task",
       "title": "サブエージェント：「いまの様子を要約」ボタン（Haiku で1回・本体のログインの中継・サイドバーへ）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "item-3",
       "dependsOn": [
         "subagent-now-panel",
@@ -11785,7 +11785,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-20T20:29:58.745Z",
+      "updatedAt": "2026-10-20T20:30:48.262Z",
       "closedAt": null,
       "extra": {}
     },
