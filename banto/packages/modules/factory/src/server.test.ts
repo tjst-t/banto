@@ -550,6 +550,10 @@ test("人の画面から流した（頼んだ会話が無い）ものは request
 // 人が回したときと同じく、その repo の設定の名になる
 test("Project のコマンド（/bin/sh）の中で作るコミットには Factory の名乗りを付けない", async () => {
   const repo = mkdtempSync(join(tmpdir(), "factory-ident-"));
+  // 外から来た名前の環境変数は消す（あると repo の設定より勝つ。試験を回す側——古い Factory 等——が付けていることがある）
+  const names = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
+  const env = Object.fromEntries(names.map((k) => [k, process.env[k]]));
+  for (const k of names) delete process.env[k];
   try {
     execFileSync("git", ["init", "-q", repo]);
     execFileSync("git", ["config", "user.name", "人"], { cwd: repo });
@@ -558,6 +562,10 @@ test("Project のコマンド（/bin/sh）の中で作るコミットには Fact
     assert.equal(r.code, 0, r.out);
     assert.equal(r.out.trim(), "人 <h@h> / 人 <h@h>");
   } finally {
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     rmSync(repo, { recursive: true, force: true });
   }
 });
