@@ -316,6 +316,14 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       await picker.getByTestId("path-picker-entry").filter({ hasText: /^work$/ }).click();
       await expect(picker.getByTestId("path-picker-current")).toHaveText(`/home/${host.user}/work`, { timeout: 60_000 });
       await expect(picker.getByTestId("path-picker-entry")).toHaveText(["alpha", "beta"]);
+      // 向こうにも新しいフォルダをその場で作れる（追加・2026-10-20）
+      await picker.getByTestId("path-picker-new-folder").click();
+      await picker.getByTestId("path-picker-new-folder-name").fill("gamma");
+      await picker.getByTestId("path-picker-new-folder-create").click();
+      await expect(picker.getByTestId("path-picker-current")).toHaveText(`/home/${host.user}/work/gamma`, { timeout: 60_000 });
+      expect((await host.rootExec(`test -d /home/${host.user}/work/gamma && echo made`)).stdout.trim()).toBe("made");
+      await picker.getByRole("button", { name: "上へ" }).click();
+      await expect(picker.getByTestId("path-picker-entry")).toHaveText(["alpha", "beta", "gamma"], { timeout: 60_000 });
       await picker.getByTestId("path-picker-entry").filter({ hasText: "alpha" }).click();
       await expect(picker.getByTestId("path-picker-current")).toHaveText(`/home/${host.user}/work/alpha`, { timeout: 60_000 });
       await picker.getByRole("button", { name: "ここにする" }).click();

@@ -599,6 +599,31 @@ export async function realpathRemote(t: SshTarget, files: SshFiles, hostKeyType:
 }
 
 /**
+ * **向こうにフォルダを1つ作る**（追加・2026-10-20、ユーザー）。親（`~`・`~/…`・絶対パス）の中に1段だけ（`mkdir -p` はしない）。
+ * 名前は呼び手が確かめる（区切り・`..` は来ない）。親が無い・同じ名前がある・作れないは理由を添えて投げる。作ったフォルダの
+ * 正規化した絶対パスを返す。`containers` でも VM のユーザーで作る——中身の無いフォルダを1つ作るだけで、見せたフォルダの中身を
+ * 書く・解釈することではない（条件3）
+ */
+export async function createRemoteDirectory(t: SshTarget, files: SshFiles, hostKeyType: string, parent: string | undefined, name: string): Promise<string> {
+  const script = [
+    `p=${remotePathExpr((parent ?? "").trim())}`,
+    `n=${shq(name)}`,
+    `[ -d "$p" ] || { printf '向こうにそのフォルダがありません：%s\\n' "$p" >&2; exit 3; }`,
+    `cd -P -- "$p" || exit 3`,
+    `[ -e "$n" ] && { printf '同じ名前のものがもうあります：%s\\n' "$n" >&2; exit 3; }`,
+    `mkdir -m 0755 -- "$n" 2>/dev/null || { printf 'その場所には作れません（権限がありません）\\n' >&2; exit 3; }`,
+    `cd -P -- "$n" && printf '%s\\0' "$(pwd -P)"`,
+    "",
+  ].join("\n");
+  const r = await runRemoteScript(t, files, hostKeyType, script);
+  if (r.code === 3) throw new Error(r.stderr.trim().split("\n").pop() ?? "向こうにフォルダを作れませんでした");
+  if (r.code !== 0) throw new SshCommandError("向こうにフォルダを作れませんでした", r);
+  const made = (r.stdout.split("\0")[0] ?? "").split("\n").pop() ?? "";
+  if (!made.startsWith("/")) throw new Error("作ったフォルダの場所を読めませんでした");
+  return made;
+}
+
+/**
  * **その根が、向こうの banto の置き場を含むか**（v4-security.md §1「登録と選び方」——広すぎる根の警告は、向こうの banto の
  * 置き場の根を含むかで判断する）。どちらも向こうで正規化して比べる。根がまだ無い（打っている途中）なら含まない
  */

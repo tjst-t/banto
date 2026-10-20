@@ -133,7 +133,7 @@ import {
 import { ModuleMetaError } from "@banto/module-contract";
 import { McpServersError, fromMcpServers, toMcpServers } from "../modules/mcp-servers.js";
 import { describeRootScope } from "../modules/root-scope.js";
-import { listDirectories } from "./directories.js";
+import { createDirectory, folderNameProblem, listDirectories } from "./directories.js";
 import { collectActivity } from "./activity.js";
 import { RESTARTING_REFUSAL } from "../relay/module-calls.js";
 import { SelfUpdateError, type SelfUpdate } from "../self-update/self-update.js";
@@ -2110,6 +2110,14 @@ export function createApp(deps: AppDeps) {
             if (action === "/directories" && req.method === "GET") {
               return json(res, 200, await runtimes.listDirectories(name, url.searchParams.get("path") ?? undefined));
             }
+            // 向こうにフォルダを1つ作る（`POST /api/fs/directories` と同じ形。追加・2026-10-20）
+            if (action === "/directories" && req.method === "POST") {
+              const body = (await readJsonBody(req)) as { parent?: unknown; name?: unknown };
+              const problem = folderNameProblem(typeof body.name === "string" ? body.name : "");
+              if (problem) return json(res, 400, { error: problem });
+              const path = await runtimes.createDirectory(name, typeof body.parent === "string" ? body.parent : undefined, body.name as string);
+              return json(res, 201, { path });
+            }
           }
           return json(res, 404, { error: "not found" });
         } catch (err) {
@@ -3632,6 +3640,19 @@ export function createApp(deps: AppDeps) {
 
       // **フォルダを選べるようにする**（決定・2026-09-11、ユーザー要望）。
       // 返すのはフォルダの名前だけ——人が Root を選ぶための窓（`directories.ts`）
+      // **フォルダを1つ作る**（追加・2026-10-20、ユーザー）。新しい Project の「選ぶ」の画面の「新しいフォルダ」——1段だけ
+      if (url.pathname === "/api/fs/directories" && req.method === "POST") {
+        try {
+          const body = (await readJsonBody(req)) as { parent?: unknown; name?: unknown };
+          const path = await createDirectory(typeof body.parent === "string" ? body.parent : undefined, typeof body.name === "string" ? body.name : "");
+          return json(res, 201, { path });
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          const message =
+            code === "EEXIST" ? "同じ名前のものがもうあります" : code === "EACCES" ? "その場所には作れません（権限がありません）" : err instanceof Error ? err.message : String(err);
+          return json(res, 400, { error: message });
+        }
+      }
       if (url.pathname === "/api/fs/directories" && req.method === "GET") {
         try {
           json(res, 200, await listDirectories(url.searchParams.get("path") ?? undefined));
