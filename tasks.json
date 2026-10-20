@@ -10219,7 +10219,7 @@
       "number": 424,
       "kind": "task",
       "title": "Repositories に読むだけの GitHub の tool（Issue・PR・CI）",
-      "status": "in-progress",
+      "status": "ready",
       "parent": "missions-patrols",
       "dependsOn": [
         "read-only-runs"
@@ -10233,7 +10233,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T06:45:03.011Z",
+      "updatedAt": "2026-10-20T07:20:40.393Z",
       "closedAt": null,
       "extra": {}
     },
