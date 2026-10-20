@@ -55,7 +55,7 @@ import {
 } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 import { RESTARTING_REFUSAL } from "./module-calls.js";
-import { READ_ONLY_REFUSAL, mayCallInReadOnly, mayReadResourcesInReadOnly, type RestrictionFor } from "./read-only.js";
+import { READ_ONLY_REFUSAL, mayCallInReadOnly, mayReadResourcesInReadOnly, mayRelayOwnCredentialInReadOnly, type RestrictionFor } from "./read-only.js";
 
 /**
  * **中継の本文の上限**（追加・2026-10-15、`docs/specs/v4-modules.md` §2.2「変換役」）。Module の stdio は1通 10MB まで
@@ -1305,12 +1305,18 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       const ok =
         kind === "tool"
           ? targetInfo !== undefined &&
-            mayCallInReadOnly({
+            (mayCallInReadOnly({
               moduleName: targetName,
               bundled: bundledTarget,
               tool: { name, ...(targetInfo.readEffect ? { _meta: { [EFFECT_META_KEY]: "read" } } : {}) },
               allowed,
-            })
+            }) ||
+              // 同梱の banto 全体の Module が、自分の資格情報を Vault から引く・回った組を書き戻す（AI には返らない）
+              mayRelayOwnCredentialInReadOnly({
+                caller: { bundled: identity.meta?.origin === "bundled", inContainer: identity.inContainer === true, projectScoped: identity.projectId !== undefined },
+                target: { bundled: bundledTarget, roles: target.meta.satisfies },
+                tool: { name, callerOwned: targetInfo.callerOwned },
+              }))
           : mayReadResourcesInReadOnly({ moduleName: targetName, bundled: bundledTarget, allowed });
       if (!ok) {
         await audit(false, "読むだけの回からの、読むだけでない宛先への中継");

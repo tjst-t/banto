@@ -66,6 +66,8 @@ async function setup(
     readOnly?: boolean;
     /** 人が「見回りで使ってよい」と許したもの */
     patrolAllowed?: string[];
+    /** 呼び手を banto 全体の Module にする（Project を持たない——Repositories と同じ形） */
+    instanceCaller?: boolean;
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "banto-relay-gate-"));
@@ -99,7 +101,7 @@ async function setup(
   const token = registry.issueToken({
     moduleName: "shell",
     connName: "shell-project-1",
-    projectId: PROJECT,
+    ...(opts.instanceCaller ? {} : { projectId: PROJECT }),
     meta: shellMeta,
     ...(opts.inContainer ? { inContainer: true } : {}),
   });
@@ -1035,6 +1037,48 @@ test("読むだけの回の中継：読むだけの宛先でも、まだ許し�
     endCall();
   } finally {
     await t.close();
+  }
+});
+
+test("読むだけの回の中継：banto 本体で動く同梱の banto 全体の Module は、自分の資格情報を同梱の Vault から引ける（承認は今までどおり）", async () => {
+  const t = await setup({ readOnly: true, bundled: true, instanceCaller: true, vaultBundled: true, vaultTools: readTools(), autoApprove: { on: true } });
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+    // 印の確かめは通る。まだ許していないので、聞かずに断る
+    await assert.rejects(
+      () => t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } }),
+      /人に聞けないため/,
+    );
+    assert.equal(t.inbox.listOpen().length, 0, "読むだけの回で判断待ちを出した");
+    // banto 全体の Module の承認は Project を持たない（ふつうの会話で一度許したもの）
+    await t.grants.grant({ callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias" });
+    const ok = await t.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } });
+    assert.equal((ok.content as { text: string }[])[0]?.text, "SECRET-VALUE");
+    endCall();
+  } finally {
+    await t.close();
+  }
+
+  // 緩めない：コンテナの中の呼び手・Project の Module・同梱でない呼び手・同梱でない Vault
+  for (const opts of [
+    { bundled: true, instanceCaller: true, inContainer: true, vaultBundled: true },
+    { bundled: true, vaultBundled: true },
+    { instanceCaller: true, vaultBundled: true },
+    { bundled: true, instanceCaller: true },
+  ]) {
+    const n = await setup({ readOnly: true, vaultTools: readTools(), ...opts });
+    try {
+      await n.grants.grant({ ...("instanceCaller" in opts ? {} : { projectId: PROJECT }), callerModule: "shell", targetModule: "vault", kind: "tool", name: "resolveAlias" });
+      const endCall = n.moduleCalls.begin("shell-project-1", THREAD, "turn", PROJECT);
+      await assert.rejects(
+        () => n.caller.callTool({ name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } }),
+        /見回りの回では使えません/,
+        JSON.stringify(opts),
+      );
+      endCall();
+    } finally {
+      await n.close();
+    }
   }
 });
 

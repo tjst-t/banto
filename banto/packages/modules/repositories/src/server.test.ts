@@ -58,8 +58,10 @@ test("道具はどれも人の画面からだけ——可視性は admin、刻�
     // 例外は Backlog が中継で呼ぶ、ブランチを送る・取ってくる口と送り先を引く口（branch-sync.test.ts）と、Vault が中継で呼ぶ
     // 持ち主の口（presentOwnedSecret、2026-10-18——accounts.test.ts）
     const fromRelay = ["push_branch", "fetch_branch", "branch_target", "presentOwnedSecret"];
+    // もう1つの例外は、AI に見せる読むだけの GitHub の tool（2026-10-20、Backlog #424——github-read.test.ts）
+    const forAgent = ["listIssues", "getIssue", "listPullRequests", "getPullRequest", "listCiRuns", "getCiRun"];
     for (const t of tools) {
-      const expected = fromRelay.includes(t.name) ? "module" : "admin";
+      const expected = fromRelay.includes(t.name) ? "module" : forAgent.includes(t.name) ? "agent" : "admin";
       assert.equal((t._meta as Record<string, unknown>)[VISIBILITY_META_KEY], expected, t.name);
     }
 

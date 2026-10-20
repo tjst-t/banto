@@ -2191,9 +2191,26 @@ banto 全体の設定の Repositories の面にも同じものを出す（**bant
   （v4-frontend.md §6.2）。閉じた Project は押せない（再開は banto の「閉じたものの一覧」で）。設定の面への「変える」は、
   入口からは「banto 全体の設定の Repositories で変えられます」と言うだけ（今まで通り）
 
-**AI 向けの道具**：**まだ持たない**（決定・2026-10-01）。台帳はこのマシンのフォルダの場所で、Project のコンテナの
-中の AI からは届かない場所を指す——渡しても AI が次の一手に使えず、道具の説明で文脈を取られるだけになる（GitHub
-公式の MCP を繋がないのと同じ理由）。AI が「新しい開発を始めて」と頼む道具は下の「まだ決めていないこと」。
+**AI 向けの道具**：**読むだけの GitHub の tool だけ**（台帳の管理は持たない——決定・2026-10-01。読むだけの tool を足した
+——2026-10-20、Backlog #424、アーキ仕様 §4.4）。台帳はこのマシンのフォルダの場所で、Project のコンテナの中の AI からは届かない
+場所を指す——台帳の管理を渡しても AI が次の一手に使えず、道具の説明で文脈を取られるだけになる（GitHub 公式の MCP を繋がないのと
+同じ理由）。AI が「新しい開発を始めて」と頼む道具は下の「まだ決めていないこと」。
+
+**読むだけの GitHub の tool**（2026-10-20、Backlog #424。見回りが外の出来事を見るため、アーキ仕様 §4.4）：可視性 `agent`・
+`dev.banto/effect: "read"`。コードは `github-read.ts`。
+
+- `listIssues({ state?, limit? })`（PR を除く）・`getIssue({ number })`（本文とコメント）・`listPullRequests({ state?, limit? })`・
+  `getPullRequest({ number })`（本文・コメント・その head の commit の GitHub Actions の実行）・`listCiRuns({ status?, limit? })`・
+  `getCiRun({ runId })`（job と step の結果。ログは読まない——ログの口は別の相手へ送り直す）。`state` は open・closed・all
+  （既定 open）、`status` は queued・in_progress・completed・success・failure・cancelled、`limit` は 1〜50（既定 20）
+- **リポジトリは呼んだ Project の根で決まる**（ブランチを送る口と同じ決め方——host に `relayCallerProject` で聞き、刻印と照らす）。
+  台帳の行の GitHub の場所と、フォルダの origin が同じものだけ（コンテナの中から origin を書き換えて、別のリポジトリをこの
+  アカウントで読ませない——食い違えば「一覧を開くと直します」で断る）。台帳に無い・GitHub に無い・別のサーバの Project は断る
+- **引数は決めた欄だけ**。欄の外（owner・repo・URL・検索語）が来たら、GitHub にも Vault にも行かずに断る（黙って捨てると、
+  AI は別のリポジトリを読めたと思い込む）。宛先はそのリポジトリの API の決まった場所だけで、リダイレクトの先へは行かない
+- **読むのに使うのは台帳の行のアカウント**。アカウントの無い行は鍵なしで読む（公開のものだけ。非公開は「扱うアカウントを
+  選ぶと読めます」で断る）。トークンの引き方は使えるトークン（下）と同じで、返事には入れない
+- 返すのは決めた欄（番号・題・状態・人・ラベル・時刻・本文・GitHub の場所）だけ。本文・コメントは 4000 字で切る
 
 **アカウント**：設定（banto 全体の設定の Repositories の面）で登録——名前・**API の資格情報**・**SSH 鍵（Vault の alias）**。API の資格情報は2通りから選ぶ
 （決定・2026-10-01、ユーザー）：**PAT**（fine-grained、Vault の alias）か、**ブラウザでログイン**——GitHub App の

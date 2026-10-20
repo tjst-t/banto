@@ -8,7 +8,7 @@
 // 振る舞いを替えるときは置き場のファイルに書いた URL の口（`/__fake/state`）を叩く。
 import { readFileSync, writeFileSync } from "node:fs";
 import { GITHUB_LOGIN_FIXTURE_FILE } from "./config.ts";
-import { FAKE_CLIENT_ID, startFakeGithub } from "../packages/modules/repositories/dist/test-fakes.js";
+import { FAKE_CLIENT_ID, startFakeGithub, type FakeRepoContent } from "../packages/modules/repositories/dist/test-fakes.js";
 
 /** 貼る PAT と、その持ち主 */
 export const E2E_GITHUB_PAT = "ghp_e2e_pasted_pat_9Zq";
@@ -39,9 +39,17 @@ export async function setGithubLoginFixture(patch: {
   rejectPush?: { repo: string; on: boolean };
   /** その login の GitHub App のインストールを差し替える（null で既定——自分に Administration・Contents が書けるもの——に戻す） */
   installations?: { login: string; list: Array<{ account: string; administration?: "read" | "write"; contents?: "read" | "write" }> | null };
-}): Promise<{ refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>; issued: number }> {
+  /** そのリポジトリに Issue・PR・GitHub Actions の実行を足す（読むだけの tool の試験） */
+  addContent?: FakeRepoContent;
+}): Promise<{
+  refreshCalls: number;
+  created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>;
+  issued: number;
+  /** 読むだけの口（Issue・PR・CI）に来た要求（パスとクエリ・誰として読んだか） */
+  apiReads: Array<{ path: string; query: string; login?: string }>;
+}> {
   const { web } = JSON.parse(readFileSync(GITHUB_LOGIN_FIXTURE_FILE, "utf8")) as { web: string };
   const res = await fetch(`${web}/__fake/state`, { method: "POST", body: JSON.stringify(patch) });
   if (!res.ok) throw new Error(`偽の GitHub が振る舞いの変更を断りました（${res.status}）`);
-  return (await res.json()) as { refreshCalls: number; created: Array<{ owner: string; name: string; private: boolean; description?: string; by: string }>; issued: number };
+  return (await res.json()) as Awaited<ReturnType<typeof setGithubLoginFixture>>;
 }
