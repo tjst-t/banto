@@ -37,6 +37,9 @@ interface Ctx {
   mapped: Map<string, Map<number, number>>;
   /** host に外させた道（`<Project>:<ポート>`） */
   released: string[];
+  /** host が道を外せない（別のサーバに繋がらない） */
+  releaseFails: { on: boolean };
+  store: PublishStore;
   publisher: CaddyPublisher;
   call(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
 }
@@ -53,6 +56,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
   const onLan = new Set<string>();
   const mapped = new Map<string, Map<number, number>>();
   const released: string[] = [];
+  const releaseFails = { on: false };
   const publisher = new CaddyPublisher({
     store,
     caddyFor: (s) => new HttpCaddyAdmin(s.adminUrl),
@@ -64,6 +68,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
       return { address: a, ...(vmPort !== undefined ? { port: vmPort } : {}), ...(onLan.has(projectId) ? { exposedOnLan: true as const } : {}) };
     },
     releasePort: async (projectId, port) => {
+      if (releaseFails.on) throw new Error("別のサーバに繋がりません");
       released.push(`${projectId}:${port}`);
     },
     probe: async (address, port) => listening.has(`${address}:${port}`),
@@ -80,7 +85,7 @@ async function withCaddy(fn: (ctx: Ctx) => Promise<void>, opts: { configured?: b
     return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
   };
   try {
-    await fn({ client, caddy, dir, addresses, flaky, listening, onLan, mapped, released, publisher, call });
+    await fn({ client, caddy, dir, addresses, flaky, listening, onLan, mapped, released, releaseFails, store, publisher, call });
   } finally {
     await client.close();
     await caddy.stop();
@@ -509,10 +514,10 @@ test("別のサーバの Project ごとのコンテナ：サービスのポー�
     const listed = JSON.parse((await call("listRoutes", {})).text) as { routes: Array<{ state: string }> };
     assert.deepEqual(listed.routes.map((r) => r.state), ["active"]);
     assert.equal(caddy.writes().length, before, "同じ行き先なのに書き直した");
-    // やめる：host に道を外させる
+    // やめる：host に道を外させる（1つ目は、最初に届かず公開できなかったときに外させたもの）
     const off = await call("unpublishRoute", { projectId: P2, service: "web", port: 3000 });
     assert.equal(off.isError, false, off.text);
-    assert.deepEqual(released, [`${P2}:3000`]);
+    assert.deepEqual(released, [`${P2}:3000`, `${P2}:3000`]);
   });
 });
 
@@ -531,5 +536,47 @@ test("同じ Project の別の Service が同じポートで公開されてい�
     assert.deepEqual(released, [], "もう1つの公開が使っている道を外させた");
     assert.equal((await call("unpublishRoute", { projectId: P2, service: "api", port: 3000 })).isError, false);
     assert.deepEqual(released, [`${P2}:3000`]);
+  });
+});
+
+test("公開できなかったら host が張った道を外させる。外させ損ねた道（公開・やめる）は覚えて、突き合わせで外し直す（レビュー M1）", async () => {
+  await withCaddy(async ({ call, addresses, listening, onLan, mapped, released, releaseFails, store }) => {
+    onLan.add(P2);
+    addresses.set(P2, "192.168.10.50");
+    mapped.set(P2, new Map([[3000, 20002]]));
+    listening.clear();
+    // 届かないので公開できない——host がこの公開のために張った道を外させる
+    assert.ok((await call("publishRoute", publishArgs({ projectId: P2 }))).isError);
+    assert.deepEqual(released, [`${P2}:3000`], "公開できなかったのに host が張った道を残した");
+    // 外させられなかった（別のサーバに繋がらない）——覚えておき、突き合わせで外し直す
+    releaseFails.on = true;
+    assert.ok((await call("publishRoute", publishArgs({ projectId: P2 }))).isError);
+    assert.deepEqual((await store.pendingReleases()).map((p) => [p.projectId, p.port]), [[P2, 3000]]);
+    releaseFails.on = false;
+    await call("listRoutes", {});
+    assert.deepEqual(released, [`${P2}:3000`, `${P2}:3000`]);
+    assert.deepEqual(await store.pendingReleases(), [], "外し直せたのに覚えたまま");
+
+    // やめるときに外させられなかった——記録は消し（公開はやめた）、道は覚えて外し直す
+    listening.add("192.168.10.50:20002");
+    assert.equal((await call("publishRoute", publishArgs({ projectId: P2 }))).isError, false);
+    releaseFails.on = true;
+    const off = await call("unpublishRoute", { projectId: P2, service: "web", port: 3000 });
+    assert.equal(off.isError, false, off.text);
+    assert.match(off.text, /外し直します/);
+    assert.equal((await store.pendingReleases()).length, 1);
+    // 繋がらない間は、突き合わせのたびに繋ぎに行かない（間隔を空ける）
+    await call("listRoutes", {});
+    assert.equal((await store.pendingReleases()).length, 1);
+    releaseFails.on = false;
+    const before = released.length;
+    await call("listRoutes", {});
+    assert.equal(released.length, before, "外し直す間隔を空けずに繋ぎに行った");
+
+    // 同じ Project の同じポートがまた公開されたら、その公開が使うので外さずに忘れる
+    assert.equal((await call("publishRoute", publishArgs({ projectId: P2, service: "api" }))).isError, false);
+    await call("listRoutes", {});
+    assert.deepEqual(await store.pendingReleases(), []);
+    assert.equal(released.length, before, "また公開された道を外させた");
   });
 });
