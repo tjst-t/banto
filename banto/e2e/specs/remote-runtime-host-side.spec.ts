@@ -8,7 +8,8 @@
 // 見るもの（規則14——吹き出しが出たで終わらせず、記録と向こうの git の中身まで見る）：
 //   1. 会話ができる：Runner は host の Project ごとの空のフォルダで走り（向こうのパスで走らない）、system prompt の root は
 //      向こうのパスと実行場所の名前。Module（Backlog）の tool が向こうで動く
-//   2. Backlog が向こうから origin へ push する（Repositories は引き受けない——向こうの git の設定のまま）。host の同じパスの
+//   2. Backlog が向こうから origin へ push する（origin は向こうのフォルダで GitHub の外なので Repositories は引き受けない——向こうの
+//      git の設定のまま。GitHub の origin を Repositories が引き受ける形は remote-backlog-repositories-push.spec.ts）。host の同じパスの
 //      リポジトリには何も書かない
 //   3. Repositories の一覧：host の同じパスのフォルダは「Project はまだ無い」のまま（別のサーバの Project と突き合わせない）
 //   4. ターンの途中で banto が落ちて起き直すと、切れたターンが続き、最後まで走る（続きも host のフォルダで走る）
