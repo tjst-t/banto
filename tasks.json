@@ -11418,7 +11418,7 @@
       "number": 474,
       "kind": "task",
       "title": "新しい Project の画面の3つのスイッチ：POST /api/projects の settings と画面",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "new-project-toggles",
       "dependsOn": [],
       "milestone": null,
@@ -11430,7 +11430,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T14:18:11.252Z",
-      "updatedAt": "2026-10-20T15:27:38.604Z",
+      "updatedAt": "2026-10-20T15:27:46.533Z",
       "closedAt": null,
       "extra": {}
     },
