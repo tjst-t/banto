@@ -10125,7 +10125,7 @@
       "number": 420,
       "kind": "task",
       "title": "土台：読むだけの印と読むだけの回",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "missions-patrols",
       "dependsOn": [],
       "milestone": null,
@@ -10137,7 +10137,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T05:40:15.320Z",
-      "updatedAt": "2026-10-20T05:40:15.320Z",
+      "updatedAt": "2026-10-20T05:42:12.703Z",
       "closedAt": null,
       "extra": {}
     },
