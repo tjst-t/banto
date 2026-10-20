@@ -8860,7 +8860,7 @@
       "labels": [
         "runtime"
       ],
-      "body": "決定・2026-10-16〜17、ユーザー（案A・P1・core が sudo で準備）。仕様は v4-security.md §1「別のサーバの中のコンテナ——1台に Project を複数置く」（a50d5fda、Fable のレビュー2回）。\n\n別のサーバの実行場所に「動かし方」（machine／containers）を足し、containers では Project ごとに Incus のコンテナを立て、道は proxy device で張る。root の要る準備は core が sudo -n で登録のときだけ行う。\n\n順番：#361（実行場所の鍵を core だけに）→ 実機で測る → SSH の接続を Project ごとにする作り直し → コンテナと道と準備。",
+      "body": "決定・2026-10-16〜17、ユーザー（案A・P1・core が sudo で準備）。仕様は v4-security.md §1「別のサーバの中のコンテナ——1台に Project を複数置く」（a50d5fda、Fable のレビュー2回）。\n\n別のサーバの実行場所に「動かし方」（machine／containers）を足し、containers では Project ごとに Incus のコンテナを立て、道は proxy device で張る。root の要る準備は core が sudo -n で登録のときだけ行う。\n\n順番：#361（実行場所の鍵を core だけに）→ 実機で測る → SSH の接続を Project ごとにする作り直し → コンテナと道と準備。\n\n## 完了の確かめに回したもの（2026-10-20、ユーザー）\n#369 を閉じるとき、「2つの Project を同じ VM で動かし、片方のコンテナからもう片方の中継の口・フォルダに届かない」ことの実機の確かめを、このストーリーの完了の確かめに回した。#369 では、banto-dev-vm の使い捨ての区画で道を手で張って測ったこと（中の 29839 番は外から届かない）と、sakutei開発（baremetal）で中継・Vault・Factory・ssh-agent が通ったことまで確かめている（docs/notes/2026-10-20-containers-paths.md）。",
       "doneWhen": "banto-dev-vm を containers の実行場所として登録し、2つの Project を同じ VM で動かせる（Shell・Service・Publish・Claude の中継・ssh-agent・流れの口がそれぞれ通り、片方の AI がもう片方のフォルダ・中継の口に届かない）",
       "resolution": null,
       "refs": [
@@ -8868,7 +8868,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-17T00:43:16.575Z",
-      "updatedAt": "2026-10-17T00:43:16.575Z",
+      "updatedAt": "2026-10-20T13:56:05.935Z",
       "closedAt": null,
       "extra": {}
     },
