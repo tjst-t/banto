@@ -614,3 +614,26 @@ test("別のサーバの Project：最初に引き受けた送り先とアカウ
     assert.equal(toBob(), 0);
   });
 });
+
+/** git の形として正しくないコミット（author にメールが無い）1つだけの bundle（`hash-object --literally` で作る） */
+function malformedBundle(dir: string): Buffer {
+  const repo = join(dir, "malformed");
+  mkdirSync(repo);
+  execFileSync("git", ["init", "-q", "--bare", repo]);
+  const tree = execFileSync("git", ["--git-dir", repo, "mktree"], { input: "", encoding: "utf8" }).trim();
+  const body = `tree ${tree}\nauthor nobody 1700000000 +0000\ncommitter nobody 1700000000 +0000\n\nbad\n`;
+  const commit = execFileSync("git", ["--git-dir", repo, "hash-object", "-t", "commit", "-w", "--literally", "--stdin"], { input: body, encoding: "utf8" }).trim();
+  execFileSync("git", ["--git-dir", repo, "update-ref", "refs/heads/backlog", commit]);
+  return execFileSync("git", ["--git-dir", repo, "bundle", "create", "-q", "-", "refs/heads/backlog"]);
+}
+
+test("別のサーバの Project：向こうから来た bundle の中身を fsck で確かめ、git の形として正しくなければ送らない", async () => {
+  await withWorld(async (w) => {
+    await addAccount(w, "alice", TOKEN);
+    const { far, sync, project } = await farClone(w);
+    far.forgedBundle = malformedBundle(w.home);
+    await assert.rejects(() => asBacklog(sync, "push", "backlog", project), /git の形として正しくないので送りません：error in commit [0-9a-f]+: missingEmail/);
+    assert.equal(bareHead(w.gh, "backlog"), undefined, "正しくない中身を GitHub に送った");
+    assert.equal(w.gh.gitRequests.filter((r) => r.path.includes("receive-pack")).length, 0);
+  });
+});

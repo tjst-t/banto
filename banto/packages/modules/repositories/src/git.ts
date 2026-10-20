@@ -80,8 +80,9 @@ export const GIT_COMMANDS: readonly string[] = [
   "push",
   // Backlog のブランチを送る・取ってくる（`branch-sync.ts`。環境は `writeEnv`）
   "fetch",
-  // 別のサーバの Project のブランチを運ぶ——host の使い捨ての置き場で bundle にする（`branch-sync.ts`）
+  // 別のサーバの Project のブランチを運ぶ——host の使い捨ての置き場で bundle にする・向こうから来た中身を確かめる（`branch-sync.ts`）
   "bundle create",
+  "fsck",
 ];
 
 /**
@@ -865,9 +866,11 @@ export async function gitInitBare(path: string): Promise<void> {
 }
 
 /**
- * **向こうから来た bundle の、そのブランチだけを取り込む**（`refs/heads/<b>`）。bundle は中の AI が作りうるので、中身を
- * 確かめて（`transfer.fsckObjects`）から受ける。bundle はこの Module が書いた置き場のファイルなので、手元のパスを読ませる
- * （`protocol.file.allow` をここだけ戻す）。ほかの ref・タグは取らない
+ * **向こうから来た bundle の、そのブランチだけを取り込む**（`refs/heads/<b>`）。bundle は中の AI が作りうるので、取り込んだ
+ * あと**使い捨ての置き場を `git fsck --strict` で確かめ**、落ちたら断る——bundle からの fetch は git 2.43 では
+ * `transfer.fsckObjects` を効かせない（author にメールの無いコミットが終了コード 0 で入る。2026-10-20 に実測、レビュー M1）。
+ * 置き場には取り込んだものしか無いので、確かめるのはそのブランチの中身だけ。bundle はこの Module が書いた置き場のファイルなので、
+ * 手元のパスを読ませる（`protocol.file.allow` をここだけ戻す）。ほかの ref・タグは取らない
  */
 export async function gitFetchBundle(path: string, bundle: string, branch: string): Promise<void> {
   const env = withConfig(writeEnv({ kind: "none" }), [
@@ -876,6 +879,15 @@ export async function gitFetchBundle(path: string, bundle: string, branch: strin
   ]);
   const r = await git(path, ["fetch", "--no-tags", "--no-write-fetch-head", bundle, `+refs/heads/${branch}:refs/heads/${branch}`], GIT_TIMEOUTS.losses, env);
   if (!r.ok) throw new Error(`向こうから来た ${branch} を取り込めませんでした：${r.stderr.trim().slice(-500) || String(r.code)}`);
+  const checked = await git(path, ["fsck", "--strict", "--no-dangling", "--no-progress"], GIT_TIMEOUTS.losses, writeEnv({ kind: "none" }));
+  if (!checked.ok) {
+    const errors = checked.stderr
+      .split("\n")
+      .filter((l) => /^(error|fatal|missing|broken)/.test(l.trim()))
+      .slice(0, 3)
+      .join("\n");
+    throw new Error(`向こうから来た ${branch} の中身が git の形として正しくないので送りません：${errors || checked.stderr.trim().slice(-500) || String(checked.code)}`);
+  }
 }
 
 /** そのブランチの指すコミット */
