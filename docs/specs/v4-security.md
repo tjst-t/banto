@@ -1034,7 +1034,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で
   確かめる（E2E の SSH の相手に Incus を入れるのは3段の入れ子になり重い）
 
-#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。未実装。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
+#### `containers` で仮想化の実験——/dev/kvm と特権（決定・2026-10-20、ユーザー。一部実装——#458。実測は `docs/notes/2026-10-20-containers-virtualization.md`）
 
 **同じサーバに置いた複数の Project が、それぞれ仮想化の実験（KVM の VM・containerlab・Proxmox を VM で立てる等）をできるようにする。**
 ユーザー：「仮想化の実験を複数の Project でやりたい。コンテナごとの環境の作成ができるので、セキュリティ面が弱まったとしても、やる意味は
@@ -1071,6 +1071,14 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
      hugepages の確保（下）。崩れていれば「確かめ直す」で整えると言う
    - 前提の確かめに、入れ子の KVM（`/sys/module/kvm_intel/parameters/nested` か `kvm_amd`）を表示だけ足す——Proxmox を VM で立てて
      その中で VM を作るには要る（V9）
+   - **実装済み（2026-10-20、Backlog #458）**：実行場所の記録の `virtualization`（既定は無し＝オフ。`runtime.remote_virtualization_set`）。
+     口は `PUT /api/runtimes/<名前>/virtualization`（`{ allowed }`、人の画面の口だけ。画面のスイッチは #462）。`containers` でなければ
+     409。オン：`sudo -n incus project set user-<uid> restricted.devices.unix-char=allow`。オフ：その実行場所の Project（閉じたもの・
+     眠っているもの・移してくる途中のものも）の設定に「/dev/kvm を見せる」か hugepages が残っていれば名指しして 409
+     （`code: "virtualization-in-use"`）、無ければ区画に項目があるときだけ `incus project unset`、`rm -f` で2つのファイルを消す
+     （`runtime/containers-virt.ts`）。許した実行場所は準備の項目に区画の unix-char が入り（`incus-unix-char`）、登録・確かめ直しで
+     整え、繋ぐたびは崩れていれば注意（断らない）で「確かめ直す」と言う。入れ子の KVM は前提の一覧の `nested-kvm`（表示だけ。
+     許した実行場所で有効でなければ注意）。`privilege` を足す・外すのは「特権コンテナにする」と一緒に（まだ無い）
 2. **Project ごとの3つの設定**（Project の設定「一般」の実行場所の下。その実行場所が許していなければ出さず、`containers` の Project
    だけ。**3つとも既定はオフ**——「既定は特権無し＋/dev/kvm」は勧める順のことで、自動では入れない。V10。人だけが変えられる——AI の
    tool も Module からの中継も無い。置き場は host 側の Project の設定（Project の根＝AI が書ける場所には置かない））。

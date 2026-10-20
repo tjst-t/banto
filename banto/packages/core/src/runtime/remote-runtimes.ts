@@ -49,7 +49,7 @@ import {
   type SshFiles,
   type SshResult,
 } from "./ssh.js";
-import { ContainersPrepareError, probeContainersPrerequisites } from "./containers-host.js";
+import { ContainersPrepareError, probeContainersPrerequisites, sshVmRun, vmAccessOf, type VmAccess } from "./containers-host.js";
 import { AutoFixError, ranSuffix } from "./host-autoprep.js";
 
 /** 画面に返す失敗（状態番号つき）。理由はそのまま人に見せる */
@@ -407,11 +407,34 @@ export class RemoteRuntimes {
   }
 
   /**
+   * **実行場所を押さえて繋ぎ、VM のユーザーとしてコマンドを1つずつ流す口を渡す**（人が押した仮想化の実験の設定。
+   * v4-security.md §1「`containers` で仮想化の実験」）。作成・再開・確かめ直しと同じ鍵で1本ずつ通す
+   */
+  async withVm<T>(name: string, fn: (vm: VmAccess) => Promise<T>): Promise<T> {
+    return this.exclusive(name, () =>
+      this.withConnection(name, async (r, files) => {
+        const log = (line: string) => console.log(`[runtime ${r.name}] sudo: ${line}`);
+        return fn(await vmAccessOf(sshVmRun(r, files, r.hostKey.type), log));
+      }),
+    );
+  }
+
+  /** その実行場所を使う Project（閉じたもの・眠っているもの・移してくる途中のものも） */
+  projectsOn(runtime: string): Array<{ id: string; name: string }> {
+    return this.deps.projectsUsing(runtime, { includeClosed: true }).map(({ id, name }) => ({ id, name }));
+  }
+
+  /** 実行場所の記録に「仮想化の実験を許す」を書く（`ContainersVirtualization` が向こうを整えてから） */
+  async recordVirtualization(name: string, allowed: boolean): Promise<void> {
+    if (this.deps.store.get(name)) await this.deps.store.setVirtualization(name, allowed);
+  }
+
+  /**
    * **前提を確かめる**（動かし方で分ける）。`check`：登録の前（sudo しない）。`prepare`：登録・人の「確かめ直す」（`containers` は
    * sudo -n で整える）。`verify`：繋ぐたび（`containers` は準備が崩れていないことを確かめるだけ、sudo しない）
    */
   async probeChecks(
-    r: RemoteRuntimeInput,
+    r: RemoteRuntimeInput & { virtualization?: boolean },
     files: SshFiles,
     hostKeyType: string,
     stage: "check" | "prepare" | "verify",
@@ -426,6 +449,8 @@ export class RemoteRuntimes {
         log,
         // ユーザーの systemd を起こし直すのは、その実行場所を使う Project が1つも無いときだけ（閉じた Project は動いていない）
         mayRestartUserManager: this.deps.projectsUsing(runtimeIdOf(r.name)).length === 0,
+        // 仮想化の実験を許した実行場所は、区画の unix-char も準備の項目に入る（繋ぐたびには崩れていれば注意だけ）
+        virtualization: r.virtualization === true,
       });
     } catch (err) {
       // 途中で落ちても、それまでに行ったことを添える（入れたものは残る——確かめ直せば続きから）
