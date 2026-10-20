@@ -54,13 +54,14 @@ import {
   DEFAULT_TIMEOUTS,
   ProjectContainers,
   containerNameFor,
+  effectiveInsideIds,
   defaultContainerLimits,
   ensureBaseImage,
   type ContainerVirtualization,
 } from "@banto/container";
 import {
   AGENT_DEVICE_PREFIX,
-  INSIDE_IDS,
+  LEGACY_INSIDE_IDS,
   INSIDE_RELAY_PORT,
   RELAY_DEVICE,
   agentInsidePath,
@@ -74,6 +75,7 @@ import {
   vmResources,
   vmUserRunDir,
   relayRoute,
+  type InsideIds,
   type VmShell,
 } from "./remote-containers.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
@@ -241,6 +243,14 @@ type Codec = "zstd" | "gzip" | "none";
  */
 export function remoteConnectionKey(runtimeName: string, projectId: string | undefined): string {
   return `${runtimeName}\0${projectId ?? ""}`;
+}
+
+/**
+ * **containers のコンテナの番号の宣言**（#457）：外＝VM の SSH ユーザー（U/G）、中も U/G。札の無い前のコンテナ（中 1000）は
+ * `legacyInside` で見分け、次に止めるときに付け替える
+ */
+function containerSpecIds(vm: { uid: number; gid: number }) {
+  return { uid: vm.uid, gid: vm.gid, inside: { uid: vm.uid, gid: vm.gid }, legacyInside: LEGACY_INSIDE_IDS };
 }
 
 /** 張っている接続1本 */
@@ -470,7 +480,7 @@ export class RemoteSshRuntime {
     const conn = await this.ensureConnection(name, place);
     if (conn.runtime.mode !== "containers") return this.preparedFrom(conn, this.machineOrigin(conn));
     const container = await this.ensureProjectContainer(conn, place);
-    return this.preparedInContainer(conn, container);
+    return this.preparedInContainer(conn, container, (await this.containerIdsOf(conn)).inside);
   }
 
   /**
@@ -645,9 +655,11 @@ export class RemoteSshRuntime {
     const key = remoteConnectionKey(name, projectId);
     const live = this.connections.get(key);
     const conn = live?.alive ? live : await this.connecting.run(this.flightKey(name, projectId), () => this.connect(name, projectId));
-    await this.incusOf(conn).stop(containerNameFor(projectId));
-    // 次に使うときは、止まったコンテナを起こすところから確かめ直す
+    // 止めたついでに、まだ中の番号が前のもの（#368 の 1000）なら1回だけ U に付け替える（#457。止まったまま返る）
+    await this.incusOf(conn).stopAndMigrate(containerNameFor(projectId), containerSpecIds(await this.vmIds(conn)));
+    // 次に使うときは、止まったコンテナを起こすところから確かめ直す（中の番号も読み直す）
     delete conn.container;
+    delete conn.containerIds;
     this.log(`[host] 別のサーバ「${name}」の Project ${projectId} のコンテナを止めました`);
   }
 
@@ -1717,11 +1729,11 @@ export class RemoteSshRuntime {
     const shell = this.vmShell(conn);
     const run = vmIncus(shell);
     const incus = this.incusOf(conn);
-    const ids = await this.containerIdsOf(conn);
+    const ids = await this.vmIds(conn);
     // 中から banto への道の先（その Project のトンネルのソケット）。張ってからコンテナを用意する（装置が繋ぐ先）
     const tunnel = await this.ensureTunnel(conn);
     const image = await this.ensureVmBaseImage(conn, run);
-    const { name } = await incus.ensure({
+    const { name, inside } = await incus.ensure({
       projectId: place.id,
       root: place.root,
       // 版はパスで選ぶ（版を替えても装置を付け直さない——眠っているコンテナが消えた版を指して起きられなくなるのを避ける）
@@ -1731,12 +1743,14 @@ export class RemoteSshRuntime {
       nesting: place.nesting,
       image,
       owner: this.opts.dataDir,
-      ...ids,
+      ...containerSpecIds(ids),
       portIsolation: true,
       proxies: { [RELAY_DEVICE]: relayRoute(tunnel) },
       limits: await this.containerLimitsOn(conn.runtimeName, shell),
       ...(virtualization !== undefined ? { virtualization } : {}),
     });
+    // いまこのコンテナで使う中の番号（まだ付け替えていなければ前の番号）。あとから足す道・起こし方はこれに従う
+    conn.containerIds = { ...ids, inside };
     // 前の接続で張った鍵の窓口の装置を外す（窓口の転送は接続と一緒に消えている。窓口は Vault が開き直したときに張り直す）。
     // 接続ごとに1回——同じ接続で用意し直す（`forget`）ときに、いま使っている窓口を外さない
     if (!conn.agentDevicesCleared) {
@@ -1767,7 +1781,9 @@ export class RemoteSshRuntime {
   private async containerIdsOf(conn: Connection): Promise<{ uid: number; gid: number; inside: { uid: number; gid: number } }> {
     if (conn.containerIds) return conn.containerIds;
     const { uid, gid } = await this.vmIds(conn);
-    return (conn.containerIds = { uid, gid, inside: INSIDE_IDS });
+    // 中の番号はコンテナごと（札の無い前のコンテナは、付け替えるまで前の番号）。無ければ新しく作るときの番号（U）
+    const st = conn.projectId !== undefined ? await this.incusOf(conn).state(containerNameFor(conn.projectId)) : undefined;
+    return (conn.containerIds = { uid, gid, inside: effectiveInsideIds(st?.config, containerSpecIds({ uid, gid })) });
   }
 
   /** VM のユーザーの番号（接続ごとに1回読む） */
@@ -1852,7 +1868,7 @@ export class RemoteSshRuntime {
    * `incus exec <c> --user <中の番号> -- <起動役>`・単位を止めるのも中で・中から banto へは中の 127.0.0.1 の決めたポート
    * （proxy device がその Project のトンネルのソケットへ繋ぐ）・鍵の窓口は中の `/run` に出す
    */
-  private preparedInContainer(conn: Connection, container: string): PreparedPlace {
+  private preparedInContainer(conn: Connection, container: string, inside: InsideIds): PreparedPlace {
     // 中継と Claude のログインの中継の住所：コンテナの中の 127.0.0.1（VM の 127.0.0.1 は中からは届かない——自分のネットワーク
     // 名前空間を持つ）
     const base = this.preparedFrom(conn, `http://127.0.0.1:${INSIDE_RELAY_PORT}`);
@@ -1910,7 +1926,7 @@ export class RemoteSshRuntime {
         const unit = moduleUnitName(p.name);
         const prelude: LauncherRequest = { command, args: p.args, cwd: p.cwd, env: p.env };
         // 中のユーザーとして起動役を起こす。単位は中のユーザーの systemd（env・合言葉は最初の1行で渡す）
-        const args = [...self.muxArgs(conn), "--", conn.runtime.host, insideCommand(container, [nodePath, launcherPath, unit])];
+        const args = [...self.muxArgs(conn), "--", conn.runtime.host, insideCommand(container, inside, [nodePath, launcherPath, unit])];
         return {
           command: "ssh",
           args,
@@ -1932,7 +1948,7 @@ export class RemoteSshRuntime {
     const r = await this.run(
       conn,
       container
-        ? `${insideStopUnitCommand(container, unit)}\n`
+        ? `${insideStopUnitCommand(container, (await this.containerIdsOf(conn)).inside, unit)}\n`
         : `u=$(id -u); XDG_RUNTIME_DIR=/run/user/$u DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$u/bus systemctl --user stop ${shq(`${unit}.service`)}\n`,
       { timeoutMs: 30_000 },
     );
@@ -1998,7 +2014,7 @@ export class RemoteSshRuntime {
       "Shell のホームを送れ",
       // containers：ホームは見せたフォルダの中——消すのも展開するのも中のユーザーで（条件3）
       container
-        ? insideShellHomeCommand(container, home, nodePath, removeOld)
+        ? insideShellHomeCommand(container, (await this.containerIdsOf(conn)).inside, home, nodePath, removeOld)
         : `mkdir -p ${shq(home)} && chmod 700 ${shq(home)} && ${shq(nodePath)} -e ${shq(removeOld)} ${shq(home)} && tar -C ${shq(home)} -xf -`,
       { stdin: tar.stdout },
     );

@@ -10,8 +10,8 @@
 
 import { runRootCommand, AutoFixError, type RanCommand, type RootCommand } from "./host-autoprep.js";
 import { allowUnixCharCommand, projectNameOf, unsetUnixCharCommand, UNIX_CHAR_KEY, type VmAccess } from "./containers-host.js";
-import { containerNameFor, DEFAULT_TIMEOUTS, defaultContainerLimits, ProjectContainers, type ContainerVirtualization } from "@banto/container";
-import { INSIDE_IDS } from "./remote-containers.js";
+import { containerNameFor, DEFAULT_TIMEOUTS, effectiveInsideIds, defaultContainerLimits, ProjectContainers, type ContainerVirtualization } from "@banto/container";
+import { LEGACY_INSIDE_IDS } from "./remote-containers.js";
 import { remoteNameOf, RemoteRuntimeError, runtimeIdOf } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 
@@ -359,7 +359,10 @@ export class ContainersVirtualization {
     const limits = defaultContainerLimits({ cpus, memoryBytes });
     for (const p of this.deps.projectsOn(runtimeIdOf(runtimeName))) {
       const name = containerNameFor(p.id);
-      if ((await incus.state(name))?.status === "Running") await incus.applyLimits(name, limits, INSIDE_IDS.uid);
+      const st = await incus.state(name);
+      // 仕事の組の天井は中のユーザーの systemd に置く——中の番号はコンテナごと（まだ付け替えていなければ前の番号）
+      const ids = { uid: vm.uid, gid: vm.gid, inside: { uid: vm.uid, gid: vm.gid }, legacyInside: LEGACY_INSIDE_IDS };
+      if (st?.status === "Running") await incus.applyLimits(name, limits, effectiveInsideIds(st.config, ids).uid);
     }
   }
 

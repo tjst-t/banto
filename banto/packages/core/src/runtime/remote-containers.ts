@@ -4,8 +4,9 @@
 // この機械の `ProjectContainers` を、Incus の呼び方（`RunIncus`）を SSH 越しに差し替えて使う。違うところだけをここに置く：
 //   - Incus は VM の SSH ユーザー（制限された区画 `user-<uid>`）として呼ぶ。中から host に届くアドレスは VM のインターフェース
 //     から読む（host のを読まない）。上限は VM の資源で計算する
-//   - VM の SSH ユーザーの uid/gid（U/G）を中の 1000 に対応させる（`raw.idmap` の `uid U 1000`・`gid G 1000`）
-//   - **見せたフォルダに書く・中身を解釈するものは `incus exec <c> --user 1000` で中から**（条件3）。VM のユーザーがしてよいのは
+//   - VM の SSH ユーザーの uid/gid（U/G）を中の同じ番号 U/G に対応させる（`raw.idmap` の `uid U U`・`gid G G`。#457——#368 で中の
+//     1000 に対応させて作ったコンテナは、次に止めるときに1回だけ付け替える。それまでは前の番号で使う）
+//   - **見せたフォルダに書く・中身を解釈するものは `incus exec <c> --user <中の番号>` で中から**（条件3）。VM のユーザーがしてよいのは
 //     symlink を辿らずに読むことと、まだ見せていないフォルダを作ることだけ
 //
 // **道**（#369、v4-security.md §1「道」）はどれも proxy device（転送役は作らない）。VM の側の端は**コンテナに見せていない VM だけの
@@ -16,8 +17,17 @@
 import { CONTAINER_USER_NAME, type HostInterfaces, type HostResources, type ProxyRoute, type RunIncus } from "@banto/container";
 import { shq, type SshResult } from "./ssh.js";
 
-/** 中のユーザーの番号（VM の SSH ユーザーをここに対応させる） */
-export const INSIDE_IDS = { uid: 1000, gid: 1000 } as const;
+/**
+ * **前の中の番号**（#368 で作ったコンテナは VM の SSH ユーザーを中の 1000 に対応させていた）。札 `user.banto.inside` の無い
+ * コンテナはこれで作ったものとして扱い、次に止めるときに U に付け替える（#457）。新しいコンテナには使わない
+ */
+export const LEGACY_INSIDE_IDS = { uid: 1000, gid: 1000 } as const;
+
+/** 中の番号（いまそのコンテナで使うもの） */
+export interface InsideIds {
+  uid: number;
+  gid: number;
+}
 /** 中のユーザーのホーム */
 export const INSIDE_HOME = `/home/${CONTAINER_USER_NAME}`;
 
@@ -99,23 +109,37 @@ export async function vmResources(shell: VmShell): Promise<HostResources> {
 }
 
 /**
+ * **札から中の番号を読んで中のユーザーとして流す台本**（VM で流す。コンテナの番号を core がまだ知らないところ——移す前に動いている
+ * ものを数える等）。札 `user.banto.inside`（`<uid>:<gid>`）が無ければ前の番号（まだ付け替えていない）。中のユーザーの systemd の
+ * バスは台本の側で `id -u` から組む
+ */
+export function insideCommandByLabel(container: string, argv: readonly string[]): string {
+  const words = ["incus", "exec", container, "--user", "$u", "--group", "$g"];
+  return [
+    `ids=$(incus config get ${shq(container)} user.banto.inside) || exit 5`,
+    `case "$ids" in *:*) u=\${ids%%:*} g=\${ids#*:} ;; *) u=${LEGACY_INSIDE_IDS.uid} g=${LEGACY_INSIDE_IDS.gid} ;; esac`,
+    `case "$u:$g" in :*|*:|*:*:*|*[!0-9:]*) echo "札 user.banto.inside の形が違います：$ids" >&2; exit 5 ;; esac`,
+    `exec ${words.map((w) => (w.startsWith("$") ? `"${w}"` : shq(w))).join(" ")} --env USER=${CONTAINER_USER_NAME} --env LOGNAME=${CONTAINER_USER_NAME} --env HOME=${INSIDE_HOME} -- ${argv.map(shq).join(" ")}`,
+  ].join("\n");
+}
+
+/**
  * **コンテナの中のユーザーとして流すコマンド行**（VM の上で打つもの）。env は `--env` で渡る（VM の `ps` には載るが、VM の
  * ユーザーは core だけが使う——条件1）。秘密を載せるときは標準入力で渡す（起動役の最初の1行）
  */
-export function insideCommand(container: string, argv: readonly string[], env: Readonly<Record<string, string>> = {}): string {
+export function insideCommand(container: string, ids: InsideIds, argv: readonly string[], env: Readonly<Record<string, string>> = {}): string {
   const envArgs = Object.entries({ USER: CONTAINER_USER_NAME, LOGNAME: CONTAINER_USER_NAME, HOME: INSIDE_HOME, ...env }).flatMap(([k, v]) => [
     "--env",
     `${k}=${v}`,
   ]);
-  const words = ["incus", "exec", container, "--user", String(INSIDE_IDS.uid), "--group", String(INSIDE_IDS.gid), ...envArgs, "--", ...argv];
+  const words = ["incus", "exec", container, "--user", String(ids.uid), "--group", String(ids.gid), ...envArgs, "--", ...argv];
   return `exec ${words.map(shq).join(" ")}`;
 }
 
 /** 中のユーザーの systemd のバス（単位を止めるとき） */
-export const INSIDE_BUS_ENV = {
-  XDG_RUNTIME_DIR: `/run/user/${INSIDE_IDS.uid}`,
-  DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${INSIDE_IDS.uid}/bus`,
-} as const;
+export function insideBusEnv(uid: number): Record<string, string> {
+  return { XDG_RUNTIME_DIR: `/run/user/${uid}`, DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${uid}/bus` };
+}
 
 /**
  * **まだ見せていないフォルダを VM のユーザーで作る**（コンテナに見せる disk device は元が要る）。あれば触らない
@@ -147,8 +171,8 @@ export function createOnlyDirScript(path: string): string {
  * **Shell のホームを中で展開するコマンド**（条件3）。前に送ったもの（`.banto-shell-home.json` の一覧）を中の node で消してから、
  * 標準入力の tar を中のユーザーとして展開する——中の AI が置いた symlink を辿るのも、中の権限だけ
  */
-export function insideShellHomeCommand(container: string, home: string, nodePath: string, removeOldScript: string): string {
-  return insideCommand(container, [
+export function insideShellHomeCommand(container: string, ids: InsideIds, home: string, nodePath: string, removeOldScript: string): string {
+  return insideCommand(container, ids, [
     "/bin/sh",
     "-c",
     'mkdir -p -- "$1" && chmod 700 -- "$1" && "$2" -e "$3" "$1" && tar -C "$1" --no-same-owner -xf -',
@@ -160,8 +184,8 @@ export function insideShellHomeCommand(container: string, home: string, nodePath
 }
 
 /** 中で落とした Module の単位を止めるコマンド */
-export function insideStopUnitCommand(container: string, unit: string): string {
-  return insideCommand(container, ["systemctl", "--user", "stop", `${unit}.service`], INSIDE_BUS_ENV);
+export function insideStopUnitCommand(container: string, ids: InsideIds, unit: string): string {
+  return insideCommand(container, ids, ["systemctl", "--user", "stop", `${unit}.service`], insideBusEnv(ids.uid));
 }
 
 /** VM の上の、根の重なりを見るのに要る場所（どれも VM で正規化したもの） */

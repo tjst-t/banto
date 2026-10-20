@@ -739,3 +739,213 @@ test("道を足すのが断られたら（中のポートがぶつかった等�
     /道（banto-relay：tcp:127\.0\.0\.1:29839 → unix:\/run\/user\/1001\/banto\/p-p1\/t\.sock）を足すのに失敗しました：.*address already in use/,
   );
 });
+
+/** 中の番号の付け替え（#457）の偽の Incus：止まっているときだけ file・config を受け、exec は動いているときだけ。台本の中身は真似る */
+function migratingIncus(opts: { failScript?: boolean; status?: string; label?: string } = {}) {
+  const calls: string[][] = [];
+  const inst = {
+    status: opts.status ?? "Running",
+    config: { "raw.idmap": "uid 1001 1000\ngid 1001 1000", ...(opts.label ? { "user.banto.inside": opts.label } : {}) } as Record<string, string>,
+    devices: {
+      "banto-relay": { type: "proxy", bind: "instance", listen: "tcp:127.0.0.1:29839", connect: "unix:/run/user/1001/banto/p-p1/t.sock", "security.uid": "1001", "security.gid": "1001" },
+      "banto-st-x": { type: "proxy", bind: "host", listen: "unix:/vm/st-x", connect: "unix:/in/x.sock", "security.uid": "1000", "security.gid": "1000", uid: "1001", gid: "1001", mode: "0600" },
+      "banto-a-y": { type: "proxy", bind: "instance", listen: "unix:/run/banto-a-y.sock", connect: "unix:/vm/a.sock", "security.uid": "1001", "security.gid": "1001", uid: "1000", gid: "1000", mode: "0600" },
+    } as Record<string, Record<string, string>>,
+  };
+  const files = new Map([["/var/lib/systemd/linger/banto", ""]]);
+  /** 中のユーザー banto の番号と、持ち主が前の番号のもの（台本が付け替える） */
+  const inside = { userUid: 1000, groupGid: 1000, owned1000: 3, runsAt: [] as string[] };
+  const run: RunIncus = async (args) => {
+    calls.push(args);
+    const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
+    if (args[0] === "project") return ok("user-1001\n");
+    const patch = patchedDevices(args);
+    if (patch) {
+      Object.assign(inst.devices, patch);
+      return ok();
+    }
+    if (args[0] === "query") return ok(JSON.stringify({ ...inst, expanded_devices: inst.devices }));
+    if (args[0] === "stop") {
+      inst.status = "Stopped";
+      return ok();
+    }
+    if (args[0] === "start") {
+      inst.status = "Running";
+      // linger の印が残っていれば、中のユーザーの systemd が前の番号で起きてしまう
+      if (files.has("/var/lib/systemd/linger/banto")) inside.runsAt.push(`user@${inside.userUid}`);
+      return ok();
+    }
+    if (args[0] === "file" && args[1] === "pull") return ok("root:x:0:0::/root:/bin/bash\nbanto:x:1000:1000::/home/banto:/bin/bash\n");
+    if (args[0] === "file" && args[1] === "delete") {
+      const path = args[2]!.slice(args[2]!.indexOf("/"));
+      if (!files.delete(path)) return { code: 1, stdout: "", stderr: "Error: not found" };
+      return ok();
+    }
+    if (args[0] === "config" && args[1] === "set") {
+      for (const kv of args.slice(3)) inst.config[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1);
+      return ok();
+    }
+    if (args[0] === "config" && args[1] === "device" && args[2] === "remove") {
+      delete inst.devices[args[4]!];
+      return ok();
+    }
+    if (args[0] === "exec") {
+      if (inst.status !== "Running") return { code: 1, stdout: "", stderr: "Error: Instance is not running" };
+      if (args.includes("banto-inside")) {
+        if (opts.failScript) return { code: 1, stdout: "", stderr: "usermod: user banto is currently used by process 42" };
+        const [, , newUid, newGid] = args.slice(args.indexOf("banto-inside") + 1).map(Number);
+        inside.userUid = newUid!;
+        inside.groupGid = newGid!;
+        inside.owned1000 = 0;
+        files.set("/var/lib/systemd/linger/banto", "");
+        return ok();
+      }
+      if (args.includes("--version")) return ok("v22.0.0\n");
+      return ok("1\n");
+    }
+    return ok();
+  };
+  return { run, calls, inst, inside, files };
+}
+
+const U_SPEC = { uid: 1001, gid: 1001, inside: { uid: 1001, gid: 1001 }, legacyInside: { uid: 1000, gid: 1000 } };
+
+test("中の番号：新しいコンテナは最初から U（raw.idmap uid U U・札つき）で作り、中のユーザーも U で作る。道の装置の番号も U", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const r = await c.ensure({
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    ...U_SPEC,
+    proxies: { "banto-relay": { bind: "instance", listen: "unix:/run/banto-r.sock", connect: "unix:/vm/t.sock" } },
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  });
+  assert.deepEqual(r.inside, { uid: 1001, gid: 1001 });
+  assert.equal(f.inst()!.config["raw.idmap"], "both 1001 1001");
+  assert.equal(f.inst()!.config["user.banto.inside"], "1001:1001");
+  const user = f.calls.find((a) => a[0] === "exec" && a.at(-1)!.includes("useradd"))!;
+  assert.match(user.at(-1)!, /useradd -m -u 1001 -g 1001/);
+  assert.deepEqual(
+    { uid: f.inst()!.devices["banto-relay"]!["uid"], suid: f.inst()!.devices["banto-relay"]!["security.uid"] },
+    { uid: "1001", suid: "1001" },
+  );
+});
+
+test("中の番号：札の無い前のコンテナ（中 1000）は、用意しても付け替えず前の番号で使い、止めたときに1回だけ付け替える。2回目はしない", async () => {
+  const f = migratingIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    ...U_SPEC,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  const used = await c.ensure(spec);
+  assert.deepEqual(used.inside, { uid: 1000, gid: 1000 }, "止める前に付け替えた・新しい番号で使った");
+  assert.equal(f.inst.config["raw.idmap"], "uid 1001 1000\ngid 1001 1000");
+
+  f.calls.length = 0;
+  await c.stopAndMigrate("banto-p1", U_SPEC);
+  const steps = f.calls.filter((a) => ["stop", "start", "file", "config", "exec"].includes(a[0]!)).map((a) => (a[0] === "exec" ? (a.includes("banto-inside") ? "exec:migrate" : "exec") : a.slice(0, 2).join(" ")));
+  // 止める → linger の印を消す → 対応を替える → 起こす → 中の root で付け替える → 札 → 止める
+  assert.deepEqual(steps.filter((s) => s !== "exec" && s !== "config device"), [
+    "stop banto-p1",
+    "file pull",
+    "file delete",
+    "config set",
+    "start banto-p1",
+    "exec:migrate",
+    "config set",
+    "stop banto-p1",
+  ]);
+  assert.deepEqual(f.inside.runsAt, [], "付け替える前に中のユーザーの systemd が前の番号で起きた");
+  assert.equal(f.inst.status, "Stopped", "止めたかったのに動いたまま");
+  assert.equal(f.inst.config["raw.idmap"], "both 1001 1001");
+  assert.equal(f.inst.config["user.banto.inside"], "1001:1001");
+  assert.deepEqual(f.inside, { userUid: 1001, groupGid: 1001, owned1000: 0, runsAt: [] });
+  assert.ok(f.files.has("/var/lib/systemd/linger/banto"), "linger の印を戻していない");
+  // 道の装置の中の側：host の security.uid/gid、instance の待ち受けの uid/gid。VM の側（instance の security.uid）は U のまま
+  assert.equal(f.inst.devices["banto-st-x"]!["security.uid"], "1001");
+  assert.equal(f.inst.devices["banto-st-x"]!["uid"], "1001");
+  assert.equal(f.inst.devices["banto-a-y"]!["uid"], "1001");
+  assert.equal(f.inst.devices["banto-a-y"]!["security.uid"], "1001");
+  assert.deepEqual(f.inst.devices["banto-relay"]!["security.uid"], "1001");
+
+  // 2回目：止めても付け替えない
+  f.calls.length = 0;
+  await c.stopAndMigrate("banto-p1", U_SPEC);
+  assert.ok(!f.calls.some((a) => a[0] === "exec" || a[0] === "file" || (a[0] === "config" && a[1] === "set")), "2回目も付け替えた");
+  // 付け替えたあとは新しい番号で使う
+  assert.deepEqual((await c.ensure(spec)).inside, { uid: 1001, gid: 1001 });
+});
+
+test("中の番号：付け替えが途中で落ちたら止めて理由を投げ、札は書かない。用意するときは Module を起こす前に付け替え直す", async () => {
+  const f = migratingIncus({ failScript: true });
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  await assert.rejects(c.stopAndMigrate("banto-p1", U_SPEC), /付け替えられませんでした.*currently used by process/);
+  assert.equal(f.inst.status, "Stopped");
+  assert.equal(f.inst.config["user.banto.inside"], undefined);
+  const spec = {
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    ...U_SPEC,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  };
+  // 対応だけ替わった（途中）コンテナ：用意しても前の番号で使わず、付け替えに失敗したら起こさずに断る
+  await assert.rejects(c.ensure(spec), /付け替えられませんでした/);
+  assert.equal(f.inst.status, "Stopped", "付け替えに失敗したのに起こした");
+  // 直ったら、用意するときに付け替えてから起こす
+  const fixed = migratingIncus({ status: "Stopped" });
+  fixed.inst.config["raw.idmap"] = "both 1001 1001"; // 途中で止まった様子
+  fixed.files.clear();
+  const c2 = new ProjectContainers(fixed.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const r = await c2.ensure(spec);
+  assert.deepEqual(r.inside, { uid: 1001, gid: 1001 });
+  assert.equal(fixed.inst.config["user.banto.inside"], "1001:1001");
+  assert.equal(fixed.inside.userUid, 1001);
+  assert.equal(fixed.inst.status, "Running");
+});
+
+test("中の番号：外も中も 1000 なら付け替えるものは無く、札だけ付ける", async () => {
+  const f = migratingIncus({ status: "Stopped" });
+  f.inst.config["raw.idmap"] = "both 1000 1000";
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  await c.stopAndMigrate("banto-p1", { uid: 1000, gid: 1000, inside: { uid: 1000, gid: 1000 }, legacyInside: { uid: 1000, gid: 1000 } });
+  assert.equal(f.inst.config["user.banto.inside"], "1000:1000");
+  assert.ok(!f.calls.some((a) => a[0] === "start" || a[0] === "exec"));
+});
+
+test("中の番号：止まっている前のコンテナは、用意するとき起こす前に付け替えてから U で起こす", async () => {
+  const f = migratingIncus({ status: "Stopped" });
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const r = await c.ensure({
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    ...U_SPEC,
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  });
+  assert.deepEqual(r.inside, { uid: 1001, gid: 1001 });
+  assert.equal(f.inside.userUid, 1001);
+  assert.deepEqual(f.inside.runsAt, ["user@1001"], "前の番号で中のユーザーの systemd が起きた");
+  assert.equal(f.inst.status, "Running");
+});

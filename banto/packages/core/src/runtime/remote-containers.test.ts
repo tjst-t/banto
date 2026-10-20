@@ -10,7 +10,6 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { idmapFor } from "@banto/container";
 import {
-  INSIDE_IDS,
   INSIDE_RELAY_PORT,
   containersRootProblem,
   createOnlyDirScript,
@@ -88,20 +87,20 @@ test("まだ見せていないフォルダを作る台本：無ければ作り�
   }
 });
 
-test("中で流すコマンドは incus exec <c> --user 1000 --group 1000 で、引数は崩れない", () => {
+test("中で流すコマンドは incus exec <c> --user <中の番号> --group <中の番号> で、引数は崩れない", () => {
   const dir = mkdtempSync(join(tmpdir(), "banto-inside-cmd-"));
   try {
     writeFileSync(join(dir, "incus"), `#!/bin/sh\nfor a; do printf '[%s]\\n' "$a"; done\n`);
     chmodSync(join(dir, "incus"), 0o755);
-    const cmd = insideShellHomeCommand("banto-p1", "/home/vm/x y/home", "/c/bin/node", `const s='a b';"$x"`);
+    const cmd = insideShellHomeCommand("banto-p1", { uid: 1001, gid: 1002 }, "/home/vm/x y/home", "/c/bin/node", `const s='a b';"$x"`);
     const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
     const argv = [...r.stdout.matchAll(/^\[([\s\S]*?)\]$/gm)].map((m) => m[1]);
-    assert.deepEqual(argv.slice(0, 6), ["exec", "banto-p1", "--user", "1000", "--group", "1000"]);
+    assert.deepEqual(argv.slice(0, 6), ["exec", "banto-p1", "--user", "1001", "--group", "1002"]);
     assert.ok(argv.includes("HOME=/home/banto"));
     const rest = argv.slice(argv.indexOf("--") + 1);
     assert.equal(rest[0], "/bin/sh");
     assert.deepEqual(rest.slice(3), ["banto-shell-home", "/home/vm/x y/home", "/c/bin/node", `const s='a b';"$x"`]);
-    assert.match(insideCommand("c", ["true"]), /^exec 'incus' 'exec' 'c' '--user' '1000' '--group' '1000' /);
+    assert.match(insideCommand("c", { uid: 1001, gid: 1002 }, ["true"]), /^exec 'incus' 'exec' 'c' '--user' '1001' '--group' '1002' /);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -292,7 +291,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.equal(ca.storage, "banto");
     assert.equal(ca.status, "Running");
     const { uid, gid } = userInfo();
-    assert.equal(ca.config["raw.idmap"], idmapFor(uid, gid, INSIDE_IDS), "VM のユーザーを中の 1000 に対応させていない");
+    assert.equal(ca.config["raw.idmap"], idmapFor(uid, gid, { uid, gid }), "VM のユーザーを中の同じ番号に対応させていない");
+    assert.equal(ca.config["user.banto.inside"], `${uid}:${gid}`, "新しいコンテナに中の番号の札が無い");
     assert.equal(ca.config["user.banto.owner"], dataDir);
     assert.deepEqual(ca.devices["banto"], { type: "disk", source: `${base}/code`, path: `${base}/code`, readonly: "true" });
     assert.deepEqual(ca.devices["project"], { type: "disk", source: rootA, path: rootA });
@@ -350,7 +350,7 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     const incusCalls = readFileSync(incusLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
     const homeExec = incusCalls.find((c) => c[0] === "exec" && c.includes(home.home));
     assert.ok(homeExec, "ホームを中で展開していない");
-    assert.deepEqual(homeExec.slice(0, 6), ["exec", "banto-p1", "--user", "1000", "--group", "1000"]);
+    assert.deepEqual(homeExec.slice(0, 6), ["exec", "banto-p1", "--user", String(uid), "--group", String(gid)]);
     // 中のユーザーで流したもの（`exec 'incus' 'exec' …`、標準入力を流すときは `sh -c` に包まれる）を除いた、VM のユーザーの台本
     const vmScripts = readFileSync(sshLog, "utf8").split("\0").filter((s) => s.trim() && !/^(sh -c ')?exec '[^a-z]*incus/.test(s.trim()));
     assert.ok(!vmScripts.some((s) => s.includes(home.home)), `VM のユーザーの台本が見せたフォルダに書いている：${vmScripts.join("\n---\n")}`);
@@ -364,11 +364,11 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
     assert.ok(!sources("banto-p1").includes(`${base}/modules/files-p1`), "symlink の置き場を見せた");
     assert.deepEqual(readdirSync(outside), []);
 
-    // 起こし方：ssh <VM> incus exec <c> --user 1000 -- <node> <起動役> <単位>
+    // 起こし方：ssh <VM> incus exec <c> --user <U> -- <node> <起動役> <単位>（中の番号は VM のユーザーと同じ）
     const cmd = a.processCommand({ name: "shell-p1", command: process.execPath, args: ["server.js"], cwd: rootA, env: { SECRET: "s" } });
     assert.equal(cmd.command, "ssh");
     const remote = cmd.args[cmd.args.length - 1]!;
-    assert.ok(remote.startsWith("exec 'incus' 'exec' 'banto-p1' '--user' '1000' '--group' '1000' "), remote);
+    assert.ok(remote.startsWith(`exec 'incus' 'exec' 'banto-p1' '--user' '${uid}' '--group' '${gid}' `), remote);
     assert.ok(remote.endsWith(`'--' '${codeDir}/bin/node' '${codeDir}/banto-launcher.mjs' 'banto-mod-shell-p1'`), remote);
     assert.ok(!remote.includes("SECRET"), "env がコマンド行に載った");
     assert.throws(() => a.processCommand({ name: "x", command: "x", args: [], cwd: "/", env: {}, asRoot: true }), /root/);
@@ -389,8 +389,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
       "security.uid": String(uid),
       "security.gid": String(gid),
       // 中の待ち受けは中のユーザーのもの（中の番号は宣言から——決め打ちしない）
-      uid: String(INSIDE_IDS.uid),
-      gid: String(INSIDE_IDS.gid),
+      uid: String(userInfo().uid),
+      gid: String(userInfo().gid),
       mode: "0600",
     });
     assert.ok(!Object.keys(state().instances["banto-p2"]!.devices).some((d) => d.startsWith("banto-a-")), "p1 の鍵の窓口が p2 のコンテナに見える");
@@ -415,8 +415,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
       listen: `unix:${base}/s/${st}`,
       connect: `unix:${base}/modules/shell-p1/s/stream.sock`,
       // 繋ぐのは中——中の番号に落とす（宣言から）。VM の待ち受けは VM のユーザー（sshd）のもの
-      "security.uid": String(INSIDE_IDS.uid),
-      "security.gid": String(INSIDE_IDS.gid),
+      "security.uid": String(userInfo().uid),
+      "security.gid": String(userInfo().gid),
       uid: String(uid),
       gid: String(gid),
       mode: "0600",
@@ -505,8 +505,8 @@ test("containers の Project：コンテナの中で起こし、置き場はそ�
       listen: `tcp:0.0.0.0:${vmPortA}`,
       connect: "tcp:127.0.0.1:3000",
       // 繋ぐのは中——中の番号に落とす（宣言から）
-      "security.uid": String(INSIDE_IDS.uid),
-      "security.gid": String(INSIDE_IDS.gid),
+      "security.uid": String(userInfo().uid),
+      "security.gid": String(userInfo().gid),
     });
     // 同じポートをもう一度：同じ VM のポート（覚えずに装置から読む）
     assert.deepEqual(await rt.address("p1", 3000), pubA);
