@@ -12,6 +12,7 @@
 // known_hosts と公開鍵のファイルは、繋ぐたびに記録から書き出す（真実は記録だけ。規則3）。置き場は banto のデータの置き場の
 // 中で、人の `~/.ssh` には触らない。鍵は Vault に ssh-agent を立ててもらう（core が自分のために頼む——人が登録した鍵だけ）。
 
+import { containersRootProblem } from "./remote-containers.js";
 import { coreSocketDir } from "./socket-dir.js";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -34,6 +35,7 @@ import {
   probePrerequisites,
   realpathRemote,
   remoteRootIncludesDataRoot,
+  remoteHomeAndDataRoot,
   scanHostKey,
   sshFailure,
   SshCommandError,
@@ -82,7 +84,7 @@ export interface RemoteRuntimeDeps {
    * 数えない」）。`includeClosed` なら閉じたものも（外すときだけ——閉じた Project も再開・移すのに登録が要る）。移している
    * 途中の Project は、移す先としても数える
    */
-  projectsUsing(runtime: string, opts?: { includeClosed?: boolean }): Array<{ id: string; name: string }>;
+  projectsUsing(runtime: string, opts?: { includeClosed?: boolean }): Array<{ id: string; name: string; root?: string }>;
 }
 
 /** 一覧に出す1件（記録＋導いた値） */
@@ -315,7 +317,11 @@ export class RemoteRuntimes {
       if (!r) throw new RemoteRuntimeError(400, `実行場所「${name}」はありません`);
       const before = this.unavailableReason(r);
       if (before) throw new RemoteRuntimeError(409, `実行場所「${name}」は選べません：${before}`);
-      const resolved = await this.connect(r, (files) => realpathRemote(r, files, r.hostKey.type, root));
+      const resolved = await this.connect(r, async (files) => {
+        const real = await realpathRemote(r, files, r.hostKey.type, root);
+        if (r.mode === "containers") await this.refuseContainersRootOverlap(r, files, real, undefined);
+        return real;
+      });
       const after = this.deps.store.get(name);
       const reason = after ? this.unavailableReason(after) : "登録が外されました";
       if (reason) throw new RemoteRuntimeError(409, `実行場所「${name}」は選べません：${reason}`);
@@ -332,6 +338,11 @@ export class RemoteRuntimes {
     return this.exclusive(name, async () => {
       const used =
         this.deps.store.get(name)?.mode === "containers" ? undefined : this.deps.projectsUsing(runtimeIdOf(name)).find((p) => p.id !== projectId);
+      const r = this.deps.store.get(name);
+      if (r?.mode === "containers") {
+        const root = this.deps.projectsUsing(runtimeIdOf(name), { includeClosed: true }).find((p) => p.id === projectId)?.root;
+        if (root) await this.connect(r, (files) => this.refuseContainersRootOverlap(r, files, root, projectId));
+      }
       if (used) {
         throw new RemoteRuntimeError(
           409,
@@ -342,6 +353,19 @@ export class RemoteRuntimes {
       }
       await reopen();
     });
+  }
+
+  /**
+   * **containers の Project の根の重なりを断る**（v4-security.md §1「置き場と見せ方」）：home そのもの・home の外・置き場の根・
+   * 同じ実行場所のほかの Project の根（閉じたもの・移してくる途中のものも）と重なれば 409
+   */
+  private async refuseContainersRootOverlap(r: RemoteRuntime, files: SshFiles, root: string, self: string | undefined): Promise<void> {
+    const { home, dataRoot } = await remoteHomeAndDataRoot(r, files, r.hostKey.type, r.dataRoot);
+    const others = this.deps
+      .projectsUsing(runtimeIdOf(r.name), { includeClosed: true })
+      .flatMap((p) => (p.id !== self && p.root ? [{ name: p.name, root: p.root }] : []));
+    const problem = containersRootProblem(root, { home, dataRoot, others });
+    if (problem) throw new RemoteRuntimeError(409, `実行場所「${r.name}」に置けません：${problem}`, { code: "root-overlap" });
   }
 
   /**

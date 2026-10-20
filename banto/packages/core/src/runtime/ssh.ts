@@ -625,3 +625,29 @@ export async function remoteRootIncludesDataRoot(
   const resolvedDataRoot = (parts[0] ?? "").split("\n").pop() ?? "";
   return { includes: parts[1] === "yes", dataRoot: resolvedDataRoot };
 }
+
+/**
+ * **向こうの home と置き場の根を正規化して引く**（containers の根の重なりを見るため）。置き場の根がまだ無ければ、
+ * 綴りを展開しただけのもの
+ */
+export async function remoteHomeAndDataRoot(
+  t: SshTarget,
+  files: SshFiles,
+  hostKeyType: string,
+  dataRoot: string,
+): Promise<{ home: string; dataRoot: string }> {
+  const script = [
+    `h=$(cd -P -- "$HOME" && pwd -P) || exit 1`,
+    `d=${remotePathExpr(dataRoot)}`,
+    `[ -d "$d" ] && d=$(cd -P -- "$d" && pwd -P)`,
+    `printf '%s\\0%s\\0' "$h" "$d"`,
+    "",
+  ].join("\n");
+  const r = await runRemoteScript(t, files, hostKeyType, script);
+  if (r.code !== 0) throw new SshCommandError("向こうの home と置き場を確かめられませんでした", r);
+  const parts = r.stdout.split("\0");
+  const home = (parts[0] ?? "").split("\n").pop() ?? "";
+  const resolved = parts[1] ?? "";
+  if (!home.startsWith("/") || !resolved.startsWith("/")) throw new Error("向こうの home と置き場の場所を読めませんでした");
+  return { home, dataRoot: resolved };
+}

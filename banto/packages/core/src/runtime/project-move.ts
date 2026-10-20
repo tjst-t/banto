@@ -794,6 +794,15 @@ export class ProjectMover {
   private targetRuntimeProblem(project: ProjectState, runtime: string): string | undefined {
     const from = project.runtime ?? HOST_CONTAINER_RUNTIME;
     if (runtime === from) return "いまと同じ実行場所です";
+    // **containers との間はまだ移せない**（v4-security.md §1 の条件3、#369）：移す手順は向こうで VM のユーザーとして展開・
+    // rsync・git worktree repair をする。containers ではコンテナに見せたフォルダへの書き込みは中から行う決まりで、その形の
+    // 移し方はまだ作っていない——黙って VM のユーザーで書かない
+    for (const side of [from, runtime]) {
+      const name = remoteNameOf(side);
+      if (name && this.deps.remoteRuntimes.get(name)?.mode === "containers") {
+        return `実行場所「${name}」は Project ごとのコンテナ（containers）で、そことの間で移す形はまだ作っていません`;
+      }
+    }
     if (runtime === HOST_CONTAINER_RUNTIME) return undefined;
     const name = remoteNameOf(runtime);
     if (!name) return "実行場所は host-container か remote:<名前> で渡してください";

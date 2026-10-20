@@ -92,6 +92,10 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
       await expect(cautions).toContainText("banto が sudo -n で root の要る準備");
       await expect(cautions).toContainText("サーバは banto 専用にしてください");
       await expect(cautions).toContainText("サーバ丸ごと（machine）と並べて登録できません");
+      // Module はコンテナの中で起きる（#368）。道と移すことはまだ無い
+      await expect(cautions).toContainText("Module はその Project のコンテナの中で動きます");
+      await expect(cautions).toContainText("ここへ・ここから移すことは、まだ作っていません");
+      await expect(cautions).not.toContainText("コンテナで Module を起こすところはまだ作っていません");
       await expect(form.getByTestId("runtime-cautions")).toHaveCount(0);
       await expect(form.getByText("banto 専用のユーザー（パスワード無しで sudo できること）")).toBeVisible();
 
