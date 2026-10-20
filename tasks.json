@@ -11433,6 +11433,33 @@
       "updatedAt": "2026-10-20T14:18:11.252Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "containers-inside-user-name",
+      "number": 475,
+      "kind": "bug",
+      "title": "containers の既存のコンテナで、中の番号のユーザー名が banto ではなく ubuntu のまま（仕様と食い違い）",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "runtime",
+        "container"
+      ],
+      "body": "2026-10-20、ベアメタルの sakutei で #457 の付け替え（1000→1001）を確かめたら、中で 1000 を持っていたのは `ubuntu`（home /home/ubuntu）で、付け替え後は `ubuntu`（1001）になった。仕様（v4-security.md §1「別のサーバの中のコンテナ」の実装済み）は「中にその番号のユーザーが無ければ banto（home /home/banto）を作る」と書いており、土台のイメージに ubuntu が居る場合と食い違う。Module は番号（--user 1001）と env USER=banto・HOME=/home/banto で起こしているので動きは問題ない（Module 8本・systemd --user・根と Module の置き場への書き込みを確かめた）。直すなら：中の番号のユーザーの名前を揃える（usermod -l）か、仕様を「番号で決め、名前は問わない」に改める。新しいコンテナ（banto-af352873…）の中の名前も見ること。",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [
+        "#456",
+        "#457"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-20T14:31:12.792Z",
+      "updatedAt": "2026-10-20T14:31:12.792Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
