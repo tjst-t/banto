@@ -10770,7 +10770,7 @@
       "number": 449,
       "kind": "task",
       "title": "受信箱を Windows の通知・タスクバーの件数・トレイに出す",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-2-daily",
       "dependsOn": [],
       "milestone": null,
@@ -10782,7 +10782,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:31.460Z",
-      "updatedAt": "2026-10-20T08:57:31.460Z",
+      "updatedAt": "2026-10-20T08:59:14.069Z",
       "closedAt": null,
       "extra": {}
     },
