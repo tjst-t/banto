@@ -11412,6 +11412,27 @@
       "updatedAt": "2026-10-20T14:17:06.721Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "new-project-toggles-impl",
+      "number": 474,
+      "kind": "task",
+      "title": "新しい Project の画面の3つのスイッチ：POST /api/projects の settings と画面",
+      "status": "ready",
+      "parent": "new-project-toggles",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "v4-frontend.md §6.51。core：POST /api/projects に settings: {turnSummary, autoApproveAll, idleCompaction}（任意の真偽値）を足し、Project を作るのと同じ処理の中で Configuration（thread.turnSummary・approvals.autoApproveAll・thread.idleCompaction）に書く。渡されない鍵は書かない。別のサーバの start の道も同じ。画面：新しい Project の画面の全タブで「作る」の上に「この Project の AI」3行、初めはオン、自動で許可がオンなら警告色。Project の設定の「一般」の並びと説明をそろえる。idleCompaction の口（GET/PUT /api/projects/:id/idle-compaction）がまだ無ければ、鍵を書くだけでよい（効き目は idle-cache のストーリー）。",
+      "doneWhen": "単体テストで settings の書き込みと「渡さなければ書かない」を押さえ、E2E で画面から切って作った Project と全部オンで作った Project の設定を確かめ、自動で許可が最初のターンから効くことを確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T14:18:11.252Z",
+      "updatedAt": "2026-10-20T14:18:11.252Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
