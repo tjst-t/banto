@@ -66,6 +66,47 @@ export interface ProjectContainerSpec {
   proxies?: Readonly<Record<string, ProxyRoute>>;
   /** 資源の上限（`defaultContainerLimits()`）。動いているコンテナにもそのまま効く（起こし直さない） */
   limits: ContainerLimits;
+  /**
+   * **仮想化の実験**（追加・2026-10-20、別のサーバの `containers`。`docs/specs/v4-security.md` §1「`containers` で仮想化の実験」）。
+   * 実行場所が許していればその Project の設定、許していなければ `null`（付いていれば外す）。この機械のコンテナには無い（触らない）
+   */
+  virtualization?: ContainerVirtualization | null;
+}
+
+/** コンテナに付ける仮想化の実験の設定 */
+export interface ContainerVirtualization {
+  /** `/dev/kvm` と `/dev/vhost-net` を unix-char で見せる（`mode=0666`。path は固定の2つ） */
+  kvm: boolean;
+}
+
+/**
+ * **`/dev/kvm` を見せる装置**（固定の2つ。設定に path は持たない——区画の unix-char=allow は `/dev/mem` を含む任意の path を
+ * 許すため。v4-security.md §1 の V5）
+ */
+export const KVM_DEVICES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  kvm: { type: "unix-char", path: "/dev/kvm", mode: "0666" },
+  "vhost-net": { type: "unix-char", path: "/dev/vhost-net", mode: "0666" },
+};
+
+/** 今の装置から、仮想化の実験の設定に合わせるための足すもの・外すもの */
+export function virtualizationDeviceChanges(
+  devices: Record<string, Record<string, string>>,
+  v: ContainerVirtualization | null,
+): { add: Record<string, Record<string, string>>; remove: string[] } {
+  const add: Record<string, Record<string, string>> = {};
+  const remove: string[] = [];
+  for (const [name, want] of Object.entries(KVM_DEVICES)) {
+    const cur = devices[name];
+    const same = !!cur && Object.keys(want).length === Object.keys(cur).length && Object.entries(want).every(([k, x]) => cur[k] === x);
+    if (v?.kvm) {
+      if (same) continue;
+      if (cur) remove.push(name);
+      add[name] = { ...want };
+    } else if (cur) {
+      remove.push(name);
+    }
+  }
+  return { add, remove };
 }
 
 /**
@@ -520,6 +561,7 @@ export class ProjectContainers {
         ? `banto のコードと Project の根のマウントと、道（${proxyNames.map((d) => `${d}：${toAdd[d]!["listen"]} → ${toAdd[d]!["connect"]}`).join("・")}）を足すの`
         : "banto のコードと Project の根をマウントするの",
     );
+    if (spec.virtualization !== undefined) await this.applyVirtualizationNow(name, st, spec.virtualization);
     if ((st.config["security.nesting"] ?? "false") !== String(spec.nesting)) {
       await this.incus(["config", "set", name, `security.nesting=${spec.nesting}`], "入れ子の設定を変えるの");
       // AppArmor のプロファイルは起動のときに作られる——動いているなら起こし直さないと効かない
@@ -805,6 +847,25 @@ export class ProjectContainers {
   /** その banto（`owner`）が作ったコンテナの名前 */
   async listOwned(owner: string): Promise<string[]> {
     return (await this.listBanto()).filter((c) => c.owner === owner).map((c) => c.name);
+  }
+
+  /**
+   * **仮想化の実験の設定をコンテナに合わせる**（追加・2026-10-20、人が Project の設定を変えたとき）。装置は動いているコンテナにも
+   * そのまま足せる（起こし直さない）。無ければ何もしない（次に作るとき `ensure` が付ける）。合わせたら true
+   */
+  async applyVirtualization(name: string, v: ContainerVirtualization | null): Promise<boolean> {
+    return this.serialize(name, async () => {
+      const st = await this.state(name);
+      if (!st) return false;
+      await this.applyVirtualizationNow(name, st, v);
+      return true;
+    });
+  }
+
+  private async applyVirtualizationNow(name: string, st: InstanceState, v: ContainerVirtualization | null): Promise<void> {
+    const { add, remove } = virtualizationDeviceChanges(st.devices, v);
+    for (const device of remove) await this.incus(["config", "device", "remove", name, device], `${device} の装置を外すの`);
+    await this.addDevices(name, add, "/dev/kvm を見せるの");
   }
 
   /**

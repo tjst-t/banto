@@ -56,6 +56,7 @@ import {
   containerNameFor,
   defaultContainerLimits,
   ensureBaseImage,
+  type ContainerVirtualization,
 } from "@banto/container";
 import {
   AGENT_DEVICE_PREFIX,
@@ -149,6 +150,11 @@ export interface RemoteSshRuntimeOptions {
    * `<置き場>/agent-binaries/` のうちこれに無いものを消す。渡さなければ片づけない
    */
   agentBinaryDirNames?: () => ReadonlySet<string>;
+  /**
+   * **containers のコンテナに付ける仮想化の実験の設定**（追加・2026-10-20、v4-security.md §1「`containers` で仮想化の実験」）。
+   * 実行場所が許していなければ null（付いていれば外す）。渡さなければ付けない
+   */
+  containerVirtualization?: (runtimeName: string, projectId: string) => ContainerVirtualization | null;
   /**
    * containers：VM のユーザーの、コンテナに見せていない場所（既定は `/run/user/<uid>`。試験だけが差し替える——この機械の
    * `/run/user` を使わない）
@@ -259,7 +265,7 @@ interface Connection {
   /** containers：この接続の上で Incus を呼ぶ口（装置の書き換えを1本ずつ通すので、接続ごとに1つ） */
   incus?: ProjectContainers;
   /** containers：用意したコンテナ（根・入れ子が変われば用意し直す） */
-  container?: { root: string | undefined; nesting: boolean; ready: Promise<string> };
+  container?: { root: string | undefined; nesting: boolean; virtualization: string; ready: Promise<string> };
   /** containers：VM のユーザーの番号（読むのは接続ごとに1回） */
   vmIds?: Promise<{ uid: number; gid: number }>;
   /**
@@ -1688,9 +1694,11 @@ export class RemoteSshRuntime {
    */
   private ensureProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
     const cur = conn.container;
-    if (cur && cur.root === place.root && cur.nesting === place.nesting) return cur.ready;
-    const ready = this.createProjectContainer(conn, place);
-    conn.container = { root: place.root, nesting: place.nesting, ready };
+    const virtualization = this.opts.containerVirtualization?.(conn.runtimeName, place.id);
+    const virtKey = JSON.stringify(virtualization ?? null);
+    if (cur && cur.root === place.root && cur.nesting === place.nesting && cur.virtualization === virtKey) return cur.ready;
+    const ready = this.createProjectContainer(conn, place, virtualization);
+    conn.container = { root: place.root, nesting: place.nesting, virtualization: virtKey, ready };
     // 失敗したら覚えない（次に使うときにやり直す）
     ready.catch(() => {
       if (conn.container?.ready === ready) delete conn.container;
@@ -1698,7 +1706,7 @@ export class RemoteSshRuntime {
     return ready;
   }
 
-  private async createProjectContainer(conn: Connection, place: RuntimePlace): Promise<string> {
+  private async createProjectContainer(conn: Connection, place: RuntimePlace, virtualization: ContainerVirtualization | null | undefined): Promise<string> {
     if (!place.root) throw new Error(`別のサーバ「${conn.runtimeName}」の Project ${place.id} に根がありません`);
     if (place.tools) throw new Error("道具用の箱は別のサーバには置きません");
     const shell = this.vmShell(conn);
@@ -1722,6 +1730,7 @@ export class RemoteSshRuntime {
       portIsolation: true,
       proxies: { [RELAY_DEVICE]: relayRoute(tunnel) },
       limits: defaultContainerLimits(await vmResources(shell)),
+      ...(virtualization !== undefined ? { virtualization } : {}),
     });
     // 前の接続で張った鍵の窓口の装置を外す（窓口の転送は接続と一緒に消えている。窓口は Vault が開き直したときに張り直す）。
     // 接続ごとに1回——同じ接続で用意し直す（`forget`）ときに、いま使っている窓口を外さない
