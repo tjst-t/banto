@@ -51,6 +51,16 @@ Dots の権限の仕組み（操作ごとの4段の Custom Rules・オフにで�
   tool の中でカードを出す（`canUseTool` の自動の許可を通らない）
 - Repositories の GitHub の tool は、呼んだ Project のリポジトリだけ・決まった欄だけ
 
+## Fable のレビュー2回目（直せば入れてよい）で直したこと
+
+- `readDocument` の読むだけは PDF の文字だけ（docx も変換役を通る。`asImage` も変換役に中継する）
+- 見回りの Fork の読むだけの印は `thread.created` に刻み、見回りを消しても残す（消すと外の文を読んだ Fork がふつうの会話に戻る穴）。`mode` は作ったあと変えない
+- `decisions` のあるまとめは予約が無くても受け付ける（枠の外で人に聞く道が、まとめの断りと衝突していた）
+- 時計で期限を過ぎたときは、ターンの外からレビュー待ちを出す／更新する
+- 見回りの会話にはまとめの prompt と Stop hook を付けない
+- 「答えていない決めこと」は判断役の `movedOnReason` と同じ手がかりで判定する
+- 「やって」の引用は外から来たものと同じ囲み、`start_mission` のカードは form の部品、人の「今すぐ起こす」は最短の間隔に縛られない
+
 ## 参考
 
 - [OpenAI launches Dots（TechCrunch）](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/)
