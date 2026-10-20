@@ -604,7 +604,8 @@ export async function* runTurn(opts: {
     );
     const res = await fetch(`${base}/v1/messages?beta=true`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...custom },
+      // 本物の CLI と同じく、要求ごとにセッションの印を付ける（均すの固定の鍵、v4-security.md §2「均す」の実測）
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-claude-code-session-id": sessionId, ...custom },
       body: JSON.stringify({ model: "claude-fake", max_tokens: 16, messages: [{ role: "user", content: `fake-runner relay ${i}` }] }),
     });
     const body = await res.text();

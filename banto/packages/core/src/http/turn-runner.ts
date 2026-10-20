@@ -34,6 +34,7 @@ import {
   type TurnSummaryState,
 } from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
@@ -361,7 +362,7 @@ async function* runThreadTurnInner(
      * **会話の本体の CLI の環境**（§2「Claude のアカウントを複数持つ」の 2.——Claude のログインの中継を通す）。ターンを始める
      * ときに1回引く。渡されなければ Runner の既定（process.env に付随の通信を止める印）
      */
-    runnerEnv?(projectId: string, threadId: string): Promise<Record<string, string | undefined>>;
+    runnerEnv?(projectId: string, threadId: string, session: RunnerSession): Promise<Record<string, string | undefined>>;
     /**
      * **上限で終わったターンを、いつ自動で続けるか**（追加・2026-10-18、v4-security.md §2 の 9.）。ターンの終わりを書く直前に
      * 呼ぶ（Thread の最後のターンはまだそのターン）。`resetsAt` はそのターンの最後の `rate_limit_event` の時刻（UNIX 秒）。
@@ -626,7 +627,14 @@ async function* runThreadTurnInner(
     // （追加・2026-09-26）。ターンは答えが揃った時点で終わり、CLI の後片づけは
     // 裏で続く（`RunnerTurnResult.exited`）。ふつうは人が次を打つより先に終わっている
     if (resumeFrom !== undefined) await cliExits.get(resumeFrom);
-    const env = await deps.runnerEnv?.(thread.projectId, input.threadId);
+    // 均すときは、このセッションを Claude のアカウントに固定する（Fork の最初のターンは親のセッションの固定を継ぐ。
+    // v4-security.md §2「均す」の 3.）。新しい会話・Fork は host が先に決めた id、続きは続ける会話の id
+    const runnerSessionId = assignedSessionId ?? resumeFrom;
+    if (runnerSessionId === undefined) throw new Error("unreachable: このターンの会話の id が決まっていない");
+    const env = await deps.runnerEnv?.(thread.projectId, input.threadId, {
+      sessionId: runnerSessionId,
+      ...(forkSession && resumeFrom !== undefined ? { inheritFrom: resumeFrom } : {}),
+    });
     const gen = (deps.runTurn ?? runTurn)({
       ...(env ? { env } : {}),
       signal: abortTurn.signal,

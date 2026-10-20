@@ -20,6 +20,8 @@ export interface ApiRequest {
   auth: string | null;
   /** 届いた Thread の印（中継が剥がすので、届いていれば漏れている） */
   threadHeader: string | null;
+  /** セッションの印（`x-claude-code-session-id`——均すの固定の鍵。中継はそのまま流す） */
+  session: string | null;
   path: string;
   /** その要求の会話（各発言の文を1つにつないだもの） */
   messages: Array<{ role: string; text: string }>;
@@ -47,7 +49,7 @@ export interface FakeAnthropic {
   requests: ApiRequest[];
   seen: string[];
   /** `/v1/messages` に来た要求の、トークン（Bearer の後ろ）と返した状態（会話でない要求も・断ったものも） */
-  replies: Array<{ token: string; status: number; path: string }>;
+  replies: Array<{ token: string; status: number; path: string; session: string | null }>;
   /** そのトークンの使用率を決める（undefined で見出しを付けない） */
   setLimit: (token: string, limit: FakeLimit | undefined) => void;
   /** そのコードを交換すると、そのトークン・メールアドレスのアカウントになる */
@@ -104,6 +106,8 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
         return;
       }
       const auth = req.headers.authorization ?? null;
+      const sessionHeader = req.headers["x-claude-code-session-id"];
+      const session = typeof sessionHeader === "string" ? sessionHeader : null;
       const token = (auth ?? "").replace(/^Bearer /, "");
       if (path === "/api/oauth/profile") {
         const login = [...logins.values()].find((l) => l.accessToken === token);
@@ -126,14 +130,14 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       }
       const rateHeaders = limit ? limitHeaders(limit) : {};
       if (path.startsWith("/v1/messages") && limit?.rejected) {
-        replies.push({ token, status: 429, path });
+        replies.push({ token, status: 429, path, session });
         res
           .writeHead(429, { "content-type": "application/json", ...rateHeaders })
           .end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "fake: usage limit reached" } }));
         return;
       }
       const forced = req.headers["x-e2e-upstream-status"];
-      if (path.startsWith("/v1/messages")) replies.push({ token, status: Number(forced ?? 200), path });
+      if (path.startsWith("/v1/messages")) replies.push({ token, status: Number(forced ?? 200), path, session });
       if (path.startsWith("/v1/messages") && (forced !== undefined || !Array.isArray(body.messages))) {
         res.writeHead(Number(forced ?? 200), { "content-type": "application/json", ...rateHeaders }).end(JSON.stringify({ fakeUpstream: true, path, auth }));
         return;
@@ -148,7 +152,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       }
       const messages = (body.messages ?? []).map((m) => ({ role: m.role, text: textOf(m.content) }));
       const threadHeader = req.headers["x-banto-thread-id"];
-      requests.push({ path, messages, auth, threadHeader: typeof threadHeader === "string" ? threadHeader : null });
+      requests.push({ path, messages, auth, threadHeader: typeof threadHeader === "string" ? threadHeader : null, session });
       const n = ++seq;
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.text ?? "";
       const said = /合言葉は ([a-z]+-\d+)/.exec(lastUser)?.[1];

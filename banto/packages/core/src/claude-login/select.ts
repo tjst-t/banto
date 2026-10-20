@@ -100,3 +100,46 @@ export function earliestRecovery(order: readonly string[], usageOf: (id: string)
   const times = order.map((id) => usableAgainAt(usageOf(id), thresholds, now)).filter((t): t is number => t !== undefined);
   return times.length === 0 ? undefined : Math.min(...times);
 }
+
+/**
+ * 選んでから最初の返事が来るまでの固定1つにつき、余裕の比に足す重み（閾値の 1%。§2「均す」の 5.——同時に始まった
+ * セッションを1つのアカウントに寄せない。重みは実際に使って直す）
+ */
+export const PENDING_PIN_WEIGHT = 0.01;
+
+/**
+ * **余裕の比** r = max(5時間の率 ÷ 5時間の閾値, 週の率 ÷ 週の閾値)（§2「均す」の 5.）。分からない窓（リセットを過ぎた・
+ * まだ使っていない）は率 0
+ */
+export function headroomRatio(usage: AccountUsage | undefined, thresholds: UsageThresholds, now: Date): number {
+  const u = usage ? freshUsage(usage, now) : undefined;
+  return Math.max((u?.fiveHour?.utilization ?? 0) / thresholds.fiveHour, (u?.sevenDay?.utilization ?? 0) / thresholds.sevenDay);
+}
+
+/**
+ * **均すときに並びから選ぶ**（§2「均す」の 5.）：閾値を越えていない（`blockedBy` が無い）ものの中から、余裕の比に
+ * まだ返事の来ていない固定の数 × 0.01 を足したものが一番小さいもの。同じなら並びの前。全部が越えていれば
+ * 上から順にと同じ（一番早く使えるようになるもの）。`skip` は `chooseAccount` と同じ
+ */
+export function chooseBalanced(
+  order: readonly string[],
+  usageOf: (id: string) => AccountUsage | undefined,
+  thresholds: UsageThresholds,
+  now: Date,
+  pendingOf: (id: string) => number,
+  skip: ReadonlySet<string> = new Set(),
+): Choice | undefined {
+  const usable = order.filter((id) => !skip.has(id) && !blockedBy(usageOf(id), thresholds, now));
+  if (usable.length === 0) return chooseAccount(order, usageOf, thresholds, now, skip);
+  let best = usable[0]!;
+  let bestScore = Infinity;
+  for (const id of usable) {
+    const score = headroomRatio(usageOf(id), thresholds, now) + pendingOf(id) * PENDING_PIN_WEIGHT;
+    // 同じなら並びの前（厳密に小さいときだけ替える）
+    if (score < bestScore) {
+      best = id;
+      bestScore = score;
+    }
+  }
+  return { accountId: best, allOver: false };
+}

@@ -6,7 +6,7 @@ import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_LOGIN_PATH, ClaudeLoginRelay, hostClaudeCredentialsPath, type ClaudeLoginListener, type ClaudeLoginRelayDeps } from "./relay.js";
 import { createRelayListener } from "../relay/relay-listener.js";
-import { ClaudeAccountStore } from "./accounts.js";
+import { ClaudeAccountStore, type ClaudeAccountMode } from "./accounts.js";
 
 /** 台帳と最初の1つの置き場（試験の置き場を指す） */
 const accountsAt = (dataDir: string, hostCredentialsPath: string, now?: () => Date) =>
@@ -54,7 +54,7 @@ async function listen(server: Server): Promise<string> {
 }
 
 async function fixture(
-  overrides: Partial<ClaudeLoginRelayDeps> & { credentialsPath?: string } = {},
+  overrides: Partial<ClaudeLoginRelayDeps> & { credentialsPath?: string; mode?: ClaudeAccountMode } = {},
   listener: ClaudeLoginListener = CORE,
 ): Promise<Fixture> {
   const dir = mkdtempSync(join(tmpdir(), "claude-login-relay-"));
@@ -96,8 +96,10 @@ async function fixture(
   const authorized = { count: 0 };
   const enabled = new Set(["p1", "p2"]);
   const unauthorized: string[] = [];
-  const { credentialsPath, ...rest } = overrides;
+  const { credentialsPath, mode, ...rest } = overrides;
   const accounts = accountsAt(dir, credentialsPath ?? join(dir, ".credentials.json"), () => new Date("2026-10-08T00:00:00Z"));
+  // 上から順にの試験が多い（均すの試験は mode を渡す）
+  accounts.setMode(mode ?? "ordered");
   const relay = new ClaudeLoginRelay({
     accounts,
     secretsPath: join(dir, "secrets.json"),
@@ -424,7 +426,7 @@ test("本体の環境：上流の変数を外し、中継の住所・本体用�
       ANTHROPIC_BASE_URL: "http://outer",
       CLAUDE_CODE_OAUTH_TOKEN: "outer-token",
     };
-    const env = await f.relay.runnerEnvFor("p1", "t1", "http://127.0.0.1:4737", outer);
+    const env = await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://127.0.0.1:4737", outer);
     const secret = env.CLAUDE_CODE_OAUTH_TOKEN!;
     assert.match(secret, /^banto-runner-/);
     assert.deepEqual(env, {
@@ -439,8 +441,8 @@ test("本体の環境：上流の変数を外し、中継の住所・本体用�
       ANTHROPIC_CUSTOM_HEADERS: "x-banto-thread-id: t1",
     });
     // Project ごとに1つ（Thread が替わっても同じ）。コンテナ用とは別のもの。置き場には書かない
-    assert.equal((await f.relay.runnerEnvFor("p1", "t2", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
-    assert.notEqual((await f.relay.runnerEnvFor("p2", "t3", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
+    assert.equal((await f.relay.runnerEnvFor("p1", "t2", { sessionId: "s-t2" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
+    assert.notEqual((await f.relay.runnerEnvFor("p2", "t3", { sessionId: "s-t3" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
     const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
     assert.notEqual(container, secret);
     assert.doesNotMatch(readFileSync(join(f.dir, "secrets.json"), "utf8"), new RegExp(secret));
@@ -452,7 +454,7 @@ test("本体の環境：上流の変数を外し、中継の住所・本体用�
 test("中継が取り直せない banto では、本体は中継を通さない（今の環境に付随の通信を止める印だけ）", async () => {
   const f = await fixture({ refreshEnabled: false });
   try {
-    const env = await f.relay.runnerEnvFor("p1", "t1", "http://127.0.0.1:4737", { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-outer" });
+    const env = await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://127.0.0.1:4737", { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-outer" });
     assert.deepEqual(env, { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-outer", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
   } finally {
     await f.close();
@@ -468,7 +470,7 @@ test("本体用の合言葉：host の loopback から通り、Thread の印は�
     },
   });
   try {
-    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     const ok = await post(f.url, secret, "/v1/messages?beta=true", { "x-banto-thread-id": "t1" });
     assert.equal(ok.status, 200);
     assert.deepEqual(f.seen, [{ url: "/v1/messages?beta=true", auth: "Bearer REAL-ACCESS", beta: "oauth-2025-04-20" }]);
@@ -506,7 +508,7 @@ test("取り違えた合言葉は断る：本体用をコンテナの口・別�
     .flat()
     .find((i) => i && i.family === "IPv4" && !i.internal)?.address;
   try {
-    const runner = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
     // コンテナ用を host の loopback から（本体の口）：コンテナではないので断る
     const swapped = await post(f.url, container);
@@ -761,7 +763,7 @@ test("閾値を越えたら次の要求から次のアカウント、リセッ�
   const f = await fixture({ now: () => clock, onAccountSwitched: (c) => switches.push(c) });
   try {
     const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
-    const runner = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     const reset = new Date("2026-10-08T01:00:00Z");
     f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.96, reset) } };
     // 1回目は host（起こしてから最初なので切り替えではない）。返事で 96% と分かる
@@ -817,7 +819,7 @@ test("上限の 429（rejected）は並びの次へ順に送り直し、3つ目�
   try {
     const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
     const c = f.accounts.add({ email: "c@example.com", oauth: { accessToken: "C-ACCESS" } });
-    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     assert.equal((await post(f.url, secret)).status, 200);
     const reset = new Date("2026-10-08T02:00:00Z");
     const rejected = { status: 429, headers: limitHeaders(0.5, reset, "rejected") };
@@ -853,7 +855,7 @@ test("見出しの無い 429（上限ではない）は送り直さず、旗も�
   const f = await fixture();
   try {
     f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
-    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     f.upstreamByToken.value = { "REAL-ACCESS": { status: 429, headers: {} } };
     const r = await post(f.url, secret);
     assert.equal(r.status, 429);
@@ -874,7 +876,7 @@ test("並びの全部が閾値を越えたら一番早くリセットされる�
   });
   try {
     const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
-    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     const key = `host,${b.id}`;
     // まだ見ていない並びは開いている扱い——最初に選んだときに（起こし直す前の）カードを閉じに行く
     assert.equal((await post(f.url, secret)).status, 200);
@@ -891,7 +893,7 @@ test("並びの全部が閾値を越えたら一番早くリセットされる�
     assert.deepEqual(f.seen.slice(-2).map((x) => x.auth), ["Bearer B-ACCESS", "Bearer B-ACCESS"]);
     assert.deepEqual(events, [`close ${key}`, `open ${key} p1 using=${b.id}`]);
     // 同じ並びの別の Project でも増やさない
-    const other = (await f.relay.runnerEnvFor("p2", "t2", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const other = (await f.relay.runnerEnvFor("p2", "t2", { sessionId: "s-t2" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     assert.equal((await post(f.url, other)).status, 200);
     assert.equal(events.length, 2);
     // B のリセットを過ぎる——要求が来なくても、時計が見直して閉じる
@@ -928,10 +930,10 @@ test("使用率の読み直し：アカウントごとのトークンで usage �
     assert.deepEqual(failures, [{ accountId: b.id, reason: "使用率の口が 500 を返しました" }]);
     // 中継を通っていない（上流には何も来ない）
     assert.deepEqual(f.seen, []);
-    assert.deepEqual([...f.relay.currentAccounts()], []);
+    assert.deepEqual(f.relay.currentAccounts(), []);
     const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
     assert.equal((await post(f.url, secret)).status, 200);
-    assert.deepEqual([...f.relay.currentAccounts()], [["p1", "host"]]);
+    assert.deepEqual(f.relay.currentAccounts(), [{ projectId: "p1", accountId: "host" }]);
   } finally {
     await f.close();
     usage.closeAllConnections();
@@ -945,7 +947,7 @@ test("並びの全部が閾値を越えて一番早くリセットされるも�
   const f = await fixture({ now: () => clock, onAccountSwitched: (c) => switches.push(c) });
   try {
     const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
-    const secret = (await f.relay.runnerEnvFor("p1", "t1", "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    const secret = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s-t1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
     // host は1時間後、B は2時間後に戻る
     f.upstreamByToken.value = {
       "REAL-ACCESS": { headers: limitHeaders(0.97, new Date("2026-10-08T01:00:00Z")) },
@@ -960,6 +962,283 @@ test("並びの全部が閾値を越えて一番早くリセットされるも�
     );
   } finally {
     f.relay.close();
+    await f.close();
+  }
+});
+
+// ---- 均す（v4-security.md §2「均す」） ----------------------------------------------------------------------------
+
+/** 均すの試験：使用率の読み直しの口（トークンごとの返事・来た回数）を手元に立てる（本物の API に出さない） */
+async function balanceFixture(overrides: Partial<ClaudeLoginRelayDeps> = {}) {
+  const usageCalls: string[] = [];
+  const usageReply: { value: Record<string, { status?: number; body?: unknown; hang?: true }> } = { value: {} };
+  const hanging: Array<() => void> = [];
+  const usage = createServer((req, res) => {
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    usageCalls.push(token);
+    const r = usageReply.value[token];
+    if (r?.hang) {
+      hanging.push(() => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ five_hour: null, seven_day: null })));
+      return;
+    }
+    res.writeHead(r?.status ?? 200, { "content-type": "application/json" }).end(JSON.stringify(r?.body ?? { five_hour: null, seven_day: null }));
+  });
+  const usageUrl = await listen(usage);
+  const f = await fixture({ mode: "balance", usageUrl: `${usageUrl}/api/oauth/usage`, ...overrides });
+  return {
+    ...f,
+    usageCalls,
+    usageReply,
+    releaseHanging: () => hanging.splice(0).forEach((fn) => fn()),
+    close: async () => {
+      for (const fn of hanging.splice(0)) fn();
+      usage.closeAllConnections();
+      await new Promise((r) => usage.close(r));
+      await f.close();
+    },
+  };
+}
+
+const session = (id: string, thread?: string) => ({ "x-claude-code-session-id": id, ...(thread ? { "x-banto-thread-id": thread } : {}) });
+const FAR = new Date("2026-10-09T00:00:00Z");
+
+test("均す：別のセッションは余裕の比の小さいアカウントへ、同じセッションは固定先へ。最初の選びは切り替えにしない", async () => {
+  const switches: unknown[] = [];
+  const f = await balanceFixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // host は 5時間 50%、B はまだ分からない（0 とみなす）
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.5, FAR) }, "B-ACCESS": { headers: limitHeaders(0.1, FAR) } };
+    // 最初は同じ（どちらも分からない）→ 並びの前の host
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    // s2：host は 50% と分かった → B
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s2"))).status, 200);
+    // s1 は host が B より重くなっても host のまま（キャッシュを崩さない）
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s2"))).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer B-ACCESS", "Bearer REAL-ACCESS", "Bearer B-ACCESS"]);
+    assert.deepEqual(switches, []);
+    // 設定の「いま使っている Project」は固定の表から。1つの Project が両方の下に出る。上から順にの「最後の返事」は持たない
+    assert.deepEqual(f.relay.currentAccounts(), [
+      { projectId: "p1", accountId: "host" },
+      { projectId: "p1", accountId: b.id },
+    ]);
+    assert.deepEqual(f.relay.pinnedAccountsOf("p1"), ["host", b.id]);
+    assert.equal(f.relay.currentAccountOf("p1"), undefined);
+    // 印の無い要求は Project ごとに1つの鍵（B は 10%、host は 50% → B）
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.equal((await post(f.url, secret)).status, 200);
+    assert.deepEqual(f.seen.slice(4).map((x) => x.auth), ["Bearer B-ACCESS", "Bearer B-ACCESS"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：同時に始まったセッションを寄せない（まだ返事の来ていない固定1つにつき 0.01）。同じセッションの同時の要求は別々に選ばない", async () => {
+  const f = await balanceFixture();
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS", subscriptionType: "pro" } });
+    const c = f.accounts.add({ email: "c@example.com", oauth: { accessToken: "C-ACCESS" } });
+    // 本体のターンの始めに固定する（まだ要求は来ていない）——3つとも分からないので、host・B・C と散る
+    const e1 = await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s1" }, "http://x", {});
+    const e2 = await f.relay.runnerEnvFor("p1", "t2", { sessionId: "s2" }, "http://x", {});
+    await f.relay.runnerEnvFor("p1", "t3", { sessionId: "s3" }, "http://x", {});
+    assert.deepEqual(f.relay.pinnedAccountsOf("p1"), ["host", b.id, c.id]);
+    assert.equal(f.relay.pinnedAccountOfThread("t2"), b.id);
+    // 契約の種類の env はその固定先のもの
+    assert.equal(e1.CLAUDE_CODE_SUBSCRIPTION_TYPE, "max");
+    assert.equal(e2.CLAUDE_CODE_SUBSCRIPTION_TYPE, "pro");
+    // 同じセッションの要求が2つ同時に来ても、同じアカウント
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    await Promise.all([post(f.url, secret, "/v1/messages", session("s9")), post(f.url, secret, "/v1/messages", session("s9"))]);
+    assert.equal(new Set(f.seen.map((x) => x.auth)).size, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：固定は最後の要求から1時間。切れたら選び直し、記録しない", async () => {
+  let clock = new Date("2026-10-08T00:00:00Z");
+  const switches: unknown[] = [];
+  const f = await balanceFixture({ now: () => clock, onAccountSwitched: (c) => switches.push(c) });
+  try {
+    f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.5, FAR) }, "B-ACCESS": { headers: limitHeaders(0.1, FAR) } };
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    // 59分後：まだ生きている（要求のたびに寿命は延びる）
+    clock = new Date("2026-10-08T00:59:00Z");
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    clock = new Date("2026-10-08T01:58:00Z");
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer REAL-ACCESS", "Bearer REAL-ACCESS"]);
+    // 最後の要求から1時間：切れて、余裕のある B を選び直す。記録はしない
+    clock = new Date("2026-10-08T02:58:00Z");
+    f.usageReply.value = { "REAL-ACCESS": { body: { five_hour: { utilization: 50, resets_at: FAR.toISOString() } } } };
+    assert.equal(f.relay.pinnedAccountsOf("p1").length, 0);
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer B-ACCESS");
+    assert.deepEqual(switches, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：固定先が閾値を越えたら移り、その鍵で1件だけ記録する（同じ Project の別のセッションは動かさない）", async () => {
+  const switches: Array<{ threadId?: string; from: string; to: string; reason: { kind: string } }> = [];
+  const f = await balanceFixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "s1" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    await f.relay.runnerEnvFor("p1", "t2", { sessionId: "s2" }, "http://x", {});
+    assert.equal(f.relay.pinnedAccountOfThread("t1"), "host");
+    assert.equal(f.relay.pinnedAccountOfThread("t2"), b.id);
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.96, FAR) }, "B-ACCESS": { headers: limitHeaders(0.2, FAR) } };
+    assert.equal((await post(f.url, runner, "/v1/messages", session("s1", "t1"))).status, 200);
+    assert.equal((await post(f.url, runner, "/v1/messages", session("s2", "t2"))).status, 200);
+    assert.equal(switches.length, 0);
+    // s1 の次の要求は B へ（host が 96%）。記録は t1 の1件だけ
+    assert.equal((await post(f.url, runner, "/v1/messages", session("s1", "t1"))).status, 200);
+    assert.equal((await post(f.url, runner, "/v1/messages", session("s1", "t1"))).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer B-ACCESS", "Bearer B-ACCESS", "Bearer B-ACCESS"]);
+    assert.deepEqual(switches.map((s) => `${s.threadId} ${s.from}→${s.to} ${s.reason.kind}`), [`t1 host→${b.id} threshold`]);
+    assert.equal(f.relay.pinnedAccountOfThread("t1"), b.id);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：固定先が並びから外れたら選び直して order で記録。アカウントを外したらその固定を捨てる（記録しない）", async () => {
+  const switches: Array<{ from: string; to: string; reason: { kind: string } }> = [];
+  const f = await balanceFixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const c = f.accounts.add({ email: "c@example.com", oauth: { accessToken: "C-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer REAL-ACCESS");
+    f.accounts.setProjectOrder("p1", [b.id, c.id]);
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer B-ACCESS");
+    assert.deepEqual(switches.map((s) => `${s.from}→${s.to} ${s.reason.kind}`), [`host→${b.id} order`]);
+    // B を外す：固定は捨てられ、次は最初の選びと同じ（記録しない）
+    f.accounts.remove(b.id);
+    f.relay.forgetAccount(b.id);
+    assert.deepEqual(f.relay.pinnedAccountsOf("p1"), []);
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer C-ACCESS");
+    assert.equal(switches.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：Fork の最初のターンは親のセッションの固定を継ぐ（ほかに余裕のあるアカウントがあっても）。Clear（新しいセッション）は選び直す", async () => {
+  const f = await balanceFixture();
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS", subscriptionType: "pro" } });
+    const runner = (await f.relay.runnerEnvFor("p1", "t1", { sessionId: "parent" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN!;
+    f.upstreamByToken.value = { "REAL-ACCESS": { headers: limitHeaders(0.6, FAR) } };
+    assert.equal((await post(f.url, runner, "/v1/messages", session("parent", "t1"))).status, 200);
+    // B のほうが余裕がある（分からない＝0）が、Fork は親の host を継ぐ
+    const fork = await f.relay.runnerEnvFor("p1", "t-fork", { sessionId: "fork-1", inheritFrom: "parent" }, "http://x", {});
+    assert.equal(fork.CLAUDE_CODE_SUBSCRIPTION_TYPE, "max");
+    assert.equal(f.relay.pinnedAccountOfThread("t-fork"), "host");
+    assert.equal((await post(f.url, runner, "/v1/messages", session("fork-1", "t-fork"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer REAL-ACCESS");
+    // 親の固定が無い（切れた）なら継がずに選ぶ
+    const orphan = await f.relay.runnerEnvFor("p1", "t-fork2", { sessionId: "fork-2", inheritFrom: "gone" }, "http://x", {});
+    assert.equal(orphan.CLAUDE_CODE_SUBSCRIPTION_TYPE, "pro");
+    // Clear は新しいセッション：選び直す
+    await f.relay.runnerEnvFor("p1", "t1", { sessionId: "after-clear" }, "http://x", {});
+    assert.equal(f.relay.pinnedAccountOfThread("t1"), b.id);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：選ぶ前に30分より古い使用率だけ読み直す。試みた時刻で歯止め（失敗しても30分は試み直さない）・待つのは上限まで", async () => {
+  let clock = new Date("2026-10-08T00:00:00Z");
+  const f = await balanceFixture({ now: () => clock, usageWaitMs: 200 });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // host は人の claude で 80% 使われている（中継は知らない）。B は読めない
+    f.usageReply.value = { "REAL-ACCESS": { body: { five_hour: { utilization: 80, resets_at: FAR.toISOString() } } }, "B-ACCESS": { status: 500 } };
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    // 読み直した host の 80% を見て B を選んだ
+    assert.equal(f.seen.at(-1)!.auth, "Bearer B-ACCESS");
+    assert.deepEqual([...f.usageCalls].sort(), ["B-ACCESS", "REAL-ACCESS"]);
+    // 10分後の別のセッション：host は読んだばかり、B は読めなかったが試みたばかり——どちらも読みに行かない
+    clock = new Date("2026-10-08T00:10:00Z");
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s2"))).status, 200);
+    assert.equal(f.usageCalls.length, 2);
+    // 31分後：B は前の返事の見出しが無かった（台帳に使用率が無い）ので試み直す。host は読んでから31分で古い
+    clock = new Date("2026-10-08T00:31:00Z");
+    f.usageReply.value = { "REAL-ACCESS": { hang: true }, "B-ACCESS": { hang: true } };
+    const started = Date.now();
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s3"))).status, 200);
+    // 答えない読み直しは待ち切らない（上限で手元の値で選ぶ）
+    assert.ok(Date.now() - started < 2_000, `読み直しを待ちすぎた（${Date.now() - started}ms）`);
+    assert.equal(f.usageCalls.length, 4);
+    // 同時に来た選びは同じ読み直しを待つ（走っている間は数を増やさない）
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s4"))).status, 200);
+    assert.equal(f.usageCalls.length, 4);
+    f.releaseHanging();
+    void b;
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：上限の 429 の送り直しは余裕の比の小さい順。通ったものに固定を移して rejected で記録。全部断ったら固定は動かさない", async () => {
+  const switches: Array<{ from: string; to: string; reason: { kind: string } }> = [];
+  const f = await balanceFixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const c = f.accounts.add({ email: "c@example.com", oauth: { accessToken: "C-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    // B は 70%・C は 20% と分かっている
+    f.upstreamByToken.value = { "B-ACCESS": { headers: limitHeaders(0.7, FAR) }, "C-ACCESS": { headers: limitHeaders(0.2, FAR) } };
+    f.accounts.recordUsage(b.id, new Headers(limitHeaders(0.7, FAR)));
+    f.accounts.recordUsage(c.id, new Headers(limitHeaders(0.2, FAR)));
+    // s1 は host（分からない＝0）。次に host が上限で断る→残りから r の小さい C へ送り直して通る
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    const rejected = { status: 429, headers: limitHeaders(0.5, FAR, "rejected") };
+    f.upstreamByToken.value = { ...f.upstreamByToken.value, "REAL-ACCESS": rejected };
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.deepEqual(f.seen.map((x) => x.auth), ["Bearer REAL-ACCESS", "Bearer REAL-ACCESS", "Bearer C-ACCESS"]);
+    assert.deepEqual(switches.map((s) => `${s.from}→${s.to} ${s.reason.kind}`), [`host→${c.id} rejected`]);
+    // 次の要求はそのまま C
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer C-ACCESS");
+    // 全部が断る：429 を返し、固定は C のまま（記録も増えない）
+    f.upstreamByToken.value = { "REAL-ACCESS": rejected, "B-ACCESS": rejected, "C-ACCESS": rejected };
+    const refused = await post(f.url, secret, "/v1/messages", session("s1"));
+    assert.equal(refused.status, 429);
+    assert.equal(refused.headers.get("x-should-retry"), "false");
+    assert.deepEqual(f.relay.pinnedAccountsOf("p1"), [c.id]);
+    assert.equal(switches.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("均す：ログインしていないアカウントに固定されていたら、次へ送って移し unavailable で記録", async () => {
+  const switches: Array<{ from: string; to: string; reason: { kind: string } }> = [];
+  const f = await balanceFixture({ onAccountSwitched: (c) => switches.push(c) });
+  try {
+    const b = f.accounts.add({ email: "b@example.com", oauth: { accessToken: "B-ACCESS" } });
+    const secret = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer REAL-ACCESS");
+    // host のログインが消えた
+    rmSync(join(f.dir, ".credentials.json"));
+    assert.equal((await post(f.url, secret, "/v1/messages", session("s1"))).status, 200);
+    assert.equal(f.seen.at(-1)!.auth, "Bearer B-ACCESS");
+    assert.deepEqual(switches.map((s) => `${s.from}→${s.to} ${s.reason.kind}`), [`host→${b.id} unavailable`]);
+  } finally {
     await f.close();
   }
 });
