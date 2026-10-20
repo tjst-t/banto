@@ -10812,7 +10812,7 @@
       "number": 451,
       "kind": "task",
       "title": "Windows のプロキシの設定を core・Module・Claude Code に渡し、Vault（Infisical）を Windows で動かす",
-      "status": "ready",
+      "status": "backlog",
       "parent": "desktop-2-daily",
       "dependsOn": [],
       "milestone": null,
@@ -10824,7 +10824,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T08:57:31.460Z",
-      "updatedAt": "2026-10-20T08:57:31.460Z",
+      "updatedAt": "2026-10-20T08:59:25.942Z",
       "closedAt": null,
       "extra": {}
     },
