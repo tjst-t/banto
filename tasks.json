@@ -8951,7 +8951,7 @@
       "number": 368,
       "kind": "task",
       "title": "containers の実行場所：Project ごとのコンテナ・置き場と見せ方・Module の起動・中から書く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "containers-core-sudo-n"
@@ -8961,12 +8961,12 @@
       "labels": [],
       "body": "仕様 docs/specs/v4-security.md §1「別のサーバの中のコンテナ——1台に Project を複数置く」の「コンテナの作りと上限」「置き場（pool）」「土台のイメージ」「置き場と見せ方」「Module の起こし方」「コンテナどうしのネットワーク」と「条件 3・4」。「道」（proxy device で中から banto へ・ssh-agent・流れの口・公開）と移す・眠らせる・資源の画面は #369 の範囲で、ここでは作らない。\n\n## 作るもの\n- ProjectContainers（packages/container/src/project-container.ts）を、RunIncus を SSH 越しに差し替えて使う（containers-host.ts の sshVmRun・VmAccess と同じ口）。hostAddress は VM のインターフェース（host のを読まない）、ensureNode は VM のコードの置き場の bin/node、uid/gid は VM の SSH ユーザーのもの（userInfo() でない）で raw.idmap `uid U 1000`・`gid G 1000`。置き場は pool banto（--storage banto、#367 の準備で作ってある）。NIC は security.port_isolation=true。名前・札（user.banto.owner）・上限（VM で計算）・アドレスは毎回 Incus に聞く、は今と同じ。\n- 土台のイメージは VM の上で作る（VM ごとに1つ、同じ VM の Project で共有）。最初の1回は数分——コードの送り込みと同じく進み具合を出す。\n- コードは VM の <置き場>/code を丸ごと読み取り専用で見せ、版はパスで選ぶ（版を替えても device を付け直さない）。Project のフォルダと Module の置き場は VM の home の下に Project ごとに分け、その Project のコンテナにだけ disk device で見せる。\n- 根の重なりは断る（作る・移す・再開する）：Project の根が、置き場の根・ほかの Project の根（閉じたものも）・home そのものと重なれば断る。\n- Module は `ssh <VM> incus exec <c> --user <uid> -- <起動役>`（remote-launcher.ts はほぼそのまま。単位はコンテナの中のユーザーの systemd、stopUnit も中で）。runtime/remote-ssh.ts の「containers の Project の Module はまだ起こせない」の断り（509 行付近）を、この起こし方に置き換える。SSH の接続は Project ごと（#366 の remoteConnectionKey）。\n- 条件3：見せたフォルダに書く・解釈するもの（Shell のホームの写し・Module の置き場の用意・tar の展開・git worktree repair・ソケットの片づけ・rsync の受け手）は incus exec で中から。VM のユーザーがしてよいのは symlink を辿らずに読むことだけ。\n- この段では中から banto への道（中継・Claude の中継）はまだ無い（#369）。Module の住所の環境変数が届かない先を指していても、Shell の runCommand・FileSystem・Service は動くこと。中継を要る機能が「繋がらない」で返るのは承知。\n\n## 試験\n偽の RunIncus（containers-host.test.ts の偽の VM の形）で単体試験：コンテナの作り（idmap・port_isolation・disk device・読み取り専用のコード）・根の重なり・中から書く（VM のユーザーで見せたフォルダに書かない）・symlink を辿らない。E2E の SSH の相手に Incus は無いので、本物は banto-ct-test で人と確かめる（release の後）。",
       "doneWhen": "単体試験で、コンテナの作り・根の重なりの断り・中から書く・symlink を辿らないことを確かめる。core の単体テストと実行場所の E2E（remote-runtime-ssh・remote-runtime-registry・remote-runtime-containers-register・remote-runtime-key-place）が通る。そのあと banto-ct-test（containers で登録済み）で、2つの Project を作り Shell・FileSystem・Service がそれぞれのコンテナで動き、片方からもう片方のフォルダに届かないことを確かめる（実機、release の後に人と）。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/containers-project-module）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-20T04:44:09.705Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-20T05:55:14.598Z",
+      "closedAt": "2026-10-20T05:55:14.598Z",
       "extra": {}
     },
     {
