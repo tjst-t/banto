@@ -11629,6 +11629,27 @@
       "updatedAt": "2026-10-20T20:04:08.285Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-repositories-spec-1180-release-disab",
+      "number": 483,
+      "kind": "bug",
+      "title": "E2E repositories.spec:1180 が release で落ちる——アカウントを足す画面の「ブラウザでログイン」が選べない（disabled）",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "2026-10-20、任務と見回りを release に入れる前のフル E2E で見つけた。変更なしの origin/release（7efe202b）でも単独で毎回落ちる（既存）。\n`await expect(inner.getByTestId(\"gh-method-browser\")).toBeChecked()`（1208行）で、ラジオが `disabled` で選ばれていない。ブラウザでログインに要る GitHub App の client ID が試験の環境で決まっていない・release の Repositories の画面の既定が変わった、のどちらかと思われる（未確認）。main でも落ちるかは確かめていない。",
+      "doneWhen": "原因を直し、repositories.spec:1180 が main と release の両方の版で3回続けて通る",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T20:26:59.859Z",
+      "updatedAt": "2026-10-20T20:26:59.859Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
