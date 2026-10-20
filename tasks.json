@@ -11460,6 +11460,29 @@
       "updatedAt": "2026-10-20T14:31:12.792Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "e2e-remote-runtime-containers-register-n",
+      "number": 476,
+      "kind": "bug",
+      "title": "E2E remote-runtime-containers-register が落ちる——前提の確かめに足した nested-kvm を期待値が知らない",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "2026-10-20、release 版 #466 のフル E2E（335 本中 1 本落ち）で見つけた。\n\nspecs/remote-runtime-containers-register.spec.ts:131 の前提の確かめの一覧の期待値に、仮想化（KVM）の #458 で containers-host.ts に足した前提の項目 `nested-kvm`（受け取った値は ok）が入っていない。release（0aaa6865）と main のどちらでも、containers-host.ts には nested-kvm があり、spec には無い。#466 の変更はこのファイルに触れていない。\n\n直し方：期待値に `\"nested-kvm\"` を足す（E2E の相手での値を確かめて）。仮想化（KVM）を作った会話（Fork「containers で仮想化の実験」）の範囲。",
+      "doneWhen": "remote-runtime-containers-register.spec.ts が main と release で通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T14:44:36.842Z",
+      "updatedAt": "2026-10-20T14:44:36.842Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
