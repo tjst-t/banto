@@ -11273,6 +11273,31 @@
       "updatedAt": "2026-10-20T13:27:27.232Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "project-project",
+      "number": 468,
+      "kind": "task",
+      "title": "別のサーバの Project の固定した送り先：外す・選び直す口と、自動で許す Project での最初の固定",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [
+        "project-backlog-push-repositories-2"
+      ],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "runtime"
+      ],
+      "body": "#466 から残したもの（2026-10-20、ユーザーの指示でまとめて積んだ）。\n\n#466 で、別のサーバの Project の Backlog の push・fetch を Repositories が引き受けるとき、最初に決まった送り先（owner/name）とアカウントを Project ごとに固定する（Repositories の置き場の remote-targets.json）。以降は向こうの origin がそこと違えば断る。承認のカードに送り先とアカウントが出る。\n\n残っていること：\n- **固定を外す・選び直す口が無い**：いまは向こうの origin を戻すしかなく、Project を閉じても記録は残る。画面を作るならモックから。\n- **最初の固定は origin の申告を信じる**：最初の時点で中の AI が origin を書き換えていたら防げず、守りは承認のカードの表示だけ。「承認をすべて自動で許可する」がオンの Project では、カード無しで最初の送り先が固定される。それでよいか、最初の固定だけは人に聞くか（自動で許す設定を越えて聞くか）を決める。\n- 承認のカードで「この Project の送り先として初めて決める」を目立たせるか。\n\n経緯：docs/notes/2026-10-20-remote-branch-sync.md、仕様 v4-modules.md §2.4「別のサーバの Project」。",
+      "doneWhen": "固定を外す・選び直す口（人の画面）ができ、自動で許す Project での最初の固定の扱いが仕様に決まって実装と試験で確かめられている。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-20T13:56:11.574Z",
+      "updatedAt": "2026-10-20T13:56:11.574Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
