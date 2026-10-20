@@ -1064,6 +1064,12 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
     `memory.events` の oom_kill・`pids.events` の max と `memory.max`・`pids.max` も持ち帰り、上限の見張り（`container-pressure.ts`、
     1分ごと、ログに書く）がこの機械のコンテナと同じ形で増えた分を書く（数えは最後に読めた回のもの。上げ方の文は「VM の資源から
     決めています（実行場所ごとに変える口はまだありません）」）
+  - **実装済み（2026-10-20、Backlog #369）——動いているものはコンテナの中で数える**（`runtime/project-move.ts` の `runningInPlace`。
+    移す前の確かめと眠らせる前の「止まるもの」が使う）：VM で `incus list` を見て、コンテナが動いていなければ何も数えない（数える
+    ために起こさない）、動いていれば中のユーザー（中の番号・中のユーザーの systemd のバス）で今の台本を流す。Incus が答えなければ
+    失敗にする。閉じた Project の元の実行場所を別の Project が使っているか（`sourceTakenBy`）は `containers` では見ない（空かない）。
+    **移すこと自体はまだ断る**（`targetRuntimeProblem`——移す手順の向こうの側を条件3の形（中から書く・`--rsync-path` を中に・
+    `git worktree repair` を中で・移す先のコンテナを先に作る）にするまで）。「1つに1つ」は #367 から `containers` では数えない
 - **ほかの節の書き分け**：「登録と選び方」「最初は作らないもの」「資源の上限は作らない」「向こうの機械は丸ごとその Project の
   AI のもの」は `machine` の話と明記する
 - **試験**：まず偽の `RunIncus` で単体試験（コンテナの作り・道の張り外し・根の重なり・中から書く）。本物は banto-dev-vm で

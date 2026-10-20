@@ -79,6 +79,14 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   - 上限の1行（`describeLimits`）は、この機械の設定から計算すると VM と違う値を出してしまうので、読んだ `memory.max`・`pids.max` を
     見せる。上げ方の文も替えた（この機械の設定では変わらない）
 
+- **移すのは引き続き断り、「動いているものを中で数える」だけ入れた**。移す手順（`project-move.ts`）の向こうの側は、VM の SSH ユーザー
+  として `tar` の展開・rsync の受け手・`git worktree repair`・置き場の片づけをする（`withSide` の `run` は素の ssh）。containers で
+  条件3を満たすには、(1) 移す先のコンテナを根を見せた形で先に作る（いまの作りは Module を起こすときの `prepare` だけ）、(2) 書く
+  ものを全部 `incus exec <c> --user <中の番号>` に通す（rsync は `--rsync-path` で中へ）、(3) 移したあとの元のコンテナを止めて残す、
+  が要り、移す手順の片側（`Side`）を作り直すことになる。#369 の範囲では大きすぎるので残した（Backlog に積み直す）
+  - 「中で数える」は眠らせる前の「止まるもの」（`runningInPlace`）でも使われていて、VM の SSH ユーザーで数えると containers では
+    いつも「何も動いていない」になる（Service はコンテナの中のユーザーの systemd）ので、先に直した
+
 ## 試験
 
 - `packages/container/src/project-container.test.ts`：`proxyDevice` の番号の向き（`instance`/`host`、TCP と UNIX の待ち受け、中の
@@ -95,6 +103,8 @@ Repositories・Backlog の push が全部失敗していた。`preparedInContain
   流して JSON が返ること（この試験で、台本の中の改行が崩れていたのを見つけた）
 - `packages/core/src/resources.test.ts`・`container-pressure.test.ts`：別のサーバのコンテナの数えは最後に読めた回から（読めなくなったら
   無い）、上げ方の文を Project で替えられる
+- `packages/core/src/runtime/project-move.test.ts`：containers で動いているものを数える台本（偽の incus）——動いていれば中のユーザー
+  （中のユーザーのバス）で数える、止まっている・無いなら中で流さず何も出さない、Incus が答えなければ失敗
 - `packages/core/src/runtime/remote-runtimes.test.ts`：実行場所の種類（containers の登録は `remote-containers`、登録が無い名前は
   machine）と、眠らせる・閉じるときの答え
 - 直しを外すと落ちることを、組んだ JS を書き換えて確かめた（窓口を閉じても装置を外さない・前の接続の装置を外さない・見張りが
