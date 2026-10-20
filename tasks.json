@@ -8979,7 +8979,7 @@
       "number": 369,
       "kind": "task",
       "title": "containers の実行場所：proxy device の道（中から banto・ssh-agent・流れの口・公開）と、移す・眠らせる・資源の画面",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "1-vm-project-a",
       "dependsOn": [
         "containers-project-module"
@@ -8987,13 +8987,18 @@
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「道」「条件 4」「他の仕組みとの関係」「畳んだとき」。\n\n- すべての proxy device に security.uid/gid。connect=unix: の先は VM だけの場所（/run/user/<U>/banto/p-<Project>/…）\n- 中から banto へ（bind=instance → Project ごとのトンネルのソケット）・ssh-agent（bind=instance）・流れの口（bind=host、向きが逆）・公開（bind=host、全コンテナのポートを避けて選ぶ、眠らせても外さない）\n- 移す（1つに1つを外す・動いているものは中で数える）・閉じたら空く・眠らせる（コンテナを止めるだけ）・資源の画面（lxc.payload.user-<uid>_<名前> を読む、上限に当たった知らせも）\n- port_isolation は測った結果に従う\n- ほかの節の書き分け（「1つに1つ」等は machine の話と明記）",
+      "body": "仕様 v4-security.md §1「別のサーバの中のコンテナ」の「道」「条件 4」「他の仕組みとの関係」「畳んだとき」。\n\n- すべての proxy device に security.uid/gid。connect=unix: の先は VM だけの場所（/run/user/<U>/banto/p-<Project>/…）\n- 中から banto へ（bind=instance → Project ごとのトンネルのソケット）・ssh-agent（bind=instance）・流れの口（bind=host、向きが逆）・公開（bind=host、全コンテナのポートを避けて選ぶ、眠らせても外さない）\n- 移す（1つに1つを外す・動いているものは中で数える）・閉じたら空く・眠らせる（コンテナを止めるだけ）・資源の画面（lxc.payload.user-<uid>_<名前> を読む、上限に当たった知らせも）\n- port_isolation は測った結果に従う\n- ほかの節の書き分け（「1つに1つ」等は machine の話と明記）\n\n## 経緯（2026-10-20）\nsakutei開発（containers の実行場所 baremetal）で、Module の BANTO_HOST_MCP_URL が VM 側の 127.0.0.1 のトンネル番号のままコンテナの中に渡り、Vault の値・Repositories・Backlog の push が全部 fetch failed になった（コンテナは自分のネットワーク名前空間を持つ）。ユーザーの指示で #369 全体を一度に作る。作業は .worktrees/containers-paths（fork/containers-paths）。",
       "doneWhen": "ストーリー #364 の完了条件を実機（banto-dev-vm）で満たす。片方のコンテナからもう片方の中継の口に届かないことを確かめる。単体テスト（偽の RunIncus）で道の張り外し",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "d913ed74-625a-402d-8fa7-feafcadc84d8"
+        }
+      ],
       "createdAt": "2026-10-17T00:44:57.917Z",
-      "updatedAt": "2026-10-17T00:44:57.917Z",
+      "updatedAt": "2026-10-20T09:21:55.010Z",
       "closedAt": null,
       "extra": {}
     },
