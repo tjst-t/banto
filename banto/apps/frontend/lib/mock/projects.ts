@@ -14,6 +14,10 @@ import {
   getBackendConfig,
   closeRealProject,
   reopenRealProject,
+  createRealChat,
+  promoteRealChat,
+  sendRealThreadMessage,
+  type RealProject,
   renameRealProject,
   setRealProjectOrder,
   assignRealProjectGroup,
@@ -38,18 +42,62 @@ export function getActiveProjects(): readonly MockProject[] {
   return projects.filter((p) => p.status === "active");
 }
 
-/** 開いていて起きている Project（サイドバーのグループ・レールに並ぶもの） */
+/**
+ * **チャットか**（v4-frontend.md §6.53）。チャットは中身は普通の Project だが、画面ではサイドバーの「チャット」にだけ並ぶ
+ * ——下の「Project の一覧」の口（起きている・眠っている・閉じた）には入れない
+ */
+export function isChat(p: MockProject): boolean {
+  return p.kind === "chat";
+}
+
+/** 開いていて起きている Project（サイドバーのグループ・レールに並ぶもの）。チャットは入れない */
 export function getAwakeProjects(): readonly MockProject[] {
-  return projects.filter((p) => p.status === "active" && !p.sleep);
+  return projects.filter((p) => p.status === "active" && !p.sleep && !isChat(p));
 }
 
-/** 眠っている Project（開いているもの）。並びは host の並び（v4-frontend.md §6.43「スリープ中」） */
+/** 眠っている Project（開いているもの）。並びは host の並び（v4-frontend.md §6.43「スリープ中」）。チャットは入れない */
 export function getSleepingProjects(): readonly MockProject[] {
-  return projects.filter((p) => p.status === "active" && p.sleep);
+  return projects.filter((p) => p.status === "active" && p.sleep && !isChat(p));
 }
 
+/** 閉じた Project（履歴）。閉じたチャットは「閉じたチャット」の小窓に分ける */
 export function getClosedProjects(): readonly MockProject[] {
-  return projects.filter((p) => p.status === "closed");
+  return projects.filter((p) => p.status === "closed" && !isChat(p));
+}
+
+/** 新しい順（作った時刻。知らなければ後ろ） */
+function newestFirst(a: MockProject, b: MockProject): number {
+  return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+}
+
+/**
+ * **サイドバーの「チャット」**（v4-frontend.md §6.53）。開いているチャット（眠っているものも——行の印が月になるだけで、
+ * スリープ中の欄へは移さない）。新しいものから
+ */
+export function getChatProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "active" && isChat(p)).sort(newestFirst);
+}
+
+/** 閉じたチャット（「閉じたチャット」の小窓）。新しいものから */
+export function getClosedChats(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "closed" && isChat(p)).sort(newestFirst);
+}
+
+/** 題を付けるまでの仮の名前（host の `NEW_CHAT_NAME`）。この名前のチャットは「題を考えています…」と出す */
+export const NEW_CHAT_NAME = "新しいチャット";
+
+/** 題を考えている途中か（host が最初のターンのあとで題を付ける。付くまでは仮の名前のまま） */
+export function isChatTitling(p: MockProject): boolean {
+  return isChat(p) && p.name === NEW_CHAT_NAME;
+}
+
+/** host の記録のうち、チャットの印と作った時刻（写すときに添える） */
+function chatFieldsOf(rp: RealProject): Pick<MockProject, "kind" | "prototyping" | "createdAt"> {
+  return {
+    ...(rp.kind === "chat" ? { kind: "chat" as const } : {}),
+    ...(rp.prototyping ? { prototyping: true as const } : {}),
+    createdAt: rp.createdAt,
+  };
 }
 
 /** 見つからない場合、デモの先頭Projectへの暗黙フォールバックはしない
@@ -222,7 +270,10 @@ export async function syncRealProjects(): Promise<void> {
     else delete next.idle;
     if (rp.privileged) next.privileged = true;
     else delete next.privileged;
-    return next;
+    // チャットの印は「Project にする」で外れ、試作は始めると立つ（§6.53）
+    delete next.kind;
+    delete next.prototyping;
+    return { ...next, ...chatFieldsOf(rp) };
   });
   // host に無いもの（ありえないが）は元の場所の順で後ろへ
   const rank = (p: MockProject) => byId.get(p.id)?.i ?? Number.MAX_SAFE_INTEGER;
@@ -326,6 +377,7 @@ export async function createRealProject(input: NewProjectInput): Promise<MockPro
     status: realProject.status,
     real: true,
     ...(realProject.runtime ? { runtime: realProject.runtime } : {}),
+    ...chatFieldsOf(realProject),
   };
   // 作った知らせ（projects.changed）で一覧を読み直した側が、先に足していることがある——二重にしない
   projects = [...projects.filter((p) => p.id !== project.id), project];
@@ -400,6 +452,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       ...(rp.partlyAwake ? { partlyAwake: rp.partlyAwake } : {}),
       ...(rp.idle ? { idle: rp.idle } : {}),
       ...(rp.privileged ? { privileged: true as const } : {}),
+      ...chatFieldsOf(rp),
     };
     projects = [...projects, project];
     // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。
@@ -496,4 +549,68 @@ export async function reopenProject(id: string): Promise<void> {
   if (project.real) await reopenRealProject(id);
   projects = projects.map((p) => (p.id === id ? { ...p, status: "active", closedAt: undefined } : p));
   notifyMockStoreChange();
+}
+
+/**
+ * **新しいチャットを最初の書き込みで始める**（追加・2026-10-21、アーキ仕様 §2.2「始め方——最初の書き込みで作る」）。
+ * 新しいチャットの画面を開いただけでは何も作らない——送ったここで初めて作り、同じ書き込みを最初のターンとして送る。
+ * 名前・根は host が決める。返すのは作ったチャット。
+ *
+ * 送れなかったときは `{ project, sendError }`——チャットはもうできているので消さず、書き込みは呼んだ側が入力欄へ戻す
+ * （黙って捨てない、規則2）
+ */
+export async function startChat(text: string): Promise<{ project: MockProject; sendError?: unknown }> {
+  const realProject = await createRealChat();
+  const realThread = await createRealBaseThread(realProject.id);
+  const project: MockProject = {
+    id: realProject.id,
+    name: realProject.name,
+    initial: realProject.name.slice(0, 1),
+    baseThreadId: realThread.id,
+    basePath: realProject.root,
+    status: realProject.status,
+    real: true,
+    ...chatFieldsOf(realProject),
+  };
+  projects = [...projects.filter((p) => p.id !== project.id), project];
+  registerRealThread(realThread.id, realProject.id, realProject.name, realThread.messages, realThread.markers, realThread.usage);
+  notifyMockStoreChange();
+  try {
+    // host は受け付けたところで最後まで走らせる。開いた会話には turn.started で最新が出る
+    await sendRealThreadMessage(realThread.id, text);
+  } catch (err) {
+    return { project, sendError: err };
+  }
+  return { project };
+}
+
+/** 「Project にする」で決めること（v4-frontend.md §6.53）。`folder` があれば根を置き場の下のその名前へ移す */
+export interface PromoteChatInput {
+  name: string;
+  groupId: string | null;
+  folder?: string;
+}
+
+/**
+ * **チャットを Project にする**（追加・2026-10-21、アーキ仕様 §2.2「Project にする」）。先に host へ書き（断られたら理由を
+ * 投げる）、返った記録で手元を直す——チャットの印が外れ、名前・根・グループが替わる。並びは host に合わせる
+ */
+export async function promoteChat(projectId: string, input: PromoteChatInput): Promise<MockProject> {
+  const promoted = await promoteRealChat(projectId, {
+    name: input.name,
+    groupId: input.groupId,
+    ...(input.folder ? { folder: input.folder } : {}),
+  });
+  projects = projects.map((p) => {
+    if (p.id !== projectId) return p;
+    const next: MockProject = { ...p, name: promoted.name, initial: promoted.name.slice(0, 1), basePath: promoted.root };
+    delete next.kind;
+    delete next.prototyping;
+    if (promoted.groupId) next.groupId = promoted.groupId;
+    else delete next.groupId;
+    return next;
+  });
+  notifyMockStoreChange();
+  await syncRealProjects();
+  return getProject(projectId);
 }

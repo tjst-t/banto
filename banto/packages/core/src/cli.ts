@@ -3314,6 +3314,9 @@ async function main(): Promise<void> {
   if (bootstrap.testOnlyReadOnlyThreads) {
     console.warn("[host] **試験が読むだけの印を付けた会話を立てられます**（試験用、config.json の testOnlyReadOnlyThreads）");
   }
+  if (bootstrap.testOnlyChatsDir) {
+    console.warn(`[host] **チャットの置き場を試験の置き場 ${bootstrap.testOnlyChatsDir} にしています**（試験用、config.json の testOnlyChatsDir）`);
+  }
   if (bootstrap.testOnlyIdleCheck) {
     console.warn("[host] **しばらく開いていない Project の時計を、試験が好きな時刻で回せます**（試験用、config.json の testOnlyIdleCheck）");
   }
@@ -3340,6 +3343,7 @@ async function main(): Promise<void> {
   const app = createApp({
     warmModelCatalog: true,
     chatIdle,
+    ...(bootstrap.testOnlyChatsDir ? { chatsDir: bootstrap.testOnlyChatsDir } : {}),
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
     // **会話の本体も Claude のログインの中継を通す**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 2.）。
     // 住所は host の loopback——中継は本体用の合言葉をそこからだけ受ける

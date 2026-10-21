@@ -21,6 +21,7 @@ import {
   RELEASE_DIR,
   SELF_UPDATE_DIR,
   SELF_UPDATE_GITHUB_URL,
+  CHATS_DIR,
 } from "./config.ts";
 import { removeTree } from "./remove-tree.ts";
 
@@ -65,6 +66,8 @@ export default function globalSetup(): void {
         testOnlyIdleCheck: true,
         // 試験だけ：読むだけの印を付けた会話を立てる口（read-only-runs.spec.ts。見回りがまだ無いので試験が作る）
         testOnlyReadOnlyThreads: true,
+        // 試験だけ：チャットの置き場（chat.spec.ts。人の ~/banto/chats に作らない）
+        testOnlyChatsDir: CHATS_DIR,
       },
       null,
       2,

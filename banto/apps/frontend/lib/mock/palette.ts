@@ -1,6 +1,7 @@
 import {
   FolderGit2,
   GitFork,
+  MessageCircle,
   Inbox,
   MessageSquare,
   Rocket,
@@ -10,7 +11,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { getActiveProjects, getProject } from "./projects";
+import { getActiveProjects, getProject, isChat } from "./projects";
 import { getThread, getThreadsForProject } from "./threads";
 import { getRealJudgments } from "../backend/real-inbox";
 import { getRealLaunchers } from "../backend/real-launchers";
@@ -24,7 +25,7 @@ import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "../feature-flags";
 // モックなので導出元はすべて静的な配列だが、構造は本実装と同じにする：
 // パレット専用のデータストアを新しく作らない。
 
-export type PaletteGroupKind = "project" | "thread" | "inbox" | "launcher" | "resource" | "operation";
+export type PaletteGroupKind = "project" | "chat" | "thread" | "inbox" | "launcher" | "resource" | "operation";
 
 export interface PaletteItem {
   id: string;
@@ -80,7 +81,9 @@ export function buildPaletteGroups(
 
   // Project / Thread ——banto 全体（Project を切り替える手段なので、§6.3）。眠っている Project も出し、名前の後ろに
   // 「スリープ中」（§6.43）。選べばその画面が開き、開いた画面の `modules/prepare` が起こす
-  const projectItems: PaletteItem[] = getActiveProjects()
+  // **チャットは Project の欄に出さない**——「チャット」の欄に分ける（v4-frontend.md §6.53）
+  const projects = getActiveProjects().filter((p) => !isChat(p));
+  const projectItems: PaletteItem[] = projects
     .filter((p) => q === "" || p.name.toLowerCase().includes(q))
     .map((p) => ({
       id: `project:${p.id}`,
@@ -92,7 +95,20 @@ export function buildPaletteGroups(
     }));
   if (projectItems.length > 0) groups.push({ kind: "project", label: "Project", items: projectItems });
 
-  const threadItems: PaletteItem[] = getActiveProjects()
+  const chatItems: PaletteItem[] = getActiveProjects()
+    .filter((p) => isChat(p) && (q === "" || p.name.toLowerCase().includes(q)))
+    .map((p) => ({
+      id: `chat:${p.id}`,
+      title: p.name,
+      subtitle: "チャット",
+      icon: MessageCircle,
+      href: `/p/${p.id}`,
+      kind: "chat",
+    }));
+  if (chatItems.length > 0) groups.push({ kind: "chat", label: "チャット", items: chatItems });
+
+  // チャットの会話（Base Thread）は上の「チャット」の欄で引ける——ここに同じものを2つ出さない
+  const threadItems: PaletteItem[] = projects
     .flatMap((p) => getThreadsForProject(p.id).map((t) => ({ thread: t, project: p })))
     .filter(({ thread }) => q === "" || thread.title.toLowerCase().includes(q))
     .map(({ thread, project }) => ({
