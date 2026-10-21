@@ -12524,7 +12524,7 @@
       "number": 519,
       "kind": "task",
       "title": "配る版の install.sh と更新（目録を見て落とす・確かめる・展開する）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [
         "distribute-workflow"
@@ -12538,7 +12538,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:39:23.533Z",
       "closedAt": null,
       "extra": {}
     },
