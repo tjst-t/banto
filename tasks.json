@@ -11979,7 +11979,7 @@
       "number": 497,
       "kind": "task",
       "title": "core：小さいモデルを1回呼ぶ口（道具なし・本体のログイン）——チャットの題に使う",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [],
       "milestone": null,
@@ -11991,7 +11991,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:24.815Z",
+      "updatedAt": "2026-10-21T06:17:38.404Z",
       "closedAt": null,
       "extra": {}
     },
