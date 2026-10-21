@@ -44,7 +44,7 @@ import {
   rmSync,
 } from "node:fs";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Transform, type TransformCallback } from "node:stream";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import { rootIsOnThisMachine, usesHostContainer } from "./runtime-kind.js";
@@ -1558,6 +1558,65 @@ export class ProjectMover {
       join(this.deps.claudeConfigDir, "projects", newName),
       sessionIdsOf(this.deps.projectThread.listThreadsForProject(project.id)),
     );
+  }
+
+  // ── 同じ機械の中で根を付け替える ─────────────────────────────────────────
+
+  /**
+   * **同じ機械の中で根を付け替える**（チャットを Project にするときの「フォルダを置き場へ移す」、アーキ仕様 §2.2「チャット」）。
+   * 別の実行場所へ移すときと同じ手順のうち、同じ機械で要るものだけを使う：動いているものがあれば断る → Module を畳んで
+   * コンテナを止める → フォルダを移す（同じ機械なので写さずに rename）→ `git worktree repair` → Claude の会話の記録を写す
+   * （元は残す）→ 根を替える（`project.root_changed`）。移す先は無いこと（banto が作る）。途中で失敗したらフォルダを戻す
+   */
+  async moveRootOnThisMachine(projectId: string, newRoot: string): Promise<{ project: ProjectState; records: { copied: number; setAside: number; note?: string } }> {
+    const project = this.mustGetProject(projectId);
+    if (!usesHostContainer(project.runtime)) throw new RuntimeMoveError(409, "フォルダを移せるのは、この機械のコンテナで動く Project だけです");
+    if (project.move) throw new RuntimeMoveError(409, "いま別の実行場所へ移しています");
+    const running = await this.running(project);
+    if (running.length > 0) {
+      throw new RuntimeMoveError(409, `動いているものがあるので移せません：${running.map((r) => r.label).join("／")}`, { running });
+    }
+    if (existsSync(newRoot) || isLink(newRoot)) throw new RuntimeMoveError(409, `移す先 ${newRoot} はもうあります`);
+    mkdirSync(dirname(newRoot), { recursive: true });
+
+    // コンテナは根を見せているので、移す前に畳んで止める（次に Module を繋ぐとき新しい根で作り直す）
+    await this.deps.releaseModules(projectId);
+    // 畳んでいる間に始まったもの（ターン等）があれば移さない。ここから rename までは待たない——間にターンは始まらない
+    const again = this.deps.hostActivity(projectId);
+    if (again.length > 0) throw new RuntimeMoveError(409, `動いているものがあるので移せません：${again.map((r) => r.label).join("／")}`, { running: again });
+    const from = this.mustGetProject(projectId);
+    const oldCwd = this.deps.projectThread.runnerCwd(from);
+    renameSync(from.root, newRoot);
+    try {
+      const moved = realpathSync(newRoot);
+      await this.repairWorktrees(this.hostSide(), from.root, moved);
+      const newCwd = this.deps.projectThread.runnerCwd({ ...from, root: moved });
+      const oldName = claudeProjectDirName(oldCwd);
+      const newName = claudeProjectDirName(newCwd);
+      const records =
+        oldName && newName
+          ? copyClaudeRecordFiles(
+              join(this.deps.claudeConfigDir, "projects", oldName),
+              join(this.deps.claudeConfigDir, "projects", newName),
+              sessionIdsOf(this.deps.projectThread.listThreadsForProject(projectId)),
+            )
+          : { copied: 0, setAside: 0, note: "（作業ディレクトリのパスが長いので、Claude の会話の記録は写していません。続かなければ Clear してください）" };
+      const updated = await this.deps.projectThread.setProjectRoot(projectId, moved);
+      this.log(
+        `[host] Project ${projectId} のフォルダを ${from.root} から ${moved} へ移しました（会話の記録 ${records.copied} 件、うち写す先の古いものを退かせた ${records.setAside} 件）`,
+      );
+      return { project: updated, records };
+    } catch (err) {
+      try {
+        renameSync(newRoot, from.root);
+      } catch (backErr) {
+        throw new Error(
+          `フォルダを移したあとで失敗し（${err instanceof Error ? err.message : String(err)}）、元へ戻せませんでした` +
+            `（${backErr instanceof Error ? backErr.message : String(backErr)}）。フォルダは ${newRoot} にあり、根は ${from.root} のままです`,
+        );
+      }
+      throw err;
+    }
   }
 
   // ── 動いているもの ─────────────────────────────────────────────────────

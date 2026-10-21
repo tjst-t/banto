@@ -35,6 +35,7 @@ import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
   InvalidProjectGroupError,
+  NotChatProjectError,
   NotFoundError,
   ProjectGroupConflictError,
   RemoteProjectError,
@@ -106,7 +107,7 @@ import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-o
 import { listPatrolTools, readOnlyModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
-import { createChatProject } from "./chat-project.js";
+import { createChatProject, CHATS_DIR, promotedRootOf } from "./chat-project.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
 import { closeForkDroppedNote, composeForkInstruction, type ForkRequest } from "./fork-tool.js";
@@ -396,7 +397,7 @@ export interface AppDeps {
    */
   testOnlyReadOnlyThreads?: boolean;
   /** **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1）。無ければその口は 404 */
-  runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving">;
+  runtimeMove?: Pick<ProjectMover, "estimate" | "start" | "status" | "moving" | "moveRootOnThisMachine">;
   /**
    * **新しい Project の始め方の仕事**（追加・2026-10-20、v4-frontend.md §6.49）。別のサーバに「clone」「新しいリポジトリ」で
    * 作る。無ければ `start` を渡した作成は 501
@@ -2845,6 +2846,46 @@ export function createApp(deps: AppDeps) {
         const clients = (await deps.resolveModuleClientsForProject?.(prepareMatch[1]!)) ?? [];
         json(res, 200, { connected: clients.map((c) => c.name) });
         return;
+      }
+
+      // **チャットを Project にする**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。**人が押したときだけ**（AI は画面を
+      // 開かせるだけ）。確かめを全部済ませてから、フォルダを移す（断られうる）→ `project.promoted` → グループの順に書く
+      const promoteMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/promote$/);
+      if (promoteMatch && req.method === "POST") {
+        const projectId = promoteMatch[1]!;
+        try {
+          if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
+          const body = (await readJsonBody(req)) as { name?: unknown; groupId?: unknown; folder?: unknown };
+          const project = deps.projectThread.getProject(projectId);
+          if (!project) return json(res, 404, { error: "not found" });
+          if (project.kind !== "chat") return json(res, 409, { error: "この Project はチャットではありません" });
+          const name = typeof body.name === "string" ? body.name.trim() : "";
+          if (!name) return json(res, 400, { error: "name is required" });
+          if (name.length > 120) return json(res, 400, { error: "name is too long" });
+          if (body.groupId !== undefined && body.groupId !== null && typeof body.groupId !== "string") {
+            return json(res, 400, { error: "groupId は文字列か null で渡してください" });
+          }
+          const groupId = body.groupId as string | null | undefined;
+          if (typeof groupId === "string" && !deps.projectThread.getProjectGroup(groupId)) return json(res, 400, { error: `グループ ${groupId} はありません` });
+          let target: string | undefined;
+          if (body.folder !== undefined) {
+            const t = promotedRootOf(deps.chatsDir ?? CHATS_DIR, body.folder);
+            if ("error" in t) return json(res, 400, { error: t.error });
+            if (!deps.runtimeMove) return json(res, 501, { error: "この banto はフォルダを移せません" });
+            target = t.root;
+          }
+          if (target) await deps.runtimeMove!.moveRootOnThisMachine(projectId, target);
+          let promoted = await deps.projectThread.promoteProject(projectId, name);
+          if (groupId !== undefined) promoted = await deps.projectThread.assignProjectGroup(projectId, groupId);
+          return json(res, 200, promoted);
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
+          if (err instanceof NotChatProjectError) return json(res, 409, { error: err.message });
+          if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
       }
 
       // **Project を別の実行場所へ移す**（決定・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。
