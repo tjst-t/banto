@@ -10,6 +10,7 @@
 // 許す形を取れるように）。ファイルを書くのは `tee <ファイル>` に中身を標準入力で渡す。
 
 import type { IncusResult } from "@banto/container";
+import type { ProjectWokeCause } from "../project-thread/types.js";
 import type { ForwardingProbe, RuntimeCheck } from "./ssh.js";
 
 /**
@@ -172,6 +173,33 @@ export function commonFixes({ values: v, forwarding, mode, requiredTools }: Comm
     }
   }
   return fixes;
+}
+
+/**
+ * **Docker を入れてよいきっかけか**（`machine`、v4-security.md §1「足りないものは banto が入れる」の 5a.、Backlog #414）：人が
+ * 開いた（`opened`）・人が送った（`human`）ときだけ。自動化（`automation`）・届いたもの（`delivery`）で起きたときは入れない
+ */
+export function mayInstallDocker(cause: ProjectWokeCause): boolean {
+  return cause === "human" || cause === "opened";
+}
+
+/**
+ * **Docker を使えるようにするコマンド**（`machine`。使えていれば空）。無ければ docker.io を入れ（4. と同じ apt の手順）、
+ * dockerd を起こし、docker グループに入っていなければ足して、ユーザーの systemd を新しいグループで起こし直す（4.「グループを
+ * 替えたあとの繋ぎ直し」。その実行場所の Project は開いているその1つだけ）
+ */
+export function dockerFixCommands(v: Map<string, string>): RootCommand[] {
+  if (v.get("docker") === "1") return [];
+  const user = v.get("user") ?? "";
+  const uid = v.get("uid") ?? "";
+  const commands: RootCommand[] = [];
+  if (v.get("tool.docker") !== "1") commands.push(...aptPrelude(v), aptInstall(["docker.io"]));
+  commands.push({ args: ["systemctl", "enable", "--now", "docker.service"] });
+  if (user && !(v.get("groups") ?? "").split(/\s+/).includes("docker")) {
+    commands.push({ args: ["usermod", "-aG", "docker", user] });
+    if (/^\d+$/.test(uid)) commands.push({ args: ["systemctl", "restart", `user@${uid}.service`] });
+  }
+  return commands;
 }
 
 /** sudo の後ろの引数を、人が打つ1行にする */

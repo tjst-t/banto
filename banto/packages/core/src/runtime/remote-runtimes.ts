@@ -34,6 +34,7 @@ import {
   createRemoteDirectory,
   removeRemoteEmptyDirectory,
   listRemoteDirectories,
+  installDockerOnMachine,
   probePrerequisites,
   realpathRemote,
   remoteRootIncludesDataRoot,
@@ -50,7 +51,8 @@ import {
   type SshResult,
 } from "./ssh.js";
 import { ContainersPrepareError, probeContainersPrerequisites, sshVmRun, vmAccessOf, type VmAccess } from "./containers-host.js";
-import { AutoFixError, ranSuffix } from "./host-autoprep.js";
+import { AutoFixError, ranSuffix, type RanCommand } from "./host-autoprep.js";
+import type { ProjectWokeCause } from "../project-thread/types.js";
 
 /** 画面に返す失敗（状態番号つき）。理由はそのまま人に見せる */
 export class RemoteRuntimeError extends Error {
@@ -457,6 +459,29 @@ export class RemoteRuntimes {
       if (err instanceof ContainersPrepareError || err instanceof AutoFixError) throw new RemoteRuntimeError(502, `${err.message}${ranSuffix(err.ran)}`);
       throw err;
     }
+  }
+
+  /**
+   * **「中で Docker を使う」Project を人が作る・開くときに、Docker を入れる**（`machine` だけ。v4-security.md §1「足りないものは
+   * banto が入れる」の 5a.、Backlog #414）。作成・再開・確かめ直しと同じ鍵で1本ずつ（apt の lock を取り合わない）。入れなかった
+   * （使えている・きっかけが自動・sudo -n が通らない）なら空。途中で落ちたら、それまでに行ったことを添えて投げる
+   */
+  async installDocker(name: string, cause: ProjectWokeCause): Promise<RanCommand[]> {
+    const r = this.mustGetUsable(name);
+    if (r.mode === "containers") return [];
+    return this.exclusive(name, () =>
+      this.connect(r, async (files) => {
+        const log = (line: string) => console.log(`[runtime ${r.name}] sudo: ${line}`);
+        try {
+          const { ran, skipped } = await installDockerOnMachine(r, files, r.hostKey.type, r.dataRoot, { cause, log });
+          if (skipped) console.log(`[runtime ${r.name}] Docker は入れません（${skipped}）`);
+          return ran;
+        } catch (err) {
+          if (err instanceof AutoFixError) throw new RemoteRuntimeError(502, `${err.message}${ranSuffix(err.ran)}`);
+          throw err;
+        }
+      }),
+    );
   }
 
   /** 繋いだときに確かめた前提を記録する（設定の一覧に出す） */

@@ -44,3 +44,21 @@
 
 - パスワードの要る sudo（画面で1回入れて `sudo -S`）。今回は対応しない。
 - 登録・確かめ直しを裏で進め、行に進み具合を出す形。
+
+## 2026-10-21 「中で Docker を使う」Project を人が開くときの Docker（Backlog #414、仕様 5a.）
+
+- **人のきっかけの見分け方**：新しい印は作らず、眠っている Project を起こす理由 `ProjectWokeCause` をそのまま使った。`opened`
+  （画面が開いた `modules/prepare`）と `human`（人が送ったターン）だけで入れ、`automation`・`delivery` では入れない。人が作った
+  Project の始め方（clone・init）で Shell を起こすところも `human` として呼ぶ。`modules/prepare` を機械の合言葉で叩いた場合も `opened`
+  になる——今の「起こす理由」の分け方と同じ扱いにした（人のセッションかでさらに絞るかは決めていない）。
+- **どこで入れるか**：Module を起こすところ（`ensureConnection` の `refuseUnusable`）には入れなかった。自動化で一度断られると Module の
+  試し直しの間（最長5分）が残り、人が開いても Module を起こしに来ない——入れる場所に届かない。そこで人の道（`modules/prepare`・
+  人のターン・始め方の Shell）から Module を起こす前に呼ぶ口（`prepareProjectForPerson`）を足し、入れたらその Project の Module の
+  試し直しの間を忘れる。
+- **入れたあと接続を閉じる**：グループを替えたので、その Project の多重化した SSH の親（古いグループのまま）を閉じる。次に繋ぐときの
+  確かめで Docker を見直し、その確かめの一覧の最後に「banto が向こうで行ったこと」を出す（次に繋いだときの確かめで消える——
+  登録・確かめ直しと同じ）。先に一覧に書くと、直後の繋ぎ直しの確かめで消えてしまう。
+- **`systemctl enable --now docker.service` も打つ**：docker.io の postinst は起こすが、入っているのに dockerd が止まっているときにも
+  効く（入っていれば何もしない）。
+- **失敗したとき**：Module を起こすところで今どおり「中で Docker を使う」の文で断り、その後ろに「banto が入れようとしましたが、
+  できませんでした：<どのコマンドが何と言ったか・それまでに行ったこと>」を添える（入れられたら消す）。

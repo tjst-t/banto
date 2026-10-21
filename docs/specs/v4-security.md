@@ -561,7 +561,8 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 
 1. **いつ**：登録（`register`）と、人が押した「確かめ直す」（`recheck`。鍵を覚え直したあとの確かめ直し、鍵の置き場を移したあとの
    繋ぎ直しも）のときだけ。押した時点で向こうの様子を引き直し、足りないものを入れる。登録の前の確かめ（`check`）は何も変えない。
-   繋ぐたび・Module を起こすときは今どおり何も変えない（`containers` の繋ぐたびの確かめは、準備が崩れていないかを root で
+   繋ぐたび・Module を起こすときは今どおり何も変えない（例外は下の 5a.——`machine` で「中で Docker を使う」Project を人が作る・
+   開くときの Docker。`containers` の繋ぐたびの確かめは、準備が崩れていないかを root で
    **読むだけ**は行う——`sudo -n true`・置き場と初期化の有無。変える sudo はしない）。**同じ実行場所の準備は1本ずつ**（Project の
    作成・再開・移すと同じ鍵で並ぶ——apt の lock を取り合わない。長い準備の間、その実行場所の再開・移すは待つ）
 2. **何で**：SSH のユーザーの `sudo -n`。sudo は `/usr/bin/sudo` で呼び、後ろのコマンドは名前で書いて sudo の `secure_path` で
@@ -620,14 +621,23 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
 5. **入れないもの**（今どおり打つコマンドを見せて断る・注意する）：CPU の種類と libc、ログインしたときに何か出す（人の
    `~/.bashrc` 等——banto は人の設定ファイルを書き換えない。この2つが断られていれば、ほかの項目も入れない）、Docker（登録では
    入れない——下の 5a.）、置き場を作るディスクの空きが足りない、apt の無い OS・Zabbly の無い Ubuntu の版、sudo -n が通らない
-5a. **Docker は使う Project ができたときだけ入れる**（決定・2026-10-20、ユーザー。未実装、Backlog に積んだ）：使わない VM で dockerd が
+5a. **Docker は使う Project ができたときだけ入れる**（決定・2026-10-20、ユーザー。`machine` は実装・2026-10-21、Backlog #414）：使わない VM で dockerd が
    動き続けて資源を使わないよう、登録では入れない。**`machine`**：その実行場所で「中で Docker を使う」を入れた Project を作る・開く
    とき（人が押した・人が送ったで起きるとき——自動化や届いたもので起きたときは入れず、今どおり理由を添えて断る）に、Docker が無い・
    このユーザーで使えないなら、`sudo -n` で `apt-get install docker.io`（4. と同じ apt の手順）と `usermod -aG docker <ユーザー>`、
    グループを替えたらユーザーの systemd を起こし直す（4. の「グループを替えたあとの繋ぎ直し」と同じ。その実行場所の Project はその
    1つだけなので、開く途中なら起こし直してよい）。`docker` グループは実質 root だが、`sudo -n` が通る相手なら AI はもともと root に
    なれる（9.）。`sudo -n` が通らなければ今どおり打つコマンドを添えて断る。入れたことは Project を開く画面と受信箱には出さず、
-   banto のログと実行場所の確かめの一覧（「banto が向こうで行ったこと」）に残す。**`containers`**：Docker は Project のコンテナの
+   banto のログと実行場所の確かめの一覧（「banto が向こうで行ったこと」）に残す。
+   **実装の形**（2026-10-21、#414）：人のきっかけは Project を起こす理由（`ProjectWokeCause`）で決める——`opened`（画面が開いた
+   `modules/prepare`）と `human`（人が送ったターン・人が作った Project の始め方で Shell を起こすとき）だけ。`automation`・`delivery`
+   では入れない。Module を起こす前に呼び（`prepareProjectForPerson`→`RemoteSshRuntime.installDockerForPerson`、前に繋いだときの
+   確かめで Docker が使えていれば繋がない）、作成・再開・確かめ直しと同じ鍵で1本ずつ、`ssh.ts` の `installDockerOnMachine` が
+   様子を引き直してから打つ：docker が無ければ 4. の apt の手順で `docker.io` → `systemctl enable --now docker.service` →
+   docker グループに居なければ `usermod -aG docker <ユーザー>` と `systemctl restart user@<uid>.service`。グループを替えたので
+   その Project の接続（多重化した SSH の親）を閉じ、Module の試し直しの間を忘れる——次に繋ぐときの確かめで Docker を見直し、
+   その確かめの一覧の最後に「banto が向こうで行ったこと」を出す。入れられなかったら（apt の失敗）、その理由を「中で Docker を
+   使う」で断る文に添える。**`containers`**：Docker は Project のコンテナの
    中で動く（VM には入れない）——コンテナを作るところ（Backlog #368）で、その Project が「中で Docker を使う」ならコンテナに入れる
 6. **順番**：`machine` は道具 → 置き場の根 → sshd → linger とユーザーの systemd を続けて打ち、終わってから1回だけ引き直す（互いに
    独立なので）。`containers` は共通の項目（道具・置き場の根・sshd）を打って引き直したあと、Incus → グループ（incus-admin を外す・

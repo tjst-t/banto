@@ -83,6 +83,8 @@ import {
 } from "./remote-containers.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
 import { withMissingBridgeHint } from "./containers-host.js";
+import { mayInstallDocker, preparedCheck, type RanCommand } from "./host-autoprep.js";
+import type { ProjectWokeCause } from "../project-thread/types.js";
 import type { RemoteRuntimes } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 import { RuntimeStopError, type PlaceAddress, type PreparedPlace, type RuntimePlace, type RuntimeProcess } from "./runtime.js";
@@ -390,6 +392,10 @@ export class RemoteSshRuntime {
   private readonly releasedPorts = new Map<string, Map<number, number>>();
   /** エージェントの本体を送っているもの（（実行場所・フォルダの名前）ごとに1本。同時の頼みは待たせる） */
   private readonly agentBinarySends = new SharedProgressTasks<string>();
+  /** 人が開いたときに Docker を入れるため banto が向こうで行ったこと（実行場所ごと。次に繋いだときの確かめの一覧の最後に出す） */
+  private readonly dockerPrepared = new Map<string, RanCommand[]>();
+  /** Docker を入れられなかった理由（実行場所ごと。「中で Docker を使う」で断るときに添える。入れられたら消す） */
+  private readonly dockerFailures = new Map<string, string>();
 
   constructor(private readonly opts: RemoteSshRuntimeOptions) {
     this.log = opts.log ?? ((line) => console.log(line));
@@ -771,11 +777,45 @@ export class RemoteSshRuntime {
   private refuseUnusable(conn: Connection, place: RuntimePlace): void {
     const docker = conn.checks.find((c) => c.id === "docker");
     if (place.nesting && docker && docker.status !== "ok") {
+      const failure = this.dockerFailures.get(conn.runtimeName);
       throw new Error(
         `別のサーバ「${conn.runtimeName}」で Module を起こせません——この Project は「中で Docker を使う」設定ですが、` +
-          `${docker.detail ?? "Docker が使えません。"}（直し方：${docker.fix ?? "向こうで Docker を入れる"}）`,
+          `${docker.detail ?? "Docker が使えません。"}（直し方：${docker.fix ?? "向こうで Docker を入れる"}）` +
+          (failure ? `\nbanto が入れようとしましたが、できませんでした：${failure}` : ""),
       );
     }
+  }
+
+  /**
+   * **「中で Docker を使う」Project を人が作る・開くときに、Docker を入れる**（`machine`。v4-security.md §1「足りないものは banto が
+   * 入れる」の 5a.、Backlog #414）。Module を起こす前に呼ぶ。人が開いた・送ったとき（`cause`）だけで、自動化・届いたもので起きた
+   * ときは何もしない（Module を起こすところで今どおり断る）。前の確かめで Docker が使えていれば繋がない。入れたら（グループを
+   * 替えたら）その Project の接続を閉じる——多重化した SSH の親は古いグループのままで、次に繋ぐときの確かめで Docker を見直す。
+   * **投げない**：入れられなければログに残し、断るときの文に理由を添える。入れたら true
+   */
+  async installDockerForPerson(projectId: string, nesting: boolean, cause: ProjectWokeCause): Promise<boolean> {
+    const name = this.opts.remoteNameOf(projectId);
+    if (!name || !nesting || !mayInstallDocker(cause)) return false;
+    const key = remoteConnectionKey(name, projectId);
+    if (this.modeOf(name, key) === "containers") return false;
+    const live = this.connections.get(key);
+    const docker = (live?.alive ? live.checks : this.opts.runtimes.get(name)?.checks)?.find((c) => c.id === "docker");
+    if (docker?.status === "ok") return false;
+    let ran: RanCommand[];
+    try {
+      ran = await this.opts.runtimes.installDocker(name, cause);
+      this.dockerFailures.delete(name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.dockerFailures.set(name, message);
+      this.log(`[host] 別のサーバ「${name}」に Docker を入れられませんでした（Project ${projectId}）：${message}`);
+      return false;
+    }
+    if (ran.length === 0) return false;
+    this.dockerPrepared.set(name, [...(this.dockerPrepared.get(name) ?? []), ...ran]);
+    this.log(`[host] 別のサーバ「${name}」に Docker を使えるようにしました（Project ${projectId} を人が開いた）：${ran.map((r) => r.display).join(" ／ ")}`);
+    await this.closeConnectionOf(key);
+    return true;
   }
 
   /**
@@ -807,7 +847,10 @@ export class RemoteSshRuntime {
       //    確かめるだけで、sudo しない）
       const { checks, result } = await this.opts.runtimes.probeChecks(r, files, r.hostKey.type, "verify");
       if (checks.length === 0) throw new SshCommandError(`${r.user}@${r.host} に繋げませんでした`, result);
-      await this.opts.runtimes.recordChecks(name, checks);
+      // 人が開いたときに Docker を入れたなら、確かめの一覧の最後に「banto が向こうで行ったこと」（次に繋いだときの確かめで消える）
+      const prepared = this.dockerPrepared.get(name);
+      this.dockerPrepared.delete(name);
+      await this.opts.runtimes.recordChecks(name, prepared ? [...checks, preparedCheck(prepared)] : checks);
       const failed = checks.filter((c) => c.status === "fail");
       if (failed.length > 0) {
         throw new Error(
