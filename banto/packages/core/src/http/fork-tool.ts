@@ -10,7 +10,7 @@
 //   人もサイドバーから Fork の Fork を作れる。連鎖は届けもののホップ（maxHop）と1ターン5本で止まる
 // - 承認は特別扱いしない——その Thread の承認モードに従う（ユーザー決定・案A）
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { READ_ONLY_CORE_TOOLS } from "../relay/read-only.js";
+import { readOnlyCoreToolsOf, type ReadOnlyTurnShape } from "../relay/read-only.js";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
@@ -272,6 +272,11 @@ export function createForkMcpServer(
    * tool を見せない（見回りの Fork は毎回まっさらなので、一覧が変わってもキャッシュを引き継ぐ相手がいない）
    */
   patrol?: { notify(input: Partial<NotifyInput>): Promise<NotifyResult> },
+  /**
+   * **読むだけの回の形**（追加・2026-10-21、アーキ仕様 §4.4「見回りが消えたあとの Fork」）。見回りの自動化が消えたあとの見回りの
+   * Fork なら、読むだけの tool に `close_fork` だけを足す
+   */
+  readOnlyShape: ReadOnlyTurnShape = {},
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -584,7 +589,7 @@ export function createForkMcpServer(
         },
       ),
   ];
-  const readOnlyNames = READ_ONLY_CORE_TOOLS[FORK_SERVER_NAME] ?? [];
+  const readOnlyNames = readOnlyCoreToolsOf(FORK_SERVER_NAME, readOnlyShape);
   return createSdkMcpServer({
     name: FORK_SERVER_NAME,
     // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）

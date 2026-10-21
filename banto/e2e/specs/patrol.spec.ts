@@ -283,7 +283,11 @@ test("見回り：notify で気づきを出し、同じ key は出し直さず�
   await row2.getByTestId("automation-remove-confirm").click();
   await expect.poll(async () => (await automations()).length, { message: "見回りが消えない" }).toBe(0);
   await page.goto(`/p/${projectId}?fork=${forkId}`);
-  await expect(page.getByTestId("patrol-thread-band")).toBeVisible({ timeout: 30_000 });
+  // 見回りが消えたあとは、閉じることだけはできると添える（§6.47、追加・2026-10-21）
+  await expect(page.getByTestId("patrol-thread-band")).toHaveText(
+    "見回りは消えました。ここで頼んだことも読むだけで動きます（この会話を閉じることはできます）",
+    { timeout: 30_000 },
+  );
   const composer = page.getByPlaceholder("この Fork Thread に送る");
   const before = (await get<{ messages: Array<{ role: string }> }>(`/api/threads/${forkId}`)).messages.filter((m) => m.role === "assistant").length;
   await composer.fill(
@@ -297,6 +301,19 @@ test("見回り：notify で気づきを出し、同じ key は出し直さず�
   await expect(refused.last()).toContainText(REFUSAL);
   expect((await get<{ restriction?: string }>(`/api/threads/${forkId}`)).restriction).toBe("read-only");
   await expect(page.locator('[data-role="judgment-card"]')).toHaveCount(0);
+
+  // ---- 9. 見回りを消したあとの Fork は、自分の会話を閉じる close_fork だけは使える（アーキ仕様 §4.4、追加・2026-10-21） ----
+  const beforeClose = (await get<{ messages: Array<{ role: string }> }>(`/api/threads/${forkId}`)).messages.filter((m) => m.role === "assistant").length;
+  await composer.fill(
+    "この会話を閉じて。" +
+      fakeTurn({ tools: [{ server: "banto-thread", name: "close_fork", args: { reason: "見回りは消えた" } }], then: "閉じます。" }),
+  );
+  await composer.press("Enter");
+  await waitTurnEnded(page, forkId, beforeClose + 1, 60_000);
+  await expect
+    .poll(async () => (await get<{ status?: string }>(`/api/threads/${forkId}`)).status, { message: "見回りを消したあとの Fork が close_fork で閉じない" })
+    .toBe("closed");
+  expect((await get<{ restriction?: string }>(`/api/threads/${forkId}`)).restriction, "閉じても読むだけの印は残る").toBe("read-only");
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
   // 後の spec に受信箱を持ち越さない

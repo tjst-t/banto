@@ -21,6 +21,7 @@ import {
   READ_ONLY_REFUSAL,
   readOnlyCoreToolNames,
   readOnlyHookAllows,
+  type ReadOnlyTurnShape,
 } from "../relay/read-only.js";
 import { createMemoryMcpServer, REVISE_MEMORY_TOOL_NAME } from "./memory-tool.js";
 import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
@@ -617,6 +618,12 @@ async function* runThreadTurnInner(
     readOnly && deps.patrols?.patrolOf(input.threadId)
       ? { notify: (args: Parameters<Patrols["notify"]>[1]) => deps.patrols!.notify(input.threadId, args, patrolTurn) }
       : undefined;
+  // **見回りが消えたあとの見回りの Fork**（追加・2026-10-21、§4.4）：自分を閉じる `close_fork` だけ足す。見回りの印は見回りの Fork に
+  // しか付かないので、「読むだけで、届け先にしている見回りが無い」がそれ（一時停止の見回りは残っているので足さない）。見回りを
+  // 引く口が無い構成では足さない
+  const readOnlyShape: ReadOnlyTurnShape = {
+    orphanedPatrol: readOnly && deps.patrols !== undefined && !deps.patrols.patrolOf(input.threadId),
+  };
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -632,6 +639,7 @@ async function* runThreadTurnInner(
     deps.missions,
     deps.claudeUsage ? (threadId) => deps.claudeUsage!(thread.projectId, threadId) : undefined,
     patrolNotify,
+    readOnlyShape,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -752,7 +760,7 @@ async function* runThreadTurnInner(
         ? [
             ...READ_ONLY_BUILTIN_TOOLS,
             // `notify` は見回りの Fork のターンにだけ在る——無い回には載せない
-            ...readOnlyCoreToolNames().filter((name) => patrolNotify || name !== `mcp__banto-thread__${NOTIFY_TOOL_NAME}`),
+            ...readOnlyCoreToolNames(readOnlyShape).filter((name) => patrolNotify || name !== `mcp__banto-thread__${NOTIFY_TOOL_NAME}`),
             ...readOnlyModuleTools,
           ]
         : [
@@ -774,7 +782,7 @@ async function* runThreadTurnInner(
         ? {
             builtinTools: READ_ONLY_BUILTIN_TOOLS,
             onPreToolUse: ({ toolName }: { toolName: string }) =>
-              readOnlyHookAllows(toolName, readOnlyModuleTools) ? undefined : READ_ONLY_REFUSAL,
+              readOnlyHookAllows(toolName, readOnlyModuleTools, readOnlyShape) ? undefined : READ_ONLY_REFUSAL,
             declineElicitations: true,
           }
         : idle

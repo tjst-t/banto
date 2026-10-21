@@ -36,6 +36,14 @@ export const READ_ONLY_CORE_TOOLS: Readonly<Record<string, readonly string[]>> =
   "banto-thread": ["list_threads", "list_automations", "claude_usage", "notify"],
 };
 
+/**
+ * **見回りが消えたあとの見回りの Fork にだけ足す core の tool**（決定・2026-10-21、ユーザー。アーキ仕様 §4.4「見回りが消えたあとの
+ * Fork」）。自分の会話を閉じるだけ——環境は変わらず、外へも運べず、会話と Memory は残る。ほかの書く tool は読むだけのまま
+ */
+export const ORPHANED_PATROL_CORE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  "banto-thread": ["close_fork"],
+};
+
 /** その会話の制限を引く口（`autoApproveFor` と同じ形）。制限が無ければ undefined */
 export type RestrictionFor = (projectId: string | undefined, threadId: string | undefined) => ThreadRestriction | undefined;
 
@@ -114,17 +122,28 @@ export function mayReadResourcesInReadOnly(input: { moduleName: string; bundled:
   return input.bundled || input.allowed.includes(patrolAllowedEntry(input.moduleName, PATROL_RESOURCES_ENTRY));
 }
 
+/** 読むだけの回の形。`orphanedPatrol` は「見回りの自動化が消えたあとの見回りの Fork」（一時停止は含まない） */
+export interface ReadOnlyTurnShape {
+  orphanedPatrol?: boolean;
+}
+
+/** その回で core のサーバに残す tool の名前（サーバごと） */
+export function readOnlyCoreToolsOf(server: string, shape: ReadOnlyTurnShape = {}): string[] {
+  return [...(READ_ONLY_CORE_TOOLS[server] ?? []), ...(shape.orphanedPatrol ? (ORPHANED_PATROL_CORE_TOOLS[server] ?? []) : [])];
+}
+
 /** core の tool（`mcp__<server>__<tool>` の形）のうち、読むだけの回に残すもの */
-export function readOnlyCoreToolNames(): string[] {
-  return Object.entries(READ_ONLY_CORE_TOOLS).flatMap(([server, tools]) => tools.map((t) => `mcp__${server}__${t}`));
+export function readOnlyCoreToolNames(shape: ReadOnlyTurnShape = {}): string[] {
+  const servers = new Set([...Object.keys(READ_ONLY_CORE_TOOLS), ...(shape.orphanedPatrol ? Object.keys(ORPHANED_PATROL_CORE_TOOLS) : [])]);
+  return [...servers].flatMap((server) => readOnlyCoreToolsOf(server, shape).map((t) => `mcp__${server}__${t}`));
 }
 
 /**
  * **PreToolUse の最後の網**：その名前の tool を読むだけの回で通してよいか。`allowedModuleTools` は、ターンを始めるときに
  * Module の一覧から引いた「読むだけの回で使ってよい Module の tool」（`mcp__<Module>__<tool>`）。引けなかったものは通さない
  */
-export function readOnlyHookAllows(toolName: string, allowedModuleTools: ReadonlySet<string>): boolean {
+export function readOnlyHookAllows(toolName: string, allowedModuleTools: ReadonlySet<string>, shape: ReadOnlyTurnShape = {}): boolean {
   if (READ_ONLY_BUILTIN_TOOLS.includes(toolName)) return true;
-  if (readOnlyCoreToolNames().includes(toolName)) return true;
+  if (readOnlyCoreToolNames(shape).includes(toolName)) return true;
   return allowedModuleTools.has(toolName);
 }
