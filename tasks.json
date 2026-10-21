@@ -12186,7 +12186,7 @@
       "number": 506,
       "kind": "task",
       "title": "番頭：問いの種類（decisions[].kind）と方針の置き場（全体＋Project の足し外し）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "banto-supervisor",
       "dependsOn": [],
       "milestone": null,
@@ -12198,7 +12198,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T07:35:40.881Z",
+      "updatedAt": "2026-10-21T07:35:52.706Z",
       "closedAt": null,
       "extra": {}
     },
