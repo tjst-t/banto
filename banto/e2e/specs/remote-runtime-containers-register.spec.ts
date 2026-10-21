@@ -140,6 +140,8 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
         "incus-proxy": "fail",
         "incus-idmap": "fail",
         "incus-pool": "fail",
+        // 区画のネットワークのブリッジ（#427）——Incus が無いうちは、ほかの区画の項目と同じく「Incus を入れたあとに」
+        "incus-network": "fail",
         linger: "fail",
         // 入れ子の KVM は表示だけ——仮想化（KVM）を許していない実行場所では ok（#458）
         "nested-kvm": "ok",
