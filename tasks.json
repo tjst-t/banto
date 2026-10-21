@@ -12457,7 +12457,7 @@
       "number": 516,
       "kind": "task",
       "title": "組み立てを self と dist に分け、dist からサブスクのログインをコードごと抜く",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [
         "claude-api-key-account"
@@ -12471,7 +12471,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:38:56.158Z",
       "closedAt": null,
       "extra": {}
     },
