@@ -11719,7 +11719,7 @@
       "number": 487,
       "kind": "task",
       "title": "サブエージェント：runSubagent に呼び名（label）を足し、カードの題・一覧の題・Factory の頼みに使う",
-      "status": "backlog",
+      "status": "ready",
       "parent": "item-3",
       "dependsOn": [],
       "milestone": null,
@@ -11731,7 +11731,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-20T20:30:25.918Z",
+      "updatedAt": "2026-10-21T10:34:01.206Z",
       "closedAt": null,
       "extra": {}
     },
