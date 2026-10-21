@@ -611,6 +611,9 @@ Module の画面**を枠ごと出したもの（v4-modules.md §2.4「core と�
 | 画面 → banto（押せるか） | notification `dev.banto/folder-adopter-state` = `{ ready, choice: "github"\|"local"\|"none", reason? }`。読めなければ押せないことにする |
 | banto → 画面（押したとき） | request `dev.banto/adopt-folder` = `{ path, name }`。画面がリポジトリにし（GitHub なら上げ終わるまで、待つのは 15 分まで）、`{ choice, summary, path?, github?: { owner, name, htmlUrl? } }` を返す。失敗は JSON-RPC の error（理由をそのまま人に見せる）。`choice` が `none` 以外なら `path` が、`github` なら `github` が無ければ「できた」と読まない |
 
+- 上のリポジトリの中の、追われていないフォルダ（`~/banto` が clone のときのチャットの置き場）は入れ子のリポジトリにする
+  ——画面は「〈上〉のリポジトリの中ですが、そちらはこのフォルダを追っていないので、別のリポジトリとして作ります」と1行添える。
+  上が中のファイルを追っていれば理由を出して断り、選べるものは出さない（「作らない」として押せる）
 - Repositories は `ui://banto-repositories/adopt-folder`：「GitHub に上げる」（アカウント・持ち主・公開範囲。名前は core の
   `name`）・「手元だけ（git init）」・「作らない」。押されたら `adopt_folder`（git でなければ git init して中身を最初の
   コミットに、台帳に足す）→ GitHub なら今の公開の口（`start_publish`）。GitHub に上げるのに失敗しても、手元のリポジトリは

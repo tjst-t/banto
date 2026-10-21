@@ -28,8 +28,25 @@ test.setTimeout(180_000);
 const SERVER = "repositories";
 const RESOURCE = "ui://banto-repositories/adopt-folder";
 const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
-const chats = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-chats-")));
-test.afterAll(() => rmSync(chats, { recursive: true, force: true }));
+/**
+ * **この機械の本物の置き場と同じ形**（レビュー・2026-10-21）：`~/banto` は banto を clone したリポジトリで、`chats/` は
+ * 追っておらず .gitignore にも無い——`~/banto/chats/<日付>-<id>` で git に聞くと `~/banto` の中と答える。人の `~/banto` には
+ * 書かず、同じ形を一時フォルダに作る
+ */
+const home = realpathSync(mkdtempSync(join(tmpdir(), "banto-e2e-chathome-")));
+const bantoClone = join(home, "banto");
+const chats = join(bantoClone, "chats");
+test.beforeAll(() => {
+  mkdirSync(bantoClone, { recursive: true });
+  writeFileSync(join(bantoClone, "README.md"), "banto\n");
+  writeFileSync(join(bantoClone, ".gitignore"), "node_modules/\n");
+  const g = (...args: string[]) => execFileSync("git", ["-c", "user.name=e2e", "-c", "user.email=e2e@example.com", "-c", "init.defaultBranch=main", ...args], { cwd: bantoClone, stdio: "ignore" });
+  g("init", "-q");
+  g("add", ".");
+  g("commit", "-q", "-m", "banto");
+  mkdirSync(chats);
+});
+test.afterAll(() => rmSync(home, { recursive: true, force: true }));
 
 /** チャットの置き場の形のフォルダ（git でない・試作のファイル入り） */
 function chatFolder(id: string): string {
@@ -188,6 +205,11 @@ test("「GitHub に上げる」：チャットのフォルダが git init・最�
   await setGithubLoginFixture({ addRepo: { owner: me, name: taken } });
   await ensurePatAccount(page);
   const dir = chatFolder(`gh${suffix}`);
+  // 前提：本物の置き場と同じく、チャットのフォルダは上の banto のリポジトリの中と読まれる（追ってはいない）
+  expect(gitOut(dir, "rev-parse", "--show-toplevel")).toBe(bantoClone);
+  // .gitignore にも入っていない（check-ignore は入っていなければ 1 で終わる）
+  expect(() => execFileSync("git", ["check-ignore", "-q", dir], { cwd: bantoClone, stdio: "ignore" }), "前提：chats は .gitignore に無い").toThrow();
+  const parentHead = gitOut(bantoClone, "rev-parse", "HEAD");
 
   const h = await mountAdopter(page, { path: dir, name });
   const panel = h.canvas.getByTestId("adopt-panel");
@@ -199,6 +221,10 @@ test("「GitHub に上げる」：チャットのフォルダが git init・最�
   await expect(panel.locator('[data-testid="adopt-visibility"][data-value="private"]')).toHaveAttribute("aria-checked", "true");
   await expect(panel.getByTestId("adopt-github-note")).toHaveText(`github.com/${me}/${name} を非公開で作り、今あるファイルを最初のコミットにして上げます。`);
   await expect.poll(() => h.state()).toEqual({ ready: true, choice: "github" });
+  await expect(panel.getByTestId("adopt-refusal")).toHaveCount(0);
+  await expect(panel.getByTestId("adopt-nested-note")).toHaveText(
+    `${shown(bantoClone)} のリポジトリの中ですが、そちらはこのフォルダを追っていないので、別のリポジトリとして作ります（${shown(bantoClone)} の履歴は変えません）。`,
+  );
 
   // 人が「Project にする」の画面で名前を打ち替えた——GitHub にもうある名前なら、押せないと言う
   await h.setTarget({ path: dir, name: taken });
@@ -229,7 +255,11 @@ test("「GitHub に上げる」：チャットのフォルダが git init・最�
   await expect(panel.locator('[data-testid="adopt-choice"][data-value="local"]')).toBeDisabled();
   expect((await h.adopt({ path: dir, name })).error).toBe("もうリポジトリにしました");
 
-  // フォルダ：最初のコミットは .gitignore に従った中身、いまのブランチは origin/main を追う
+  // フォルダ：入れ子の、自分のリポジトリ。最初のコミットは .gitignore に従った中身、いまのブランチは origin/main を追う
+  expect(gitOut(dir, "rev-parse", "--show-toplevel")).toBe(dir);
+  // 上の banto のリポジトリは変わらない
+  expect(gitOut(bantoClone, "rev-parse", "HEAD")).toBe(parentHead);
+  expect(gitOut(bantoClone, "ls-files").split("\n").sort()).toEqual([".gitignore", "README.md"]);
   expect(gitOut(dir, "log", "--format=%s")).toBe("Initial commit");
   expect(gitOut(dir, "ls-files").split("\n").sort()).toEqual([".gitignore", "index.html", "src/app.js"]);
   expect(gitOut(dir, "rev-parse", "--abbrev-ref", "main@{upstream}")).toBe("origin/main");
@@ -250,6 +280,7 @@ test("「手元だけ」は git init・最初のコミット・台帳だけ（Gi
   const name = `chat-local-${suffix}`;
   await ensurePatAccount(page);
   const dir = chatFolder(`lo${suffix}`);
+  expect(gitOut(dir, "rev-parse", "--show-toplevel"), "前提：上の banto のリポジトリの中").toBe(bantoClone);
   const createdBefore = (await setGithubLoginFixture({})).created.length;
 
   const h = await mountAdopter(page, { path: dir, name });
@@ -269,14 +300,32 @@ test("「手元だけ」は git init・最初のコミット・台帳だけ（Gi
   await expect(panel.getByTestId("adopt-done")).toHaveText(` ${shown(dir)} をリポジトリにしました`);
   expect(gitOut(dir, "log", "--format=%s")).toBe("Initial commit");
   expect(gitOut(dir, "ls-files").split("\n").sort()).toEqual([".gitignore", "index.html", "src/app.js"]);
+  expect(gitOut(dir, "rev-parse", "--show-toplevel")).toBe(dir);
   expect(gitOut(dir, "remote")).toBe("");
   expect((await setGithubLoginFixture({})).created.length, "GitHub に何か作った").toBe(createdBefore);
   const row = await ledgerRow(page, dir);
   expect(row?.remote).toEqual({ kind: "none" });
 
+  // 上の banto のリポジトリが中のファイルを追っているフォルダは断る——選べるものは出さず、理由を出し、「作らない」で押せる
+  const tracked = chatFolder(`tr${suffix}`);
+  execFileSync("git", ["add", "--", tracked], { cwd: bantoClone, stdio: "ignore" });
+  await page.close();
+  const page3 = await page.context().newPage();
+  page3.on("pageerror", (err) => pageErrors.push(err.message));
+  const h3 = await mountAdopter(page3, { path: tracked, name: `chat-tracked-${suffix}` });
+  const panel3 = h3.canvas.getByTestId("adopt-panel");
+  await expect(panel3.getByTestId("adopt-refusal")).toHaveText(
+    `${shown(tracked)} はリポジトリにできません：${shown(bantoClone)} のリポジトリが、このフォルダの中のファイルを追っています（入れ子のリポジトリにすると、同じファイルを2つのリポジトリが追うことになります）`,
+    { timeout: 30_000 },
+  );
+  await expect(panel3.getByTestId("adopt-choice")).toHaveCount(0);
+  await expect.poll(() => h3.state()).toEqual({ ready: true, choice: "none" });
+  expect(existsSync(join(tracked, ".git"))).toBe(false);
+  execFileSync("git", ["rm", "-q", "-r", "--cached", "--", tracked], { cwd: bantoClone, stdio: "ignore" });
+  await page3.close();
+
   // 「作らない」——押しても何もしない
   const plain = chatFolder(`no${suffix}`);
-  await page.close();
   const page2 = await page.context().newPage();
   const h2 = await mountAdopter(page2, { path: plain, name: `chat-none-${suffix}` });
   const panel2 = h2.canvas.getByTestId("adopt-panel");
