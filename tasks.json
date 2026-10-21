@@ -12276,7 +12276,7 @@
       "number": 510,
       "kind": "task",
       "title": "番頭：守り（量の上限・全部止める・記録と受信箱のカード・取り消し・1日のまとめ）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "banto-supervisor",
       "dependsOn": [
         "instruct-thread-supervisor-list-stalled",
@@ -12291,7 +12291,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T07:35:40.881Z",
+      "updatedAt": "2026-10-21T07:36:22.838Z",
       "closedAt": null,
       "extra": {}
     },
