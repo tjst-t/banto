@@ -2419,7 +2419,7 @@ Project の画面からも一覧からも開く。アカウント・名前・公
     終わったとき・止められたとき（HUP・INT・PIPE・TERM）に消し、片づけ損ねた 30 分より古い自分のものは次に取り込むときに消す
   - **運び方**：送る＝向こうで bundle を作る → host の使い捨ての bare リポジトリ（Module の置き場の `branch-sync/`、毎回作って消す。
     前の回が落ちて残したものは Repositories を起こしたときに消す）に取り込み、**`git fsck --strict` で中身を確かめる**（bundle からの
-    fetch は git 2.43 では `transfer.fsckObjects` が効かない——実測）→ **host で組んだ URL** へ Repositories の資格情報（一度きりの
+    fetch は git 2.43 では `transfer.fsckObjects` が効かない——実測。新しい git〈2.5x〉は fetch の段で断るので、そのときも同じ理由で返す）→ **host で組んだ URL** へ Repositories の資格情報（一度きりの
     窓口か ssh-agent、この機械と同じ）で `refs/heads/<b>:refs/heads/<b>`（force しない）→ 送れたら向こうの `refs/remotes/origin/<b>` を
     送ったコミットに合わせる（この機械で `git push origin` が追跡の ref を進めるのと同じ。Backlog はこれで「まだ送っていない」を数える。
     合わせられなくても送れたことは変えず、返事の文言に理由を添える）。取ってくる＝host で origin から `+refs/heads/<b>:refs/heads/<b>`

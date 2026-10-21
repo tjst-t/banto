@@ -180,3 +180,13 @@ test("どこにいるかは git に聞く——bare は bare、その中は「�
     s.done();
   }
 });
+
+test("fsckErrorLines：新しい git の fetch が transfer.fsckObjects で断った行だけを拾う（ほかの失敗は拾わない）", async () => {
+  const { fsckErrorLines } = await import("./git.js");
+  const stderr =
+    "error: object 1389a1c3b2e32dd7d66abee848efc06e5f64baf7: missingEmail: invalid author/committer line - missing email\n" +
+    "fatal: fsck error in packed object\nfatal: index-pack failed\n";
+  assert.equal(fsckErrorLines(stderr), "error: object 1389a1c3b2e32dd7d66abee848efc06e5f64baf7: missingEmail: invalid author/committer line - missing email");
+  assert.equal(fsckErrorLines("fatal: '/tmp/x.bundle' does not look like a v2 or v3 bundle file\n"), undefined);
+  assert.equal(fsckErrorLines(""), undefined);
+});
