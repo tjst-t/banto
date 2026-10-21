@@ -674,9 +674,9 @@ async function* runThreadTurnInner(
     orphanedPatrol: readOnly && deps.patrols !== undefined && !deps.patrols.patrolOf(input.threadId),
     ...(supervisor ? { supervisor: true } : {}),
   };
-  // **試作を始める**はチャットで、まだ始めていないときだけ（読むだけの回には出さない、§2.2「コンテナは試作を始めたときに作る」）
+  // **試作を始める**はチャットで、まだ始めていないときだけ（読むだけの回・番頭の回には出さない、§2.2「コンテナは試作を始めたときに作る」）
   const prototypingTool: PrototypingTool | undefined =
-    !readOnly && project.kind === "chat" && !project.prototyping && deps.startPrototyping
+    !restricted && project.kind === "chat" && !project.prototyping && deps.startPrototyping
       ? Object.assign(forks.prototyping, { start: () => deps.startPrototyping!(thread.projectId) })
       : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
