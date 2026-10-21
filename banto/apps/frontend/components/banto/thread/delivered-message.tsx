@@ -14,6 +14,8 @@ import { useState } from "react";
 import { MessagePrimitive, useAuiState } from "@assistant-ui/react";
 import { ChevronDown, ChevronRight, Inbox, Target, Webhook } from "lucide-react";
 import type { RealMessageOrigin } from "@/lib/backend/client";
+import { SupervisorInstructionLine } from "@/components/banto/supervisor/thread-supervisor";
+import { useThreadId } from "./thread-id-context";
 
 function parsed(text: string): unknown {
   try {
@@ -42,7 +44,10 @@ export function DeliveredMessage({ origin }: { origin: RealMessageOrigin }) {
   const [open, setOpen] = useState(false);
   const value = parsed(text);
   const summary = value === undefined ? text : summaryOf(value);
+  const threadId = useThreadId();
   if (origin.mission) return <MissionWakeLine origin={origin} mission={origin.mission} text={text} />;
+  // 番頭の頼み（§6.54）：届いたもののカードではなく、発言の頭に薄い1行
+  if (origin.supervisor) return <SupervisorInstructionLine origin={origin} supervisor={origin.supervisor} text={text} threadId={threadId ?? undefined} />;
 
   return (
     <MessagePrimitive.Root

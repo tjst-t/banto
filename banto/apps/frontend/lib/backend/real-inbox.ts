@@ -159,10 +159,10 @@ export async function refreshRealInbox(): Promise<void> {
     const noticesChanged =
       nextNotices.length !== notices.length ||
       nextNotices.some((n, i) => n.id !== notices[i]!.id);
-    // レビュー待ちは中身（turn）も見る——同じ1件のまま、その Thread で次のターンが走って中身が替わることがある
+    // レビュー待ちは中身も見る——同じ1件のまま、その Thread で次のターンが走って中身（turn）が替わる・判断役や番頭の決め
+    // （judge）があとから付くことがある（Backlog #511：中身を turn だけで比べていたので、あとから付いた番頭の決めが出なかった）
     const reviewsChanged =
-      nextReviews.length !== reviews.length ||
-      nextReviews.some((r, i) => r.id !== reviews[i]!.id || JSON.stringify(r.turn) !== JSON.stringify(reviews[i]!.turn));
+      nextReviews.length !== reviews.length || nextReviews.some((r, i) => JSON.stringify(r) !== JSON.stringify(reviews[i]));
     const nextFindings = all.filter((i): i is RealInboxFinding => i.kind === "finding" && !i.closed);
     const findingsChanged = nextFindings.length !== findings.length || nextFindings.some((f, i) => f.id !== findings[i]!.id);
     if (sameIds(items, next) && !noticesChanged && !reviewsChanged && !findingsChanged) return;

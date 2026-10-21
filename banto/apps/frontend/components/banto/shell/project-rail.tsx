@@ -16,7 +16,8 @@
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import { Fragment, useState } from "react";
 import { UrlLink as Link } from "@/components/banto/url-link";
-import { Bell, Clock, Moon, PanelLeft, Plus, Search, Settings } from "lucide-react";
+import { Bell, Clock, Moon, PanelLeft, Plus, Search, Settings, UserCheck } from "lucide-react";
+import { SUPERVISOR_LABEL } from "@/lib/supervisor-label";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -99,12 +100,15 @@ function RailIconButton({
 function CollapsedRail({
   activeProjectId,
   onOpenInbox,
+  onOpenSupervisor,
   onOpenPalette,
   onOpenArchive,
   onNewProject,
 }: {
   activeProjectId: string | null;
   onOpenInbox: () => void;
+  /** 番頭の画面（§6.54） */
+  onOpenSupervisor: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
   onNewProject: () => void;
@@ -161,6 +165,7 @@ function CollapsedRail({
             ) : null}
           </RailIconButton>
         ) : null}
+        <RailIconButton icon={UserCheck} label={SUPERVISOR_LABEL} onClick={onOpenSupervisor} />
         <RailIconButton icon={Search} label="検索（⌘K / Ctrl-K）" onClick={onOpenPalette} />
       </SidebarHeader>
 
@@ -382,6 +387,7 @@ export function ProjectRail({
   onResize,
   onResizeEnd,
   onOpenInbox,
+  onOpenSupervisor,
   onOpenPalette,
   onOpenArchive,
 }: {
@@ -394,6 +400,8 @@ export function ProjectRail({
   onResize: (width: number) => void;
   onResizeEnd: (width: number) => void;
   onOpenInbox: () => void;
+  /** 番頭の画面（§6.54） */
+  onOpenSupervisor: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
 }) {
@@ -411,6 +419,7 @@ export function ProjectRail({
         onResize={onResize}
         onResizeEnd={onResizeEnd}
         onOpenInbox={onOpenInbox}
+        onOpenSupervisor={onOpenSupervisor}
         onOpenPalette={onOpenPalette}
         onOpenArchive={onOpenArchive}
         onNewProject={() => setShowNewProject(true)}
@@ -428,6 +437,7 @@ function SidebarBody({
   onResize,
   onResizeEnd,
   onOpenInbox,
+  onOpenSupervisor,
   onOpenPalette,
   onOpenArchive,
   onNewProject,
@@ -438,6 +448,8 @@ function SidebarBody({
   onResize: (width: number) => void;
   onResizeEnd: (width: number) => void;
   onOpenInbox: () => void;
+  /** 番頭の画面（§6.54） */
+  onOpenSupervisor: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
   onNewProject: () => void;
@@ -450,6 +462,7 @@ function SidebarBody({
       <CollapsedRail
         activeProjectId={activeProjectId}
         onOpenInbox={onOpenInbox}
+        onOpenSupervisor={onOpenSupervisor}
         onOpenPalette={onOpenPalette}
         onOpenArchive={onOpenArchive}
         onNewProject={onNewProject}
@@ -464,6 +477,7 @@ function SidebarBody({
       activeProjectId={activeProjectId}
       activeForkThreadId={activeForkThreadId}
       onOpenInbox={onOpenInbox}
+        onOpenSupervisor={onOpenSupervisor}
       onOpenPalette={onOpenPalette}
       onOpenArchive={onOpenArchive}
       onNewProject={onNewProject}

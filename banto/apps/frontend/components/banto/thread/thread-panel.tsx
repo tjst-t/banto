@@ -40,6 +40,7 @@ import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
 import { useAutomations } from "@/lib/backend/automations";
+import { SupervisorThreadBand } from "@/components/banto/supervisor/thread-supervisor";
 import type { MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
@@ -395,6 +396,8 @@ function ThreadRuntime({
       <RateLimitWaitBanner threadId={threadId} />
       {/* **見回りの会話**（§6.47）：どう起こしても読むだけで動く——人がここで頼んでも書けないことを先に言う */}
       {getThread(threadId)?.restriction === "read-only" ? <PatrolThreadBand projectId={projectId} threadId={threadId} /> : null}
+      {/* **番頭の会話**（§6.54）：番頭が何だけをするかと、番頭の画面へ戻る口 */}
+      {getThread(threadId)?.restriction === "supervisor" ? <SupervisorThreadBand /> : null}
       {/* 4時間空いた会話の冷める前の要約——5分前から「まもなく要約します」、要約している間は「要約しています」（§6.52） */}
       <IdleCompactionBanner threadId={threadId} />
       <ThreadMarkers markers={markers} />

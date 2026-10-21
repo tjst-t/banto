@@ -85,6 +85,9 @@ import { RealInboxAcknowledgeAll } from "./inbox-acknowledge-all";
 import { FindingBody } from "./finding-card";
 import { MissionExtendForm, stopMission } from "@/components/banto/thread/mission-panel";
 import { MISSION_STATUS_TEXT, missionIsOpen, missionNeedsHuman, useThreadMission } from "@/lib/backend/missions";
+import { DecisionKindBadge, SupervisorCannotAnswer, SupervisorInboxHead, SupervisorJudgeNote } from "@/components/banto/supervisor/inbox-supervisor";
+import { SUPERVISOR_LABEL } from "@/lib/supervisor-label";
+import { useSupervisors } from "@/lib/backend/supervisors";
 
 type Section = "judgment" | "decide" | "returned" | "finding" | "fix";
 
@@ -158,7 +161,7 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function InboxPage({ onClose }: { onClose: () => void }) {
+export function InboxPage({ onClose, onOpenSupervisor }: { onClose: () => void; /** 番頭の画面（§6.54） */ onOpenSupervisor?: () => void }) {
   useRealInboxVersion();
   // Thread/Project の名前は mock ストア側の登録から引く（hydrateRealProjects が実 Thread を登録している）
   useMockStoreVersion();
@@ -294,6 +297,8 @@ export function InboxPage({ onClose }: { onClose: () => void }) {
           <Kbd>e</Kbd>見た
           <Kbd>o</Kbd>開く
         </span>
+        {/* 番頭が動いている印と「番頭を全部止める」（§6.54）。番頭が無ければ出ない */}
+        <SupervisorInboxHead onOpenSupervisor={onOpenSupervisor} />
         <RealInboxAcknowledgeAll />
         <button
           type="button"
@@ -608,6 +613,8 @@ function ReturnedBody({
   // 判断役が決めた問いで、別の選択肢を押した——確かめている間の問いと選択肢
   const [confirming, setConfirming] = useState<{ index: number; reply: string; label: string } | null>(null);
   const judge = item.judge;
+  /** 決めたのは判断役か番頭か（札と確かめの文の言い方） */
+  const decider = judge?.by === "supervisor" ? SUPERVISOR_LABEL : "判断役";
   /** 判断役が決めた選択肢（問いの位置 0 から → 選択肢の位置 0 から） */
   const judgeChoice = new Map<number, { choice: number; label: string }>(
     judge?.kind === "decided-by-automation" ? (judge.answers ?? []).map((a) => [a.question - 1, { choice: a.choice - 1, label: a.label }]) : [],
@@ -840,14 +847,31 @@ function ReturnedBody({
           <p className="mt-1.5 text-xs text-ink-3">返事は記録されていません</p>
         ) : null}
 
-        <JudgeNote judge={judge} carried={item.carriedJudge} watching={item.judgeWatching} />
+        {/* 番頭のもの（`by: "supervisor"`）は番頭の言い方で、判断役のものと分けて出す（§6.54） */}
+        <JudgeNote
+          judge={judge?.by === "supervisor" ? undefined : judge}
+          carried={item.carriedJudge?.by === "supervisor" ? undefined : item.carriedJudge}
+          watching={item.judgeWatching}
+        />
+        <SupervisorJudgeNote judge={judge} carried={item.carriedJudge} threadId={item.threadId} />
 
         {decisions.length > 0 ? (
           <div className="mt-3 space-y-2.5">
             {decisions.map((d, i) => (
               <div key={i} data-testid="inbox-turn-decision" className="rounded-lg border-l-2 border-turn bg-turn-soft/50 px-3 py-2.5">
-                <p className="text-md font-medium text-foreground">{d.question}</p>
+                <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-md font-medium text-foreground">
+                  <span>{d.question}</span>
+                  {/* 問いの種類の札（§6.54）。元の AI の申告 */}
+                  {typeof d.kind === "string" && d.kind !== "" ? <DecisionKindBadge kind={d.kind} /> : null}
+                </p>
                 {d.context ? <p className="mt-0.5 text-xs text-ink-2">{d.context}</p> : null}
+                {judgeChoice.has(i) ? null : (
+                  <SupervisorCannotAnswer
+                    projectId={item.projectId ?? getThread(item.threadId)?.projectId}
+                    kind={typeof d.kind === "string" ? d.kind : undefined}
+                    readExternal={turn?.readExternal === true}
+                  />
+                )}
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {d.options.map((o, oi) => {
                     const on = chosen[i] === o.reply;
@@ -875,7 +899,7 @@ function ReturnedBody({
                           {o.recommended && !on ? <span className="text-xs text-turn">おすすめ</span> : null}
                           {byJudge && !on ? (
                             <span data-testid="inbox-turn-option-judge" className="text-xs text-primary">
-                              判断役が選択
+                              {decider}が選択
                             </span>
                           ) : null}
                         </button>
@@ -905,7 +929,7 @@ function ReturnedBody({
                 {confirming?.index === i ? (
                   <div data-testid="inbox-judge-confirm" className="mt-2 rounded-md border border-warn/40 bg-card px-3 py-2 text-xs">
                     <p className="text-foreground" data-testid="inbox-judge-confirm-text">
-                      判断役は「{judgeChoice.get(i)?.label}」を選び、AI はもう進めています。「{confirming.label}」に変えますか
+                      {decider}は「{judgeChoice.get(i)?.label}」を選び、AI はもう進めています。「{confirming.label}」に変えますか
                     </p>
                     <div className="mt-2 flex gap-2">
                       <button
@@ -1130,6 +1154,9 @@ function JudgeNote({
   carried: RealReviewJudge | undefined;
   watching: { id: string; name: string } | undefined;
 }) {
+  // 見ているのが番頭の自動化なら、番頭の言い方にする（§6.54。番頭の自動化は自動化の一覧に出ないので名前で言わない）
+  const supervisors = useSupervisors(watching !== undefined);
+  const watchingSupervisor = watching !== undefined && (supervisors?.supervisors.some((s) => s.automations.some((a) => a.id === watching.id)) ?? false);
   if (!judge && !carried && !watching) return null;
   const answers = (j: RealReviewJudge) => j.answers ?? [];
   return (
@@ -1148,7 +1175,7 @@ function JudgeNote({
       {watching && !judge ? (
         <p data-testid="inbox-judge-watching" className="flex items-center gap-1.5 text-ink-2">
           <Loader2 className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
-          判断役が見ています（自動化「{watching.name}」）
+          {watchingSupervisor ? `${SUPERVISOR_LABEL}が見ています` : `判断役が見ています（自動化「${watching.name}」）`}
         </p>
       ) : null}
       {judge?.kind === "decided-by-automation" ? (
