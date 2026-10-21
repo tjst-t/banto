@@ -12253,7 +12253,7 @@
       "number": 509,
       "kind": "task",
       "title": "番頭：Factory（流す・全体の上限・止まった件に答える）",
-      "status": "backlog",
+      "status": "done",
       "parent": "banto-supervisor",
       "dependsOn": [
         "mode-supervisor-answer-decision"
@@ -12263,12 +12263,12 @@
       "labels": [],
       "body": "§4.5「番頭の tool」の Factory。runFactory・listFactoryRuns・answerFactory・Backlog の listItems・getItem を名前空間つきで許す。runFactory は host が走っている件を数え全体の上限（既定2）を超えれば断る。番頭が流した件の止まった知らせに答える（continue・retry＝fix-tests、accept＝minor-design、drop は人）。流していない件は記録だけ。Factory の出来事は自分の回のものも受ける。",
       "doneWhen": "E2E：ready のタスクが流れ、上限を超えて流さず、止まった件に方針どおり答え、記録に残る",
-      "resolution": null,
+      "resolution": "main b1c987bf・db5f47f5・0076a126。Factory・Backlog の tool を役割で許す（cancelFactory は無し）、流すのは merge を任されたときだけ、全体の上限は番頭が流した件を factory-started の記録と Factory の状態で数える（超えたら全部断る）、answerFactory は番頭が流した件だけ・continue/retry=fix-tests・accept=minor-design・drop と instruction は断る・同じ段に2回まで、札の知らせは番頭の回に一緒に積み外から来た扱い。#507 の「返事待ちなら見回りを飛ばす」試験を意図のまま書き換え。core 1316（失敗0、私が流し直し）、E2E 14件通過（サブエージェント）。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T08:03:08.783Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T09:34:42.918Z",
+      "closedAt": "2026-10-21T09:34:42.918Z",
       "extra": {}
     },
     {
