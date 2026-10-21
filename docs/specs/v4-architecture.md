@@ -3539,7 +3539,7 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 - **OpenCode の本体は banto に同梱せず、初めて使うときに banto 本体が取ってくる**（決定・2026-10-17、ユーザー。下の
   「エージェントの本体を取ってくる」）
 
-#### 仕事の画面で、いま何をしているかを分かるようにする（決定・2026-10-20、ユーザー、案3。未実装）
+#### 仕事の画面で、いま何をしているかを分かるようにする（決定・2026-10-20、ユーザー、案3。レビューを反映・2026-10-21。未実装）
 
 ユーザー：「Launcher を見ても Tool の呼び出し状況は分かるが、何をしているのか全然分からない」（2026-10-20）。調べると、見せ方より前に
 **エージェントが送ってくる中身の大半を拾っていなかった**（実測・2026-10-20、この Project の直近 50 件の仕事：経過 1,779 件のうち
@@ -3554,17 +3554,32 @@ banto の AI ──MCP──▶ Subagent Module ──ACP──▶ claude-agent-
 **1. 取りこぼしを拾う**（Subagent の `acp-run.ts` と記録 `runs.ts`）
 
 - **経過の1件（step）を tool の呼び出しごとに持つ**：`toolCallId`・題・種類・状態（`pending`／`in_progress`／`completed`／`failed`）・
-  始めた時刻・終わった時刻・説明・触ったファイル。`tool_call_update` に題・種類・`locations` があれば同じ `toolCallId` の1件を書き換える
+  始めた時刻・終わった時刻・説明・触ったファイル。`tool_call_update` に題・種類・`locations` があれば同じ `toolCallId` の1件を書き換える。
+  **動いている tool の控え（`server.ts` の `toolsInFlight`——起こし直したあとの続きの指示に使う）の題も同じく本当の題で書き換える**
+- **AI に返る `toolCalls`（使った tool の一覧）と、進み具合の知らせの「ツール：…」も本当の題にする**——「Terminal」は AI にも役に
+  立たない。返り値の `text` は変えない（下）
 - **説明**：`rawInput.description` が文字列なら説明にする（Claude の Bash は「テストを流す」のような短い説明を持つ）。画面は説明が
   あれば説明を題にし、コマンドはその下に小さく出す。エージェントに依らない読み方だけにする（無ければ題だけ）
 - **途中の発言を経過に入れる**：`agent_message_chunk` を、tool の呼び出しを挟むたびに区切って1件（種類 `message`）にする。
   1件は 2,000 字で切る（全文は返答に残る）
 - **返り値の `text`（AI に返る返答）は変えない**——連結のまま。最後の発言だけにするかは、AI が受け取るものを変えるので別に決める
 - **やること一覧**：`plan` の最新（項目ごとに文・状態 `pending`／`in_progress`／`completed`）を記録の `plan` に置き換えで持つ
-- **触ったファイル**：`locations` のパス（根からの相対。根の外はそのまま）を、読んだ（read）・書いた（edit・delete・move）に分け、
-  回数と最後の時刻つきで記録の `files` に持つ
+- **触ったファイル**：`locations` のパスを、tool の種類（`kind`）で分ける——`edit`・`delete`・`move` は**書いた**、`read` は**読んだ**、
+  それ以外（`search`・`execute`・`fetch` など）は数えない。パスは**その仕事の作業場所（cwd）からの相対**で見せ、cwd の外は絶対パスの
+  まま。回数と最後の時刻つきで記録の `files` に持つ
 - 思考（`agent_thought_chunk`）・入れ子のサブエージェント（`subagent_spawned` 等）はいまは拾わない
-- **記録の大きさ**：経過は 1,000 件まで（越えたら古い順に1件の「ほか n 件」に畳む）。`runs.jsonl` は新しい 200 件のまま
+- **前の版の記録**：状態を持たない前の版の経過は、仕事が終わっていれば済み（`completed`）として見せる
+- **記録の大きさ**：経過は 1,000 件まで（越えたら古い順に1件の「ほか n 件」に畳む）。経過の1件の題は 300 字・説明は 200 字で切り、
+  1件の大きさは 16 KiB まで（越えた分は切って、切った印を付ける）。`runs.jsonl` は新しい 200 件のまま。数字は最初の値で、実装で
+  直してよい
+- **画面の取り直しは差分で**：いまの仕事の画面は、走っている仕事を 1.5 秒ごとに `getRun` で丸ごと取り直している
+  （`ui/runs-view.ts`）。経過が 1,000 件まで育つと重いので、`getRun` に経過の差分取り（`sinceStep`——その番号より後の経過と、
+  いまの状況の欄だけを返す）を足し、画面は走っている間それで読み足す
+- **秘密の扱い**：経過の題・引数にはコマンドの全文が残り、要約の材料にもなる（秘密を直に書いたコマンドもそのまま）。記録の側で
+  秘密を見分けて隠すことはしない——秘密はコマンドに書かず `envSecrets` で渡す、という既存の規則（§2.5「alias 方式」・
+  `docs/specs/v4-modules.md` §2.3 の「秘密の渡し方」）に頼る
+- **起こし直しのあと続けた仕事**：banto を起こし直したあと続けた仕事（§2.5「2.」）は、経過・やること・触ったファイル・要約の
+  うち起こし直しより前の分を持たない。これは受け入れ、画面の経過の頭に「起こし直しより前の経過はありません」と出す
 
 **2. 呼び名（`label`）**——Shell の `runCommand` と同じ（§2.3 の決まり：1行に収めて 80 字で切る、文字列でなければ断る、空白だけなら
 付けなかったのと同じ）。カードの名乗りは題 `{label|prompt}`・説明 `{prompt}`（カードの題は 80 字で畳むので、呼び名が無ければ頼んだ文の頭）。
@@ -3581,23 +3596,29 @@ Module が中継で頼む Factory も呼び名を付ける（「#123 実装」�
 - **経過の見せ方**：発言は吹き出しで、tool の間に挟む。同じ種類の tool が続いたら1行に畳む（「ファイルを 12 個読んだ」「コマンドを 5 回
   流した」、開けば全部）。動いている tool は回る印
 
-**4. 要約——人がボタンを押したときだけ**（決定・2026-10-20、ユーザー「人が明示的にボタンを押して要約を指示したときだけでいい」）
+**4. 要約——人がボタンを押したときだけ**（決定・2026-10-20、ユーザー「人が明示的にボタンを押して要約を指示したときだけでいい」。
+作り手を core に改めた・2026-10-21、レビュー）
 
 - 仕事の画面の「いまの状況」に**「いまの様子を要約」**ボタン。**走っている仕事だけ**（終わった仕事は返答がある）。**自動では作らない**
   ——定期的にも、頼んだときにも作らない
 - **材料**：頼んだ文（頭 2,000 字）・やること一覧・経過の新しい 40 件（題・説明・状態）・最後の発言 3 件・触ったファイルの上位。
-  合わせて 24,000 字まで。エージェントの会話の記録は読まない（banto 側から見えたことだけ——上の原則）
-- **小さいモデルで、エージェントを通さず1回だけ**：Claude の Messages API（`/v1/messages`）を直に呼ぶ。モデルは Haiku の決まった版を
-  コードに書いて固定する（上げるときはコードを直す）。`max_tokens` 400、指示は banto 側で固定（「日本語で、いま何をしていて、
-  どこまで進んだかを2文で。推測は推測と書く」）
-- **通り道は core の Claude ログインの中継**（コンテナの環境の住所と合言葉——`docs/specs/v4-security.md` §2）。エージェントが OpenCode でも
-  要約は本体のログインで作る。使用量は本体の使用量に数える（アカウントの均しの対象）。**本体のログインを使えないとき**（中継が無い・
-  Project で使わせない）はボタンを押せず、理由を添える
-- **結果**：記録の `summaries`（時刻・文・モデル・使用量、新しい 5 件）に残し、画面に「要約（n 分前）」。作っている間は「要約しています」、
-  失敗したら理由を画面に出す。同じ仕事で同時に2つは作らない（押せなくする）
-- **AI には渡さない**——人が頼んだもので、返り値にも届けにも入れない
-- **サイドバーにも出す**：待たない形で頼んだ仕事（頼んだ Thread の返事待ちの札がある）なら、要約の1文を host の口
-  `relayUpdateBackgroundWork`（§4.2）で札の手がかりに載せる。サイドバーの一覧の1件に「要約：…（n 分前）」が出る
+  エージェントの会話の記録は読まない（banto 側から見えたことだけ——上の原則）。材料を組むのは Subagent、合わせて 24,000 字で切るのは
+  core（下）。数字は最初の値で、実装で直してよい
+- **作るのは core**：Subagent は材料を host の口 `relaySummarizeBackgroundWork`（§4.2）に渡し、core が `runner/one-shot.ts` の
+  `askSmallModel`（`SMALL_MODEL`・本体の Claude のログイン——会話の題（`http/chat-title.ts`）と同じ組み方）で1回だけ作って返す。
+  **指示（system prompt）とモデルは core が1か所に持つ**。Module から中継へ `/v1/messages` を直に送る案はやめた
+  （`docs/notes/2026-10-20-background-visibility.md`「レビューで直したこと」）
+- **指示**：「日本語で、いま何をしていて、どこまで進んだかを1行・2文まで。推測は推測と書く」。`askSmallModel` は答えの最初の
+  空でない行だけを返すので、1行で答えさせる（全文を返す選択は足さない）
+- エージェントが OpenCode でも要約は本体のログインで作る。使用量は本体の使用量に数える（アカウントの均しの対象）
+- **失敗**（ログイン切れ・中継が無い・下の回数の断りなど）は core が理由を Module に返し、Module はそれを画面にそのまま出す
+- **作っている間**：その印は Subagent が仕事ごとに持つ——二つの窓から押されても作るのは1つ、開き直した画面にも「要約しています」を
+  出す。**作っている間に仕事が終わったら、その要約は捨てる**（画面に「仕事が終わったので要約を捨てました」）
+- **結果**：記録の `summaries`（時刻・文、新しい 5 件）に残し、画面に「要約（n 分前）」
+- **AI には渡さない**——人が頼んだもので、返り値にも届けにも入れない。サイドバーの1件から作る AI 向けの文（`http/fork-tool.ts` の
+  `describeBackgroundItems`・`closeForkDroppedNote` など）にも入れない
+- **サイドバーにも出す**：待たない形で頼んだ仕事（頼んだ Thread の返事待ちの札がある）なら、Subagent は `relaySummarizeBackgroundWork`
+  にその札（`replyTo`）を添え、core が作った要約を札の1件に重ねる（§4.2）。サイドバーの一覧の1件に「要約：…（n 分前）」が出る
   （`docs/specs/v4-frontend.md` §6.33）。待つ形・Module が頼んだ仕事（Factory）は札が Thread に無いので、画面だけ
 - 人の画面から呼ぶ道具：`summarizeRun({ id })`（`admin`）
 
@@ -3892,18 +3913,60 @@ canceled）、認証を持つ。
   `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
   `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
-#### 札の手がかりを Module があとから足す・結果で画面を名乗る（決定・2026-10-20、ユーザー。未実装）
+#### 札の手がかりを Module があとから足す・結果で画面を名乗る（決定・2026-10-20、ユーザー。レビューを反映・2026-10-21。未実装）
 
 サイドバーのバックグラウンドの1件（札の手がかり `BackgroundWork`）は、host が呼び出しの引数とカードの名乗りから作り、あとから
 変わらなかった。サブエージェントの要約（§4.1「仕事の画面で、いま何をしているかを分かるようにする」）と、Shell の待たないコマンドの
 画面（`docs/specs/v4-modules.md` §2.3「人の画面」）のために2つ足す。
 
-- **結果で名乗る画面**：「あとで届ける」と言う結果の `_meta["dev.banto/view"] = { resourceUri }`。tool の定義に `ui.resourceUri` が
-  無いときだけ、host が札の手がかりの `resourceUri` に写す（定義にあればそちらが先）。会話のカードの描き方は変えない——サイドバーの
-  1件から開く画面だけが決まる。`waitingOn`・`resultLocation` と同じく、その呼び出しの結果が一番正しいので結果に載せる
-- **host の口 `relayUpdateBackgroundWork({ replyTo, summary })`**：札を持つ Module が、その札の手がかりに `summary`（1行。200 字で切る）と
-  `summaryAt`（host が刻む）を載せる。**札を渡した Module からだけ**（接続名で照合）、まだ返事待ちの札だけ。host は `background.changed` を出す。
-  手がかりはメモリだけで、起こし直しで消えてよい（覚え直した札は要約なしで戻る）。今は Subagent だけが呼ぶが、Module の名前で分けない
+**1. 結果で名乗る画面**
+
+- 「あとで届ける」と言う結果の `_meta["dev.banto/backgroundView"] = { resourceUri, select? }`。`resourceUri` はその Module の入口
+  （launcher）の資源、`select` はその画面に「見ている場所」として渡すもの（中身は画面の Module が決める。Shell なら `{ commandId }`）。
+  `waitingOn`・`resultLocation` と同じく、その呼び出しの結果が一番正しいので結果に載せる。名前を `dev.banto/view` にしないのは、
+  既存の `dev.banto/view-state`（見ている場所）と紛らわしいため
+- **host は `markAwaiting` のときにこれを札の手がかりの `resourceUri`・`select` に写す**（`relay/agent-proxy.ts`・
+  `relay/host-relay-endpoint.ts` の `markAwaiting` の呼び出し、`delivery/reply-handles.ts`）。手がかりは `reply.awaiting` として
+  記録に残るので、起こし直しても同じ1件が開く。結果は AI に渡す前に `dev.banto/*` を外す（`stripBantoMeta`）ので、AI には見えない
+- tool の定義に `ui.resourceUri` があれば、今までどおりそちらが先（サイドバーの1件は会話のカードと同じ画面を toolCallId で開く）
+- **サイドバーの1件から開く**：その Thread へ移り、その Module の入口を `canvasView`＝`select` で開く——`dev.banto/open-surface` の
+  `{ surface: "launcher", server, resourceUri, select }` と同じ開き方（`docs/specs/v4-frontend.md` §6.2「画面から『同じ Project の
+  別の面を開いて』」。Subagent の入口が `{ runId }` で受けているのと同じ形）
+- **toolCallId では開かない**——toolCallId から画面を組めるのは、定義に `ui.resourceUri` を持つ tool の呼び出しだけ（turn-runner が
+  定義から作る `uiToolCalls`（`http/turn-runner.ts` の `UiToolBinding`）と、画面の `inlineViewByToolCallId`（`apps/frontend/lib/
+  backend/adapter.ts`・`project-panels.tsx`）にしか載らない）。定義に持たない tool では、結果の `_meta` も host が外したあとなので、
+  画面の側からは辿れない
+- `docs/specs/v4-frontend.md` §6.2 の「`select` は tool の入出力（`ui/notifications/tool-input`）には乗せない」と食い違わない
+  ——ここでも `select` は見ている場所として渡し、入口の画面は呼び出し無しで開く（無い呼び出しを作らない）
+
+**2. host の口 `relaySummarizeBackgroundWork({ replyTo?, material: { workId, text } })`**——要約を core が作る
+（前の下書きの `relayUpdateBackgroundWork({ replyTo, summary })`——Module が作った要約を載せる口——を置き換える）
+
+- **core が作って返す**：`runner/one-shot.ts` の `askSmallModel`（`SMALL_MODEL`・本体の Claude のログイン。会話の題
+  `http/chat-title.ts` と同じ組み方）で1回だけ作り、`{ summary }` を返す。**指示（system prompt）とモデルは core が持つ**
+  （1か所）。`material.text` の上限（24,000 字）は core が切る。指示は §4.1「4.」
+- **札の照らし方**：`replyTo` があれば `ReplyHandles.get()` で引き、渡してきた Module（`moduleName` と接続名）の札かだけを照らす。
+  `use()` と違って**回数を数えない**（届けではない）。`finalOnly` の札（起こし直しで覚え直した札）でも受ける。違う Module の札は
+  理由つきで断る
+- **サイドバーに置く**：まだ返事待ちで、宛先が Thread の札なら、要約を下の表に置いて `background.changed` を流す
+- **置かないが、断らない**：宛先が Module の札（`toModule`——Factory などが中継で頼んだ仕事）・届け済み（もう無い）の札・`replyTo`
+  無し。要約は作って返す（Module の画面には出る）
+- **回数**：同じ札（`replyTo` が無ければ Module＋`workId`）で同時に1つ、前の要約から 10 秒あける。超えたら理由つきで断る
+- **失敗**（ログイン切れ・中継が無いなど）は理由を Module に返す。Module はそれを画面にそのまま出す（§4.1「4.」）
+- 数字（24,000 字・10 秒）は最初の値で、実装で直してよい。決まりは上の形のほう
+- 今は Subagent だけが呼ぶが、Module の名前で分けない
+
+**3. 要約の置き場——host のメモリの表**
+
+- 表は `replyTo` → `{ summary, summaryAt }`（`summaryAt` は host が刻む）。札が済んだら（`settle`）消す。**起こし直しで消えてよい**
+  ——人が見る画面の写しは Module の仕事の記録（Subagent の `summaries`）に残る
+- **記録に残るのは `resourceUri`・`select` だけ**（`reply.awaiting` の手がかり）。**要約はメモリだけ**で、Event Store には書かない
+- サイドバーの1件は、Event Store を畳んだ `ThreadState.awaitingReplies[].work` から `backgroundItemsOf`（`http/app-events.ts`）が
+  作る。**表を重ねるのはこの1か所**——`backgroundItemsOf` を表も受ける形に変え、呼び元（`cli.ts`・`http/app.ts`・`http/fork-tool.ts`・
+  `http/turn-runner.ts`）の全部に効かせる（呼び元ごとに重ねると、どこかが要約の無い1件を流す）
+- AI に見せる文（`describeBackgroundItems`・`closeForkDroppedNote` など）は要約を使わない（§4.1「4.」）
+- Event Store の出来事・read model の形は変えない（手がかりに任意の `select` が増えるだけで、前の記録は畳み直しても同じになる）ので、
+  `SnapshotProjection` の版は上げない
 
 ### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345。判断役を実装・2026-10-16、Backlog #348。段2の画面を実装・2026-10-16、Backlog #349）
 

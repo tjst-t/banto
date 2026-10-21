@@ -46,3 +46,37 @@ Shell と Service：
 - 要約は走っている仕事だけ・材料は banto 側から見えたことだけ・本体のログインの中継を通す（エージェントが OpenCode でも）
 - Service の画面から新しいサービスは登録しない（見る・動かすまで）。公開の URL は出さない（Publish の画面にある）
 - 札の要約はメモリだけ（起こし直しで消えてよい）
+
+## レビューで直したこと（2026-10-21）
+
+下書きをレビューに掛け、指摘を全部仕様に反映した。上の「下書きで決めたこと」のうち、結果で名乗る名前（`dev.banto/view`）・
+要約の作り手・Service のログの口は、ここで改めた。
+
+- **サイドバーから Shell の1件を開く仕組み**：下書きの「toolCallId で開く」は動かない。toolCallId から画面を組めるのは定義に
+  `ui.resourceUri` を持つ tool だけ（`http/turn-runner.ts` の `UiToolBinding`→`uiToolCalls`、画面の `inlineViewByToolCallId`）で、
+  結果の `dev.banto/*` は host が外す（`stripBantoMeta`）。→ 結果の `_meta["dev.banto/backgroundView"] = { resourceUri, select }` を
+  host が `markAwaiting` で札の手がかりに写し（`reply.awaiting` に残る）、サイドバーは入口を `canvasView`＝`select` で開く
+  （`dev.banto/open-surface` の launcher・Subagent の `{ runId }` と同じ形）。会話のカードの「画面で見る」は `shell-command-card.tsx` が
+  結果の本文の `commandId` で同じ形に開く。名前は既存の `dev.banto/view-state` と紛らわしいので `backgroundView` にした
+- **要約の置き場**：サイドバーは Event Store を畳んだ `awaitingReplies[].work` から `backgroundItemsOf` で作るので、「手がかりに載せる」
+  では記録に混ざるか、呼び元ごとに食い違う。→ host のメモリの表（`replyTo` → 要約）を `backgroundItemsOf` の1か所で重ねる。
+  記録に残るのは `resourceUri`・`select` だけ。Event Store・read model の形は変えないので `SnapshotProjection` の版は上げない
+- **要約を作るのは core**：Module が中継へ `/v1/messages` を直に送る案はやめた——OAuth のログインで素の Messages API を呼べるかが
+  未確認・見出しの付け方を Module が知ることになる・モデルの版の写しが Module に増える。→ host の口 `relaySummarizeBackgroundWork`
+  （`relayUpdateBackgroundWork` を置き換え）で core が `askSmallModel` を呼ぶ。札は `get()` で持ち主だけ照らし（回数を数えない・
+  `finalOnly` でも受ける）、宛先が Module・届け済み・`replyTo` 無しは「作って返すが置かない」。同時に1つ・10 秒あける。
+  `askSmallModel` が最初の行だけを返すので、全文を返す選択を足すより「1行・2文まで」と指示するほうを選んだ（口を増やさない）
+- **記録の大きさ**：題 300 字・説明 200 字・1件 16 KiB、画面は `getRun` の差分取り（`sinceStep`）。コマンドの全文が記録と要約の材料に
+  残ることは「秘密の扱い」として書き、隠す仕組みは作らない（`envSecrets` の規則に頼る）
+- **起こし直しのあと続けた仕事**：前の分の経過を失うのは受け入れ、画面にそう出す。`toolsInFlight` の題も本当の題にする
+- **人が止めたコマンド**：AI が自分で止めたと誤らないよう、`cancelRequestedBy: "human"` を残し、知らせを「人が画面で止めました」に
+- **Service のログ**：AI の口 `readServiceLogs` に `beforeByte` を足す案はやめ、画面用の `readServiceLog`（`admin`、`serialize` に
+  並ばない、大きさと世代を返す）を別に作る——AI の口の形を画面の都合で変えない。回ったら画面は読み直す
+- **Shell の画面の細部**：alias 名を job.json に（値は書かない）、題が無いときは 80 字（カードと揃える。通知の 40 字は据え置き）、
+  文字の切れ目で切るのは tool・行の頭に揃えるのは画面
+- **経過の細部**：触ったファイルは `kind` で数える（edit・delete・move／read、他は数えない）・根は仕事の cwd・前の版の経過は終わった
+  仕事なら済み・AI に返る `toolCalls` と進み具合も本当の題に
+- **要約の競合**：作っている間に終わった仕事の要約は捨てる。作っている印は Module が持つ（窓が二つでも1つ）
+- AI に見せる文（`describeBackgroundItems`・`closeForkDroppedNote`）に要約は入れない
+- 古くなる文を直した：`v4-modules.md` §2.3 の Palette の入口、`v4-frontend.md` §6.33 の「画面を持たない tool なら Thread へ移るだけ」。
+  コンテナの外の Shell は入口の資源を `ListResources` に出さない
