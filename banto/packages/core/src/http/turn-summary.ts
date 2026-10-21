@@ -11,6 +11,7 @@
 //  - **元の人の発言は AI に引用させない**——画面が会話の記録から取る（言い換えが混ざらない）
 import { z } from "zod";
 import type { RuntimeConfigStore } from "../config/runtime.js";
+import { DECISION_KINDS } from "../supervisor/policy.js";
 
 /** Configuration の鍵（真偽値）。**Project にだけ置ける**——既定はオフ */
 export const TURN_SUMMARY_KEY = "thread.turnSummary";
@@ -78,6 +79,14 @@ export const reportTurnShape = {
       z.object({
         question: z.string().describe("人が決めることを問いの形で1文"),
         context: z.string().optional().describe("決めるのに要る背景（1〜2文）。無くても決められるなら省く"),
+        // **問いの種類**（追加・2026-10-21、アーキ仕様 §4.5「問いの種類」）。番頭は種類で答えてよいかを決める。無くても受け付ける
+        // （書かれていない問いは番頭が答えず人に回る）
+        kind: z
+          .enum(DECISION_KINDS)
+          .optional()
+          .describe(
+            "問いの種類。決まった手順は continue・retry-turn・rerun-tests・fix-tests・merge・push・release・backlog、今の仕様に収まる小さな設計は minor-design、仕様・アーキの向きは spec、外への公開は publish、お金は money、消す・取り消せない操作は destructive",
+          ),
         options: z
           .array(option)
           .describe(`返答の候補（${TURN_SUMMARY_LIMITS.optionsMin}〜${TURN_SUMMARY_LIMITS.optionsMax}個）`),
@@ -225,4 +234,5 @@ export const TURN_SUMMARY_PROMPT_SECTION = `# 人に返すとき（ターンの�
 - request：人の言葉をなぞらず、何を頼まれたかを具体的に書く。「それでお願い」「さっきの直して」なら、何を指すかを前の話から補う。
 - outcome：作業を見ていない人が、前の話を覚えていなくても分かるように書く。確かめていないことは notVerified に書き、確かめたように書かない。
 - decisions：人が答えないと先へ進めないことだけを書く。options の reply は、そのまま送れば通じる文にする（「A で」ではなく「案A で。○○して」）。
+- decisions の kind：問いの種類を必ず書く。決まった手順（続ける continue・ターンのやり直し retry-turn・試験の流し直し rerun-tests・落ちた試験の直し fix-tests・main への取り込み merge・自分のリポジトリへの push・release への反映 release・Backlog の更新 backlog）、今の仕様に収まる小さな設計（画面の文言・tool の引数の形など）は minor-design、仕様・アーキテクチャの向きを変えるものは spec、外への公開は publish、お金は money、消す・取り消せない操作は destructive。迷ったら重いほう（spec・publish・money・destructive）を選ぶ。
 - 人に聞くことが無ければ decisions は空にし、次に頼めることを nextSuggestions に書く。`;

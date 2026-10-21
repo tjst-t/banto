@@ -11,6 +11,7 @@
 //
 // 選択肢の中身は出来事の `text` からではなく、元の会話の記録（まとめ）から引く——真実は1箇所（規則3）
 
+import { isDecisionKind, type DecisionKind } from "../supervisor/policy.js";
 import type { EventDeclaration } from "@banto/module-contract";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { MessageEntry, PendingDelivery, ThreadState } from "../project-thread/types.js";
@@ -105,6 +106,8 @@ export function judgeNotices(projectId: string, deps: { turnSummaryEnabled(proje
 export interface TurnDecision {
   question: string;
   context?: string;
+  /** 問いの種類（アーキ仕様 §4.5）。元の AI の申告で、書かれていなければ無い */
+  kind?: DecisionKind;
   options: Array<{ label: string; reply: string; recommended?: boolean }>;
 }
 
@@ -123,7 +126,14 @@ export function decisionsOf(summary: Record<string, unknown> | undefined): TurnD
         ? [{ label: o.label, reply: o.reply, ...(o.recommended === true ? { recommended: true } : {}) }]
         : [],
     );
-    return [{ question: d.question, ...(typeof d.context === "string" ? { context: d.context } : {}), options }];
+    return [
+      {
+        question: d.question,
+        ...(typeof d.context === "string" ? { context: d.context } : {}),
+        ...(isDecisionKind(d.kind) ? { kind: d.kind } : {}),
+        options,
+      },
+    ];
   });
 }
 
@@ -166,6 +176,7 @@ export function turnDecisionsEventOf(thread: ThreadState, hop: number): {
         number: i + 1,
         question: d.question,
         ...(d.context ? { context: d.context } : {}),
+        ...(d.kind ? { kind: d.kind } : {}),
         options: d.options.map((o, j) => ({ number: j + 1, label: o.label, reply: o.reply, ...(o.recommended ? { recommended: true } : {}) })),
       })),
     },

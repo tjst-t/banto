@@ -78,6 +78,21 @@ test("形が合っていれば通り、合わなければ直し方の分かる�
   );
 });
 
+test("決めることの種類（kind）は表の値だけ受け付ける（無くてもよい）", async () => {
+  const { z } = await import("zod");
+  const { reportTurnShape } = await import("./turn-summary.js");
+  const schema = z.object(reportTurnShape);
+  const opts = [
+    { label: "A", reply: "A で" },
+    { label: "B", reply: "B で" },
+  ];
+  const withKind = (kind?: string) => ({ ...good, decisions: [{ question: "?", ...(kind ? { kind } : {}), options: opts }] });
+  assert.ok(schema.safeParse(withKind("release")).success);
+  assert.ok(schema.safeParse(withKind("spec")).success);
+  assert.ok(schema.safeParse(withKind()).success);
+  assert.ok(!schema.safeParse(withKind("whatever")).success);
+});
+
 test("artifacts・選択肢・次に頼めることの url は http/https だけ通す（受信箱で押せるリンクにする）", () => {
   const withUrls: TurnSummary = {
     ...good,
