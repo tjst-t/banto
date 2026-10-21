@@ -12114,7 +12114,7 @@
       "number": 503,
       "kind": "task",
       "title": "画面：サイドバーの「チャット」・新しいチャットの画面・閉じたチャットの小窓・「…」の Project にする・設定の「チャット」",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create",
@@ -12133,7 +12133,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:08.269Z",
+      "updatedAt": "2026-10-21T07:26:06.471Z",
       "closedAt": null,
       "extra": {}
     },
