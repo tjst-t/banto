@@ -12142,7 +12142,7 @@
       "number": 504,
       "kind": "task",
       "title": "Project にする：フォルダを移している間にターン・modules/prepare が始まると古い根を使う（移している間の印が無い）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12154,7 +12154,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:12:58.295Z",
-      "updatedAt": "2026-10-21T07:12:58.295Z",
+      "updatedAt": "2026-10-21T07:13:11.358Z",
       "closedAt": null,
       "extra": {}
     }
