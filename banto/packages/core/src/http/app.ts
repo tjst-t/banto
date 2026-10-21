@@ -114,7 +114,7 @@ import { reviewTurnOf } from "../inbox/review-turn.js";
 import { unseenRunsOf } from "../inbox/automation-review.js";
 import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
 import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-only.js";
-import { listPatrolTools, readOnlyModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
+import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
@@ -343,6 +343,8 @@ export interface AppDeps {
       scope?: "instance" | "project";
       /** 目録と同じコードか（読むだけの印を信じてよいか、アーキ仕様 §4.4）。無ければ第三者として扱う */
       bundled?: boolean;
+      /** 宣言の役割（`satisfies`）。番頭の回で使える tool を役割で決める（アーキ仕様 §4.5） */
+      roles?: readonly string[];
     }>
   >;
   /** banto 全体（instance）で1本の Module（決定・2026-09-07、ユーザー指摘）。
@@ -1490,6 +1492,8 @@ export function createApp(deps: AppDeps) {
   // **読むだけの回で使ってよい Module の tool**（追加・2026-10-20、アーキ仕様 §4.4 の守りの 4.）。読むだけの会話のターンを始めるときに引く
   const readOnlyModuleTools = async (projectId: string): Promise<string[]> =>
     readOnlyModuleToolNames((await deps.resolveModuleClientsForProject?.(projectId)) ?? [], patrolAllowedTools(deps.runtimeConfig, projectId));
+  const supervisorModuleTools = async (projectId: string): Promise<string[]> =>
+    supervisorModuleToolNames((await deps.resolveModuleClientsForProject?.(projectId)) ?? []);
   // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
   const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
   const projectInstruction = (projectId: string) => projectInstructionOf(deps.runtimeConfig, projectId);
@@ -1804,7 +1808,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,

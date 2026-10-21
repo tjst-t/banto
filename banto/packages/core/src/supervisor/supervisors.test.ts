@@ -25,6 +25,7 @@ interface Ctx {
   runner: AutomationRunner;
   supervisors: Supervisors;
   tools: AutomationTools;
+  deliveries: ThreadDeliveries;
   projectId: string;
   baseId: string;
   /** 届いたもので起こしたターンに積んだ文（Thread の id と文） */
@@ -92,7 +93,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       inbox,
       pendingApprovals: new PendingApprovalRegistry(),
     });
-    await fn({ store, automations, runner, supervisors, tools, projectId: project.id, baseId: base.id, delivered, notices, config });
+    await fn({ store, automations, runner, supervisors, tools, deliveries, projectId: project.id, baseId: base.id, delivered, notices, config });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -266,15 +267,88 @@ test("番頭の回は毎回まっさらで、方針（任せる行い・人に�
   });
 });
 
+test("届ける文（#509）：見回りの回は ready を優先順に Factory へ流す手順、止まった件の回は自分が流した件だけ方針どおり答える手順。記録に Factory の行", async () => {
+  await setup(async (ctx) => {
+    const s = await ctx.supervisors.create(ctx.projectId);
+    const [, stopped, , clock] = s.automations;
+    await ctx.automations.recordSupervisorAct(clock!.id, { at: "2026-10-21T01:00:00.000Z", kind: "factory-started", threadId: s.threadId!, runId: "run-1", items: ["a", "b"], reason: "ready を流した" });
+    await ctx.automations.recordSupervisorAct(stopped!.id, {
+      at: "2026-10-21T02:00:00.000Z",
+      kind: "factory-answered",
+      threadId: s.threadId!,
+      runId: "run-1",
+      item: "a",
+      stage: "テスト",
+      action: "retry",
+      reason: "落ちた試験を直させる",
+    });
+    const patrol = await ctx.runner.run(ctx.automations.get(clock!.id)!, "manual");
+    assert.equal(patrol.result, "running", patrol.reason);
+    for (let i = 0; i < 400 && ctx.delivered.length < 1; i++) await new Promise((r) => setTimeout(r, 5));
+    const text = ctx.delivered[0]!.text;
+    assert.match(text, /listItems（actionable: true）で今すぐ着手できる ready のタスク・バグを並び順（優先順）に見て/);
+    assert.match(text, /runFactory で Factory に流して/);
+    assert.match(text, /断られたらそれ以上は流さないでください/);
+    assert.match(text, /answerFactory で答えます——continue・retry は fix-tests、accept は minor-design/);
+    assert.match(text, /- 2026-10-21T02:00:00.000Z Factory に答えた：実行 run-1 の a（段 テスト）→ retry——落ちた試験を直させる/);
+    assert.match(text, /- 2026-10-21T01:00:00.000Z Factory に流した：実行 run-1（a・b）——ready を流した/);
+  });
+});
+
+test("Factory の止まった件の回の文：番頭が流した件だけ答え、drop・取りやめは人、流していない件は何もしない（台帳の古い文ではなく今の文）", async () => {
+  await setup(async (ctx) => {
+    const s = await ctx.supervisors.create(ctx.projectId);
+    const stopped = s.automations[1]!;
+    assert.equal(stopped.source.kind === "event" && stopped.source.event, "factory.item-stopped");
+    assert.equal(stopped.source.kind === "event" && stopped.source.allowSelfTriggered, true, "自分の回が起こした Factory の出来事を受けない");
+    assert.equal(s.automations[2]!.source.kind === "event" && s.automations[2]!.source.allowSelfTriggered, true);
+    const { supervisorDeliveryText } = await import("./supervisors.js");
+    const text = supervisorDeliveryText(
+      // 前の版で作った台帳の文（「何もせずに終えて」）が残っていても、今の文を届ける
+      { ...stopped, instruction: "いまの番頭は Factory に答える tool を持たないので、何もせずに終えてください。" },
+      supervisorPolicy(undefined, ctx.projectId),
+      [],
+    );
+    assert.doesNotMatch(text, /Factory に答える tool を持たない/);
+    assert.match(text, /その runId が下の「番頭の記録」の「Factory に流した」にある（番頭が流した件）ときだけ、方針どおり answerFactory で答えて/);
+    assert.match(text, /やめる（drop）・取りやめるは人が決めます/);
+    assert.match(text, /番頭が流していない件は、何もせずに終えてください/);
+  });
+});
+
+test("番頭の記録は1件の自動化につき 100 件だが、Factory に流した記録はそれを越えても残す（全体の上限の数えから漏らさない）", async () => {
+  await setup(async (ctx) => {
+    const s = await ctx.supervisors.create(ctx.projectId);
+    const clock = s.automations[3]!;
+    await ctx.automations.recordSupervisorAct(clock.id, { at: "2026-10-21T00:00:00.000Z", kind: "factory-started", threadId: s.threadId!, runId: "old-run", items: ["a"], reason: "流した" });
+    for (let i = 0; i < 120; i++) {
+      await ctx.automations.recordSupervisorAct(clock.id, { at: `2026-10-21T01:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`, kind: "refused", threadId: "t", reason: `断られた ${i}` });
+    }
+    const acts = ctx.automations.get(clock.id)!.supervisorActs!;
+    assert.equal(acts.length, 101);
+    assert.equal(acts.at(-1)!.runId, "old-run");
+    assert.equal(acts.filter((a) => a.kind === "refused").length, 100);
+  });
+});
+
 test("前の回が終わっていない番頭の Fork には、時刻の回は飛ばし、出来事は溜めたまま（記録しない）", async () => {
   await setup(async (ctx) => {
     const s = await ctx.supervisors.create(ctx.projectId);
     const [decide, , , clock] = s.automations;
-    // 同じ Fork の前の回が裏の仕事の返事を待っている
-    await ctx.store.recordAwaitingReply({ threadId: s.threadId!, replyTo: "r1", connName: "c", moduleName: "subagent", hop: 0 });
+    // 同じ Fork に前の回の届けもの（番頭の自動化の指示）がまだ積まれていない（#509 から、Factory の返事待ちは「終わっていない」に数えない——下の試験）
+    await ctx.store.recordDelivery({
+      threadId: s.threadId!,
+      deliveryId: "d-prev",
+      from: "banto",
+      title: "番頭：決めること",
+      text: "前の回",
+      hop: 1,
+      kind: "automation",
+      automation: { id: decide!.id, runId: "run-prev" },
+    });
     const skipped = await ctx.runner.run(ctx.automations.get(clock!.id)!, "clock");
     assert.equal(skipped.result, "skipped");
-    assert.match(skipped.reason ?? "", /返事/);
+    assert.match(skipped.reason ?? "", /届けもの/);
     assert.equal(ctx.automations.get(clock!.id)!.runs[0]?.result, "skipped");
     const received = {
       kind: "event" as const,
@@ -293,6 +367,41 @@ test("前の回が終わっていない番頭の Fork には、時刻の回は�
     assert.equal(ctx.automations.get(decide!.id)!.runs.length, 0, "溜めた出来事の回を記録した");
     assert.equal(ctx.automations.get(decide!.id)!.received.length, 1, "溜めた出来事を捨てた");
     assert.equal(ctx.delivered.length, 0);
+  });
+});
+
+test("番頭の Fork：Factory の返事待ちは前の回が終わっていないことにせず、Module の知らせだけでは起こさず（受信箱にも出さない）、次の回に一緒に積む", async () => {
+  await setup(async (ctx) => {
+    const s = await ctx.supervisors.create(ctx.projectId);
+    const [, , , clock] = s.automations;
+    // 前の回が runFactory で札を出した（返事待ち）
+    await ctx.store.recordAwaitingReply({ threadId: s.threadId!, replyTo: "r1", connName: "factory-p", moduleName: "factory", hop: 1 });
+    // Factory の「止まりました」が札で届く——それだけでは番頭の会話を起こさない
+    const wake = await ctx.deliveries.deliver({ threadId: s.threadId!, from: "factory", title: "Factory：a が止まりました（テスト）", text: '{"runId":"run-1"}', hop: 2 });
+    assert.equal(wake.wake, "held");
+    assert.equal((wake as { quiet?: true }).quiet, true, "人の番ではないのに受信箱に出す扱いにした");
+    assert.equal(ctx.delivered.length, 0, "Module の知らせだけで番頭の会話を起こした");
+    assert.equal(ctx.notices.length, 0, "番頭の Fork に留めた知らせを受信箱に出した");
+    // 次の番頭の回は飛ばさずに届き、留めていた知らせも同じターンに積む
+    const run = await ctx.runner.run(ctx.automations.get(clock!.id)!, "clock");
+    assert.equal(run.result, "running", run.reason);
+    for (let i = 0; i < 400 && ctx.delivered.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(
+      ctx.delivered.map((d) => d.title),
+      ["Factory：a が止まりました（テスト）", "番頭：見回り"],
+    );
+  });
+});
+
+test("番頭でない会話には、Module の知らせで今どおり起こし、返事待ちは前の回が終わっていないことのまま", async () => {
+  await setup(async (ctx) => {
+    const wake = await ctx.deliveries.deliver({ threadId: ctx.baseId, from: "factory", title: "Factory：a が止まりました", text: "{}", hop: 1 });
+    assert.equal(wake.wake, "now");
+    for (let i = 0; i < 400 && ctx.delivered.length < 1; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(ctx.delivered.map((d) => d.threadId), [ctx.baseId]);
+    const { previousRunUnfinished } = await import("../automation/busy.js");
+    await ctx.store.recordAwaitingReply({ threadId: ctx.baseId, replyTo: "r2", connName: "c", moduleName: "subagent", hop: 0 });
+    assert.match(previousRunUnfinished(ctx.store.getThread(ctx.baseId), { isRunning: () => false, listJudgmentsForThread: () => [] }) ?? "", /返事/);
   });
 });
 

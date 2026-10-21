@@ -1257,6 +1257,44 @@ test("番頭の回にだけ instruct_thread・list_stalled_threads を見せ、�
   });
 });
 
+// **番頭の回の Factory・Backlog の tool**（追加・2026-10-21、Backlog #509）。allowedTools と PreToolUse の最後の網は、AI の代理と同じ判定の
+// 一覧（`supervisorModuleTools`）を引く。見回りで許した tool の一覧は引かない
+test("番頭の会話のターンは、番頭に許した Module の tool（Factory・Backlog）を allowedTools と PreToolUse に載せ、ほかの Module の tool は断る", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const fork = await store.forkThread(threadId, { fresh: true, restriction: "supervisor" });
+    let seen: Parameters<typeof runTurn>[0] | undefined;
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      seen = opts;
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    let readOnlyAsked = false;
+    await collect(
+      runThreadTurn(
+        {
+          ...deps,
+          runTurn: fake,
+          readOnlyModuleTools: async () => {
+            readOnlyAsked = true;
+            return ["mcp__filesystem__readFile"];
+          },
+          supervisorModuleTools: async () => ["mcp__backlog__listItems", "mcp__factory__answerFactory", "mcp__factory__runFactory"],
+        },
+        { threadId: fork.id, prompt: "番頭の回", modules: [] },
+      ),
+    );
+    assert.ok(seen, "Runner が呼ばれていない");
+    assert.equal(readOnlyAsked, false, "番頭の回に見回りで使ってよい Module の tool を引いた");
+    for (const name of ["mcp__backlog__listItems", "mcp__factory__answerFactory", "mcp__factory__runFactory"]) {
+      assert.ok(seen.allowedTools?.includes(name), `allowedTools に ${name} が無い`);
+      assert.equal(seen.onPreToolUse!({ toolName: name }), undefined, name);
+    }
+    for (const ng of ["mcp__factory__cancelFactory", "mcp__backlog__updateItem", "mcp__filesystem__readFile"]) {
+      assert.match(seen.onPreToolUse!({ toolName: ng }) ?? "", /番頭の回では使えません/, ng);
+    }
+  });
+});
+
 test("届いた番頭の指示は見直してから積む：origin.supervisor を残す。人の発言のターンで捨てたものは積まない。全部捨てたらターンを始めない", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     const supervisor = { supervisorId: "s1", runId: "r1", automationId: "a1", actionId: "x1", note: "補足" };

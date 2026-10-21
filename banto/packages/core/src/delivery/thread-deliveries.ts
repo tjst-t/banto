@@ -24,6 +24,21 @@ import type {
 } from "../project-thread/types.js";
 import type { ThreadTurns } from "./thread-turns.js";
 
+/**
+ * **番頭の会話は、番頭の回でだけ起きる**（追加・2026-10-21、アーキ仕様 §4.5「番頭の会話は毎回まっさら」、Backlog #509）。番頭が流した
+ * Factory の知らせ（返信用の札）は番頭の Fork に届くが、それだけでは起こさない——起こすと、前の回の会話を続けたまま番頭の決まりも
+ * 方針も届かない回になる。同じ出来事（`factory.item-stopped` 等）で番頭の自動化の回が起きるので、そこで一緒に積む。人の番ではないので
+ * 受信箱には出さない（`quiet`）。起こし直しで切れたターンの続き（`continues`）は今どおり起こす
+ */
+export function supervisorHoldReason(
+  thread: { restriction?: string } | undefined,
+  pending: readonly Pick<PendingDelivery, "automation" | "continues">[],
+): string | undefined {
+  if (thread?.restriction !== "supervisor") return undefined;
+  if (pending.some((d) => d.automation || d.continues)) return undefined;
+  return "番頭の会話は番頭の回でだけ起きます（届いたものは次の番頭の回に一緒に積みます）";
+}
+
 /** 仮置きの値（2026-09-25）——困ったら変える。根拠は `docs/notes/2026-09-25-thread-delivery.md` */
 export const DELIVERY_LIMITS = {
   /** 人が送ったターン＝0 から数えて、これを超えたら起こさない */
@@ -189,6 +204,8 @@ export class ThreadDeliveries {
   private holdReason(threadId: string, pending: PendingDelivery[]): { reason: string; quiet?: true } | undefined {
     const reason = this.loudHoldReason(threadId, pending);
     if (reason !== undefined) return { reason };
+    const supervisor = supervisorHoldReason(this.deps.projectThread.getThread(threadId), pending);
+    if (supervisor !== undefined) return { reason: supervisor, quiet: true };
     const waiting = this.deps.wait?.(threadId);
     return waiting !== undefined ? { reason: waiting, quiet: true } : this.rateHoldReason(threadId, pending);
   }

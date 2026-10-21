@@ -182,16 +182,18 @@ export type PatrolNoteChange = "notified" | "seen" | "muted" | "dismissed" | "un
 
 /**
  * **番頭がしたこと**の1行（アーキ仕様 §4.5「記録」）。`answered`＝選択肢を選んで届けた・`deferred`＝人に回した・`refused`＝host が
- * 断った（種類・外の文）。指示した・Factory に流した等は Backlog #508 以降で足す
+ * 断った（種類・外の文）。指示した（#508）・Factory に流した・答えた（#509）
  */
 export interface SupervisorAct {
   at: string;
   /**
    * `answered`＝選んだ・`deferred`＝人に回した・`refused`＝host が断った（`answer_decision` も `instruct_thread` も）・
-   * `instructed`＝止まった会話に手順を頼んだ・`dropped`＝頼んだ手順を、始まる前に捨てた（人が発言した等）
+   * `instructed`＝止まった会話に手順を頼んだ・`dropped`＝頼んだ手順を、始まる前に捨てた（人が発言した等）・
+   * `factory-started`＝Factory に流した（`runId`・`items`）・`factory-answered`＝番頭が流した件の止まったものに答えた
+   * （`runId`・`item`・`stage`・`action` は answerFactory の action）
    */
-  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped";
-  /** 相手の会話 */
+  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped" | "factory-started" | "factory-answered";
+  /** 相手の会話（Factory の記録は、呼んだ番頭の会話） */
   threadId: string;
   turnId?: string;
   /** 問いの番号（1から） */
@@ -217,10 +219,22 @@ export interface SupervisorAct {
    * 頼んだときの宛先の最後のまとめの位置（まとめの発言の seq。無ければ 0）。新しいまとめが出たら同じ理由の回数を数え直す
    */
   summarySeq?: number;
+  /** Factory の実行の id（`factory-started`・`factory-answered`・Factory の tool を断ったとき） */
+  runId?: string;
+  /** 流した項目（`factory-started`。Factory が受けたもの） */
+  items?: string[];
+  /** 答えた項目と、止まっていた段（`factory-answered`） */
+  item?: string;
+  stage?: string;
 }
 
 /** 番頭の記録は1件の自動化につき、これだけ fold に持つ（届ける文に添えるのは番頭の全部の自動化を合わせた直近 30 件） */
 export const SUPERVISOR_ACTS_KEPT = 100;
+/**
+ * **Factory に流した記録は、上の件数を越えても、新しいものからこれだけ持つ**（Backlog #509）。全体の上限（同時に走っている件）は
+ * この記録から番頭が流した実行を引く——長く走る実行の記録が、ほかの記録に押し出されて数えから漏れないように
+ */
+export const SUPERVISOR_FACTORY_STARTS_KEPT = 50;
 
 /** 手帳は1つの見回りでこれだけ持つ。超えたら最後に見た時刻の古いものから捨てる（「知らせない」は捨てない） */
 export const PATROL_NOTEBOOK_MAX = 500;
@@ -348,7 +362,12 @@ export const automationFold: Fold<AutomationReadModel> = {
       case "automation.supervisor_acted": {
         if (!current) return state;
         const { id: _id, ...act } = event.payload;
-        automations.set(current.id, { ...current, supervisorActs: [act, ...(current.supervisorActs ?? [])].slice(0, SUPERVISOR_ACTS_KEPT) });
+        const acts = [act, ...(current.supervisorActs ?? [])];
+        const kept = acts.slice(0, SUPERVISOR_ACTS_KEPT);
+        const olderStarts = acts.slice(SUPERVISOR_ACTS_KEPT).filter((a) => a.kind === "factory-started");
+        const startsInKept = kept.filter((a) => a.kind === "factory-started").length;
+        const extra = olderStarts.slice(0, Math.max(0, SUPERVISOR_FACTORY_STARTS_KEPT - startsInKept));
+        automations.set(current.id, { ...current, supervisorActs: [...kept, ...extra] });
         break;
       }
       case "automation.fired": {

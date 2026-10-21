@@ -5,11 +5,11 @@
 // 毎回導く（写しを持たない、規則3）。MCP の `readOnlyHint`・`openWorldHint` は判断の材料として見せるだけで、根拠にしない。
 
 import { declaresReadEffect, patrolAllowedEntry, PATROL_RESOURCES_ENTRY, visibilityOf } from "@banto/module-contract";
-import { mayCallInReadOnly } from "../relay/read-only.js";
+import { mayCallInReadOnly, mayCallInSupervisor } from "../relay/read-only.js";
 import type { ModuleClientLike } from "./app.js";
 
 /** Module の一覧を引く口（`resolveModuleClientsForProject` の形のうち、ここで使うところ） */
-export type PatrolModuleClients = Array<{ name: string; client: Pick<ModuleClientLike, "listTools">; bundled?: boolean }>;
+export type PatrolModuleClients = Array<{ name: string; client: Pick<ModuleClientLike, "listTools">; bundled?: boolean; roles?: readonly string[] }>;
 
 const LIST_TIMEOUT_MS = 10_000;
 
@@ -45,6 +45,28 @@ export async function readOnlyModuleToolNames(modules: PatrolModuleClients, allo
       }
       for (const tool of listed.tools) {
         if (mayCallInReadOnly({ moduleName: m.name, bundled: m.bundled === true, tool, allowed })) names.push(`mcp__${m.name}__${tool.name}`);
+      }
+    }),
+  );
+  return names.sort();
+}
+
+/**
+ * **番頭の回で使ってよい Module の tool**（`mcp__<Module>__<tool>`、アーキ仕様 §4.5、Backlog #509）。allowedTools と PreToolUse の最後の網に
+ * 使う。AI の代理と同じ判定（`mayCallInSupervisor`——同梱の Factory・Backlog の決まった tool）を、Module の今の tool から引く
+ */
+export async function supervisorModuleToolNames(modules: PatrolModuleClients): Promise<string[]> {
+  const names: string[] = [];
+  await Promise.all(
+    modules.map(async (m) => {
+      if (m.bundled !== true) return;
+      const listed = await agentToolsOf(m.client);
+      if ("error" in listed) {
+        console.warn(`[host] 番頭の回で使える tool を ${m.name} から引けませんでした（その Module の tool は通しません）: ${listed.error}`);
+        return;
+      }
+      for (const tool of listed.tools) {
+        if (mayCallInSupervisor({ bundled: true, roles: m.roles ?? [], tool })) names.push(`mcp__${m.name}__${tool.name}`);
       }
     }),
   );

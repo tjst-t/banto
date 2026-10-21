@@ -38,6 +38,7 @@ import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js
 import { Patrols } from "./automation/patrol.js";
 import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
+import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
@@ -899,6 +900,24 @@ async function main(): Promise<void> {
     inbox,
     policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
   });
+  // **番頭が Factory に流す・止まった件に答える**（アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。AI の代理が Module へ渡す手前で
+  // 引く。全体の上限は番頭の記録の実行を、その Project の Factory の今の様子と照らして数える
+  const supervisorFactory = new SupervisorFactory({
+    projectThread,
+    automations,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    factoryRuns: async (projectId) => {
+      const factory = (await resolveModuleClientsForProject(projectId)).find((m) => m.bundled && m.roles.includes("factory"));
+      if (!factory) return undefined;
+      const r = (await factory.client.callTool({ name: "listFactoryRuns", arguments: {} }, undefined, { timeout: 30_000 })) as {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      };
+      const text = (r.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
+      if (r.isError) throw new Error(text.slice(0, 300));
+      return parseFactoryRuns(text);
+    },
+  });
   // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
   threadTurns.onChange((change) => {
     if (change.type !== "ended" || change.idleCompaction) return;
@@ -1146,6 +1165,8 @@ async function main(): Promise<void> {
     // 読むだけの回は、読むだけの tool だけを見せ・通す（守りの 3.）
     restrictionFor,
     patrolAllowedTools: patrolAllowed,
+    // 番頭の回の Factory の tool は、中継の手前で全体の上限・方針・番頭が流した件かを照らす（§4.5）
+    supervisorGate: (input) => supervisorFactory.gate(input),
     moduleCalls,
     elicitations,
     // **始まりの印を持ち越す**（§4.3「段2」の「輪を止める」）。出来事を名乗る Module への呼び出しだけ、Thread・ターン・ホップ・
@@ -2825,11 +2846,13 @@ async function main(): Promise<void> {
           scope: declaration.meta.scope,
           // 目録と同じコードか（読むだけの印を信じてよいか、§4.4）
           bundled: declaration.meta.origin === "bundled",
+          // 役割（番頭の回で使える tool を役割で決める、§4.5）
+          roles: declaration.meta.satisfies as readonly string[],
         };
       }),
     );
     return spawned.filter(
-      (c): c is { name: string; connName: string; client: Client; scope: "instance" | "project"; bundled: boolean } =>
+      (c): c is { name: string; connName: string; client: Client; scope: "instance" | "project"; bundled: boolean; roles: readonly string[] } =>
         c.client !== undefined,
     );
   }
