@@ -12070,7 +12070,7 @@
       "number": 501,
       "kind": "task",
       "title": "core：Project にする（project.promoted・名前・グループ・フォルダを置き場へ移す）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create"
@@ -12080,12 +12080,12 @@
       "labels": [],
       "body": "POST /api/projects/:id/promote { name, groupId?, folder? }。kind を外す。フォルダを移すときは同じ機械の中の根の付け替え＋会話の記録の写し（別の実行場所へ移すときの手順を使う）、ターン・裏の仕事があれば断る。",
       "doneWhen": "単体：promote で kind が消え名前が替わる・folder を渡すと根が移り、移したあとの最初のターンが前の会話を続けられる（resume が通る）",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/chat-promote-core）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T06:52:38.676Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T07:04:02.759Z",
+      "closedAt": "2026-10-21T07:04:02.759Z",
       "extra": {}
     },
     {
