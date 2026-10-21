@@ -595,7 +595,11 @@ banto の外（Claude のチャット）で相談し、Markdown にして持ち�
 
 **中身は普通の Project、画面だけ別に扱う**（ユーザー・2026-10-21）。特別な種類の入れ物は作らない——「Base Thread が1つ・
 Memory は Project ごと・コンテナは Project ごと」の前提のあちこちに例外が要るから。チャットは Project の印 `kind: "chat"` で
-見分ける（無ければ普通の Project）。Fork・Memory・自動化・受信箱は普通の Project と同じに効く。
+見分ける（無ければ普通の Project）。Memory・自動化・受信箱は普通の Project と同じに効く。
+**チャットでは Fork を作らない**（決定・2026-10-21、ユーザー「チャットでは Fork はいらない」）：チャットの一覧は会話1本の行だけで
+Fork を出す場所が無い。人の口（`POST /api/threads/:id/fork`・発言から分ける）と AI の `start_forks` はチャットの Project では断り
+（409、`code: "chat-no-fork"`。AI の道具はチャットでは見せない）、画面も Fork の操作を出さない。「Project にする」と普通の Project に
+なり、Fork が使える。
 
 **始め方——最初の書き込みで作る**
 
