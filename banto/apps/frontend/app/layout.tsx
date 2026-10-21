@@ -1,29 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono, Noto_Sans_JP } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { RealProjectsBootstrap } from "@/components/banto/real-projects-bootstrap";
 import { PWA_COLORS } from "@/lib/pwa-colors";
+// **フォントは手元から**（2026-10-21、ユーザー）。以前は next/font/google で組み立てのたびに Google Fonts から取っていたが、応答の形で
+// Turbopack の組み立てがたまに止まり（vercel/next.js#99114、GitHub の prebuilt で2回）、ネットの無い所では組み立てられない。
+// 同じフォントを @fontsource（版は固定、どれも SIL Open Font License 1.1——ライセンスの全文はパッケージの LICENSE）から読む。
+// 太さは以前と同じ。CSS は字の範囲（unicode-range）ごとに分かれていて、ブラウザは使う字の分だけ取る（日本語も以前と同じ字形）
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/noto-sans-jp/400.css";
+import "@fontsource/noto-sans-jp/500.css";
+import "@fontsource/noto-sans-jp/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import "./globals.css";
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-});
-
-const notoSansJP = Noto_Sans_JP({
-  variable: "--font-noto-jp",
-  subsets: ["latin"],
-  weight: ["400", "500", "700"],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains",
-  subsets: ["latin"],
-  weight: ["400", "500"],
-});
 
 export const metadata: Metadata = {
   title: "banto",
@@ -64,7 +58,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="ja"
-      className={`${inter.variable} ${notoSansJP.variable} ${jetbrainsMono.variable} h-full antialiased`}
+      className="h-full antialiased"
       suppressHydrationWarning
     >
       <body className="h-full flex flex-col overflow-hidden">
