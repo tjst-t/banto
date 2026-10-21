@@ -12189,6 +12189,32 @@
       "extra": {}
     },
     {
+      "id": "fork-ai-start-forks-fork",
+      "number": 512,
+      "kind": "task",
+      "title": "チャットでは Fork を作らない（人の口・AI の start_forks を断り、画面の Fork の操作を出さない）",
+      "status": "in-progress",
+      "parent": "project-project-2",
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "ユーザー（2026-10-21）：「チャットのスレッドに Fork が作れるけど、UI では出てこない。チャットでは Fork はいらない」。仕様 v4-architecture.md §2.2「チャット」・v4-frontend.md §6.53（コミット 91ed5b5e、ブランチ fix/chat-no-fork）。POST /api/threads/:id/fork・発言から分ける口はチャットの Project で 409（code: chat-no-fork）、AI の start_forks はチャットでは見せず呼ばれても断る、画面の「…」の Fork の項目・発言から分ける・新しい Fork を出さない。Project にしたあとは使える。",
+      "doneWhen": "単体：チャットで fork の口が 409・start_forks が道具に無い、Project にしたあとは通る。E2E chat.spec：チャットの「…」に Fork の項目が無い",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "03feaa5f-708e-4085-973b-4113e2333166"
+        }
+      ],
+      "createdAt": "2026-10-21T14:23:36.698Z",
+      "updatedAt": "2026-10-21T14:23:36.698Z",
+      "closedAt": null,
+      "extra": {}
+    },
+    {
       "id": "banto-supervisor",
       "number": 505,
       "kind": "story",
