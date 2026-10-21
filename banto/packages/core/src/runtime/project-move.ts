@@ -1579,9 +1579,25 @@ export class ProjectMover {
     if (existsSync(newRoot) || isLink(newRoot)) throw new RuntimeMoveError(409, `移す先 ${newRoot} はもうあります`);
     mkdirSync(dirname(newRoot), { recursive: true });
 
+    // **印を立てる**——ここから根を替え終わるまで、新しく始まるターン・`modules/prepare` は待ち、ほかの道から Module を
+    // 起こすのは断る（古い根を作業ディレクトリ・マウント元にしない）。畳む前に立てる（畳んでいる間に起こし直させない）
+    let release: () => void;
+    try {
+      release = this.deps.projectThread.beginRootMove(projectId);
+    } catch (err) {
+      throw new RuntimeMoveError(409, err instanceof Error ? err.message : String(err));
+    }
+    try {
+      return await this.moveRootMarked(projectId, newRoot);
+    } finally {
+      release();
+    }
+  }
+
+  private async moveRootMarked(projectId: string, newRoot: string): Promise<{ project: ProjectState; records: { copied: number; setAside: number; note?: string } }> {
     // コンテナは根を見せているので、移す前に畳んで止める（次に Module を繋ぐとき新しい根で作り直す）
     await this.deps.releaseModules(projectId);
-    // 畳んでいる間に始まったもの（ターン等）があれば移さない。ここから rename までは待たない——間にターンは始まらない
+    // 印を立てる前に始まっていたもの（ターン等）があれば移さない。印のあとに来たターンは待っている
     const again = this.deps.hostActivity(projectId);
     if (again.length > 0) throw new RuntimeMoveError(409, `動いているものがあるので移せません：${again.map((r) => r.label).join("／")}`, { running: again });
     const from = this.mustGetProject(projectId);

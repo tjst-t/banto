@@ -2573,10 +2573,12 @@ test("チャットの最初のターンは、Claude の WebSearch と banto 全�
   }
 });
 
-// **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
 // **チャットを Project にする**（決定・2026-10-21、アーキ仕様 §2.2「チャット」の「Project にする」）
 /** 試験の ProjectMover（この機械のコンテナだけ。別のサーバ・Service は使わない） */
-function chatMover(store: () => ProjectThreadStore, opts: { claudeConfigDir: string; dataDir: string; busy?: () => RunningItem[]; released?: string[] }) {
+function chatMover(
+  store: () => ProjectThreadStore,
+  opts: { claudeConfigDir: string; dataDir: string; busy?: () => RunningItem[]; released?: string[]; releasing?: () => Promise<void> },
+) {
   let mover: ProjectMover | undefined;
   const get = () =>
     (mover ??= new ProjectMover({
@@ -2590,6 +2592,7 @@ function chatMover(store: () => ProjectThreadStore, opts: { claudeConfigDir: str
       disableServices: async () => [],
       releaseModules: async (projectId) => {
         opts.released?.push(projectId);
+        await opts.releasing?.();
       },
       revokeClaudeLogin: () => undefined,
       deliver: async () => undefined,
@@ -2780,6 +2783,73 @@ test("Project にする：ターン・裏の仕事が動いていればフォル
   }
 });
 
+test("Project にする：フォルダを移している途中に来たターン・modules/prepare は、移し終わるまで待ってから新しい根を使う", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  let store: ProjectThreadStore | undefined;
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  let releasing!: () => void;
+  const released = new Promise<void>((resolve) => (releasing = resolve));
+  const turns: string[] = [];
+  const prepared: string[] = [];
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        // 確かめが落ちても、止めておいた移しを放す（でないと試験が終わらない）
+        try {
+          store = projectThread;
+          const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+          const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+          const thread = await projectThread.createBaseThread(chat.id);
+          // 移し始めて、Module を畳んでいる途中で止めておく（印はもう立っている）
+          const promoting = fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "p", folder: "power" }) });
+          await released;
+          assert.ok(projectThread.rootMoving(chat.id), "移している途中なのに印が無い");
+          const turn = fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "続けて" }) }).then((r) => r.text());
+          const prepare = fetch(`${base}/api/projects/${chat.id}/modules/prepare`, { method: "POST", headers }).then((r) => r.status);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          assert.deepEqual(turns, [], "移している途中にターンが始まった");
+          assert.deepEqual(prepared, [], "移している途中に Module を用意した");
+
+          open();
+          assert.equal((await promoting).status, 200);
+          await turn;
+          assert.equal(await prepare, 200);
+          const moved = join(await realpath(scratch), "power");
+          assert.deepEqual(turns, [moved]);
+          assert.deepEqual(prepared, [moved]);
+          assert.equal(projectThread.rootMoving(chat.id), undefined, "移し終えたのに印が残った");
+        } finally {
+          open();
+        }
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: chatMover(() => store!, {
+          claudeConfigDir: join(scratch, "claude"),
+          dataDir: scratch,
+          releasing: async () => {
+            releasing();
+            await gate;
+          },
+        }),
+        resolveModuleClientsForProject: (async (projectId: string) => {
+          prepared.push(store!.getProject(projectId)!.root);
+          return [];
+        }) as unknown as Parameters<typeof createApp>[0]["resolveModuleClientsForProject"],
+        runTurn: (async function* (opts: { cwd?: string }) {
+          turns.push(opts.cwd!);
+          yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+          return { sessionId: "s", compactionCount: 0 } as never;
+        }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+// **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
 test("AI への指示は Project ごとに読み書きでき、空で保存すると消え、上限を超えたら断る", async () => {
   await withApp(async (base, token, dir) => {
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };

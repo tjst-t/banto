@@ -1798,6 +1798,15 @@ export function createApp(deps: AppDeps) {
         : {}),
     });
 
+    // **フォルダを移している途中なら、移し終わるまで待つ**（`moveRootOnThisMachine`。数秒で終わる）——作業ディレクトリと
+    // Module のマウント元は、このあとで根から決める。待つ間に止められたら取り消す
+    const rootMoveProjectId = deps.projectThread.getThread(threadId)?.projectId;
+    const rootMove = rootMoveProjectId !== undefined ? deps.projectThread.rootMoving(rootMoveProjectId) : undefined;
+    if (rootMove && (await unlessStopped(rootMove)) === STOPPED) {
+      yield withdrawnNow();
+      return;
+    }
+
     // **眠っている Project はここで起こす**（決定・2026-10-16、アーキ仕様 §2.2「起こす」の (b)）——ターンの鍵を取った直後。
     // 人の送信・受信箱からの返信・Project をまたぐメッセージ・Webhook・時計・「続ける」・起動時の `resumeAll` は、どれも
     // ここを通る。眠らせている途中なら、終わるまで待ってから起こす（断らない——送ったつもりで消えるのを作らない）
@@ -2953,6 +2962,8 @@ export function createApp(deps: AppDeps) {
       if (prepareMatch && req.method === "POST") {
         // **眠っていれば起こす**（決定・2026-10-16、アーキ仕様 §2.2「起こす」の (a)）——画面が Project を開いた・「起こす」を
         // 押した。起こす専用の口は作らない。眠らせている途中なら、終わるまで待ってから
+        // フォルダを移している途中なら、移し終わるまで待つ（古い根でコンテナを作らない）
+        await deps.projectThread.rootMoving(prepareMatch[1]!);
         if (deps.projectThread.getProject(prepareMatch[1]!)) {
           await deps.projectSleep?.wake(prepareMatch[1]!, "opened");
           // 人が開いた——Module を起こす前に実行場所に足りないもの（「中で Docker を使う」の Docker）を入れる（Backlog #414）

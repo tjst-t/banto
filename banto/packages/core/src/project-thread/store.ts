@@ -128,6 +128,29 @@ export class ProjectThreadStore {
   }
 
   /**
+   * **同じ機械の中で根を付け替えている間の印**（`runtime/project-move.ts` の `moveRootOnThisMachine`）。別の実行場所へ移すときの
+   * `project.move` に当たるもの——ただし数秒で終わるので、記録には積まずに process の中だけに持つ（起き直したら印は無く、根は
+   * 記録のとおり）。この間にターン・`modules/prepare` が始まると、もう無い古い根を作業ディレクトリ・コンテナのマウント元にする
+   */
+  private readonly rootMoves = new Map<ProjectId, Promise<void>>();
+
+  /** 根を付け替え始めた。返す関数で外す（失敗しても必ず呼ぶ） */
+  beginRootMove(id: ProjectId): () => void {
+    if (this.rootMoves.has(id)) throw new RuntimeMoveConflictError("この Project はいまフォルダを移しています");
+    let done!: () => void;
+    this.rootMoves.set(id, new Promise<void>((resolve) => (done = resolve)));
+    return () => {
+      this.rootMoves.delete(id);
+      done();
+    };
+  }
+
+  /** 根を付け替えている途中なら、終わったときに解ける Promise。途中でなければ undefined */
+  rootMoving(id: ProjectId): Promise<void> | undefined {
+    return this.rootMoves.get(id);
+  }
+
+  /**
    * **Project の一覧が変わった**（決定・2026-10-16、アーキ仕様 §2.2「Project のグループとスリープ」）。作る・名前・並び・閉じる・
    * 開き直す・グループ。中身は渡さない——聞き手（`GET /api/events` の `projects.changed`）は画面に取り直させる
    */
