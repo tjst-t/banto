@@ -46,7 +46,25 @@ test.beforeAll(() => {
   g("commit", "-q", "-m", "banto");
   mkdirSync(chats);
 });
-test.afterAll(() => rmSync(home, { recursive: true, force: true }));
+/** この spec が PAT のアカウントを登録したか（前からあったものは外さない） */
+let addedAccount = false;
+// **台帳とアカウントを元に戻す**（repositories-github-read.spec.ts と同じ作法）。残すと、次の spec の「台帳が空」が崩れ、
+// アカウントだけが残って、替わり目に test-base が消した PAT の alias を指したままになる（次の spec がそのアカウントを
+// 「もうある」と見て使い、alias が見つからずに落ちる）
+test.afterAll(async ({ request }) => {
+  const call = async (tool: string, args: Record<string, unknown>): Promise<string> => {
+    const res = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, { headers, data: { server: SERVER, tool, arguments: args } });
+    const body = (await res.json()) as { isError?: boolean; content?: Array<{ text?: string }> };
+    const text = body.content?.[0]?.text ?? "";
+    expect(res.ok() && !body.isError, `${tool}: ${res.status()} ${text}`).toBe(true);
+    return text;
+  };
+  // 台帳の行のうち、この spec の一時フォルダの下のもの（足したのは adopt だけ。途中で落ちても足した分だけ外す）
+  const rows = (JSON.parse(await call("list_repositories", {})) as { rows: Array<{ path: string }> }).rows;
+  for (const row of rows.filter((r) => r.path.startsWith(`${home}/`))) await call("remove_repository", { path: row.path });
+  if (addedAccount) await call("remove_github_account", { login: E2E_GITHUB_PAT_LOGIN });
+  rmSync(home, { recursive: true, force: true });
+});
 
 /** チャットの置き場の形のフォルダ（git でない・試作のファイル入り） */
 function chatFolder(id: string): string {
@@ -85,6 +103,7 @@ async function ensurePatAccount(page: Page): Promise<void> {
   const alias = choices.secrets.find((s) => s.name === `github-${E2E_GITHUB_PAT_LOGIN}-pat`);
   const added = await callTool(page, "add_github_account_with_pat", alias ? { patAlias: alias } : { pat: E2E_GITHUB_PAT });
   expect(added.isError, added.text).toBeFalsy();
+  addedAccount = true;
 }
 
 interface Harness {
