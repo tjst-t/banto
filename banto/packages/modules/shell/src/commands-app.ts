@@ -90,6 +90,7 @@ body[data-mode="fullscreen"] #app { height: 100vh; }
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 40px 16px; text-align: center; color: var(--ink-3); }
 .empty p { margin: 0; }
 .empty-title { font-size: var(--t-md); font-weight: 500; color: var(--ink-2); }
+.notice { margin: 8px 12px 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--bg-2); font-size: var(--t-xs); color: var(--ink-2); }
 .error { flex-shrink: 0; margin: 0; padding: 8px 16px; border-top: 1px solid var(--line); font-size: var(--t-xs); color: var(--danger); }
 `;
 

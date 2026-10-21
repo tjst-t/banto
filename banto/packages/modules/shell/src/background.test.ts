@@ -24,6 +24,7 @@ import {
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  BACKGROUND_VIEW_META_KEY,
   REPLY_TO_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
   THREAD_META_KEY,
@@ -177,6 +178,8 @@ test("名乗り：runCommand は終わったら届ける・カードの題は呼
       const { tools } = await shell.client.listTools();
       const run = tools.find((t) => t.name === "runCommand")!;
       assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], true);
+      // 画面は結果で名乗る（定義に書くと待つ形のカードまで Module の画面になる——Backlog #492）
+      assert.equal((run._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri, undefined, "定義に ui.resourceUri がある");
       const card = run._meta?.[CARD_META_KEY] as { title: string; description: string };
       assert.equal(fillCardText(card.title, { command: "npm run e2e" }), "npm run e2e");
       assert.equal(fillCardText(card.title, { command: "npm run e2e", label: "E2E を 20 回" }), "E2E を 20 回");
@@ -207,6 +210,11 @@ test("待たずに流すとすぐ返り、終わったら札で終了コード�
       const { commandId, outputFile, result } = await runInBackground(shell, { command });
       assert.ok(Date.now() - started < 5_000, "待たない形なのに待った");
       assert.equal(result._meta?.[PENDING_REPLY_META_KEY], true, "あとで届けると約束していない");
+      assert.deepEqual(
+        result._meta?.[BACKGROUND_VIEW_META_KEY],
+        { resourceUri: "ui://banto-shell/commands", select: { commandId } },
+        "結果で入口の画面を名乗っていない",
+      );
       assert.equal(shell.delivered.length, 0, "返す前に届いた");
       assert.equal(outputFile, join(dirs.commands, commandId, "output.log"));
 
@@ -384,6 +392,7 @@ test("断る：札が無い（Thread の無い呼び出し）・待たない形�
       const waited = await without.call("runCommand", { command: "echo waited" }, stamp());
       assert.equal(JSON.parse(waited.content[0]!.text).stdout, "waited\n");
       assert.equal(waited._meta?.[PENDING_REPLY_META_KEY], undefined);
+      assert.equal(waited._meta?.[BACKGROUND_VIEW_META_KEY], undefined, "外の Shell が画面を名乗っている");
     } finally {
       await without.close();
     }

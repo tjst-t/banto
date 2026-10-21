@@ -1771,7 +1771,7 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 統合は無く、Palette に載るのは launcher への入口だけ（ターミナルを開く・バックグラウンドのコマンド——下の「人の画面」。
 後者は改訂・2026-10-21）。
 
-#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。入口と画面の道具は実装・2026-10-21、Backlog #491。サイドバー・会話のカードから開く配線は未実装、Backlog #492）
+#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。入口と画面の道具は実装・2026-10-21、Backlog #491。サイドバー・会話のカードから開く配線は実装・2026-10-21、Backlog #492）
 
 待たない形で流したコマンドは、サイドバーに呼び名と時刻が出るだけで、押しても Thread へ移るだけだった。経過時間・出力の
 末尾・止める操作は AI の tool（`listCommands`・`cancelCommand`）にしか無く、人は進み具合を見られなかった
@@ -1815,10 +1815,15 @@ Shell には数えきれない資源が無いので Command Palette の `complet
   画面」）。host はそれを札の手がかりに写すので、サイドバーの1件を押すとその Thread へ移り、この入口が `canvasView`＝`{ commandId }`
   で開いて、その1件を選ぶ（Subagent の入口が `{ runId }` で受けるのと同じ形）。この画面は `{ commandId }` を「見ている場所」として受け、
   人が一覧で選んだときも同じ形で預ける。**tool の定義には `ui.resourceUri` を書かない**——書くと待つ形の `runCommand` まで会話の
-  カードが Module の画面になり、いまの専用のカード（`shell-command-card.tsx`、承認の段から結果まで1枚）が使えなくなる
-- **会話のカードの「画面で見る」**：待たない形のときだけ足す。専用のカード（`shell-command-card.tsx`）が結果の本文から `commandId`
-  を読み、サイドバーと同じ形（入口を `canvasView`＝`{ commandId }`）で開く。**狭い画面で「その1件の中身から見せる」**
-  （`docs/specs/v4-frontend.md` §6.33）も、開くときに `commandId` が渡るので成り立つ
+  カードが Module の画面（埋め込みの画面）になる。待つ形のカードは、他の tool と同じ一般のカード（`ToolFallback`——引数と結果を
+  畳んで見せる）のまま
+- **会話のカードの「画面で見る」**：待たない形のときだけ、tool の折りたたみの**外**に開けるカードを1枚足す（題は呼び名、無ければ
+  コマンド・説明はコマンド・ボタン「画面で見る」。inline の画面と同じく、人が見に行く入口を畳める所に入れない——`v4-frontend.md` §6.2）。
+  tool のカード（一般のカード）は待つ形と同じまま。カードが結果の本文から `commandId` を読み
+  （結果の `_meta` は host が外したあと）、サイドバーと同じ形（入口を `canvasView`＝`{ commandId }`）で開く。**狭い画面で
+  「その1件の中身から見せる」**（`docs/specs/v4-frontend.md` §6.33）も、開くときに `commandId` が渡るので成り立つ（訂正・2026-10-21、Backlog #492——経緯は `docs/notes/2026-10-20-background-visibility.md`）
+- **置き場に無い `commandId`** で開かれたら（記録が掃除で消えた・古い URL）、一覧を出して「開こうとしたコマンドの記録は、もう
+  残っていません」の一言（黙って別の1件を開かない。一覧で選ぶと一言は消える）
 - **外の Shell（コンテナの外）**では待たない形を持たないので、**入口の資源を `ListResources` に出さない**（Palette にも出ない。規則13）。
   結果に `dev.banto/backgroundView` も名乗らない
 
@@ -1840,6 +1845,17 @@ Shell には数えきれない資源が無いので Command Palette の `complet
   経った時間は画面で1秒ごとに進める。止める確かめは文とボタンを1つの帯に（狭い画面では文の下の右にボタン）。
   「パスをコピー」は、埋め込みの画面でクリップボードに書けなければパスを選んでおく
 - 1行が 256 KiB より長くて遡った分に改行が無いときは、捨てずに切れ端として出す（捨てると先へ遡れない）
+
+**実装で決めたこと**（2026-10-21、Backlog #492）：
+
+- 名乗りは `server.ts` の待たない形の返事（`[BACKGROUND_VIEW_META_KEY]: { resourceUri: COMMANDS_APP_URI, select: { commandId } }`）。
+  外の Shell は待たない形を断るので名乗らない
+- 会話のカード：`apps/frontend/components/banto/thread/shell-background-view-card.tsx`（`OpenableCard`、`human-tool-card.tsx` の
+  `InlineViewForPart` が折りたたみの外に描く）。どの呼び出しが
+  待たない形かは `lib/shell-background-command.ts` の `shellBackgroundCommandOf`——tool 名が `mcp__<Module名>__runCommand`、引数に
+  `runInBackground: true`、本文の JSON に `commandId`。入口の資源の URI（`ui://banto-shell/commands`）は画面の側も知っている
+  （Shell の画面を開くための、この1か所だけ）
+- 開き方はサイドバーの1件と同じ関数 `lib/backend/background-view.ts` の `backgroundViewHref`（その Thread が Fork ならその Fork のまま）
 - 回帰試験：`background.test.ts`（admin の名乗り・人が止めた印と知らせ・出力の範囲と文字の切れ目・外の Shell は入口を出さない）・
   `e2e/specs/shell-commands-view.spec.ts`
 
