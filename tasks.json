@@ -11795,7 +11795,7 @@
       "number": 490,
       "kind": "task",
       "title": "サブエージェント：「いまの様子を要約」ボタン（材料を集めて core の口へ・画面とサイドバーへ）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "item-3",
       "dependsOn": [
         "subagent-now-panel",
@@ -11806,7 +11806,7 @@
       "labels": [],
       "body": "仕様 v4-architecture.md §4.1 の4（2026-10-21 改め）。summarizeRun（admin）は材料（banto 側から見えたことだけ）を集めて relaySummarizeBackgroundWork を呼ぶ。Module は中継へ直に送らない。作っている間の印は Module が持つ（2つの窓から押しても1つ、開き直しても「要約しています」）。作っている間に仕事が終わったら捨てる。失敗の理由はそのまま画面に。summaries は新しい5つ。AI には渡さない。自動では作らない。",
       "doneWhen": "単体：host の口を偽物にして材料の上限・作っている印・終わったら捨てる・失敗の文。E2E：押すと画面とサイドバーに要約が出て、押さなければ口が呼ばれない。本物の Haiku で1回通す",
-      "resolution": null,
+      "resolution": "fork/bgv-subagent dbba4343。単体 subagent 82・core 58、E2E subagent-summary と関係 spec 6 件通過。本物の Haiku では未確認",
       "refs": [],
       "threads": [
         {
@@ -11815,8 +11815,8 @@
         }
       ],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-21T10:59:10.394Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T11:17:28.080Z",
+      "closedAt": "2026-10-21T11:17:28.080Z",
       "extra": {}
     },
     {
