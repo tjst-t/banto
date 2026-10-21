@@ -12070,7 +12070,7 @@
       "number": 501,
       "kind": "task",
       "title": "core：Project にする（project.promoted・名前・グループ・フォルダを置き場へ移す）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create"
@@ -12084,7 +12084,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:08.269Z",
+      "updatedAt": "2026-10-21T06:52:38.676Z",
       "closedAt": null,
       "extra": {}
     },
