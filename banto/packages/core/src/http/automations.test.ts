@@ -298,6 +298,8 @@ test("番頭：作る・一覧・一時停止・再開・消すは番頭の単�
     assert.equal(paused.status, 200);
     assert.equal(paused.body.paused, true);
     assert.ok((paused.body.automations as Array<{ paused: boolean }>).every((a) => a.paused));
+    // 一時停止している番頭は今すぐ見回れない
+    assert.equal((await call(`${path}/patrol`, "POST")).status, 409);
     const resumed = await call(`${path}/resume`, "POST");
     assert.equal(resumed.body.paused, false);
     assert.equal((await call(path, "DELETE")).status, 200);

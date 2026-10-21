@@ -41,6 +41,7 @@ import type {
   MissionWakeCause,
   MissionWakeResult,
   MissionWakeOrigin,
+  SupervisorOrigin,
 } from "./types.js";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -176,10 +177,14 @@ export type ProjectThreadEvent =
         automation?: { id: string; runId: string };
         /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
         mission?: MissionWakeOrigin;
+        /** 番頭が頼んだ決まった手順（追加・2026-10-21、アーキ仕様 §4.5） */
+        supervisor?: SupervisorOrigin;
         /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
         external?: ExternalContent[];
       };
     }
+  // **届いたが積まずに捨てた**（追加・2026-10-21、アーキ仕様 §4.5「始まる前に人が発言した、なら捨てて記録に残す」）。いまは番頭の指示だけ
+  | { type: "delivery.dropped"; payload: { threadId: string; deliveryIds: string[]; reason: string } }
   | {
       type: "reply.awaiting";
       payload: { threadId: string; replyTo: string; connName: string; moduleName: string; hop: number; work?: BackgroundWork };
@@ -843,6 +848,14 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           }
           // 送り元への返事を承認なしで通すための記録（§4.2）。届くたびに数え直す
           if (rest.sender) t.receivedFrom = { ...(t.receivedFrom ?? {}), [rest.sender.threadId]: raw.ts };
+        }
+        return next;
+      }
+      case "delivery.dropped": {
+        const t = next.threads.get(event.payload.threadId);
+        if (t?.deliveries) {
+          const ids = new Set(event.payload.deliveryIds);
+          t.deliveries = t.deliveries.filter((d) => !ids.has(d.deliveryId));
         }
         return next;
       }

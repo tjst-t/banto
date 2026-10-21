@@ -23,6 +23,12 @@ import {
   type Missions,
 } from "../mission/missions.js";
 import { NOTIFY_TOOL_NAME, PATROL_NOTIFY_PER_RUN, type NotifyInput, type NotifyResult } from "../automation/patrol.js";
+import {
+  INSTRUCT_NOTE_MAX_CHARS,
+  INSTRUCT_THREAD_TOOL_NAME,
+  LIST_STALLED_THREADS_TOOL_NAME,
+  type SupervisorInstructions,
+} from "../supervisor/instruct.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
@@ -288,6 +294,11 @@ export function createForkMcpServer(
    * Fork なら、読むだけの tool に `close_fork` だけを足す
    */
   readOnlyShape: ReadOnlyTurnShape = {},
+  /**
+   * **番頭の `instruct_thread`・`list_stalled_threads`**（追加・2026-10-21、アーキ仕様 §4.5「番頭の tool」）。番頭の回にだけ渡す——渡さなければ
+   * tool を見せない（ふつうの会話には出さない。番頭の会話は毎回まっさらなので、一覧が変わってもキャッシュを引き継ぐ相手がいない）
+   */
+  supervisorTools?: Pick<SupervisorInstructions, "instruct" | "listStalled">,
   /** **試作を始める**（チャットだけ）。渡されなければ tool を見せない */
   prototyping?: PrototypingTool,
 ) {
@@ -300,6 +311,39 @@ export function createForkMcpServer(
   });
   const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
   const tools = [
+      ...(supervisorTools
+        ? [
+            tool(
+              LIST_STALLED_THREADS_TOOL_NAME,
+              [
+                "番頭として、この Project の止まっている会話を理由ごとに並べる（読むだけ）。返すのは会話の id・題・理由（reason）・どうすればよいか（hint）・",
+                "最後のまとめ（頼んだこと・結果の1文・決めること・確かめていないこと）だけで、会話の中身は見えない。",
+                "理由：failed-turn（失敗した・途中で切れたターン）／mission-stopped（任務が止まった——人に回すもの）／decision-missed（番頭が答えられる決めることで",
+                "人を待っているが、この回では答えられない——何もしない）／idle（まとめから動きが無く、残りがある）。",
+                "人が人に回したもの・外から来たものを読んだ会話・閉じた会話・専用の Fork は出ない。",
+              ].join(""),
+              {},
+              async () => automationReply(supervisorTools.listStalled(threadId)),
+            ),
+            tool(
+              INSTRUCT_THREAD_TOOL_NAME,
+              [
+                "番頭として、この Project の止まった会話に、方針で任された決まった手順を頼んで起こす。送る文は banto が action から組む——自由な指示は送れない。",
+                `note（${INSTRUCT_NOTE_MAX_CHARS} 字まで）は補足として囲んで添えるだけで、外から来たもの（出来事の本文など）が届いた回には付けられない。`,
+                "頼めないもの（banto が断る）：任されていない行い・minor-design・人に回す種類・まだ答えていない決めることがある会話・ほかの Project の会話・",
+                "閉じた会話・専用の Fork・任務が止まった会話・連鎖の上限を超える会話。同じ会話の同じ止まった理由には 2 回まで、会話ごとに1日 5 回まで——",
+                "断られたら、それ以上は頼まずに人に回す（何もしない）。宛先が走っていれば、そのターンの後に始まる。始まる前に人が発言したら捨てる。",
+              ].join(""),
+              {
+                threadId: z.string().describe("頼む会話の id（list_stalled_threads の threadId）"),
+                action: z.string().describe("頼む行い（任された行いのどれか。例 retry-turn・continue・rerun-tests・fix-tests）"),
+                note: z.string().optional().describe(`補足（${INSTRUCT_NOTE_MAX_CHARS} 字まで）。手順を広げる指示は書かない`),
+                reason: z.string().describe("頼む理由（1〜2文）。記録と受信箱のカードに出る"),
+              },
+              async (args) => automationReply(await supervisorTools.instruct(threadId, args)),
+            ),
+          ]
+        : []),
       ...(patrol
         ? [
             tool(

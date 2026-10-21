@@ -1206,3 +1206,103 @@ test("冷める前の要約：SDK が要約しなければ失敗にする。続�
     assert.equal(store.getThread(threadId)!.lastTurn?.cause, "human");
   });
 });
+
+test("番頭の回にだけ instruct_thread・list_stalled_threads を見せ、聞かずに通す。ふつうの会話には無い", async () => {
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  await withThread(async ({ deps, threadId, store }) => {
+    const calls: string[] = [];
+    const supervisorInstructions = {
+      instruct: async (caller: string) => {
+        calls.push(`instruct:${caller}`);
+        return { ok: true, text: "頼みました" };
+      },
+      listStalled: (caller: string) => {
+        calls.push(`list:${caller}`);
+        return { ok: true, text: "止まっている会話はありません。" };
+      },
+      screen: async (_id: string, d: readonly unknown[]) => [...d] as never,
+    };
+    const toolsOf = async (id: string) => {
+      let seen: Parameters<typeof runTurn>[0] | undefined;
+      const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+        seen = opts;
+        yield { type: "message" as const, message: initMessage([]) } as never;
+        return { sessionId: "session-1", compactionCount: 0 } as never;
+      }) as unknown as typeof runTurn;
+      await collect(runThreadTurn({ ...deps, runTurn: fake, supervisorInstructions }, { threadId: id, prompt: "回", modules: [] }));
+      const servers = seen!.mcpServers as Record<string, { instance?: { connect(t: unknown): Promise<void> } }>;
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await servers["banto-thread"]!.instance!.connect(b);
+      const client = new Client({ name: "t", version: "0" });
+      await client.connect(a);
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      return { seen: seen!, names, client };
+    };
+    const fork = await store.forkThread(threadId, { fresh: true, restriction: "supervisor" });
+    const sup = await toolsOf(fork.id);
+    assert.deepEqual(sup.names.sort(), ["answer_decision", "claude_usage", "instruct_thread", "list_stalled_threads", "list_threads"]);
+    assert.ok(sup.seen.allowedTools?.includes("mcp__banto-thread__instruct_thread"));
+    assert.ok(sup.seen.allowedTools?.includes("mcp__banto-thread__list_stalled_threads"));
+    assert.equal(sup.seen.onPreToolUse!({ toolName: "mcp__banto-thread__instruct_thread" }), undefined);
+    await sup.client.callTool({ name: "list_stalled_threads", arguments: {} });
+    await sup.client.callTool({ name: "instruct_thread", arguments: { threadId, action: "continue", reason: "r" } });
+    assert.deepEqual(calls, [`list:${fork.id}`, `instruct:${fork.id}`]);
+    await sup.client.close();
+
+    const plain = await toolsOf(threadId);
+    assert.equal(plain.names.includes("instruct_thread"), false, "ふつうの会話に instruct_thread がある");
+    assert.equal(plain.names.includes("list_stalled_threads"), false, "ふつうの会話に list_stalled_threads がある");
+    await plain.client.close();
+  });
+});
+
+test("届いた番頭の指示は見直してから積む：origin.supervisor を残す。人の発言のターンで捨てたものは積まない。全部捨てたらターンを始めない", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    const supervisor = { supervisorId: "s1", runId: "r1", automationId: "a1", actionId: "x1", note: "補足" };
+    const screened: boolean[] = [];
+    const dropAll = { current: false };
+    const supervisorInstructions = {
+      instruct: async () => ({ ok: true, text: "" }),
+      listStalled: () => ({ ok: true, text: "" }),
+      screen: async (id: string, delivered: readonly import("../project-thread/types.js").PendingDelivery[], human: boolean) => {
+        screened.push(human);
+        if (!human && !dropAll.current) return [...delivered];
+        const drop = delivered.filter((d) => d.supervisor).map((d) => d.deliveryId);
+        await store.dropDeliveries(id, drop, "捨てた");
+        return delivered.filter((d) => !drop.includes(d.deliveryId));
+      },
+    };
+    const prompts: string[] = [];
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      prompts.push(opts.prompt as string);
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    const run = (prompt: string) => collect(runThreadTurn({ ...deps, runTurn: fake, supervisorInstructions }, { threadId, prompt, modules: [] }));
+
+    // 届けものだけのターン：積んで、印を残す
+    await store.recordDelivery({ threadId, deliveryId: "d1", from: "banto", title: "番頭の指示：続ける", text: "続けて", hop: 2, kind: "supervisor", supervisor });
+    await run("");
+    const appended = store.getThread(threadId)!.messages.find((m) => m.origin?.deliveryId === "d1");
+    assert.deepEqual(appended?.origin?.supervisor, supervisor);
+    assert.match(prompts[0]!, /<banto-supervisor-note>\n補足\n<\/banto-supervisor-note>/);
+
+    // 人の発言のターン：番頭の指示は捨て、ほかの届けものは積む
+    await store.recordDelivery({ threadId, deliveryId: "d2", from: "banto", title: "番頭の指示", text: "続けて", hop: 2, kind: "supervisor", supervisor: { ...supervisor, actionId: "x2" } });
+    await store.recordDelivery({ threadId, deliveryId: "d3", from: "m", title: "結果", text: "できた", hop: 1 });
+    await run("人の発言");
+    const ids = store.getThread(threadId)!.messages.map((m) => m.origin?.deliveryId).filter(Boolean);
+    assert.deepEqual(ids, ["d1", "d3"]);
+    assert.equal(store.getThread(threadId)!.deliveries?.length ?? 0, 0);
+
+    // 届けものが番頭の指示だけで、全部捨てた：ターンを始めない（エラーも出さない）
+    dropAll.current = true;
+    await store.recordDelivery({ threadId, deliveryId: "d4", from: "banto", title: "番頭の指示", text: "続けて", hop: 2, kind: "supervisor", supervisor: { ...supervisor, actionId: "x4" } });
+    const before = store.getThread(threadId)!.lastTurn?.turnId;
+    const events = await run("");
+    assert.deepEqual(events, []);
+    assert.equal(store.getThread(threadId)!.lastTurn?.turnId, before, "捨てたのにターンを始めた");
+    assert.deepEqual(screened, [false, true, false]);
+  });
+});

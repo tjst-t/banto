@@ -12,13 +12,14 @@ import type { ReviewAttention, ReviewAutomation, ReviewItem } from "./types.js";
 
 /**
  * **このターンが自動化の回のものか**。最後の人の発言と自動化の届けもののうち、新しいほうが自動化の届けものならその回
- * ——同じ回の続きのターン（裏の仕事の結果が届いて起きた）も、その回に数える。人がその後で送っていれば人のターン
+ * ——同じ回の続きのターン（裏の仕事の結果が届いて起きた）も、その回に数える。人がその後で送っていれば人のターン。
+ * 番頭の指示（`origin.supervisor`、§4.5）も人の発言と同じく区切る——番頭が頼んで起きたターンを、前の自動化の回に数えない
  */
 export function automationRunOfLastTurn(thread: Pick<ThreadState, "messages">): { id: string; runId: string } | undefined {
   for (let i = thread.messages.length - 1; i >= 0; i--) {
     const m = thread.messages[i]!;
     if (m.role !== "user") continue;
-    if (!m.origin) return undefined;
+    if (!m.origin || m.origin.supervisor) return undefined;
     if (m.origin.automation) return m.origin.automation;
   }
   return undefined;

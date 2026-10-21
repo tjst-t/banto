@@ -48,6 +48,7 @@ import type { ThreadMessaging } from "../delivery/thread-messages.js";
 import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
+import { INSTRUCT_THREAD_TOOL_NAME, LIST_STALLED_THREADS_TOOL_NAME, type SupervisorInstructions } from "../supervisor/instruct.js";
 import { MISSION_TOOL_NAMES, type Missions } from "../mission/missions.js";
 import { NOTIFY_TOOL_NAME, type PatrolTurnState, type Patrols } from "../automation/patrol.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
@@ -407,6 +408,11 @@ async function* runThreadTurnInner(
      */
     turnDecisions?: Pick<TurnDecisions, "beginTurn" | "answer">;
     /**
+     * **番頭の指示**（追加・2026-10-21、§4.5「番頭の tool」）。番頭の回に `instruct_thread`・`list_stalled_threads` を見せ、ターンを
+     * 始める前に届いた番頭の指示を見直す（人が先に発言した等で捨てる）。渡されなければ tool は無く、見直さない
+     */
+    supervisorInstructions?: Pick<SupervisorInstructions, "instruct" | "listStalled" | "screen">;
+    /**
      * **その Project で「ターンの終わりのまとめ」がオンか**（追加・2026-10-06、§2.2）。ターンを始めるときに1回引く——オンなら
      * `report_turn`・システムプロンプトの節・Stop hook を渡す。渡されなければオフ
      */
@@ -504,11 +510,18 @@ async function* runThreadTurnInner(
 
   // **届いていたものを先に積む**（決定・2026-09-25、アーキ仕様 §4.2）。届いた順に、送り手の印つきで——人の発言
   // ではない。上限で起こさなかったものも、人が次に送ったこのターンの頭に積まれる（黙って捨てない）
-  const delivered = idle ? [] : [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
+  const queued = idle ? [] : [...(deps.projectThread.getThread(input.threadId)?.deliveries ?? [])];
   const images = input.images ?? [];
   const quotes = input.quotes ?? [];
   // 画像だけの発言もある（文を書かずにスクリーンショットだけ貼る）。画面から添えたものだけの発言も
   const hasHumanMessage = input.prompt !== "" || images.length > 0 || quotes.length > 0;
+  // **番頭の指示を見直す**（§4.5）：始まる前に人が発言した・宛先のターンが決めることを人に聞いて終わった、なら積まずに捨てる（記録に残す）
+  const delivered = deps.supervisorInstructions && queued.length > 0 ? await deps.supervisorInstructions.screen(input.threadId, queued, hasHumanMessage) : queued;
+  if (!idle && delivered.length === 0 && !hasHumanMessage && queued.length > 0) {
+    // 届いたものが番頭の指示だけで、全部捨てた——ターンは始めない（鍵を返すと、ターンの終わりの扱いがもう一度走り、
+    // 留まっていた受信箱のカードと決めることの出来事が出る）
+    return;
+  }
   if (!idle && delivered.length === 0 && !hasHumanMessage) {
     yield { type: "error", message: "このターンに渡すもの（人の発言・届いたもの）がありません" };
     return;
@@ -571,6 +584,8 @@ async function* runThreadTurnInner(
       ...(d.automation ? { automation: d.automation } : {}),
       // 任務の予約で起こした回は、その回の結果を書くのに要る（§4.4）
       ...(d.mission ? { mission: d.mission } : {}),
+      // 番頭の指示は、どの番頭のどの指示か（受信箱のカード・記録を引く、§4.5）
+      ...(d.supervisor ? { supervisor: d.supervisor } : {}),
       // 外から来たもの（Webhook の本文）——画面は指示と分けて出す（§4.3）
       ...(d.external && d.external.length > 0 ? { external: d.external } : {}),
     });
@@ -672,6 +687,8 @@ async function* runThreadTurnInner(
     deps.missions,
     patrolNotify,
     readOnlyShape,
+    // 番頭の tool は番頭の回にだけ（ふつうの会話には出さない、§4.5）
+    supervisor ? deps.supervisorInstructions : undefined,
     prototypingTool,
   );
 
@@ -793,8 +810,14 @@ async function* runThreadTurnInner(
       allowedTools: restricted
         ? [
             ...READ_ONLY_BUILTIN_TOOLS,
-            // `notify` は見回りの Fork のターンにだけ在る——無い回には載せない
-            ...readOnlyCoreToolNames(readOnlyShape).filter((name) => patrolNotify || name !== `mcp__banto-thread__${NOTIFY_TOOL_NAME}`),
+            // `notify` は見回りの Fork のターンにだけ在る——無い回には載せない。番頭の2つも、渡された回にだけ在る
+            ...readOnlyCoreToolNames(readOnlyShape)
+              .filter((name) => patrolNotify || name !== `mcp__banto-thread__${NOTIFY_TOOL_NAME}`)
+              .filter(
+                (name) =>
+                  deps.supervisorInstructions ||
+                  (name !== `mcp__banto-thread__${INSTRUCT_THREAD_TOOL_NAME}` && name !== `mcp__banto-thread__${LIST_STALLED_THREADS_TOOL_NAME}`),
+              ),
             ...readOnlyModuleTools,
           ]
         : [
