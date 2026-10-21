@@ -7,6 +7,8 @@
 import type { AwaitingReply, MissionState, ProjectStart, ThreadClosedBy } from "../project-thread/types.js";
 import type { RuntimeMoveChange } from "../runtime/project-move.js";
 import type { IdleCompactionView } from "../delivery/idle-compaction.js";
+import type { BackgroundSummaryOf } from "../delivery/background-summaries.js";
+import type { BackgroundView } from "@banto/module-contract";
 
 /**
  * **バックグラウンドで動いているもの1件**（追加・2026-10-03、v4-frontend.md §6.33）。返事待ちの札（`AwaitingReply`）から
@@ -31,10 +33,36 @@ export interface BackgroundItem {
   keptAt?: string;
   /** Module との接続が切れたあと続けている（追加・2026-10-17、Backlog #362）。画面は「接続が切れたあと続けています」と出す */
   keptAfter?: "disconnect";
+  /**
+   * **結果で名乗った画面**（追加・2026-10-21、アーキ仕様 §4.2「結果で名乗る画面」、Backlog #489）。定義に画面（`resourceUri`）を
+   * 持たない tool だけ。画面はその Module の入口を `canvasView`＝`select` で開く
+   */
+  view?: BackgroundView;
+  /**
+   * **人が頼んだ要約**（追加・2026-10-21、アーキ仕様 §4.2「札の手がかりを Module があとから足す」の 3.、Backlog #489）。host の
+   * メモリの表から重ねる（Event Store には無い）。`summaryAt` は作った時刻（ISO）
+   */
+  summary?: string;
+  summaryAt?: string;
 }
 
-export function backgroundItemsOf(awaiting: readonly AwaitingReply[] | undefined): BackgroundItem[] {
-  return (awaiting ?? []).map((r) => ({ module: r.moduleName, since: r.since, ...(r.work ?? {}), ...(r.keptAt ? { keptAt: r.keptAt } : {}), ...(r.keptAfter ? { keptAfter: r.keptAfter } : {}) }));
+/**
+ * 返事待ちの札から、画面に見せる1件ずつを作る。**要約の表を重ねるのはここ1か所**（アーキ仕様 §4.2 の 3.）——呼び元は必ず
+ * 表を渡す。AI に見せる文を作る呼び元（`describeBackgroundItems`・`closeForkDroppedNote`）は `WITHOUT_SUMMARIES` を渡す
+ * （要約は人が頼んだもので、AI には渡さない——§4.1「4.」）
+ */
+export function backgroundItemsOf(awaiting: readonly AwaitingReply[] | undefined, summaries: BackgroundSummaryOf): BackgroundItem[] {
+  return (awaiting ?? []).map((r) => {
+    const s = summaries(r.replyTo);
+    return {
+      module: r.moduleName,
+      since: r.since,
+      ...(r.work ?? {}),
+      ...(r.keptAt ? { keptAt: r.keptAt } : {}),
+      ...(r.keptAfter ? { keptAfter: r.keptAfter } : {}),
+      ...(s ? { summary: s.summary, summaryAt: s.summaryAt } : {}),
+    };
+  });
 }
 
 export type AppEvent =

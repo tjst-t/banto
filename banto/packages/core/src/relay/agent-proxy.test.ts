@@ -407,6 +407,42 @@ test("あとで届ける結果に「人を待っている」が載っていれ�
   await moduleClient.close();
 });
 
+// **結果で名乗る画面**（追加・2026-10-21、アーキ仕様 §4.2、Backlog #489）。返事待ちにするときに渡し、AI には見せない
+test("あとで届ける結果が dev.banto/backgroundView を名乗れば返事待ちにするときに渡し、AI に返す結果からは外す", async () => {
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "run", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent", "dev.banto/deliversLater": true } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({
+    content: [{ type: "text", text: "ok" }],
+    _meta: {
+      "dev.banto/pendingReply": true,
+      "dev.banto/backgroundView": { resourceUri: "ui://banto-shell/commands", select: { commandId: "c1" } },
+    },
+  }));
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["x"], dependsOn: [], isolation: "subprocess" }, "fake");
+  const marked: unknown[] = [];
+  const proxy = buildAgentProxy(
+    { name: "shell-p1", declaredName: "shell", client: moduleClient, meta },
+    {
+      projectId: "p1",
+      threadId: "t1",
+      replies: { issue: () => "reply_1", markAwaiting: async (_replyTo, _waitingOn, _location, view) => void marked.push(view) },
+    },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+  const result = await runner.callTool({ name: "run", arguments: {} });
+  assert.deepEqual(marked, [{ resourceUri: "ui://banto-shell/commands", select: { commandId: "c1" } }]);
+  assert.equal((result._meta as Record<string, unknown> | undefined)?.["dev.banto/backgroundView"], undefined, "AI に画面の名乗りが見えている");
+  await runner.close();
+  await moduleClient.close();
+});
+
 // **人の答えを待つ間は、外側の呼び出しの上限を数えない**（追加・2026-10-04、ユーザー報告「publishService が承認待ちで
 // 止まる」）。Module の中の中継が人の承認を待つ間に、AI → Module の呼び出しが既定の60秒で切れていた
 test("Module が黙ったままなら上限で切れるが、人の答えを待っている間（holdForHuman）は数えない", async () => {

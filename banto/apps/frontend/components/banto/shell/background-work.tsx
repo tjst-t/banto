@@ -12,9 +12,14 @@
 // **人の答えを待っているもの**（公開の承認など。Module が `dev.banto/waitingOn` で名乗る、2026-10-04、ユーザー）は
 // 「バックグラウンド」と分けて、人の番の色（受信箱のバッジと同じ）で出す——放っておいてよいものに見せない。
 // 行は「人を待っている」が上、「バックグラウンド」が下の2行まで。Project の行の数は、人を待っているものがあれば人の番の色。
+//
+// **要約**（追加・2026-10-21、Backlog #489、§6.33「要約」）：人が仕事の画面で頼んだ要約があれば、一覧の1件の説明の下に
+// 「要約：<文>（<何分前>）」（2行で畳む）。Thread の行は題のまま。**狭い画面**では一覧を行の右に浮かべず、行のすぐ下に開く。
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Hand, Hourglass, Target } from "lucide-react";
+import { ChevronDown, Hand, Hourglass, Sparkles, Target } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { serializeViewState, VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 import { MissionPanel } from "@/components/banto/thread/mission-panel";
 import { useThreadMission } from "@/lib/backend/missions";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -76,13 +81,22 @@ function minutesAgo(since: string, now: number): string {
   return h < 24 ? `${h}時間前` : `${Math.floor(h / 24)}日前`;
 }
 
-/** 移り先：その Thread を開き、画面と呼び出しが分かれば Canvas にその画面を開く（会話のカードと同じ URL の形） */
+/**
+ * 移り先：その Thread を開き、画面と呼び出しが分かれば Canvas にその画面を開く（会話のカードと同じ URL の形）。定義に画面を
+ * 持たない tool が結果で画面を名乗っていれば、その Module の入口を `canvasView`＝`select` で開く（`dev.banto/open-surface` の
+ * launcher と同じ形、§6.2）
+ */
 function hrefOf(projectId: string, thread: ThreadRef, item: BackgroundItem): string {
   const params = new URLSearchParams();
   if (thread.fork) params.set("fork", thread.id);
   if (item.resourceUri) {
     params.set("canvas", `${item.module}:${item.resourceUri}`);
     if (item.toolCallId) params.set("canvasTool", item.toolCallId);
+  } else if (item.view) {
+    params.set("canvas", `${item.module}:${item.view.resourceUri}`);
+    // host が大きさを確かめて写している（上限は同じ）。それでも載らなければ入口の最初の画面を開く
+    const select = item.view.select === undefined ? undefined : serializeViewState(item.view.select);
+    if (select !== undefined) params.set(VIEW_STATE_PARAM, select);
   }
   const query = params.toString();
   return query ? `/p/${projectId}?${query}` : `/p/${projectId}`;
@@ -97,6 +111,14 @@ function ItemBody({ item, kind, now }: { item: BackgroundItem; kind: Kind; now: 
       {distinctDescription(item.title, item.description) ? (
         <span data-testid="background-item-description" className="line-clamp-2 text-xs text-ink-2">
           {item.description}
+        </span>
+      ) : null}
+      {item.summary ? (
+        // 人が頼んだ要約（AI には渡らない）。作った時刻が無ければ「何分前」は出さない
+        <span data-testid="background-item-summary" className="line-clamp-3 rounded-sm bg-surface-2 px-1.5 py-1 text-xs leading-relaxed text-ink-2 md:line-clamp-2">
+          <Sparkles className="mr-1 inline size-3 align-[-2px] text-primary" />
+          要約：{item.summary}
+          {item.summaryAt ? `（${minutesAgo(item.summaryAt, now)}）` : null}
         </span>
       ) : null}
       <span className="text-xs text-ink-3">
@@ -212,12 +234,17 @@ export function ThreadBackgroundLine({
   projectId,
   thread,
   className,
+  onNavigate,
 }: {
   projectId: string;
   thread: ThreadRef;
   className?: string;
+  /** 1件を押して移ったとき（携帯の Drawer を閉じる） */
+  onNavigate?: () => void;
 }) {
   const items = useThreadBackground(thread.id);
+  // **狭い画面**（§6.33）：行の右に浮かべる幅が無いので、一覧は行のすぐ下に開く（押すたびに開閉）
+  const narrow = useIsMobile();
   // **任務が動いていて裏の仕事もあれば、裏の仕事の行を「任務・バックグラウンドで n 件」にまとめる**（追加・2026-10-20、
   // v4-frontend.md §6.47）。開くと任務の面と裏の仕事の一覧。任務の1行は出さない（`ThreadMissionLine`）
   const mission = useThreadMission(thread.id);
@@ -233,33 +260,71 @@ export function ThreadBackgroundLine({
         if (mine.length === 0) return null;
         const merged = kind === "work" && withMission !== undefined;
         const Icon = kind === "human" ? Hand : merged ? Target : Hourglass;
+        const lineLabel = merged ? `${thread.title}の任務とバックグラウンドで動いているもの（${mine.length}件）を見る` : label(mine.length, thread.title, kind);
+        const lineText = merged ? `任務・バックグラウンドで ${mine.length} 件` : mine.length === 1 ? titleOf(mine[0]!) : KINDS[kind].line(mine.length);
+        const lineClass = cn(
+          "flex w-full items-center gap-1 truncate rounded-md py-0.5 pr-1 pl-8 text-left text-xs hover:bg-sidebar-accent",
+          kind === "human" ? "font-medium text-turn" : "text-ink-3 hover:text-foreground",
+          className,
+        );
+        const body = (
+          <>
+            {merged ? (
+              <div className="border-b border-border p-1.5 pb-3">
+                <MissionPanel threadId={thread.id} mission={withMission} />
+              </div>
+            ) : null}
+            <BackgroundList
+              projectId={projectId}
+              groups={groups}
+              showThread={false}
+              onPicked={() => {
+                setOpen(null);
+                onNavigate?.();
+              }}
+            />
+          </>
+        );
+        if (narrow) {
+          return (
+            <div key={kind} className="flex flex-col">
+              <button
+                type="button"
+                aria-label={lineLabel}
+                aria-expanded={open === kind}
+                data-testid={kind === "human" ? "thread-waiting-human" : "thread-background"}
+                data-mission={merged ? "" : undefined}
+                onClick={() => setOpen(open === kind ? null : kind)}
+                className={lineClass}
+              >
+                <Icon className="size-3 shrink-0" />
+                <span className="truncate">{lineText}</span>
+                <ChevronDown className={cn("ml-auto size-3 shrink-0 transition-transform", open !== kind && "-rotate-90")} />
+              </button>
+              {open === kind ? (
+                <div data-testid="background-inline" className="mt-1 mb-1 ml-3 rounded-lg border border-border bg-popover p-1.5 shadow-sm">
+                  {body}
+                </div>
+              ) : null}
+            </div>
+          );
+        }
         return (
           <Popover key={kind} open={open === kind} onOpenChange={(next) => setOpen(next ? kind : null)}>
             <PopoverTrigger asChild>
               <button
                 type="button"
-                aria-label={merged ? `${thread.title}の任務とバックグラウンドで動いているもの（${mine.length}件）を見る` : label(mine.length, thread.title, kind)}
+                aria-label={lineLabel}
                 data-testid={kind === "human" ? "thread-waiting-human" : "thread-background"}
                 data-mission={merged ? "" : undefined}
-                className={cn(
-                  "flex w-full items-center gap-1 truncate rounded-md py-0.5 pr-1 pl-8 text-left text-xs hover:bg-sidebar-accent",
-                  kind === "human" ? "font-medium text-turn" : "text-ink-3 hover:text-foreground",
-                  className,
-                )}
+                className={lineClass}
               >
                 <Icon className="size-3 shrink-0" />
-                <span className="truncate">
-                  {merged ? `任務・バックグラウンドで ${mine.length} 件` : mine.length === 1 ? titleOf(mine[0]!) : KINDS[kind].line(mine.length)}
-                </span>
+                <span className="truncate">{lineText}</span>
               </button>
             </PopoverTrigger>
             <PopoverContent side="right" align="start" className={cn("p-1.5", merged ? "w-96" : "w-72")}>
-              {merged ? (
-                <div className="border-b border-border p-1.5 pb-3">
-                  <MissionPanel threadId={thread.id} mission={withMission} />
-                </div>
-              ) : null}
-              <BackgroundList projectId={projectId} groups={groups} showThread={false} onPicked={() => setOpen(null)} />
+              {body}
             </PopoverContent>
           </Popover>
         );

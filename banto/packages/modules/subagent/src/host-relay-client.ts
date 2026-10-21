@@ -12,6 +12,11 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL,
+  type SummarizeBackgroundWorkInput,
+  type SummarizeBackgroundWorkReply,
+} from "@banto/module-contract";
 
 export interface HostRelayClientOptions {
   url: string;
@@ -82,6 +87,20 @@ export class HostRelayClient {
     const text = (result.content as { type: string; text: string }[])[0]?.text;
     if (result.isError) throw new Error(text ?? "呼び出し元の Thread に届けられませんでした");
     return JSON.parse(text ?? "{}");
+  }
+
+  /**
+   * **裏の仕事の要約を core に作ってもらう**（host の口、アーキ仕様 §4.2「札の手がかりを Module があとから足す」の 2.、Backlog #489）。
+   * 指示とモデルは core が持つ——ここは材料を渡すだけ（24,000 字を超えた分は core が切る）。その仕事で受け取った札（`replyTo`）を
+   * 添えると、まだ返事待ちならサイドバーのその1件にも出る。断り・失敗（違う Module の札・10 秒あけていない・ログイン切れ等）は
+   * 理由の文で投げる——画面にそのまま出す
+   */
+  async summarizeBackgroundWork(input: SummarizeBackgroundWorkInput): Promise<SummarizeBackgroundWorkReply> {
+    const client = await this.ensureConnected();
+    const result = await client.callTool({ name: RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL, arguments: { ...input } });
+    const text = (result.content as { type: string; text: string }[])[0]?.text;
+    if (result.isError) throw new Error(text ?? "要約を作れませんでした");
+    return JSON.parse(text ?? "{}") as SummarizeBackgroundWorkReply;
   }
 
   /**

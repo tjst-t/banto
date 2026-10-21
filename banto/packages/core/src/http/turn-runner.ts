@@ -37,6 +37,7 @@ import {
   type PrototypingTool,
 } from "./fork-tool.js";
 import { backgroundItemsOf } from "./app-events.js";
+import { WITHOUT_SUMMARIES } from "../delivery/background-summaries.js";
 import {
   REPORT_TURN_TOOL_NAME,
   noteToolUsed,
@@ -269,7 +270,7 @@ async function dropCloseIfDue(
   completed: boolean,
 ): Promise<TurnStreamEvent | undefined> {
   if (closing.reason === undefined || closing.settled) return undefined;
-  const items = completed ? backgroundItemsOf(deps.projectThread.getThread(threadId)?.awaitingReplies) : [];
+  const items = completed ? backgroundItemsOf(deps.projectThread.getThread(threadId)?.awaitingReplies, WITHOUT_SUMMARIES) : [];
   if (completed && items.length === 0) return undefined;
   closing.settled = true;
   const note = closeForkDroppedNote(closing.reason, completed ? items : undefined);

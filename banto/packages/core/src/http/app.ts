@@ -144,6 +144,7 @@ import {
 import type { ChatTitler } from "./chat-title.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { backgroundItemsOf, type AppEventBus } from "./app-events.js";
+import { WITHOUT_SUMMARIES, type BackgroundSummaryOf } from "../delivery/background-summaries.js";
 import { closeForkDroppedNote, composeForkInstruction, type ForkRequest } from "./fork-tool.js";
 // **MCP Registry の一覧**（追加・2026-09-21）。**host が中継する**
 // ——画面から直に外を叩かせない（`modules/registry/client.ts` の冒頭）
@@ -297,6 +298,11 @@ export interface AppDeps {
   webhookBaseUrl?: string;
   /** host から画面への出来事の流れ（`GET /api/events`、決定・2026-09-25） */
   appEvents?: AppEventBus;
+  /**
+   * **札の1件に重ねる要約**（追加・2026-10-21、アーキ仕様 §4.2「札の手がかりを Module があとから足す」の 3.、Backlog #489）。
+   * 繋いだときの hello のバックグラウンドの一覧に重ねる（host のメモリの表）。無ければ重ねない
+   */
+  backgroundSummaries?: BackgroundSummaryOf;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
    *  内部で他 Module を呼ぶとき、承認をどの会話に出すかがこれで決まる。 */
   moduleCalls?: ModuleCallTracker;
@@ -1748,7 +1754,8 @@ export function createApp(deps: AppDeps) {
       return;
     }
     // 予約のあとに頼んだ裏の仕事があれば閉じない——閉じても仕事は止まらず、結果は閉じた Fork に溜まるだけ
-    const items = backgroundItemsOf(thread.awaitingReplies);
+    // AI の会話に残す文——要約は重ねない（§4.1「4.」）
+    const items = backgroundItemsOf(thread.awaitingReplies, WITHOUT_SUMMARIES);
     if (items.length > 0) {
       await deps.projectThread.appendMessage(threadId, "assistant", closeForkDroppedNote(reason, items));
       return;
@@ -3620,7 +3627,7 @@ export function createApp(deps: AppDeps) {
           deps.projectThread
             .listThreadsForProject(p.id)
             .filter((t) => (t.awaitingReplies?.length ?? 0) > 0)
-            .map((t) => ({ threadId: t.id, projectId: p.id, items: backgroundItemsOf(t.awaitingReplies) })),
+            .map((t) => ({ threadId: t.id, projectId: p.id, items: backgroundItemsOf(t.awaitingReplies, deps.backgroundSummaries ?? WITHOUT_SUMMARIES) })),
         );
         // **上限が戻るのを待っている Thread も渡す**（追加・2026-10-18、v4-frontend.md §6.46）——会話の待ちの帯とサイドバーの1行。
         // 以後は rate_limit_wait.changed で置き換える

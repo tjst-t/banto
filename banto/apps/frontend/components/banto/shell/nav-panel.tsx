@@ -411,7 +411,7 @@ export function ProjectTreeItem({
                     </div>
                   )}
                 </SidebarItemMenu>
-                <ThreadBackgroundLine projectId={project.id} thread={{ id: project.baseThreadId, title: "Base Thread", fork: false }} />
+                <ThreadBackgroundLine projectId={project.id} thread={{ id: project.baseThreadId, title: "Base Thread", fork: false }} onNavigate={onNavigate} />
                 <ThreadRateLimitWaitLine threadId={project.baseThreadId} />
                 <ThreadMissionLine threadId={project.baseThreadId} threadTitle="Base Thread" />
               </SidebarMenuSubItem>
@@ -462,7 +462,7 @@ export function ProjectTreeItem({
                         </div>
                         )}
                       </SidebarItemMenu>
-                      <ThreadBackgroundLine projectId={project.id} thread={{ id: fork.id, title: fork.title, fork: true }} />
+                      <ThreadBackgroundLine projectId={project.id} thread={{ id: fork.id, title: fork.title, fork: true }} onNavigate={onNavigate} />
                       <ThreadRateLimitWaitLine threadId={fork.id} />
                       <ThreadMissionLine threadId={fork.id} threadTitle={fork.title} />
                       </>

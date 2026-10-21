@@ -12,7 +12,7 @@
 // 同じ印で覚え直し、**最後の届け1回だけ**使えるようにする（`restore`）。
 
 import { randomBytes } from "node:crypto";
-import { REPLY_TO_USES } from "@banto/module-contract";
+import { REPLY_TO_USES, type BackgroundView } from "@banto/module-contract";
 
 export const REPLY_LIMITS = {
   ttlMs: 24 * 60 * 60 * 1000,
@@ -45,6 +45,12 @@ export interface BackgroundWork {
    * 「途中で終わりました」に添える
    */
   resultLocation?: string;
+  /**
+   * **結果で名乗った画面**（追加・2026-10-21、アーキ仕様 §4.2「結果で名乗る画面」、Backlog #489）。定義に画面（`resourceUri`）を
+   * 持たない tool が「あとで届ける」と言うときに名乗る（`dev.banto/backgroundView`）。サイドバーの1件はその Module の入口を
+   * `select` で開く。定義に画面があれば写さない（そちらが先——会話のカードと同じ画面を toolCallId で開く）
+   */
+  view?: BackgroundView;
 }
 
 /**
@@ -92,6 +98,7 @@ export interface ReplyHandle {
 
 export class ReplyHandles {
   private readonly handles = new Map<string, ReplyHandle>();
+  private readonly settledListeners = new Set<(id: string) => void>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -168,11 +175,18 @@ export class ReplyHandles {
    * 返事待ちにする（期限で切らない）。人の答えを待っていると名乗ったら、それも覚える
    * （名乗った `title` はカードの題より優先する——その呼び出しで何を待っているかは Module が一番よく知っている）
    */
-  markAwaiting(id: string, waitingOn?: { on: "human"; title?: string }, resultLocation?: string): ReplyHandle | undefined {
+  markAwaiting(
+    id: string,
+    waitingOn?: { on: "human"; title?: string },
+    resultLocation?: string,
+    view?: BackgroundView,
+  ): ReplyHandle | undefined {
     const h = this.handles.get(id);
     if (!h) return h;
     h.awaiting = true;
     if (resultLocation) h.work = { ...(h.work ?? { toolName: "" }), resultLocation };
+    // 定義に画面がある tool は、そちらで開く（結果の名乗りは写さない）
+    if (view && !h.work?.resourceUri) h.work = { ...(h.work ?? { toolName: "" }), view };
     if (waitingOn) {
       h.work = {
         ...(h.work ?? { toolName: "" }),
@@ -186,6 +200,15 @@ export class ReplyHandles {
   /** 返事が済んだ（最後の届け・代わりの「途中で終わりました」）。 */
   settle(id: string): void {
     this.handles.delete(id);
+    for (const listener of this.settledListeners) listener(id);
+  }
+
+  /**
+   * **札が済んだら知らせてもらう**（追加・2026-10-21、Backlog #489——札の1件に重ねた要約を消す）。済ませる道は `settle` だけ
+   */
+  onSettled(listener: (id: string) => void): () => void {
+    this.settledListeners.add(listener);
+    return () => this.settledListeners.delete(listener);
   }
 
   /**
