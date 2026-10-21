@@ -39,6 +39,7 @@ import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canv
 import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread, getThreadsForProject } from "@/lib/mock/threads";
+import { useAutomations } from "@/lib/backend/automations";
 import type { MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { markThreadViewing } from "@/lib/backend/real-inbox";
@@ -393,12 +394,7 @@ function ThreadRuntime({
       {/* 上限が戻るのを待っている——自動で続ける時刻と「今すぐ続ける」「待つのをやめる」（§6.46） */}
       <RateLimitWaitBanner threadId={threadId} />
       {/* **見回りの会話**（§6.47）：どう起こしても読むだけで動く——人がここで頼んでも書けないことを先に言う */}
-      {getThread(threadId)?.restriction === "read-only" ? (
-        <p data-testid="patrol-thread-band" className="mb-2 flex items-center gap-1.5 rounded-md bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
-          <Eye className="size-3.5 shrink-0" aria-hidden />
-          見回りの会話です。ここで頼んだことも読むだけで動きます
-        </p>
-      ) : null}
+      {getThread(threadId)?.restriction === "read-only" ? <PatrolThreadBand projectId={projectId} threadId={threadId} /> : null}
       {/* 4時間空いた会話の冷める前の要約——5分前から「まもなく要約します」、要約している間は「要約しています」（§6.52） */}
       <IdleCompactionBanner threadId={threadId} />
       <ThreadMarkers markers={markers} />
@@ -454,5 +450,25 @@ function ThreadRuntime({
       </ThreadIdProvider>
       </CanvasOpenerProvider>
     </AssistantRuntimeProvider>
+  );
+}
+
+/**
+ * **見回りの会話の帯**（§6.47）：どう起こしても読むだけで動く——人がここで頼んでも書けないことを先に言う。見回りの自動化が
+ * 消えたあと（一時停止は含まない）は、この会話を閉じることだけはできると添える（追加・2026-10-21、アーキ仕様 §4.4
+ * 「見回りが消えたあとの Fork」）。自動化の一覧をまだ取れていなければ、今までの文のまま
+ */
+function PatrolThreadBand({ projectId, threadId }: { projectId: string; threadId: string }) {
+  const automations = useAutomations(projectId);
+  const orphaned =
+    automations !== undefined &&
+    !automations.some((a) => a.mode === "patrol" && a.target.kind === "dedicated" && a.target.threadId === threadId);
+  return (
+    <p data-testid="patrol-thread-band" className="mb-2 flex items-center gap-1.5 rounded-md bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
+      <Eye className="size-3.5 shrink-0" aria-hidden />
+      {orphaned
+        ? "見回りは消えました。ここで頼んだことも読むだけで動きます（この会話を閉じることはできます）"
+        : "見回りの会話です。ここで頼んだことも読むだけで動きます"}
+    </p>
   );
 }

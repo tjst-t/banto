@@ -1010,7 +1010,7 @@ test("ふつうの会話のターンは今までどおり（組み込みも core
   });
 });
 
-test("見回りの Fork のターンにだけ notify を見せ、聞かずに通す。見回りが無い読むだけの会話には出さない", async () => {
+test("見回りの Fork のターンにだけ notify を見せ、聞かずに通す。見回りを消したあとは notify の代わりに close_fork だけ足す", async () => {
   const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   await withThread(async ({ deps, threadId, store }) => {
@@ -1039,12 +1039,16 @@ test("見回りの Fork のターンにだけ notify を見せ、聞かずに通
       await servers["banto-thread"]!.instance!.connect(b);
       const client = new Client({ name: "t", version: "0" });
       await client.connect(a);
-      return { client, allowed: [...(seen!.allowedTools ?? [])] };
+      const hook = (seen as unknown as { onPreToolUse?: (i: { toolName: string }) => unknown }).onPreToolUse!;
+      return { client, allowed: [...(seen!.allowedTools ?? [])], hookAllows: (toolName: string) => hook({ toolName }) === undefined };
     };
 
-    const { client, allowed } = await toolsOf();
+    const { client, allowed, hookAllows } = await toolsOf();
     assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "list_automations", "list_threads", "notify"]);
     assert.ok(allowed.includes("mcp__banto-thread__notify"), "notify を聞かずに通していない");
+    // 見回りがあるあいだ（一時停止も同じ——自動化は残っている）は閉じられない
+    assert.ok(!allowed.includes("mcp__banto-thread__close_fork"));
+    assert.equal(hookAllows("mcp__banto-thread__close_fork"), false, "見回りがあるのに close_fork を網が通した");
     const r = (await client.callTool({ name: "notify", arguments: { key: "k", title: "t", finding: "f" } })) as { content: Array<{ text: string }> };
     assert.equal(r.content[0]!.text, "受信箱に出しました");
     assert.deepEqual(notified, [{ key: "k", title: "t", finding: "f" }]);
@@ -1054,8 +1058,17 @@ test("見回りの Fork のターンにだけ notify を見せ、聞かずに通
     // 見回りを消したあと（読むだけの印は残る）
     patrolFork.current = undefined;
     const after = await toolsOf();
-    assert.deepEqual((await after.client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "list_automations", "list_threads"]);
+    // **close_fork だけ足す**（追加・2026-10-21、§4.4「見回りが消えたあとの Fork」）。ほかの書く tool は無いまま
+    assert.deepEqual((await after.client.listTools()).tools.map((t) => t.name).sort(), ["claude_usage", "close_fork", "list_automations", "list_threads"]);
     assert.ok(!after.allowed.includes("mcp__banto-thread__notify"));
+    assert.ok(after.allowed.includes("mcp__banto-thread__close_fork"), "close_fork を聞かずに通していない");
+    assert.equal(after.hookAllows("mcp__banto-thread__close_fork"), true, "close_fork を網が断った");
+    for (const ng of ["mcp__banto-thread__start_forks", "mcp__banto-thread__send_message", "mcp__banto-thread__create_automation", "mcp__banto-memory__remember_decision", "mcp__shell__runCommand", "Bash", "WebFetch"]) {
+      assert.ok(!after.allowed.includes(ng), ng);
+      assert.equal(after.hookAllows(ng), false, ng);
+    }
+    const closed = (await after.client.callTool({ name: "close_fork", arguments: { reason: "見回りは消えた" } })) as { isError?: boolean };
+    assert.ok(!closed.isError, "close_fork が断られた");
     await after.client.close();
   });
 });

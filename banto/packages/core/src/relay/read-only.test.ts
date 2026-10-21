@@ -76,6 +76,15 @@ test("PreToolUse の最後の網：組み込みは資源の3つ、core は list_
   }
 });
 
+test("見回りが消えたあとの見回りの Fork は close_fork だけ足す（ほかの書く tool は断ったまま）", () => {
+  const modules = new Set<string>();
+  assert.equal(readOnlyHookAllows("mcp__banto-thread__close_fork", modules), false);
+  assert.equal(readOnlyHookAllows("mcp__banto-thread__close_fork", modules, { orphanedPatrol: true }), true);
+  for (const ng of ["mcp__banto-thread__start_forks", "mcp__banto-thread__send_message", "mcp__banto-memory__remember_decision", "mcp__shell__runCommand", "Bash"]) {
+    assert.equal(readOnlyHookAllows(ng, modules, { orphanedPatrol: true }), false, ng);
+  }
+});
+
 test("patrol.allowedTools は JSON の文字列の配列。壊れていれば何も許さない", () => {
   assert.deepEqual(parsePatrolAllowedTools(serializePatrolAllowedTools(["b/x", "a/y", "b/x"])), ["a/y", "b/x"]);
   assert.deepEqual(parsePatrolAllowedTools(undefined), []);
