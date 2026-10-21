@@ -14,10 +14,12 @@
 // （j/k/r/e/o・Escape）を聞くときは、自分を数えない（`exceptInbox`）。
 const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
-export function isOverlayOpen(options: { exceptSettings?: boolean; exceptInbox?: boolean } = {}): boolean {
+// **番頭の画面**（§6.54）も受信箱と同じ形で重ねる（`data-banto-supervisor`、自分のキーを聞くときは `exceptSupervisor`）。
+export function isOverlayOpen(options: { exceptSettings?: boolean; exceptInbox?: boolean; exceptSupervisor?: boolean } = {}): boolean {
   for (const el of document.querySelectorAll(OPEN_DIALOG)) {
     if (options.exceptSettings && el.hasAttribute("data-banto-settings")) continue;
     if (options.exceptInbox && el.hasAttribute("data-banto-inbox")) continue;
+    if (options.exceptSupervisor && el.hasAttribute("data-banto-supervisor")) continue;
     return true;
   }
   return false;

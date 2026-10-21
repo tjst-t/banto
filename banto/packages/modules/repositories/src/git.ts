@@ -902,6 +902,7 @@ export async function gitInitBare(path: string): Promise<void> {
  * **向こうから来た bundle の、そのブランチだけを取り込む**（`refs/heads/<b>`）。bundle は中の AI が作りうるので、取り込んだ
  * あと**使い捨ての置き場を `git fsck --strict` で確かめ**、落ちたら断る——bundle からの fetch は git 2.43 では
  * `transfer.fsckObjects` を効かせない（author にメールの無いコミットが終了コード 0 で入る。2026-10-20 に実測、レビュー M1）。
+ * 新しい git は fetch の段で断る——そのときも同じ「正しくないので送りません」で返す（2026-10-21）。
  * 置き場には取り込んだものしか無いので、確かめるのはそのブランチの中身だけ。bundle はこの Module が書いた置き場のファイルなので、
  * 手元のパスを読ませる（`protocol.file.allow` をここだけ戻す）。ほかの ref・タグは取らない
  */
@@ -911,7 +912,13 @@ export async function gitFetchBundle(path: string, bundle: string, branch: strin
     ["transfer.fsckObjects", "true"],
   ]);
   const r = await git(path, ["fetch", "--no-tags", "--no-write-fetch-head", bundle, `+refs/heads/${branch}:refs/heads/${branch}`], GIT_TIMEOUTS.losses, env);
-  if (!r.ok) throw new Error(`向こうから来た ${branch} を取り込めませんでした：${r.stderr.trim().slice(-500) || String(r.code)}`);
+  if (!r.ok) {
+    // 新しい git（CI の機械の 2.5x）は bundle からの fetch でも `transfer.fsckObjects` を効かせ、取り込む段で断る（2026-10-21、
+    // GitHub Actions で実測）。そのときは下の fsck で断ったのと同じ理由で返す——どちらの段で見つかっても、人に出る理由は1つ
+    const malformed = fsckErrorLines(r.stderr);
+    if (malformed) throw new Error(`向こうから来た ${branch} の中身が git の形として正しくないので送りません：${malformed}`);
+    throw new Error(`向こうから来た ${branch} を取り込めませんでした：${r.stderr.trim().slice(-500) || String(r.code)}`);
+  }
   const checked = await git(path, ["fsck", "--strict", "--no-dangling", "--no-progress"], GIT_TIMEOUTS.losses, writeEnv({ kind: "none" }));
   if (!checked.ok) {
     const errors = checked.stderr
@@ -921,6 +928,19 @@ export async function gitFetchBundle(path: string, bundle: string, branch: strin
       .join("\n");
     throw new Error(`向こうから来た ${branch} の中身が git の形として正しくないので送りません：${errors || checked.stderr.trim().slice(-500) || String(checked.code)}`);
   }
+}
+
+/**
+ * fetch の `transfer.fsckObjects` が断ったときの、git の形の誤りの行（`error: object <id>: <msgid>: …`）。無ければ undefined
+ * ——線が切れた・bundle が読めない等のほかの失敗は、取り込めなかったとして別に返す
+ */
+export function fsckErrorLines(stderr: string): string | undefined {
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^error: object [0-9a-f]{7,}: [A-Za-z]+:/.test(l))
+    .slice(0, 3);
+  return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
 /** そのブランチの指すコミット */

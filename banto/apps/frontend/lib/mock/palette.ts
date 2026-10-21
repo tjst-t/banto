@@ -8,8 +8,10 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  UserCheck,
   Zap,
 } from "lucide-react";
+import { SUPERVISOR_LABEL } from "../supervisor-label";
 import type { LucideIcon } from "lucide-react";
 import { getActiveProjects, getProject, isChat } from "./projects";
 import { getThread, getThreadsForProject } from "./threads";
@@ -63,6 +65,9 @@ const OPERATIONS: readonly { id: string; title: string; subtitle: string; icon: 
 export function getOperations(): typeof OPERATIONS {
   return OPERATIONS;
 }
+
+/** 番頭の画面で引ける言葉（呼び名が変わっても、一般的な語で引けるように） */
+const SUPERVISOR_WORDS = [SUPERVISOR_LABEL, "番頭", "監督", "代行", "方針", "全部止める", "supervisor"];
 
 /** 「自動化」で引ける言葉（§6.42——「cron」「予定」「webhook」「きっかけ」でも引ける） */
 const AUTOMATION_WORDS = ["自動化", "自動", "きっかけ", "予定", "定期", "cron", "webhook", "schedule", "automation"];
@@ -239,6 +244,17 @@ export function buildPaletteGroups(
       icon: Zap,
       href: automationsCanvasHref(currentProjectId),
       kind: "operation",
+    });
+  }
+  // **番頭の画面**（v4-frontend.md §6.54）——banto 全体で1つ。受信箱と同じ前面の1枚で開く（操作の `open-supervisor`）
+  if (q === "" || SUPERVISOR_WORDS.some((w) => w.toLowerCase().includes(q) || q.includes(w.toLowerCase()))) {
+    opItems.unshift({
+      id: "operation:open-supervisor",
+      title: SUPERVISOR_LABEL,
+      subtitle: "Project の決めることに方針どおり答える AI。方針・全部止める・記録",
+      icon: UserCheck,
+      kind: "operation",
+      actionId: "open-supervisor",
     });
   }
   if (opItems.length > 0) groups.push({ kind: "operation", label: "操作", items: opItems });

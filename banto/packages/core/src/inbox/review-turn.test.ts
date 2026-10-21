@@ -89,6 +89,35 @@ test("ターンの中身：まとめがあれば request はまとめから、�
   });
 });
 
+test("ターンの中身：外から来たもの（Webhook の本文・別の会話からのメッセージ）を積んだターンだけ readExternal（Backlog #511）", async () => {
+  await withStore(async (store, threadId) => {
+    const first = await store.startTurn(threadId, { cause: "human", attempt: 0 });
+    await store.appendMessage(threadId, "user", "人の頼み");
+    await store.appendMessage(threadId, "assistant", "やりました");
+    await store.endTurn(threadId, first, "completed");
+    assert.equal(reviewTurnOf(store.getThread(threadId)!, { running: false }).readExternal, undefined, "人の発言だけのターンを外から来たとした");
+
+    const second = await store.startTurn(threadId, { cause: "delivery", attempt: 0 });
+    await store.appendMessage(threadId, "user", "PR が来た", undefined, {
+      from: "banto",
+      title: "自動化「PR」",
+      hop: 1,
+      deliveryId: "d1",
+      external: [{ source: "webhook", receivedAt: new Date().toISOString(), body: "PR の本文" }],
+    });
+    await store.appendMessage(threadId, "assistant", "読みました");
+    await store.endTurn(threadId, second, "completed");
+    assert.equal(reviewTurnOf(store.getThread(threadId)!, { running: false }).readExternal, true);
+    // 前のターンの中身を組むときは、そのターンの範囲だけを見る
+    const earlier = store.getThread(threadId)!.messages.find((m) => m.text === "PR が来た")!.seq;
+    assert.equal(
+      reviewTurnOf(store.getThread(threadId)!, { running: false, earlier: { startedSeq: 0, beforeSeq: earlier } }).readExternal,
+      undefined,
+      "前のターンに後のターンの届けものを数えた",
+    );
+  });
+});
+
 test("ターンの中身：まとめが無ければ人の最後の発言の頭。長い返事は切って印を付け、返事を書く前に切れたターンは前の返事を出さない", async () => {
   await withStore(async (store, threadId) => {
     const first = await store.startTurn(threadId, { cause: "human", attempt: 0 });

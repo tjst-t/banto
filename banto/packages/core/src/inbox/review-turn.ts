@@ -29,6 +29,12 @@ export interface ReviewTurn {
   outcome?: ReviewTurnOutcome;
   /** そのターンで AI が呼んだ tool の数（まとめ・決まったことの記録は数えない）。会話の記録が読めなければ無い */
   toolCalls?: number;
+  /**
+   * **そのターンが外から来たものを読んだ**（追加・2026-10-21、Backlog #511）。番頭はこのターンの決めることに答えない（アーキ仕様 §4.5
+   * 「外の文」）——受信箱のカードがそのわけを出す。判定は `readExternalOf` と同じ（積んだ届けものに Webhook の本文・出来事・別の会話からの
+   * メッセージがある）
+   */
+  readExternal?: true;
 }
 
 /** 最後に始めたターンの結末。走っている・1度も走っていなければ無い */
@@ -88,12 +94,16 @@ export function reviewTurnOf(
   const request = summaryRequest ?? (human ? head(human.text.trim(), REVIEW_REQUEST_MAX_CHARS).text : undefined);
   const body = reply && reply.text.trim() !== "" ? head(reply.text, REVIEW_REPLY_MAX_CHARS) : undefined;
   const outcome = earlier ? earlier.outcome : outcomeOf(thread, opts.running);
+  const readExternal =
+    startedSeq !== undefined &&
+    messages.some((m) => m.seq > startedSeq && m.origin && (m.origin.sender || (m.origin.external?.length ?? 0) > 0));
   return {
     ...(request !== undefined ? { request } : {}),
     ...(body ? { reply: body.text, ...(body.truncated ? { replyTruncated: true as const } : {}) } : {}),
     ...(summary ? { summary } : {}),
     ...(outcome ? { outcome } : {}),
     ...(opts.toolCalls !== undefined ? { toolCalls: opts.toolCalls } : {}),
+    ...(readExternal ? { readExternal: true as const } : {}),
   };
 }
 

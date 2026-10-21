@@ -35,7 +35,10 @@ import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } fr
 import type { SupervisorInstructions } from "../supervisor/instruct.js";
 import { SupervisorInputError, type SupervisorControls, type SupervisorUndoExec } from "../supervisor/guard.js";
 import {
+  ACTION_SHORT_TITLES,
+  ACTION_TITLES,
   HUMAN_ONLY_KINDS,
+  SUPERVISOR_ACTIONS,
   SUPERVISOR_KEYS,
   isSupervisorAction,
   serializeInstanceDelegate,
@@ -817,6 +820,74 @@ export type ToolsInstallView = { state: "installing" } | { state: "failed"; reas
 
 /** 番頭の方針の入力が決まりに合わない（画面に理由を返す） */
 class SupervisorPolicyInputError extends Error {}
+
+/** 方針の口の行いの題（画面の「任せる」の並び・受信箱の種類の札）。並びは表の順 */
+function supervisorPolicyCatalog(): {
+  actions: Array<{ action: SupervisorAction; title: string; short: string }>;
+  humanOnly: Array<{ kind: (typeof HUMAN_ONLY_KINDS)[number]; title: string; short: string }>;
+} {
+  return {
+    actions: SUPERVISOR_ACTIONS.map((action) => ({ action, title: ACTION_TITLES[action], short: ACTION_SHORT_TITLES[action] })),
+    humanOnly: HUMAN_ONLY_KINDS.map((kind) => ({ kind, title: ACTION_TITLES[kind], short: ACTION_SHORT_TITLES[kind] })),
+  };
+}
+
+/** Project の層の番頭の方針そのもの（足す・外すの差分と追記）。読めなければ無い——読めないことは効いている方針の problems に出る */
+function projectSupervisorLayer(
+  config: Pick<RuntimeConfigStore, "layerValue">,
+  projectId: string,
+): { delegate?: { add: SupervisorAction[]; remove: SupervisorAction[] }; note?: string } {
+  const out: { delegate?: { add: SupervisorAction[]; remove: SupervisorAction[] }; note?: string } = {};
+  const raw = config.layerValue(SUPERVISOR_KEYS.delegate, projectId);
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as { add?: unknown; remove?: unknown };
+      const pick = (v: unknown) => (Array.isArray(v) ? v.filter(isSupervisorAction) : []);
+      out.delegate = { add: pick(parsed.add), remove: pick(parsed.remove) };
+    } catch {
+      // 読めない差分は problems に出ている
+    }
+  }
+  const note = config.layerValue(SUPERVISOR_KEYS.note, projectId);
+  if (typeof note === "string" && note.trim() !== "") out.note = note;
+  return out;
+}
+
+/** 全体の数の設定（見回りの間隔・全体の上限）。正の整数だけ。書く鍵と値の組を返す */
+function instanceSupervisorNumbers(body: { patrolHours?: unknown; limits?: unknown }): Array<[string, number]> {
+  const out: Array<[string, number]> = [];
+  const take = (v: unknown, key: string, label: string, max: number) => {
+    if (v === undefined) return;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > max) {
+      throw new SupervisorPolicyInputError(`${label}は 1〜${max} の整数で渡してください`);
+    }
+    out.push([key, v]);
+  };
+  take(body.patrolHours, SUPERVISOR_KEYS.patrolHours, "見回りの間隔（時間）", 168);
+  if (body.limits !== undefined) {
+    if (typeof body.limits !== "object" || body.limits === null || Array.isArray(body.limits)) {
+      throw new SupervisorPolicyInputError("limits は { runsPerHour, instructionsPerHour, factoryConcurrent } で渡してください");
+    }
+    const l = body.limits as Record<string, unknown>;
+    take(l.runsPerHour, SUPERVISOR_KEYS.runsPerHour, "1時間に起きる回数", 1000);
+    take(l.instructionsPerHour, SUPERVISOR_KEYS.instructionsPerHour, "1時間に送る指示の数", 1000);
+    take(l.factoryConcurrent, SUPERVISOR_KEYS.factoryConcurrent, "Factory の同時の件数", 100);
+  }
+  return out;
+}
+
+/** 全体のタイムゾーン（IANA の名前。空は外す） */
+function instanceSupervisorTimeZone(v: unknown): string {
+  if (typeof v !== "string") throw new SupervisorPolicyInputError("timeZone は文字列で渡してください");
+  const name = v.trim();
+  if (name === "") return "";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+  } catch {
+    throw new SupervisorPolicyInputError(`知らないタイムゾーンです: ${name}`);
+  }
+  return name;
+}
 
 export async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -4632,10 +4703,22 @@ export function createApp(deps: AppDeps) {
           // 全体の方針は Project の層を読まない形で組む
           const config = deps.runtimeConfig;
           const instanceOnly = { layerValue: (key: string, p?: string) => (p ? undefined : config.layerValue(key)) };
-          const current = () => (projectId ? supervisorPolicy(config, projectId) : supervisorPolicy(instanceOnly, "-"));
+          // 効いている方針に、画面が描くのに要るものを添える（どれも読むたびに組む）：行いの題（`catalog`）と、Project なら
+          // その層の値そのもの（`layer`——足す・外すの差分と追記。効いている方針からは追記の切れ目が分からない）
+          const current = () => ({
+            ...(projectId ? supervisorPolicy(config, projectId) : supervisorPolicy(instanceOnly, "-")),
+            catalog: supervisorPolicyCatalog(),
+            ...(projectId ? { layer: projectSupervisorLayer(config, projectId) } : {}),
+          });
           if (req.method === "GET") return json(res, 200, current());
           if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
-          const body = ((await readJsonBody(req)) ?? {}) as { delegate?: unknown; note?: unknown };
+          const body = ((await readJsonBody(req)) ?? {}) as {
+            delegate?: unknown;
+            note?: unknown;
+            patrolHours?: unknown;
+            limits?: unknown;
+            timeZone?: unknown;
+          };
           const actions = (v: unknown, where: string): SupervisorAction[] => {
             if (!Array.isArray(v)) throw new SupervisorPolicyInputError(`${where} は行いの配列で渡してください`);
             return v.map((a) => {
@@ -4648,9 +4731,19 @@ export function createApp(deps: AppDeps) {
             throw new SupervisorPolicyInputError("note は文字列で渡してください");
           }
           if (!projectId) {
+            // 数の設定（間隔・全体の上限）とタイムゾーンは全体の層だけ（追加・2026-10-21、Backlog #511——番頭の画面が書く）。
+            // 確かめてから書く——途中で断って半分だけ書かない
+            const numbers = instanceSupervisorNumbers(body);
+            const timeZone = body.timeZone === undefined ? undefined : body.timeZone === null ? "" : instanceSupervisorTimeZone(body.timeZone);
             if (body.delegate !== undefined) await config.setInstanceDefault(SUPERVISOR_KEYS.delegate, serializeInstanceDelegate(actions(body.delegate, "delegate")));
             if (typeof body.note === "string") await config.setInstanceDefault(SUPERVISOR_KEYS.note, body.note);
+            for (const [key, value] of numbers) await config.setInstanceDefault(key, value);
+            // 外すのは空の文で（全体の層に消す口は無い。読む側は空を「無い」とする）
+            if (timeZone !== undefined) await config.setInstanceDefault(SUPERVISOR_KEYS.timeZone, timeZone);
             return json(res, 200, current());
+          }
+          if (body.patrolHours !== undefined || body.limits !== undefined || body.timeZone !== undefined) {
+            throw new SupervisorPolicyInputError("見回りの間隔・全体の上限・タイムゾーンは全体の方針でだけ変えられます");
           }
           if (body.delegate === null) await config.unsetProjectOverride(projectId, SUPERVISOR_KEYS.delegate);
           else if (body.delegate !== undefined) {

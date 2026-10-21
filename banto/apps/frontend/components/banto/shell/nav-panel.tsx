@@ -17,8 +17,10 @@ import {
   Plus,
   Search,
   Settings,
+  UserCheck,
   Zap,
 } from "lucide-react";
+import { SUPERVISOR_LABEL } from "@/lib/supervisor-label";
 import {
   SidebarContent,
   SidebarFooter,
@@ -497,6 +499,7 @@ export function NavPanel({
   activeProjectId,
   activeForkThreadId,
   onOpenInbox,
+  onOpenSupervisor,
   onOpenPalette,
   onOpenArchive,
   onNewProject,
@@ -508,6 +511,8 @@ export function NavPanel({
   activeProjectId: string | null;
   activeForkThreadId: string | null;
   onOpenInbox: () => void;
+  /** 番頭の画面（§6.54）。受信箱と同じ前面の1枚で開く */
+  onOpenSupervisor: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
   onNewProject: () => void;
@@ -559,6 +564,19 @@ export function NavPanel({
               </SidebarMenuButton>
             </SidebarMenuItem>
           ) : null}
+          {/* 番頭（§6.54）。banto 全体で1つの画面——受信箱と検索の間 */}
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              data-testid="sidebar-supervisor"
+              onClick={() => {
+                onNavigate?.();
+                onOpenSupervisor();
+              }}
+            >
+              <UserCheck />
+              <span className="flex-1 truncate">{SUPERVISOR_LABEL}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
               onClick={() => {

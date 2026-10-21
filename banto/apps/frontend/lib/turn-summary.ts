@@ -28,6 +28,8 @@ export interface TurnSummaryArtifact {
 export interface TurnSummaryDecision {
   question: string;
   context?: string;
+  /** 問いの種類（追加・2026-10-21、アーキ仕様 §4.5「問いの種類」）。行い（continue 等）か spec・publish・money・destructive */
+  kind?: string;
   options: readonly TurnSummaryOption[];
 }
 

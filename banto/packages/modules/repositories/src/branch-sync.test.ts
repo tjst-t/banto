@@ -664,7 +664,7 @@ test("別のサーバの Project：向こうから来た bundle の中身を fsc
     far.forgedBundle = malformedBundle(w.home);
     const r = await asBacklog(sync, "push", "backlog", project);
     assert.equal(r.handled && !r.ok, true, JSON.stringify(r));
-    assert.match((r as { message: string }).message, /git の形として正しくないので送りません：error in commit [0-9a-f]+: missingEmail/);
+    assert.match((r as { message: string }).message, /git の形として正しくないので送りません：error(?: in commit|: object) [0-9a-f]+: missingEmail/);
     assert.equal(bareHead(w.gh, "backlog"), undefined, "正しくない中身を GitHub に送った");
     assert.equal(w.gh.gitRequests.filter((r) => r.path.includes("receive-pack")).length, 0);
   });

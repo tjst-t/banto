@@ -629,6 +629,8 @@ export interface RealReviewTurn {
   outcome?: "completed" | "stopped" | "failed" | "interrupted";
   /** そのターンで AI が呼んだ tool の数 */
   toolCalls?: number;
+  /** そのターンが外から来たもの（Webhook の本文・出来事・別の会話からのメッセージ）を読んだ。番頭はこのターンの問いに答えない */
+  readExternal?: true;
 }
 
 /** お知らせ（決定・2026-09-07）——許可/拒否を求めないが、人に伝えたいこと。
@@ -2966,4 +2968,170 @@ export async function runRealAutomation(
 export async function listRealSecretAliases(projectId: string): Promise<string[]> {
   const body = await request<{ aliases: string[] }>(`/api/projects/${encodeURIComponent(projectId)}/secret-aliases`);
   return body.aliases;
+}
+
+// ---- 番頭（アーキ仕様 §4.5、v4-frontend.md §6.54。追加・2026-10-21、Backlog #511）。どれも人のセッションだけの口 ----
+
+/** 番頭の記録の1件（host の `SupervisorAct`）。種類は 選んだ・人に回した・断られた・頼んだ・捨てた・流した・答えた・飛ばした・取り消した */
+export interface RealSupervisorAct {
+  at: string;
+  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped" | "factory-started" | "factory-answered" | "skipped" | "undone";
+  actId?: string;
+  undoes?: string[];
+  threadId: string;
+  turnId?: string;
+  question?: number;
+  choice?: number;
+  label?: string;
+  decisionKind?: string;
+  reason: string;
+  action?: string;
+  hasNote?: boolean;
+  actionId?: string;
+  stalledReason?: string;
+  runId?: string;
+  items?: string[];
+  item?: string;
+  stage?: string;
+}
+
+/** 記録の口の1件（どの番頭のものかと、取り消しの様子を host が添える） */
+export interface RealSupervisorLogEntry extends RealSupervisorAct {
+  actId: string;
+  supervisorId: string;
+  projectId: string;
+  automationId: string;
+  undoable: boolean;
+  undoneBy?: string;
+}
+
+/** 番頭1件（自動化4件の束） */
+export interface RealSupervisor {
+  id: string;
+  projectId: string;
+  /** 番頭の会話（専用の Fork）。まだ立っていなければ無い */
+  threadId?: string;
+  paused: boolean;
+  pausedReason?: string;
+  /** 全部止めて止まっている */
+  stoppedAll: boolean;
+  /** いま回を飛ばす理由（量の閾値・全体の上限）。無ければ動ける */
+  handedToHuman?: string;
+  createdAt: string;
+  automations: RealAutomation[];
+  /** 記録の直近 30 件（新しい順） */
+  acts: RealSupervisorAct[];
+}
+
+/** 番頭の守りの今（全部止めているか・全体の上限の数え） */
+export interface RealSupervisorGuard {
+  stoppedAll: boolean;
+  runs: { used: number; limit: number };
+  instructions: { used: number; limit: number };
+  runsFreeAt?: string;
+  instructionsFreeAt?: string;
+}
+
+export type RealSupervisorAction = "continue" | "retry-turn" | "rerun-tests" | "fix-tests" | "merge" | "push" | "release" | "backlog" | "minor-design";
+
+/** 方針（効いているもの）。`catalog` は行いの題、`layer` は Project の層の値そのもの（Project の口だけ） */
+export interface RealSupervisorPolicy {
+  delegate: RealSupervisorAction[];
+  note: string;
+  patrolHours: number;
+  idleHours: number;
+  limits: { runsPerHour: number; instructionsPerHour: number; factoryConcurrent: number };
+  timeZone?: string;
+  problems: string[];
+  catalog: {
+    actions: Array<{ action: RealSupervisorAction; title: string; short: string }>;
+    humanOnly: Array<{ kind: "spec" | "publish" | "money" | "destructive"; title: string; short: string }>;
+  };
+  layer?: { delegate?: { add: RealSupervisorAction[]; remove: RealSupervisorAction[] }; note?: string };
+}
+
+export interface RealSupervisorDaily {
+  date: string;
+  timeZone: string;
+  projects: Array<{ projectId: string; supervisorId: string; counts: Record<RealSupervisorAct["kind"], number> }>;
+}
+
+export async function listRealSupervisors(): Promise<{ supervisors: RealSupervisor[]; guard?: RealSupervisorGuard }> {
+  return request("/api/supervisors");
+}
+
+/** 番頭を置く。判断役が動いていれば `pauseJudges` が真でないと断られる（理由つき） */
+export async function createRealSupervisor(projectId: string, opts: { pauseJudges?: boolean } = {}): Promise<RealSupervisor> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/supervisor`, { method: "POST", body: JSON.stringify(opts) });
+}
+
+export async function removeRealSupervisor(projectId: string): Promise<void> {
+  await request(`/api/projects/${encodeURIComponent(projectId)}/supervisor`, { method: "DELETE" });
+}
+
+export async function pauseRealSupervisor(projectId: string, pause: boolean): Promise<RealSupervisor> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/supervisor/${pause ? "pause" : "resume"}`, { method: "POST" });
+}
+
+/** 今すぐ見回る（時刻の見回りの自動化を1回動かす）。飛ばした回も理由つきで返る */
+export async function patrolRealSupervisor(projectId: string): Promise<{ runId: string; result: "running" | "skipped"; reason?: string }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/supervisor/patrol`, { method: "POST" });
+}
+
+export async function stopAllRealSupervisors(): Promise<{ paused: string[]; stoppedTurns: string[]; dropped: Array<{ threadId: string; actionId: string }>; supervisors: RealSupervisor[] }> {
+  return request("/api/supervisors/stop-all", { method: "POST" });
+}
+
+export async function resumeAllRealSupervisors(): Promise<{ supervisors: RealSupervisor[] }> {
+  return request("/api/supervisors/resume-all", { method: "POST" });
+}
+
+export async function listRealSupervisorLog(filter: { project?: string; thread?: string; kinds?: readonly string[]; limit?: number } = {}): Promise<RealSupervisorLogEntry[]> {
+  const q = new URLSearchParams();
+  if (filter.project) q.set("project", filter.project);
+  if (filter.thread) q.set("thread", filter.thread);
+  if (filter.kinds && filter.kinds.length > 0) q.set("kind", filter.kinds.join(","));
+  if (filter.limit !== undefined) q.set("limit", String(filter.limit));
+  const query = q.toString();
+  const body = await request<{ acts: RealSupervisorLogEntry[] }>(`/api/supervisors/log${query ? `?${query}` : ""}`);
+  return body.acts;
+}
+
+/** 取り消す。選んだ・頼んだものは元の会話に人の発言として送る（`text` で文を直せる）。Factory に流したものは取りやめる */
+export async function undoRealSupervisorAct(
+  actId: string,
+  text?: string,
+): Promise<{ undone: RealSupervisorLogEntry[]; sent?: { threadId: string; text: string }; cancelled?: { runId: string } }> {
+  return request(`/api/supervisors/log/${encodeURIComponent(actId)}/undo`, {
+    method: "POST",
+    body: JSON.stringify(text !== undefined ? { text } : {}),
+  });
+}
+
+export async function getRealSupervisorDaily(date?: string): Promise<RealSupervisorDaily> {
+  return request(`/api/supervisors/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`);
+}
+
+/** 方針。`projectId` が無ければ banto 全体 */
+export async function getRealSupervisorPolicy(projectId?: string): Promise<RealSupervisorPolicy> {
+  return request(projectId ? `/api/projects/${encodeURIComponent(projectId)}/supervisor-policy` : "/api/supervisor-policy");
+}
+
+export async function putRealSupervisorPolicy(
+  changes: {
+    delegate?: RealSupervisorAction[];
+    note?: string;
+    patrolHours?: number;
+    limits?: Partial<RealSupervisorPolicy["limits"]>;
+    timeZone?: string | null;
+  },
+): Promise<RealSupervisorPolicy> {
+  return request("/api/supervisor-policy", { method: "PUT", body: JSON.stringify(changes) });
+}
+
+export async function putRealProjectSupervisorPolicy(
+  projectId: string,
+  changes: { delegate?: { add: RealSupervisorAction[]; remove: RealSupervisorAction[] } | null; note?: string | null },
+): Promise<RealSupervisorPolicy> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/supervisor-policy`, { method: "PUT", body: JSON.stringify(changes) });
 }
