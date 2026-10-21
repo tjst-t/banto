@@ -12547,7 +12547,7 @@
       "number": 520,
       "kind": "task",
       "title": "本人の host を非公開のリポジトリから取る形にする（deploy key と読むだけのトークン）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [
         "self-hosted-prebuilt-runner"
@@ -12561,7 +12561,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:39:32.731Z",
       "closedAt": null,
       "extra": {}
     },
