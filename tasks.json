@@ -11740,7 +11740,7 @@
       "number": 488,
       "kind": "task",
       "title": "サブエージェントの仕事の画面：「いまの状況」と経過の畳み・発言の吹き出し",
-      "status": "backlog",
+      "status": "ready",
       "parent": "item-3",
       "dependsOn": [
         "subagent-acp-capture",
@@ -11755,7 +11755,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-20T20:30:33.305Z",
+      "updatedAt": "2026-10-21T10:34:09.423Z",
       "closedAt": null,
       "extra": {}
     },
