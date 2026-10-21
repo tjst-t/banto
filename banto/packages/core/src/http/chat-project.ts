@@ -60,3 +60,35 @@ export async function createChatProject(deps: {
   await setProjectModuleSelection(deps.runtimeConfig, project.id, keep);
   return project;
 }
+
+/** 試作を始めたあと、同じ Thread に banto が届ける続き（アーキ仕様 §2.2「コンテナは試作を始めたときに作る」） */
+export const PROTOTYPING_CONTINUE_TITLE = "試作の道具が使えるようになりました";
+export const PROTOTYPING_CONTINUE_TEXT = "試作の道具（Shell・FileSystem など）が使えるようになりました。続けてください";
+
+/**
+ * **試作を始める**（`start_prototyping`、決定・2026-10-21）。Project 層の差分を外して普通の Project と同じ Module の組に戻し、
+ * 記録 `project.prototyping.started` を積む。**人の承認は求めない**（ユーザー・2026-10-21——コンテナを作って道具を戻すだけで、
+ * 書く・走らせるのはそのあとの Shell 等がそれぞれの承認を通る）。コンテナはここでは作らない——次のターンの Module の起動
+ * （今の遅延起動）が作る。
+ *
+ * 差分を外してから記録を積む——逆だと、記録だけ立って差分が残ったとき道具が戻らないまま tool が消える。もう始めていれば何もしない
+ */
+export async function startChatPrototyping(
+  deps: {
+    projectThread: Pick<ProjectThreadStore, "getProject" | "markPrototypingStarted">;
+    runtimeConfig: RuntimeConfigStore;
+  },
+  projectId: string,
+): Promise<{ ok: true; already: boolean } | { ok: false; error: string }> {
+  const project = deps.projectThread.getProject(projectId);
+  if (!project) return { ok: false, error: "この Project が見つかりません。" };
+  if (project.kind !== "chat") return { ok: false, error: "試作を始められるのはチャットだけです。" };
+  if (project.prototyping) return { ok: true, already: true };
+  await setProjectModuleSelection(
+    deps.runtimeConfig,
+    projectId,
+    loadModuleDeclarations(deps.runtimeConfig, "").map((d) => d.name),
+  );
+  await deps.projectThread.markPrototypingStarted(projectId);
+  return { ok: true, already: false };
+}
