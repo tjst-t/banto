@@ -879,7 +879,12 @@ Thread の全 resumePoint**（過去から分けた Fork・閉じた Thread・Cl
 - **Service を止めておく**のは Service の Module の人の管理操作 `disableAllServices`（全件を「止めておきたい」にして自動起動から
   外す。AI には見せない）。元の登録も「止めておきたい」になる。Service の Module に繋げない・systemd が使えないときは移さない
 - **写したものの確かめ**：ファイルとリンクの件数・ファイルの大きさの和を、両側で同じ除き方（`./s`・Shell と Terminal の
-  `./home`・`*.sock`・移した印）で数えて比べる。`git worktree repair` には、根の中にある worktree を新しい根のパスで名指して渡す
+  `./home`・`*.sock`・移した印）で数えて比べる。`git worktree repair` の前に、根の中にある worktree の印（`.git/worktrees/<名前>/gitdir` と worktree の `.git` ファイル）を元の
+  根のパスから新しい根のパスへ書き換え、根の中の worktree を新しい根のパスで名指して渡す（改訂・2026-10-21、Backlog #467——git 2.43 の
+  repair は、元の根が同じパスで見えていると写した `.git` ファイルを辿って**元のほうの印**を書き換え、名指しても防げない）。**根の外の
+  worktree が見えていれば repair は流さない**（repair はリポジトリの側から全部の worktree を見て、根の外の元の Project の worktree の
+  `.git` を写した先へ書き換える。根の中は書き換え済み）。印のファイルが symlink なら辿って書かない（`project-move.ts` の
+  `worktreeRepairScript`）
 - **作業ディレクトリが変わる**とき、会話の記録は `<CLI の置き場>/projects/<作業ディレクトリの英数字以外を - にしたもの>/` の
   中で写す（200 字を超える作業ディレクトリは CLI が名前を縮めるので写さず、知らせに書く）
 - **前に居た場所へ戻す**（2026-10-13）：started の `created.syncedPrevious` が立つ。片づけでは根ともとから有った Module の

@@ -306,9 +306,12 @@ test("containers へ移す：根は正規化して1段ずつ作り、started の
     // 決め打ちの 700 ではなく元と同じかを見る（2026-10-20、GitHub でだけ落ちた）
     assert.equal(statSync(join(h.vmHome, "work")).mode & 0o777, 0o700);
     assert.equal(statSync(to).mode & 0o777, statSync(src).mode & 0o777);
-    // git worktree repair の結果（印が新しい根を指すか）はここでは見ない——偽の VM はこの機械なので元の根も見え、git 2.43 の repair は
-    // worktree の .git が指す元のほうを直してしまう（本物では中から元の根は見えない。docs/notes/2026-10-20-containers-move.md）。
-    // 中のユーザーで流したかを下で見る
+    // git worktree repair の結果：偽の VM はこの機械なので元の根も見える。それでも元の worktree の印は変えず、写した先の印が
+    // 写した先を指す（#467。以前の git 2.43 の repair は元のほうを直していた——docs/notes/2026-10-20-containers-move.md）
+    assert.equal(readFileSync(join(src, ".git", "worktrees", "w1", "gitdir"), "utf8"), `${src}/.worktrees/w1/.git\n`, "元の worktree の印を書き換えた");
+    assert.equal(readFileSync(join(src, ".worktrees", "w1", ".git"), "utf8"), `gitdir: ${src}/.git/worktrees/w1\n`, "元の worktree の印を書き換えた");
+    assert.equal(readFileSync(join(to, ".git", "worktrees", "w1", "gitdir"), "utf8"), `${to}/.worktrees/w1/.git\n`);
+    assert.equal(readFileSync(join(to, ".worktrees", "w1", ".git"), "utf8"), `gitdir: ${to}/.git/worktrees/w1\n`);
 
     const events = h.read();
     const prepare = events.findIndex((e) => "prepare" in e);
