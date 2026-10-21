@@ -11965,7 +11965,7 @@
         "chat",
         "frontend"
       ],
-      "body": "中身は普通の Project（kind: \"chat\"）で、画面だけ別に扱う。仕様：origin/main の v4-architecture.md §2.2「チャット——Project を作る前の相談」、v4-frontend.md §6.53。モック：ブランチ fork/draft-projects の mock/。\n\n決めたこと（2026-10-21、ユーザー）：置き場は ~/banto/chats に固定・別のサーバではチャットを始めない・start_prototyping は人の承認の対象にしない。\n\n経過：タスク #496〜#504 は Factory で作り、origin/main に入った（2026-10-21、63c06ef0 まで）。載せ直しのとき、試作の道具は番頭の回にも出さないようにした（読むだけの回と同じ扱い）。release にはまだ入れていない。\n\n残り（完了条件）：host に反映したあと、本物の banto で完了条件を確かめる。#497 の小さいモデルを本物のログインで呼ぶ確かめ（npm run check:one-shot -w @banto/core）もそこで。フル E2E で Repositories の2件（repositories.spec:179・repositories-github-read.spec:116）が混んでいるときだけ落ちた——単独では通る、偽の GitHub の準備で落ちることがある。",
+      "body": "中身は普通の Project（kind: \"chat\"）で、画面だけ別に扱う。仕様：origin/main の v4-architecture.md §2.2「チャット——Project を作る前の相談」、v4-frontend.md §6.53。モック：ブランチ fork/draft-projects の mock/。\n\n決めたこと（2026-10-21、ユーザー）：置き場は ~/banto/chats に固定・別のサーバではチャットを始めない・start_prototyping は人の承認の対象にしない。\n\n経過：タスク #496〜#504 は Factory で作り、origin/main（7d7f6099 まで）と origin/release（43e67c5b まで）に入った（2026-10-21）。main では試作の道具を番頭の回にも出さない（release には番頭が無いので読むだけの回だけ）。release には仕様の文書のぶつかった分は載せていない。フル E2E で落ちた Repositories の2件は folder-adopter の spec が台帳と alias を汚していたため（7d7f6099 で直した）。repositories.spec:1180 は前からの持ち越し（#483）。\n\n残り（完了条件）：host に反映したあと、本物の banto で完了条件を確かめる。#497 の小さいモデルを本物のログインで呼ぶ確かめ（npm run check:one-shot -w @banto/core）もそこで。",
       "doneWhen": "本物の banto で：「＋」→書き込みでチャットができ題が付く／話すだけではコンテナが無い（incus list に無い）／試作を頼むとコンテナができ Shell が使える／15分でコンテナが止まり、話すと起きる／「Project にする」で同じ会話のまま Project の一覧に移り、GitHub に上がる",
       "resolution": null,
       "refs": [
@@ -11979,7 +11979,7 @@
         }
       ],
       "createdAt": "2026-10-21T05:46:41.072Z",
-      "updatedAt": "2026-10-21T09:46:46.267Z",
+      "updatedAt": "2026-10-21T11:05:23.796Z",
       "closedAt": null,
       "extra": {}
     },
