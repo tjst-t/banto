@@ -117,6 +117,7 @@ import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-o
 import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
+import { createChatProject } from "./chat-project.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { buildSystemPromptParts } from "../runner/system-prompt.js";
 import { splitMemory } from "../project-thread/memory-split.js";
@@ -487,6 +488,8 @@ export interface AppDeps {
   selfUpdate?: SelfUpdate;
   /** banto 自身の置き場（根の広さを判断するのに使う、`/api/config/root-scope`）。 */
   dataDir?: string;
+  /** チャットの置き場（試験だけの差し替え。無ければ `CHATS_DIR`＝`~/banto/chats`、アーキ仕様 §2.2「チャット」） */
+  chatsDir?: string;
   configDir?: string;
   /** 画面から更新するときの置き場（`repo.git`・`versions/`・`current`）。これを含む根も「広い」（2026-10-04） */
   releaseDir?: string;
@@ -1999,8 +2002,10 @@ export function createApp(deps: AppDeps) {
             const mark = idle?.idleOf(p.id);
             // 特権コンテナにした Project（サイドバーの行の印。v4-security.md §1「`containers` で仮想化（KVM）」の 4.）
             const privileged = deps.containersVirtualization?.privileged(p.id) === true;
+            // `kind`（チャットか）は `p` にある。`prototyping`（試作を始めたか）は全部に真偽で添える（アーキ仕様 §2.2「チャット」）
             return {
               ...p,
+              prototyping: p.prototyping === true,
               ...(partlyAwake && partlyAwake.length > 0 ? { partlyAwake } : {}),
               ...(mark ? { idle: mark } : {}),
               ...(privileged ? { privileged: true } : {}),
@@ -2167,7 +2172,7 @@ export function createApp(deps: AppDeps) {
         }
       }
       if (url.pathname === "/api/projects" && req.method === "POST") {
-        const body = (await readJsonBody(req)) as { name: string; root: string; runtime?: unknown; start?: unknown; parent?: unknown; folder?: unknown; settings?: unknown };
+        const body = (await readJsonBody(req)) as { name: string; root: string; kind?: unknown; runtime?: unknown; start?: unknown; parent?: unknown; folder?: unknown; settings?: unknown };
         // **作るときに一緒に書くスイッチ**（決定・2026-10-20、v4-frontend.md §6.51）。何も作る前に確かめ、作るのと同じ処理の中で書く
         const settings = parseNewProjectSettings(body.settings);
         if ("error" in settings) return json(res, 400, { error: settings.error });
@@ -2176,6 +2181,24 @@ export function createApp(deps: AppDeps) {
           if (deps.runtimeConfig) await applyNewProjectSettings(deps.runtimeConfig, project.id, settings);
           return project;
         };
+        // **チャット**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。名前も根も host が決め、この機械のコンテナだけ
+        // （別のサーバではチャットを始めない——ユーザー・2026-10-21）。渡されたものを黙って捨てずに断る（規則2）
+        if (body.kind !== undefined) {
+          if (body.kind !== "chat") return json(res, 400, { error: "kind は chat だけを受けます（普通の Project は kind を渡さない）" });
+          if (body.runtime !== undefined && body.runtime !== "host-container") {
+            return json(res, 400, { error: "チャットはこの機械のコンテナでだけ始めます（runtime は渡さないか host-container）" });
+          }
+          const extra = (["name", "root", "start", "parent", "folder"] as const).filter((k) => body[k] !== undefined);
+          if (extra.length > 0) return json(res, 400, { error: `チャットの名前・根は banto が決めます（${extra.join("・")} は渡さない）` });
+          // Module の差分を書くので Configuration が要る
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const project = await createChatProject({
+            projectThread: deps.projectThread,
+            runtimeConfig: deps.runtimeConfig,
+            ...(deps.chatsDir ? { chatsDir: deps.chatsDir } : {}),
+          });
+          return json(res, 201, await withSettings(project));
+        }
         // **どこで動かすか**（決定・2026-10-08、v4-security.md §1）。無いか `host-container` ならこの機械のコンテナ。
         // `remote:<名前>` なら登録した別のサーバで、根は向こうで正規化する。作ったあとは変えない
         const remote = typeof body.runtime === "string" ? remoteNameOf(body.runtime) : undefined;

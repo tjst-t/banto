@@ -38,6 +38,7 @@ import type {
   TurnOutcome,
   TurnEndReason,
   ContinuationCancelledBy,
+  ProjectKind,
   ProjectSleptBy,
   ProjectWokeCause,
   MissionFrame,
@@ -113,9 +114,10 @@ export class ProjectThreadStore {
     // v7：UiToolCallEntry に displayMode、ThreadState に createdSeq を足した
     //     （決定・2026-09-07。古いスナップショットには無いので畳み直す）
     // v6：MessageEntry に uiToolCalls を足した（決定・2026-09-07）
+    // v10：ProjectState に kind（チャット）を足した（2026-10-21、アーキ仕様 §2.2「チャット」）。read model の形を変えたので上げる
     // （上げていない：2026-09-25 に足した deliveries・awaitingReplies・MessageEntry.origin は、新しいイベントからしか
     //  生まれない——前の snapshot に畳み直すべきものが無い）
-    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 9);
+    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 10);
   }
 
   async load(): Promise<void> {
@@ -447,15 +449,18 @@ export class ProjectThreadStore {
   /**
    * `remote`：別のサーバで動かすとき（決定・2026-10-08）。`root` は呼び手が**向こうで**正規化したものをそのまま記録する
    * ——この機械には無いので、ここでは確かめない
+   *
+   * `kind`：チャット（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project
    */
-  async createProject(name: string, root: string, remote?: { runtime: string }): Promise<ProjectState> {
-    const resolvedRoot = remote ? root : normalizeProjectRoot(root);
+  async createProject(name: string, root: string, opts?: { runtime?: string; kind?: ProjectKind }): Promise<ProjectState> {
+    const resolvedRoot = opts?.runtime ? root : normalizeProjectRoot(root);
     const id = randomUUID();
     const event = await this.log.append("project.created", {
       id,
       name,
       root: resolvedRoot,
-      ...(remote ? { runtime: remote.runtime } : {}),
+      ...(opts?.runtime ? { runtime: opts.runtime } : {}),
+      ...(opts?.kind ? { kind: opts.kind } : {}),
     });
     this.projection.applyOne(event);
     this.notifyProjectsChanged();

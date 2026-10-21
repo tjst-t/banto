@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore } from "../project-thread/store.js";
@@ -12,6 +12,8 @@ import { HostRelayEndpoint, RelayRegistry } from "../relay/host-relay-endpoint.j
 import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { RuntimeConfigStore } from "../config/runtime.js";
+import { loadModuleDeclarations, modulePlacement } from "../modules/declaration.js";
+import { RUNNER_BUILTIN_TOOLS } from "../runner/adapter.js";
 import { ThreadTurns } from "../delivery/thread-turns.js";
 import { AppEventBus, announceProjectsChanged } from "./app-events.js";
 import { TurnEventBus } from "./turn-events.js";
@@ -2374,6 +2376,135 @@ test("別のサーバの始め方（start）でも、settings を作る処理の
       },
     },
   );
+});
+
+// **チャット**（決定・2026-10-21、ユーザー。アーキ仕様 §2.2「チャット——Project を作る前の相談」）
+test("kind: chat で作ると、名前は「新しいチャット」・根は置き場の下に作られ、Project のコンテナの Module は外れている", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  const chatsDir = join(scratch, "banto", "chats"); // 無ければ作る
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread, runtimeConfig }) => {
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const res = await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat", settings: { turnSummary: true } }) });
+        assert.equal(res.status, 201);
+        const chat = (await res.json()) as { id: string; name: string; root: string; kind?: string };
+        assert.equal(chat.name, "新しいチャット");
+        assert.equal(chat.kind, "chat");
+        assert.equal(dirname(chat.root), await realpath(chatsDir));
+        assert.match(basename(chat.root), /^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$/);
+        assert.ok((await stat(chat.root)).isDirectory());
+        assert.equal(projectThread.getProject(chat.id)?.runtime, undefined, "この機械のコンテナで動く");
+        // 3つのスイッチは普通の Project と同じに書く
+        assert.equal(runtimeConfig.layerValue("thread.turnSummary", chat.id), true);
+
+        // Project のコンテナで動く Module だけが外れ、ほかは残る
+        const all = loadModuleDeclarations(runtimeConfig, "");
+        const inContainer = all.filter((d) => modulePlacement(d.meta, d.launch) === "project-container").map((d) => d.name);
+        assert.ok(inContainer.length > 0, "既定に Project のコンテナで動く Module が無い（試験の前提）");
+        assert.deepEqual(
+          loadModuleDeclarations(runtimeConfig, chat.id).map((d) => d.name),
+          all.map((d) => d.name).filter((n) => !inContainer.includes(n)),
+        );
+        // 普通の Project には効かない
+        const plain = await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: _dir }) })).json();
+        assert.deepEqual(loadModuleDeclarations(runtimeConfig, plain.id).map((d) => d.name), all.map((d) => d.name));
+
+        // 一覧：チャットには kind、全部に prototyping
+        const list = (await (await fetch(`${base}/api/projects`, { headers })).json()) as Array<{ id: string; kind?: string; prototyping?: boolean }>;
+        assert.deepEqual(
+          list.map((p) => [p.id, p.kind, p.prototyping]),
+          [
+            [chat.id, "chat", false],
+            [plain.id, undefined, false],
+          ],
+        );
+      },
+      { chatsDir },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("kind: chat は別のサーバ・名前や根の指定・知らない kind を断り、何も作らない", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        for (const body of [
+          { kind: "chat", runtime: "remote:vm" },
+          { kind: "chat", name: "x" },
+          { kind: "chat", root: _dir },
+          { kind: "chat", start: { kind: "init" } },
+          { kind: "draft" },
+          { kind: "chat", settings: { turnSummary: "yes" } },
+        ]) {
+          const res = await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify(body) });
+          assert.equal(res.status, 400, JSON.stringify(body));
+        }
+        assert.equal(projectThread.listProjects().length, 0);
+        assert.deepEqual(await readdir(scratch), []);
+        // この機械のコンテナを名指しするのはよい
+        const ok = await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat", runtime: "host-container" }) });
+        assert.equal(ok.status, 201);
+      },
+      { chatsDir: scratch },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("チャットの最初のターンは、Claude の WebSearch と banto 全体の Module だけで走り、Project のコンテナを用意しない", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  let config: RuntimeConfigStore | undefined;
+  let store: ProjectThreadStore | undefined;
+  const prepared: string[] = [];
+  const turns: Array<{ servers: string[]; builtinTools?: readonly string[] }> = [];
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread, runtimeConfig }) => {
+        config = runtimeConfig;
+        store = projectThread;
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string };
+        const thread = await projectThread.createBaseThread(chat.id);
+        await (await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "何を作ろうか" }) })).text();
+
+        assert.deepEqual(prepared, [], "話すだけでコンテナを用意した");
+        assert.equal(turns.length, 1);
+        const instanceModules = loadModuleDeclarations(runtimeConfig, "")
+          .filter((d) => modulePlacement(d.meta, d.launch) !== "project-container")
+          .map((d) => d.name);
+        // 渡る Module は banto 全体のもの（と core 自身のサーバ）だけ
+        const modules = turns[0]!.servers.filter((n) => !n.startsWith("banto-"));
+        assert.deepEqual(modules.sort(), [...instanceModules].sort());
+        // 組み込みは既定の組（WebSearch・WebFetch と資源を読む3つ）
+        assert.equal(turns[0]!.builtinTools, undefined);
+        assert.ok(RUNNER_BUILTIN_TOOLS.includes("WebSearch") && !RUNNER_BUILTIN_TOOLS.includes("Bash"));
+      },
+      {
+        chatsDir: scratch,
+        // 本物（cli.ts）と同じく、Project のコンテナで動く Module を繋ぐときだけそのコンテナを用意する
+        resolveModulesForThread: async (threadId: string) => {
+          const projectId = store!.getThread(threadId)!.projectId;
+          return loadModuleDeclarations(config!, projectId).map((d) => {
+            if (modulePlacement(d.meta, d.launch) === "project-container") prepared.push(d.name);
+            return { name: d.name, url: `http://127.0.0.1:1/agent-relay/${d.name}`, headers: {} };
+          });
+        },
+        runTurn: (async function* (opts: { mcpServers?: Record<string, unknown>; builtinTools?: readonly string[] }) {
+          turns.push({ servers: Object.keys(opts.mcpServers ?? {}), ...(opts.builtinTools ? { builtinTools: opts.builtinTools } : {}) });
+          yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+          return { sessionId: "s", compactionCount: 0 } as never;
+        }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 // **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
