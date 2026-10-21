@@ -1,12 +1,12 @@
 "use client";
 
-// 相談（下書きの Project）のモック（2026-10-21、Fork「Project 作成前の検討」）。
+// チャット（下書きの Project）のモック（2026-10-21、Fork「Project 作成前の検討」）。
 //
 // - **中身は普通の Project**：Base Thread・Fork・Memory・根のフォルダを持つ。画面だけ別に扱う
-//   （サイドバーの「相談」に並び、名前もフォルダも決めずに始まる）
+//   （サイドバーの「チャット」に並び、名前もフォルダも決めずに始まる）
 // - **資源を取らない**：始めた時点ではコンテナを作らない（話す・Web で調べるだけなら要らない）。
 //   AI が初めてファイルを書く・コマンドを流すときに作る。使わなくなったら眠らせ、長く触らなければ閉じる
-// - **Project にする**：その場で名前・グループ・リポジトリ・GitHub への公開を決め、相談の印を外すだけ。
+// - **Project にする**：その場で名前・グループ・リポジトリ・GitHub への公開を決め、チャットの印を外すだけ。
 //   会話・Memory・試作のファイルはそのまま
 //
 // 真実はこのファイルの state 1か所。変わったら notifyMockStoreChange。
@@ -44,9 +44,11 @@ export type DraftCleanup = "7" | "14" | "30" | "off";
 interface DraftState {
   drafts: Record<string, DraftInfo>;
   closed: ClosedDraft[];
-  /** 使わなくなった相談のコンテナを眠らせるまでの分 */
+  /** 閉じたチャットの様子（開き直すときに戻す） */
+  parked: Record<string, DraftInfo>;
+  /** 使わなくなったチャットのコンテナを眠らせるまでの分 */
   sleepAfterMinutes: number;
-  /** 触らなくなった相談を閉じるまでの日数 */
+  /** 触らなくなったチャットを閉じるまでの日数 */
   cleanup: DraftCleanup;
   counter: number;
 }
@@ -58,6 +60,7 @@ let state: DraftState = {
     { id: "c2", title: "Rust と Go のどちらで CLI を書くか", closedAt: "9月28日", why: "あなたが閉じました" },
     { id: "c3", title: "社内勉強会のスライドの構成", closedAt: "9月20日", why: "14日触らなかったので閉じました" },
   ],
+  parked: {},
   sleepAfterMinutes: 15,
   cleanup: "14",
   counter: 4,
@@ -76,7 +79,7 @@ const genericReplies = [
     match: /試作|動か|コード|書いて|作って/,
     steps: [
       { t: "delay", ms: 300 } as MockStep,
-      T("試しに動かしてみます。この相談ではまだコンテナを作っていなかったので、ここで用意します（2秒ほど）。"),
+      T("試しに動かしてみます。このチャットではまだコンテナを作っていなかったので、ここで用意します（2秒ほど）。"),
       {
         t: "tool",
         name: "banto_shell_run_command",
@@ -99,7 +102,7 @@ const genericReplies = [
   { match: "*" as const, steps: [{ t: "delay", ms: 300 } as MockStep, T("なるほど。もう少し詳しく聞かせてください——誰が、どんなときに使うものですか？")] },
 ];
 
-/** 見本の相談 */
+/** 見本のチャット */
 const seeds: { id: string; title: string; info: Omit<DraftInfo, "projectId">; seed: MockStep[] }[] = [
   {
     id: "d-power",
@@ -111,7 +114,7 @@ const seeds: { id: string; title: string; info: Omit<DraftInfo, "projectId">; se
         "B ルートは電力会社に申し込むと ID とパスワードがもらえ、Wi-SUN の受信機で 30 秒ごとの値が取れます。流れは3段です：\n\n1. 受信機（USB の Wi-SUN ドングル）で値を取る\n2. どこかに貯める（SQLite で十分）\n3. グラフにする（Grafana か、小さな Web の画面）\n\n手元に受信機はありますか？ 無ければ先に、届いた値の形を真似た偽物で 2 と 3 を試作できます。",
       ),
       U("まだ無い。偽物で試作してみて"),
-      T("試しに動かしてみます。この相談ではまだコンテナを作っていなかったので、ここで用意します（2秒ほど）。"),
+      T("試しに動かしてみます。このチャットではまだコンテナを作っていなかったので、ここで用意します（2秒ほど）。"),
       {
         t: "tool",
         name: "banto_shell_run_command",
@@ -152,7 +155,7 @@ for (const s of seeds) {
     name: s.title,
     initial: s.title.slice(0, 1),
     baseThreadId: `${s.id}-base`,
-    basePath: `~/banto/drafts/${s.id.replace("d-", "")}`,
+    basePath: `~/banto/chats/${s.id.replace("d-", "")}`,
     status: "active",
     draft: true,
   });
@@ -192,17 +195,21 @@ export function setDraftCleanup(cleanup: DraftCleanup): void {
   set({ cleanup });
 }
 
-/** 新しい相談：名前もフォルダも聞かずに作る。コンテナはまだ作らない */
+export function setDraftSleepAfter(sleepAfterMinutes: number): void {
+  set({ sleepAfterMinutes });
+}
+
+/** 新しいチャット：名前もフォルダも聞かずに作る。コンテナはまだ作らない */
 export function createDraft(): MockProject {
   const n = state.counter;
   const id = `d-new-${n}`;
-  const title = "新しい相談";
+  const title = "新しいチャット";
   const project: MockProject = {
     id,
     name: title,
     initial: "新",
     baseThreadId: `${id}-base`,
-    basePath: `~/banto/drafts/2026-10-21-${n}`,
+    basePath: `~/banto/chats/2026-10-21-${n}`,
     status: "active",
     draft: true,
   };
@@ -246,13 +253,35 @@ export function renameDraft(projectId: string, title: string): void {
   set({ drafts: { ...state.drafts, [projectId]: { ...d, autoTitled: false } } });
 }
 
-/** 相談を閉じる（消さない。「閉じた相談」から開き直せる） */
+/** チャットを閉じる（消さない。履歴の「閉じたチャット」から開き直せる） */
 export function closeDraft(projectId: string, why = "あなたが閉じました"): void {
   const p = getProject(projectId);
   updateProjectRecord(projectId, { status: "closed", closedAt: "たった今" });
-  const { [projectId]: _d, ...rest } = state.drafts;
-  void _d;
-  set({ drafts: rest, closed: [{ id: projectId, title: p.name, closedAt: "たった今", why }, ...state.closed] });
+  const { [projectId]: d, ...rest } = state.drafts;
+  set({
+    drafts: rest,
+    parked: { ...state.parked, [projectId]: d },
+    closed: [{ id: projectId, title: p.name, closedAt: "たった今", why }, ...state.closed],
+  });
+}
+
+/** 閉じたチャットを開き直す（コンテナは消してあるので、話すだけの状態から） */
+export function reopenDraft(id: string): string | null {
+  const parked = state.parked[id];
+  const closed = state.closed.filter((c) => c.id !== id);
+  if (parked) {
+    updateProjectRecord(id, { status: "active", closedAt: undefined });
+    const { [id]: _p, ...restParked } = state.parked;
+    void _p;
+    set({ closed, parked: restParked, drafts: { ...state.drafts, [id]: { ...parked, machine: "none", lastUsed: "たった今", rank: -999 } } });
+    return id;
+  }
+  // 見本の閉じたチャット（中身の無いもの）は、同じ題の新しいチャットとして開く
+  const c = state.closed.find((x) => x.id === id);
+  const p = createDraft();
+  if (c) renameDraft(p.id, c.title);
+  set({ closed });
+  return p.id;
 }
 
 export type RepoChoice = "none" | "local" | "github";
@@ -276,7 +305,7 @@ export function folderNameOf(name: string): string {
   return ascii || "project";
 }
 
-/** Project にする：相談の印を外し、名前・置き場・グループを決める。会話・Memory・ファイルはそのまま */
+/** Project にする：チャットの印を外し、名前・置き場・グループを決める。会話・Memory・ファイルはそのまま */
 export function promoteDraft(projectId: string, input: PromoteInput): void {
   const p = getProject(projectId);
   const basePath = input.folder === "move" ? `~/banto/${input.slug}` : p.basePath;

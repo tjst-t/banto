@@ -1,6 +1,6 @@
 "use client";
 
-// 相談を Project にする（モック・2026-10-21、Fork「Project 作成前の検討」）。
+// チャットを Project にする（モック・2026-10-21、Fork「Project 作成前の検討」）。
 //
 // 中身は初めから普通の Project なので、ここで決めるのは「呼び方と置き場」だけ。会話・Memory・試作の
 // ファイルはそのまま残る——それを1行で言い、決めることは4つに絞る：名前・グループ・フォルダ・リポジトリ。
@@ -85,7 +85,7 @@ function PromoteBody({ projectId, onDone }: { projectId: string; onDone: () => v
       <DialogHeader>
         <DialogTitle>Project にする</DialogTitle>
         <DialogDescription>
-          この相談の会話・決まったこと（Memory）・{files > 0 ? `試作のファイル ${files} 個` : "フォルダ"}は、そのまま引き継ぎます。
+          このチャットの会話・決まったこと（Memory）・{files > 0 ? `試作のファイル ${files} 個` : "フォルダ"}は、そのまま引き継ぎます。
         </DialogDescription>
       </DialogHeader>
 
@@ -103,7 +103,7 @@ function PromoteBody({ projectId, onDone }: { projectId: string; onDone: () => v
             onChange={(e) => setSlug(e.target.value)}
             className="font-mono"
           />
-          <p className="text-xs text-ink-3">どちらも相談の中身から AI が付けた名前です。</p>
+          <p className="text-xs text-ink-3">どちらもチャットの中身から AI が付けた名前です。</p>
         </div>
 
         <div className="flex flex-col gap-1.5">

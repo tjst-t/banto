@@ -363,7 +363,7 @@ export function NavPanel({
 
       <SidebarContent>
         {hostSnap.host.busy === "busy" ? <HostBusyBand reason={hostSnap.host.busyReason} /> : null}
-        {/* 相談（モック・2026-10-21）：Project の上に、押せばすぐ始まる会話の一覧 */}
+        {/* チャット（モック・2026-10-21）：Project の上に、押せばすぐ始まる会話の一覧 */}
         <DraftList activeProjectId={activeProjectId} onNavigate={onNavigate} />
         {/* Project の整理（モック・2026-10-16）：グループ・スリープ・行の「…」・ドラッグ。旧い平らな一覧は ?org=off で見られる */}
         {navSearchParams.get("org") === "off" ? (

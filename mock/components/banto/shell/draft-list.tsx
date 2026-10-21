@@ -1,14 +1,16 @@
 "use client";
 
-// サイドバーの「相談」（モック・2026-10-21、Fork「Project 作成前の検討」）。
+// サイドバーの「チャット」（モック・2026-10-21、Fork「Project 作成前の検討」）。
 //
-// Claude のチャットのように、押せばすぐ始まる。名前もフォルダも聞かない。
-// 並ぶのは最近の相談だけ（5件まで。残りは「すべての相談」）。行の右の小さな印でコンテナの様子が分かる：
+// Claude のチャットのように、押せばすぐ始まる。名前もフォルダも聞かない。中身は普通の Project。
+// 見出しを押すと畳める（Project の一覧を広く使いたいとき）。畳んでいても「＋」で始められる。
+// 並ぶのは最近のものだけ（5件まで。残りは「ほかに N 件」）。閉じたチャットは「履歴」に出る。
+// 行の右の小さな印でコンテナの様子が分かる：
 //   印なし=話すだけ（コンテナを作っていない）／緑の点=試作のコンテナが動いている／月=眠っている
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronRight, MessageSquarePlus, Moon, MoreHorizontal, Rocket, X } from "lucide-react";
+import { ChevronRight, MessageSquarePlus, Moon, MoreHorizontal, Plus, Rocket, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,15 +20,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   SidebarGroup,
+  SidebarGroupAction,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import { closeDraft, createDraft, getClosedDrafts, getDrafts, type DraftMachine } from "@/lib/mock/drafts";
+import { closeDraft, createDraft, getDrafts, type DraftMachine } from "@/lib/mock/drafts";
 import { cn } from "@/lib/utils";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
 
@@ -55,83 +57,105 @@ export function DraftList({ activeProjectId, onNavigate }: { activeProjectId: st
   useMockStoreVersion();
   const router = useRouter();
   const drafts = getDrafts();
+  const [open, setOpen] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [promoteId, setPromoteId] = useState<string | null>(null);
   const shown = showAll ? drafts : drafts.slice(0, SHOWN);
-  const closedCount = getClosedDrafts().length;
+  const running = drafts.filter((d) => d.info.machine === "running").length;
+
+  function startNew() {
+    const p = createDraft();
+    setOpen(true);
+    onNavigate?.();
+    router.push(`/p/${p.id}`);
+  }
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>相談</SidebarGroupLabel>
-      <SidebarGroupContent>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              onClick={() => {
-                const p = createDraft();
-                onNavigate?.();
-                router.push(`/p/${p.id}`);
-              }}
-              className="text-foreground"
-            >
-              <MessageSquarePlus />
-              <span className="truncate">新しい相談</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          {shown.map(({ project, info }) => (
-            <SidebarMenuItem key={project.id} className="group/draft">
-              <SidebarMenuButton asChild isActive={project.id === activeProjectId} className="pr-7">
-                <Link href={`/p/${project.id}`} onClick={onNavigate}>
-                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                  <MachineMark machine={info.machine} />
-                </Link>
-              </SidebarMenuButton>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={`「${project.name}」の操作`}
-                    className="absolute top-1.5 right-1 flex size-5 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground data-[state=open]:opacity-100 md:opacity-0 md:group-hover/draft:opacity-100"
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" side="right" className="w-56">
-                  <DropdownMenuItem onSelect={() => setPromoteId(project.id)}>
-                    <Rocket />
-                    Project にする…
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => closeDraft(project.id)}>
-                    <X />
-                    閉じる
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </SidebarMenuItem>
-          ))}
-          {drafts.length > SHOWN ? (
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent"
+      >
+        <span>チャット</span>
+        <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden />
+        {!open && drafts.length > 0 ? (
+          <span className="ml-1 font-normal text-ink-3">
+            {drafts.length}
+            {running > 0 ? `（試作中 ${running}）` : ""}
+          </span>
+        ) : null}
+      </button>
+      <SidebarGroupAction onClick={startNew} aria-label="新しいチャット" title="新しいチャット">
+        <Plus />
+      </SidebarGroupAction>
+      {open ? (
+        <SidebarGroupContent>
+          <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton onClick={() => setShowAll((v) => !v)} className="text-ink-3">
-                <ChevronRight className={cn("transition-transform", showAll && "rotate-90")} />
-                <span>{showAll ? "最近のものだけ" : `ほかに ${drafts.length - SHOWN} 件`}</span>
+              <SidebarMenuButton onClick={startNew} className="text-foreground">
+                <MessageSquarePlus />
+                <span className="truncate">新しいチャット</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
-          ) : null}
-          {closedCount > 0 ? (
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild className="text-ink-3">
-                <Link href="/drafts" onClick={onNavigate}>
-                  <span className="text-xs">閉じた相談（{closedCount}）</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ) : null}
-        </SidebarMenu>
-      </SidebarGroupContent>
+            {shown.map(({ project, info }) => (
+              <SidebarMenuItem key={project.id} className="group/draft">
+                <SidebarMenuButton asChild isActive={project.id === activeProjectId} className="pr-7">
+                  <Link href={`/p/${project.id}`} onClick={onNavigate}>
+                    <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                    <MachineMark machine={info.machine} />
+                  </Link>
+                </SidebarMenuButton>
+                <DraftMenu
+                  name={project.name}
+                  onPromote={() => setPromoteId(project.id)}
+                  onClose={() => closeDraft(project.id)}
+                />
+              </SidebarMenuItem>
+            ))}
+            {drafts.length > SHOWN ? (
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => setShowAll((v) => !v)} className="text-ink-3">
+                  <ChevronRight className={cn("transition-transform", showAll && "rotate-90")} />
+                  <span>{showAll ? "最近のものだけ" : `ほかに ${drafts.length - SHOWN} 件`}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ) : null}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      ) : null}
       {promoteId ? (
         <PromoteDialog projectId={promoteId} open onOpenChange={(o) => !o && setPromoteId(null)} />
       ) : null}
     </SidebarGroup>
+  );
+}
+
+/** 行の「…」：Project にする・閉じる */
+function DraftMenu({ name, onPromote, onClose }: { name: string; onPromote: () => void; onClose: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`「${name}」の操作`}
+          className="absolute top-1.5 right-1 flex size-5 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground data-[state=open]:opacity-100 md:opacity-0 md:group-hover/draft:opacity-100"
+        >
+          <MoreHorizontal className="size-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="right" className="w-56">
+        <DropdownMenuItem onSelect={onPromote}>
+          <Rocket />
+          Project にする…
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={onClose}>
+          <X />
+          閉じる
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

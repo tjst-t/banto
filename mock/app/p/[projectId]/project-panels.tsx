@@ -19,49 +19,30 @@ import { isSleeping, isWaking, wakeProject } from "@/lib/mock/project-org";
 import { LoaderCircle, Moon } from "lucide-react";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
-import { getDraft, getDraftSettings, sleepDraft, wakeDraft } from "@/lib/mock/drafts";
+import { closeDraft, getDraft, getDraftSettings } from "@/lib/mock/drafts";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
-import { FlaskConical, MessageCircle, Rocket } from "lucide-react";
+import { FlaskConical, MessageCircle } from "lucide-react";
 
 /**
- * 相談の帯（モック・2026-10-21、Fork「Project 作成前の検討」）。会話の上に1行で、
- * いま資源を使っているか（コンテナの様子）と「Project にする」を出す
+ * チャットの帯（モック・2026-10-21、Fork「Project 作成前の検討」）。会話の上に1行で、
+ * いま資源を使っているか（コンテナの様子）だけを出す。「Project にする」はヘッダの「…」とサイドバーの行の「…」から
  */
 function DraftBand({ projectId }: { projectId: string }) {
   useMockStoreVersion();
   const draft = getDraft(projectId);
-  const [promoting, setPromoting] = useState(false);
   if (!draft) return null;
   const { sleepAfterMinutes } = getDraftSettings();
   const Icon = draft.machine === "none" ? MessageCircle : draft.machine === "running" ? FlaskConical : Moon;
   const text =
     draft.machine === "none"
-      ? "相談中——話す・調べるだけなのでコンテナはまだ作っていません。試作を始めると作ります"
+      ? "話す・調べるだけなので、コンテナはまだ作っていません。試作を始めると作ります"
       : draft.machine === "running"
-        ? `相談中——試作のコンテナが動いています。${sleepAfterMinutes}分使わなければ眠らせます`
-        : "相談中——試作のコンテナは眠っています。続けて話すと起きます";
+        ? `試作のコンテナが動いています。${sleepAfterMinutes}分使わなければ眠らせます`
+        : "試作のコンテナは眠っています。続けて話すと起きます";
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
       <Icon className="size-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1">{text}</span>
-      {draft.machine === "running" ? (
-        <button type="button" onClick={() => sleepDraft(projectId)} className="rounded-md px-2 py-0.5 hover:bg-accent">
-          今すぐ眠らせる
-        </button>
-      ) : draft.machine === "asleep" ? (
-        <button type="button" onClick={() => wakeDraft(projectId)} className="rounded-md px-2 py-0.5 hover:bg-accent">
-          起こす
-        </button>
-      ) : null}
-      <button
-        type="button"
-        onClick={() => setPromoting(true)}
-        className="flex items-center gap-1 rounded-md bg-background px-2 py-0.5 font-medium text-foreground shadow-xs ring-1 ring-border hover:bg-accent"
-      >
-        <Rocket className="size-3.5" aria-hidden />
-        Project にする
-      </button>
-      {promoting ? <PromoteDialog projectId={projectId} open onOpenChange={(o) => !o && setPromoting(false)} /> : null}
     </div>
   );
 }
@@ -196,6 +177,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
+  const [promoting, setPromoting] = useState(false);
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
 
   function addMarker(threadId: string, kind: ThreadMarker["kind"]) {
@@ -255,8 +237,18 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             <ThreadActionsMenu
               onClear={() => addMarker(project.baseThreadId, "clear")}
               onCompact={() => addMarker(project.baseThreadId, "compact")}
+              onPromote={project.draft ? () => setPromoting(true) : undefined}
+              onCloseChat={
+                project.draft
+                  ? () => {
+                      closeDraft(projectId);
+                      router.push("/");
+                    }
+                  : undefined
+              }
             />
           </PanelHeader>
+          {promoting ? <PromoteDialog projectId={projectId} open onOpenChange={(o) => !o && setPromoting(false)} /> : null}
           <SleepBand projectId={projectId} />
           <DraftBand projectId={projectId} />
           <div className="min-h-0 flex-1">

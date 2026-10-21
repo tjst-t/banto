@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Gauge, Puzzle, Server, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowUpCircle, Bell, Gauge, MessageCircle, Puzzle, Server, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ChatSettingsPanel } from "@/components/banto/settings/chat-settings-panel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -42,6 +43,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "defaults", label: "既定値", icon: SlidersHorizontal },
   { section: "credentials", label: "資格情報", icon: Sparkles },
   { section: "notifications", label: "通知", icon: Bell },
+  { section: "chat", label: "チャット", icon: MessageCircle },
   { section: "resources", label: "資源", icon: Gauge },
   { section: "runtimes", label: "実行場所", icon: Server },
   { section: "update", label: "更新", icon: ArrowUpCircle },
@@ -61,6 +63,10 @@ const RUNTIME_DEFAULT_ENTRIES = [
 ];
 
 const NOTIFICATION_ENTRIES = [{ label: "デスクトップ通知", anchorId: "anchor-notifications-permission" }];
+const CHAT_ENTRIES = [
+  { label: "試作のコンテナを眠らせるまで", anchorId: "anchor-chat-sleep" },
+  { label: "触らなくなったチャットを閉じるまで", anchorId: "anchor-chat-cleanup" },
+];
 
 const UPDATE_ENTRIES = [{ label: "今の版" }, { label: "新しいコミット" }];
 
@@ -107,6 +113,7 @@ function buildSearchEntries(): readonly SearchEntry[] {
     ...defaultEntries,
     ...credentialEntries,
     ...notificationEntries,
+    ...CHAT_ENTRIES.map((e) => ({ section: "chat" as const, label: e.label, anchorId: e.anchorId })),
     ...updateEntries,
     ...moduleConfigEntries,
   ];
@@ -163,6 +170,17 @@ function renderInstanceSection(section: SettingsSection) {
           description="判断待ち・レビュー待ちが新着したとき、受信箱のバッジ以外にも気づけるようにする。"
         />
         <NotificationSettingsPanel />
+      </div>
+    );
+  }
+  if (section === "chat") {
+    return (
+      <div>
+        <SectionHeading
+          title="チャット"
+          description="サイドバーの「チャット」で始めた会話が、使っていないときに資源を取らないようにします。"
+        />
+        <ChatSettingsPanel />
       </div>
     );
   }

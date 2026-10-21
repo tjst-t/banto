@@ -115,17 +115,17 @@ export function getAllProjects(): readonly MockProject[] {
   return projects;
 }
 
-/** 普通の Project の一覧に並ぶもの（相談は除く——サイドバーの「相談」に別に並ぶ） */
+/** 普通の Project の一覧に並ぶもの（チャットは除く——サイドバーの「チャット」に別に並ぶ） */
 export function getActiveProjects(): readonly MockProject[] {
   return projects.filter((p) => p.status === "active" && !p.draft);
 }
 
-/** 相談（下書きの Project）も含めた、開いているもの */
+/** チャット（下書きの Project）も含めた、開いているもの */
 export function getActiveProjectsWithDrafts(): readonly MockProject[] {
   return projects.filter((p) => p.status === "active");
 }
 
-/** 相談のモック（drafts.ts）が Project を足す・書き換える口 */
+/** チャットのモック（drafts.ts）が Project を足す・書き換える口 */
 export function addProjectRecord(project: MockProject): void {
   projects = [...projects, project];
 }
@@ -135,7 +135,7 @@ export function updateProjectRecord(id: string, patch: Partial<MockProject>): vo
 }
 
 export function getClosedProjects(): readonly MockProject[] {
-  return projects.filter((p) => p.status === "closed");
+  return projects.filter((p) => p.status === "closed" && !p.draft);
 }
 
 export function getProject(id: string): MockProject {

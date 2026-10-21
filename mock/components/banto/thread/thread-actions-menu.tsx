@@ -11,16 +11,22 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, Rocket, X } from "lucide-react";
 
 export function ThreadActionsMenu({
   onClear,
   onCompact,
+  onPromote,
+  onCloseChat,
 }: {
   onClear: () => void;
   onCompact: () => void;
+  /** チャット（下書きの Project）のときだけ（モック・2026-10-21） */
+  onPromote?: () => void;
+  onCloseChat?: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -33,9 +39,27 @@ export function ThreadActionsMenu({
           <MoreHorizontal className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent align="end" className="min-w-52">
+        {onPromote ? (
+          <>
+            <DropdownMenuItem onClick={onPromote}>
+              <Rocket />
+              Project にする…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuItem onClick={onClear}>Clear</DropdownMenuItem>
         <DropdownMenuItem onClick={onCompact}>Compaction</DropdownMenuItem>
+        {onCloseChat ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onCloseChat}>
+              <X />
+              このチャットを閉じる
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

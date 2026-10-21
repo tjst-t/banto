@@ -540,7 +540,7 @@ export function createBaseThreadForProject(projectId: string, threadId: string, 
   mockThreads = [...mockThreads, thread];
 }
 
-/** 相談のモック（drafts.ts）専用：台本つきの Base Thread を足す・題を変える */
+/** チャットのモック（drafts.ts）専用：台本つきの Base Thread を足す・題を変える */
 export function addThreadRecord(thread: MockThread): void {
   mockThreads = [...mockThreads, thread];
 }

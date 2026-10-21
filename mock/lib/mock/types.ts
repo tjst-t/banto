@@ -19,7 +19,7 @@ export interface MockProject {
   status: "active" | "closed";
   /** status が "closed" のときだけ意味を持つ */
   closedAt?: string;
-  /** 相談（下書きの Project）。中身は普通の Project で、画面だけ別に扱う（モック・2026-10-21、Fork「Project 作成前の検討」） */
+  /** チャット（下書きの Project）。中身は普通の Project で、画面だけ別に扱う（モック・2026-10-21、Fork「Project 作成前の検討」） */
   draft?: boolean;
 }
 
