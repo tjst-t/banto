@@ -12230,7 +12230,7 @@
       "number": 508,
       "kind": "task",
       "title": "番頭：instruct_thread（書き手 supervisor）と list_stalled_threads",
-      "status": "ready",
+      "status": "backlog",
       "parent": "banto-supervisor",
       "dependsOn": [
         "mode-supervisor-answer-decision"
@@ -12244,7 +12244,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T07:35:40.881Z",
+      "updatedAt": "2026-10-21T07:36:07.755Z",
       "closedAt": null,
       "extra": {}
     },
