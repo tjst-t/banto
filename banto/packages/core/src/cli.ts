@@ -75,6 +75,7 @@ import { RuntimeRouter } from "./runtime/router.js";
 import { ProjectMover, type RunningItem } from "./runtime/project-move.js";
 import { ProjectStarter, type ShellRun } from "./runtime/project-start.js";
 import { errandLeftoversOf, ProjectSleep } from "./runtime/project-sleep.js";
+import { ChatIdle, chatIdleSettingsOf } from "./runtime/chat-idle.js";
 import { autoSleepModeOf, lastHumanMessages, ProjectActivity, ProjectIdle } from "./runtime/project-idle.js";
 import { collectActivity } from "./http/activity.js";
 import { createRelayListener } from "./relay/relay-listener.js";
@@ -3328,6 +3329,31 @@ async function main(): Promise<void> {
     sleep: (projectId) => projectSleep!.sleep(projectId, "auto"),
     onChange: () => appEvents.publish({ type: "projects.changed" }),
   });
+  /**
+   * **使わなくなったチャットを眠らせる・触らなくなったチャットを閉じる**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。
+   * 時計は1分ごと。閉じるときは Module を畳んでコンテナを消す（会話・Memory・フォルダは残す。チャットはこの機械のコンテナだけ）
+   */
+  const chatIdle = new ChatIdle({
+    listProjects: () => projectThread.listProjects(),
+    lastTurnStartedAt: (projectId) => {
+      let latest: string | undefined;
+      for (const t of projectThread.listThreadsForProject(projectId)) {
+        const at = t.lastTurn?.startedAt;
+        if (at !== undefined && (latest === undefined || Date.parse(at) > Date.parse(latest))) latest = at;
+      }
+      return latest;
+    },
+    activity: projectActivity,
+    settings: () => chatIdleSettingsOf(runtimeConfig),
+    hostActivity,
+    sleepInProgress: (projectId) => projectSleep!.inProgress(projectId),
+    sleep: (projectId) => projectSleep!.sleep(projectId, "auto"),
+    close: async (projectId) => {
+      await projectThread.closeProject(projectId, { by: "auto" });
+      await releaseProjectModules(projectId, { stopContainer: true });
+      await hostRuntime.removeProjectContainer(projectId);
+    },
+  });
   if (bootstrap.testOnlyReadOnlyThreads) {
     console.warn("[host] **試験が読むだけの印を付けた会話を立てられます**（試験用、config.json の testOnlyReadOnlyThreads）");
   }
@@ -3337,6 +3363,9 @@ async function main(): Promise<void> {
   // ターンが終わったら、用事で起きた Project が眠りに戻れるかを見る
   threadTurns.onChange((change) => {
     if (change.type === "ended") returnToSleepIfDone(change.threadId);
+    // チャットを使った（冷める前の要約は host が自分でするもので、使ったことにしない）
+    const projectId = change.idleCompaction ? undefined : projectThread.getThread(change.threadId)?.projectId;
+    if (projectId !== undefined) chatIdle.noteUse(projectId);
   });
   // **画面から banto を更新する**（決定・2026-10-04、アーキ仕様 §2.5）。動いているコードの本当のパスで、
   // 版ごとのフォルダから動いているかを見る。
@@ -3353,6 +3382,7 @@ async function main(): Promise<void> {
   });
   const app = createApp({
     warmModelCatalog: true,
+    chatIdle,
     ...(runTurnOverride ? { runTurn: runTurnOverride } : {}),
     // **会話の本体も Claude のログインの中継を通す**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを複数持つ」の 2.）。
     // 住所は host の loopback——中継は本体用の合言葉をそこからだけ受ける
@@ -3691,6 +3721,8 @@ async function main(): Promise<void> {
     }, KEEP_AWAKE_INTERVAL_MS).unref();
     // **しばらく開いていない Project を確かめる時計**（§2.2）。起きたときに1回、そのあと1時間ごと
     projectIdle.start();
+    // **使っていないチャットを確かめる時計**（§2.2「チャット」）。起きたときに1回、そのあと1分ごと
+    chatIdle.start();
     // **別の実行場所へ移している途中で落ちていたら**、移す先の作ったものを片づけて failed を積む（待ち受けてから——
     // 別のサーバへは Vault の鍵で繋ぐ）
     void projectMover!.recoverInterrupted().catch((err: unknown) => console.warn("[host] 途中で止まった移し替えを片づけられませんでした:", err));

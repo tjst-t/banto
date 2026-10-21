@@ -17,6 +17,7 @@ import type {
   ProjectGroupColor,
   ProjectKind,
   ProjectSleptBy,
+  ProjectClosedBy,
   ProjectWokeCause,
   ThreadPermissionMode,
   ThreadClosedBy,
@@ -48,7 +49,7 @@ export type ProjectThreadEvent =
   // `runtime`：別のサーバなら `remote:<名前>`（追加・2026-10-10）。無ければこの機械のコンテナ
   // `kind`：チャット（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project
   | { type: "project.created"; payload: { id: string; name: string; root: string; runtime?: string; kind?: ProjectKind } }
-  | { type: "project.closed"; payload: { id: string } }
+  | { type: "project.closed"; payload: { id: string; by?: ProjectClosedBy } }
   // **人が付けた名前**（決定・2026-09-11、ユーザー要望）。Project は作るときに
   // 名前を付けるが、後から直せなかった
   | { type: "project.renamed"; payload: { id: string; name: string } }

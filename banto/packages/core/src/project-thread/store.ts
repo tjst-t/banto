@@ -40,6 +40,7 @@ import type {
   ContinuationCancelledBy,
   ProjectKind,
   ProjectSleptBy,
+  ProjectClosedBy,
   ProjectWokeCause,
   MissionFrame,
   MissionFollowup,
@@ -500,12 +501,12 @@ export class ProjectThreadStore {
     return project;
   }
 
-  async closeProject(id: ProjectId): Promise<void> {
+  async closeProject(id: ProjectId, opts?: { by: ProjectClosedBy }): Promise<void> {
     const project = this.getProject(id);
     if (!project) throw new NotFoundError(`project ${id} not found`);
     if (project.move) throw new RuntimeMoveConflictError("この Project はいま別の実行場所へ移しています");
     const withMission = this.listThreadsForProject(id).filter((t) => t.mission?.status === "active").map((t) => t.id);
-    const event = await this.log.append("project.closed", { id });
+    const event = await this.log.append("project.closed", { id, ...(opts ? { by: opts.by } : {}) });
     this.projection.applyOne(event);
     this.notifyProjectsChanged();
     // 閉じると動いている任務は止まる（fold）
