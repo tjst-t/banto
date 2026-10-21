@@ -12000,7 +12000,7 @@
       "number": 498,
       "kind": "task",
       "title": "core：チャットの最初のターンで題を付ける（小さいモデル→project.renamed、だめなら最初の文を縮める）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create",
@@ -12015,7 +12015,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:08.269Z",
+      "updatedAt": "2026-10-21T06:52:32.386Z",
       "closedAt": null,
       "extra": {}
     },
