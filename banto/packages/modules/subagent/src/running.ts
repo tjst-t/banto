@@ -40,6 +40,8 @@ export interface RunningRecord {
   prompt: string;
   /** 頼んだ文の頭（一覧・ログ用） */
   promptHead: string;
+  /** 呼び名（`runSubagent` の `label`。続けたあとの記録も同じ題で出す） */
+  label?: string;
   /** 続きから頼んだ仕事なら元の session id（runSubagent の sessionId） */
   resumedFrom?: string;
   startedAt: number;

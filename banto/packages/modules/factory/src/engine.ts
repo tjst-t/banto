@@ -750,7 +750,7 @@ class ItemPass implements ProcedureContext {
     const choice: AgentChoice = role === "implementer" ? this.settings.implementer : this.settings.reviewer;
     const result = await this.step<AgentResult>(`agent:${role}`, async (prev, n) => {
       try {
-        return await this.runAgent(choice, input, prev, n);
+        return await this.runAgent(role, choice, input, prev, n);
       } catch (err) {
         // **実装役が落ちたら、作業ツリーの未コミットの変更を wip コミットにしてから止まる**（追加・2026-10-13、Backlog #284）
         // ——人が手で守らなくて済むように。止められた・食い違いはそのまま
@@ -790,6 +790,7 @@ class ItemPass implements ProcedureContext {
   }
 
   private async runAgent(
+    role: "implementer" | "reviewer",
     choice: AgentChoice,
     input: { prompt: string; sessionId?: string; schema?: Record<string, unknown> },
     prev: StepRecord | undefined,
@@ -799,6 +800,8 @@ class ItemPass implements ProcedureContext {
     if (!replyId) {
       const r = await this.call("subagent", "runSubagent", {
         agent: choice.agent,
+        // 人の画面（サイドバー・サブエージェントの画面）の題（追加・2026-10-21、アーキ仕様 §4.1 の2）
+        label: `#${this.task.id} ${role === "implementer" ? "実装" : "レビュー"}`,
         ...(choice.model ? { model: choice.model } : {}),
         ...(choice.effort ? { effort: choice.effort } : {}),
         prompt: input.prompt,

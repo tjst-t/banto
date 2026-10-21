@@ -3,9 +3,14 @@
 // コンテナの中で確かめる
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CARD_META_KEY, fillCardText } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
+import { createSubagentServer } from "./server.js";
 import { fakeVault, sha, withServer } from "./testing/harness.js";
 
 test("一覧：使えるエージェントと、その設定の候補", async () => {
@@ -286,4 +291,42 @@ test("書きかけの返答は、走っている間の中身に出る", async ()
     assert.equal(done.model, "fake-small");
     assert.match(done.text, /^書きかけ…受け取った：\[slow 3\] \[draft\] 長い仕事/);
   });
+});
+
+// アーキ仕様 §4.1 の2：呼び名（label）。Shell の runCommand の label と同じ決まり（1行・80 字で切る、文字列でなければ断る、
+// 空白だけなら付けなかったのと同じ）。カードの題は {label|prompt}・説明は {prompt}
+test("呼び名（label）：1行・80 字に整えて記録と一覧に残し、文字列でなければ断る。カードの題は呼び名、無ければ頼んだ文", async () => {
+  await withServer(async (call) => {
+    const refused = await call("runSubagent", { agent: "fake", prompt: "x", label: 3 });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /label は文字列で渡してください/);
+
+    const named = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "名前つき", label: "  #123\n実装  " })).text) as { runId: string };
+    const long = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "長い名前", label: "あ".repeat(100) })).text) as { runId: string };
+    const blank = JSON.parse((await call("runSubagent", { agent: "fake", prompt: "名前なし", label: " \n " })).text) as { runId: string };
+    const labelOf = async (id: string) => (JSON.parse((await call("getRun", { id })).text) as { label?: string }).label;
+    assert.equal(await labelOf(named.runId), "#123 実装");
+    assert.equal(await labelOf(long.runId), `${"あ".repeat(80)}…`);
+    assert.equal(await labelOf(blank.runId), undefined);
+    const listed = (JSON.parse((await call("listRuns", {})).text) as { runs: { id: string; label?: string; promptHead: string }[] }).runs;
+    assert.deepEqual(
+      listed.map((r) => [r.label ?? null, r.promptHead]),
+      [[null, "名前なし"], [`${"あ".repeat(80)}…`, "長い名前"], ["#123 実装", "名前つき"]],
+    );
+  });
+
+  const root = mkdtempSync(join(tmpdir(), "subagent-card-"));
+  try {
+    const server = createSubagentServer({ projectRoot: root, moduleDataDir: root, relayClient: fakeVault().relay, claudeLoginEnv: {} });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const tool = (await client.listTools()).tools.find((t) => t.name === "runSubagent")!;
+    assert.deepEqual(tool._meta?.[CARD_META_KEY], { title: "{label|prompt}", description: "{prompt}" });
+    assert.equal(fillCardText("{label|prompt}", { label: "#123 実装", prompt: "長い頼み" }), "#123 実装");
+    assert.equal(fillCardText("{label|prompt}", { prompt: "長い頼み" }), "長い頼み");
+    await client.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

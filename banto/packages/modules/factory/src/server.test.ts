@@ -37,7 +37,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
   const held: Array<{ replyId: string; body: unknown }> = [];
   /** 出した出来事（出口の箱の手前） */
   const emitted: EmittedEvent[] = [];
-  const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0, backlogMissing: 0 };
+  const state = { current: undefined as Factory | undefined, holdImplementer: true, holdReviewer: false, implements: 0, seq: 0, failDeliveries: 0, backlogMissing: 0, labels: [] as unknown[] };
   const hand = (replyId: string, body: unknown) =>
     setTimeout(() => state.current!.receiveReply({ replyId, from: "subagent", title: "終わりました", text: JSON.stringify(body), final: true, lost: false }), 5);
   const relay = async (name: string, args: Record<string, unknown>): Promise<RelayResult> => {
@@ -68,6 +68,7 @@ function setup(settings: Partial<FactorySettings> = {}) {
     }
     if (tool === "updateItem") return { text: "ok", isError: false };
     if (tool === "runSubagent") {
+      state.labels.push(a.label);
       const replyId = `rid_${++state.seq}`;
       if (a.schema) {
         const body = { text: "", sessionId: "rev", structured: { verdict: "pass", items: [] } };
@@ -153,6 +154,8 @@ test("起き直して流し直した実行が host に問われる前に終わ�
     assert.match(h.delivered[0]!.title, /^Factory の実行が終わりました（取り込み 1／1 件）/);
     assert.deepEqual(second.factory.get(runId)!.notifyErrors, []);
     assert.equal(h.state.implements, 1, "実装役に頼み直した");
+    // 人の画面の題（呼び名）を付けて頼む（アーキ仕様 §4.1 の2）
+    assert.deepEqual(h.state.labels, ["#a 実装", "#a レビュー"]);
     assert.equal(existsSync(join(h.project, "done.txt")), true, "main に入っていない");
   } finally {
     await h.cleanup();

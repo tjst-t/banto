@@ -96,7 +96,7 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
   await expect(canvas.locator(".list-label")).toHaveText(["終わった仕事1"]);
   const done = rows.first();
   await expect(done.locator('[data-role="status"]')).toHaveText("完了");
-  await expect(done.locator('[data-role="prompt"]')).toHaveText("[write memo.txt] メモを書いて");
+  await expect(done.locator('[data-role="title"]')).toHaveText("[write memo.txt] メモを書いて");
   await expect(done).toContainText("Fake Agent（試験用）（fake-small）");
   await expect(done).toContainText("ツール 1回");
   await expect(canvas.locator('[data-role="running-count"]')).toHaveCount(0);
@@ -124,7 +124,7 @@ test("サブエージェントの入口：仕事の一覧・中身・走って�
   await expect(canvas.locator(".list-label")).toHaveText(["実行中1", "終わった仕事1"]);
   await expect(canvas.locator('[data-role="running-count"]')).toHaveText("1件 実行中");
   await expect(running.locator('[data-role="status"]')).toHaveText("実行中");
-  await expect(running.locator('[data-role="prompt"]')).toHaveText("[slow 45] [draft] 長い仕事");
+  await expect(running.locator('[data-role="title"]')).toHaveText("[slow 45] [draft] 長い仕事");
   await expect(running.locator('[data-role="progress"]')).toHaveText("sleep 45", { timeout: 15_000 });
   // 中身：経過が伸び、書きかけの返答が見える
   await running.locator('[data-role="run"]').click();

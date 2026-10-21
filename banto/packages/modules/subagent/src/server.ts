@@ -50,7 +50,7 @@ import { prepareAgentLaunch } from "./agent-home.js";
 import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
-import { clipLine, RunLog, STEP_TITLE_MAX } from "./runs.js";
+import { clipLine, LABEL_MAX, labelOf, RunLog, STEP_TITLE_MAX } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
 import { stopOwnedGroup } from "./process-group.js";
 import { compileSchema, extractJson, fixPrompt, schemaInstruction, STRUCTURED_RETRIES, type CompiledSchema } from "./structured.js";
@@ -216,6 +216,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           "OpenCode は人が banto 全体の設定の「サブエージェント」で入れた鍵を使う（どれが使えるかは listSubagents）。" +
           "それ以外の鍵で走らせたいときだけ envSecrets に alias を渡す（使える alias の一覧は resource `vault://aliases`）。" +
           "続きを頼むときは、前の返り値の sessionId を渡す。" +
+          "**頼むときは label に短い呼び名を付ける**（人が一覧で見分けるため）。" +
           "**長い仕事は runInBackground: true で待たずに頼める**——すぐ仕事の id が返り、終わったら結果がこの会話に届いて、" +
           "あなたが起こされる（届くまで他の仕事を続けてよい。結果を待つために同じ仕事を頼み直さない）。" +
           "**サブエージェントが人に確認を求めても、いまは聞く口が無いので断る**（断ったものは返り値の permissions に出る）",
@@ -224,6 +225,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           properties: {
             agent: { type: "string", enum: agents.map((a) => a.id) },
             prompt: { type: "string", description: "頼む内容。サブエージェントはあなたの会話を知らないので、要ることは全部書く" },
+            label: {
+              type: "string",
+              description:
+                "人の画面（会話のカード・サイドバーのバックグラウンドの一覧・サブエージェントの画面）に出す短い呼び名" +
+                `（例「#123 実装」「仕様の下書きをレビュー」）。付けなければ頼んだ文の頭を出す。1行・${LABEL_MAX} 字まで（越えた分は切る）`,
+            },
             model: {
               type: "string",
               description:
@@ -259,7 +266,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           [VISIBILITY_META_KEY]: "agent",
           [DELIVERS_LATER_META_KEY]: true,
           ui: { resourceUri: RUNS_APP_URI },
-          [CARD_META_KEY]: { title: "{agent} に頼んだ仕事", description: "{prompt}" },
+          // 題は呼び名、無ければ頼んだ文（カードの題は 80 字で畳む）。サイドバーの1件も同じ題（追加・2026-10-21）
+          [CARD_META_KEY]: { title: "{label|prompt}", description: "{prompt}" },
         },
       },
       {
@@ -512,6 +520,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         const agent = agentOf(args.agent);
         if (typeof args.prompt !== "string" || args.prompt.trim() === "") throw new SubagentError("prompt が空です");
         const prompt = args.prompt;
+        if (args.label !== undefined && typeof args.label !== "string") {
+          throw new SubagentError("label は文字列で渡してください（人の画面に出す短い呼び名）");
+        }
+        const label = labelOf(args.label);
         // **待たない形**（決定・2026-09-25）：届ける先（host が渡した返信用の札）が無ければ断る——黙って待つ形に
         // 落とさない（規則2。AI は「届く」と思って待ち続けることになる）
         const background = args.runInBackground === true;
@@ -538,6 +550,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
           agent: agent.id,
           agentTitle: agent.title,
           prompt,
+          ...(label ? { label } : {}),
           ...(typeof args.model === "string" ? { model: args.model } : {}),
           ...(typeof args.effort === "string" ? { effort: args.effort } : {}),
           ...(typeof args.sessionId === "string" ? { resumedFrom: args.sessionId } : {}),
@@ -580,6 +593,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
             ...(requestedBy ? { requestedBy } : {}),
             prompt,
             promptHead: promptHeadOf(prompt),
+            ...(label ? { label } : {}),
             ...(typeof args.sessionId === "string" ? { resumedFrom: args.sessionId, sessionId: args.sessionId } : {}),
             startedAt: Date.now(),
             progressed: false,
@@ -1008,6 +1022,7 @@ function runInputOf(record: RunningRecord) {
     agent: record.agent,
     agentTitle: record.agentTitle,
     prompt: record.prompt,
+    ...(record.label ? { label: record.label } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.effort ? { effort: record.effort } : {}),
     ...(record.resumedFrom ? { resumedFrom: record.resumedFrom } : {}),
