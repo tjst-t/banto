@@ -332,3 +332,39 @@ test("番頭の方針：全体は任せる行いと文、Project は足す・外
     assert.equal((await call("/api/projects/nope/supervisor-policy")).status, 404);
   });
 });
+
+test("番頭の方針（Backlog #511）：全体の間隔・上限・タイムゾーンを書ける。Project の層では書けない。行いの題と Project の層の値を添える", async () => {
+  await withApp(async (call, { projectThread }) => {
+    const p = await projectThread.createProject("p", tmpdir());
+    const put = await call("/api/supervisor-policy", "PUT", {
+      patrolHours: 6,
+      limits: { runsPerHour: 20, instructionsPerHour: 5, factoryConcurrent: 3 },
+      timeZone: "Asia/Tokyo",
+    });
+    assert.equal(put.status, 200);
+    assert.equal(put.body.patrolHours, 6);
+    assert.deepEqual(put.body.limits, { runsPerHour: 20, instructionsPerHour: 5, factoryConcurrent: 3 });
+    assert.equal(put.body.timeZone, "Asia/Tokyo");
+    const catalog = put.body.catalog as { actions: Array<{ action: string; title: string; short: string }>; humanOnly: Array<{ kind: string }> };
+    assert.equal(catalog.actions[0]!.action, "continue");
+    assert.equal(catalog.actions[0]!.short, "続ける");
+    assert.deepEqual(catalog.humanOnly.map((k) => k.kind), ["spec", "publish", "money", "destructive"]);
+    assert.equal(put.body.layer, undefined, "全体の方針に Project の層を添えた");
+    // 確かめてから書く——1つでも正しくなければ何も書かない
+    assert.equal((await call("/api/supervisor-policy", "PUT", { patrolHours: 2, limits: { runsPerHour: 0 } })).status, 400);
+    assert.equal((await call("/api/supervisor-policy")).body.patrolHours, 6);
+    assert.equal((await call("/api/supervisor-policy", "PUT", { patrolHours: 1.5 })).status, 400);
+    assert.equal((await call("/api/supervisor-policy", "PUT", { timeZone: "Nowhere/Nope" })).status, 400);
+    // 空・null で外す
+    const cleared = await call("/api/supervisor-policy", "PUT", { timeZone: null });
+    assert.equal(cleared.body.timeZone, undefined);
+
+    const path = `/api/projects/${p.id}/supervisor-policy`;
+    assert.equal((await call(path, "PUT", { patrolHours: 1 })).status, 400, "Project の層に間隔を書けた");
+    // Project の効いている方針は全体の数を読む
+    assert.equal((await call(path)).body.patrolHours, 6);
+    const layered = await call(path, "PUT", { delegate: { add: ["release"], remove: ["merge"] }, note: "Project の文" });
+    assert.deepEqual(layered.body.layer, { delegate: { add: ["release"], remove: ["merge"] }, note: "Project の文" });
+    assert.deepEqual((await call(path, "PUT", { delegate: null, note: null })).body.layer, {});
+  });
+});

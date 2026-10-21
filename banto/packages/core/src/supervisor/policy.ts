@@ -47,6 +47,23 @@ export const ACTION_TITLES: Readonly<Record<DecisionKind, string>> = {
   destructive: "消す・取り消せない操作",
 };
 
+/** 行いの短い呼び名（画面の札・チェックの見出し。長い説明は `ACTION_TITLES`） */
+export const ACTION_SHORT_TITLES: Readonly<Record<DecisionKind, string>> = {
+  continue: "続ける",
+  "retry-turn": "やり直す",
+  "rerun-tests": "試験を流し直す",
+  "fix-tests": "試験を直す",
+  merge: "main に取り込む",
+  push: "push",
+  release: "release に反映",
+  backlog: "Backlog を更新",
+  "minor-design": "小さな設計",
+  spec: "仕様",
+  publish: "公開",
+  money: "お金",
+  destructive: "消す操作",
+};
+
 /** 既定で任せる行い（全体の方針に値が無いとき） */
 export const DEFAULT_DELEGATE: readonly SupervisorAction[] = SUPERVISOR_ACTIONS.filter((a) => a !== "release");
 
