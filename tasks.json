@@ -12300,7 +12300,7 @@
       "number": 511,
       "kind": "task",
       "title": "番頭の帳面の画面（フロント §6.54）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "banto-supervisor",
       "dependsOn": [
         "1"
@@ -12314,7 +12314,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T07:35:40.881Z",
+      "updatedAt": "2026-10-21T07:36:30.969Z",
       "closedAt": null,
       "extra": {}
     }
