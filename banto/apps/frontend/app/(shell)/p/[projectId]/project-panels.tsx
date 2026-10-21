@@ -45,7 +45,8 @@ import {
 } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
 import { useIncomingForkRequest, type ForkStartMode } from "@/lib/fork-request";
-import { getProject, hydrateRealProjects, prepareProjectModules, renameProject } from "@/lib/mock/projects";
+import { closeProject, getProject, hydrateRealProjects, isChat, prepareProjectModules, renameProject } from "@/lib/mock/projects";
+import { PromoteDialog } from "@/components/banto/project/promote-dialog";
 import {
   foldForkThread,
   getThread,
@@ -227,6 +228,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
   // 名前を聞いている Fork（null なら聞いていない）——v4-frontend.md §6.32
   const [forkRequest, setForkRequest] = useState<ForkDialogRequest | null>(null);
+  // チャットの「Project にする…」（§6.53）
+  const [promoteOpen, setPromoteOpen] = useState(false);
   // 実Projectの場合、SSR側はhydrateRealProjects()未実行のためデモの初期値
   // （banto Project・"banto-base" Thread）にフォールバックしたまま描画される。
   // クライアント初回hydrateも同じ内容なら一致するが、そのあとuseMockStoreVersion
@@ -419,6 +422,16 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     stack.close("canvas");
   }
 
+  /** このチャットを閉じる（§6.53）。閉じたら居続けない——閉じたチャットはサイドバーの「閉じたチャット」から開き直す */
+  async function handleCloseChat() {
+    try {
+      await closeProject(project.id);
+      router.push("/");
+    } catch (err) {
+      toast(`チャットを閉じられませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   if (!mounted) return null;
 
   return (
@@ -456,12 +469,17 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               onFork={() => requestFork(project.baseThreadId, { start: "choose" })}
               onClear={() => handleClear(project.baseThreadId)}
               onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(project.baseThreadId, "compact") : undefined}
+              // **チャットの会話の画面**（§6.53）：「Project にする…」と「このチャットを閉じる」を足す
+              {...(isChat(project)
+                ? { onPromote: () => setPromoteOpen(true), onCloseChat: () => void handleCloseChat() }
+                : {})}
             />
           </PanelHeader>
           {/* 別の実行場所へ移している間・移せなかったとき（追加・2026-10-12、Backlog #270） */}
           <RuntimeMoveBanner projectId={project.id} />
-          {/* 眠っている・起こしている（追加・2026-10-16、§6.43） */}
-          <ProjectSleepBanner projectId={project.id} />
+          {/* 眠っている・起こしている（追加・2026-10-16、§6.43）。**チャットには出さない**——コンテナの様子はサイドバーの
+              行の印だけ（§6.53「会話の上に帯は出さない」）。開けば起きるのは同じ */}
+          {isChat(project) ? null : <ProjectSleepBanner projectId={project.id} />}
           {/* 別のサーバの clone・新しいリポジトリ（追加・2026-10-20、§6.49） */}
           <ProjectStartBanner projectId={project.id} threadId={project.baseThreadId} root={project.basePath} />
           <div className="min-h-0 flex-1">
@@ -623,6 +641,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       }}
     />
     {closeForkDialog}
+    {/* 開いている間は出し続ける——押すと途中でチャットでなくなる（その後にリポジトリの画面へ頼む） */}
+    {promoteOpen ? <PromoteDialog projectId={project.id} open onOpenChange={setPromoteOpen} /> : null}
     <ForkDialog
       request={forkRequest}
       onOpenChange={(open) => {

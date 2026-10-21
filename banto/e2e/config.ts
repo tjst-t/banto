@@ -208,6 +208,11 @@ export const DATA_DIR = coreDataDir(CORE_INDEX);
  * 試験に使わない——実行ごとの置き場に偽のホームを作る（`start-core.ts`）。
  */
 export const SHELL_HOME_SOURCE = join(E2E_TMP, "user-home");
+/**
+ * **チャットの置き場**（追加・2026-10-21、`chat.spec.ts`）。本物（`~/banto/chats`）は人の `~/banto` の中——試験のチャットと
+ * 「Project にする」で移すフォルダ（置き場の親の下）は、実行ごとの置き場に作る（config.json の `testOnlyChatsDir`）
+ */
+export const CHATS_DIR = join(E2E_TMP, "home", "banto", "chats");
 
 /**
  * **本体の Claude ログインの代わり**（Claude のログインの中継が読む。契約の種類を Project 設定・サブエージェントの

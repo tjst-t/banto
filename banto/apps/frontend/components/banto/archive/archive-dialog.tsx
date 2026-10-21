@@ -38,7 +38,8 @@ import type { MockProject, MockThread } from "@/lib/mock/types";
 type ArchiveTab = "forks" | "projects";
 
 /** 検索の直下のタブ。**検索中はどちらも選ばれていない**（結果が横断なので）。 */
-function ArchiveRow({
+/** 1行（押すと開いて中身と「再度開く」）。閉じたチャットの小窓（`closed-chats-dialog.tsx`）も同じ形を使う */
+export function ArchiveRow({
   icon: Icon,
   title,
   subtitle,
@@ -50,7 +51,8 @@ function ArchiveRow({
 }: {
   icon: IconComponent;
   title: string;
-  subtitle: string;
+  /** 題の下の1行（閉じた日など）。無ければ出さない */
+  subtitle?: string;
   /** 題の下のもう1行（AI が閉じた Fork の「AI が閉じました：（理由）」） */
   note?: string;
   expanded: boolean;
@@ -72,7 +74,7 @@ function ArchiveRow({
         <Icon className="mt-0.5 size-4 shrink-0 text-ink-3" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-foreground">{title}</span>
-          <span className="block text-xs text-ink-3">{subtitle}</span>
+          {subtitle ? <span className="block text-xs text-ink-3">{subtitle}</span> : null}
           {note ? (
             <span data-testid="archive-row-note" className="block text-xs text-ink-2">
               {note}
@@ -96,7 +98,7 @@ function ArchiveRow({
   );
 }
 
-function ThreadOverviewContent({ thread }: { thread: MockThread }) {
+export function ThreadOverviewContent({ thread }: { thread: MockThread }) {
   const overview = getThreadOverview(thread);
   return (
     <div className="flex flex-col gap-1.5 rounded-md bg-surface-2 p-2.5 text-xs text-ink-2">

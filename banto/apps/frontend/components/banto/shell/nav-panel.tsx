@@ -51,6 +51,7 @@ import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags"
 import { SidebarItemMenu, type GroupMenu } from "./sidebar-item-menu";
 import { DraggableRow, SortableList, SortableRow } from "./sortable-list";
 import { ProjectList } from "./project-list";
+import { ChatList } from "./chat-list";
 import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { useCloseForkConfirm } from "@/components/banto/thread/close-fork-confirm";
 import { ThreadRowIcon } from "@/components/banto/thread/thread-row-icon";
@@ -584,6 +585,8 @@ export function NavPanel({
             {...(onNavigate ? { onNavigate } : {})}
           />
         ) : null}
+        {/* チャット——Project の一覧の上に、押せばすぐ始まる相談の一覧（§6.53、`chat-list.tsx`） */}
+        <ChatList activeProjectId={activeProjectId} onNavigate={onNavigate} />
         {/* Project の一覧——グループ・すべて畳む・ドラッグ（§6.43、`project-list.tsx`） */}
         <ProjectList
           activeProjectId={activeProjectId}

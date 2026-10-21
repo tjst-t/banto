@@ -143,6 +143,10 @@ export interface RealProject {
   start?: RealProjectStart;
   /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化（KVM）」の 4.。サイドバーの行に印）。そうでなければ無い */
   privileged?: true;
+  /** **チャット**（追加・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project。「Project にする」で外れる */
+  kind?: "chat";
+  /** 試作を始めたか（チャットだけが立てる。一覧の口は全部に真偽で添える） */
+  prototyping?: boolean;
   createdAt: string;
 }
 
@@ -742,6 +746,40 @@ export async function retryRealProjectStart(projectId: string): Promise<void> {
  */
 export async function listRealStartGithubAccounts(): Promise<string[]> {
   return (await request<{ accounts: string[] }>("/api/project-start/github-accounts")).accounts;
+}
+
+/**
+ * **チャットを作る**（追加・2026-10-21、アーキ仕様 §2.2「始め方——最初の書き込みで作る」）。名前も根も渡さない——host が決める
+ * （仮の名前「新しいチャット」・置き場の下のフォルダ・Project のコンテナで動く Module を外す）
+ */
+export async function createRealChat(): Promise<RealProject> {
+  return request<RealProject>("/api/projects", { method: "POST", body: JSON.stringify({ kind: "chat" }) });
+}
+
+/**
+ * **チャットを Project にする**（追加・2026-10-21、アーキ仕様 §2.2「Project にする」）。`folder` を渡すと根を置き場
+ * （`~/banto/<folder>`）へ移す。動いているもの（ターン・裏の仕事）があれば理由つきで断られる
+ */
+export async function promoteRealChat(
+  projectId: string,
+  input: { name: string; groupId?: string | null; folder?: string },
+): Promise<RealProject> {
+  return request<RealProject>(`/api/projects/${projectId}/promote`, { method: "POST", body: JSON.stringify(input) });
+}
+
+/** チャットを眠らせるまでの分・閉じるまでの日数（banto 全体の設定 `chat.sleepAfterMinutes`・`chat.closeAfterDays`） */
+export interface RealChatSettings {
+  sleepAfterMinutes: 5 | 15 | 60;
+  closeAfterDays: 7 | 14 | 30 | "off";
+}
+
+export async function getRealChatSettings(): Promise<RealChatSettings> {
+  return request<RealChatSettings>("/api/settings/chat");
+}
+
+/** 渡したものだけ変える。返すのは保存したあとの値 */
+export async function setRealChatSettings(patch: Partial<RealChatSettings>): Promise<RealChatSettings> {
+  return request<RealChatSettings>("/api/settings/chat", { method: "PUT", body: JSON.stringify(patch) });
 }
 
 export async function listRealProjects(): Promise<RealProject[]> {

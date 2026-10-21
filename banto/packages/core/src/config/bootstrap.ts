@@ -60,6 +60,12 @@ export interface BootstrapConfig {
    * 見回りがまだ無いので、読むだけの回を試験が作る。**本番の config には書かない**
    */
   testOnlyReadOnlyThreads?: boolean;
+  /**
+   * **試験だけ：チャットの置き場**（追加・2026-10-21、E2E の `chat.spec.ts`。アーキ仕様 §2.2「チャット」）。本物の置き場
+   * （`~/banto/chats`、固定）は人の `~/banto` の中なので、試験が作るチャットと「Project にする」で移すフォルダを試験の置き場へ向ける。
+   * **本番の config には書かない**
+   */
+  testOnlyChatsDir?: string;
 }
 
 /** 画面のオリジンと、画面から見た API の基点（`docs/specs/v4-security.md`「人のログイン」） */
@@ -158,6 +164,12 @@ function parseTestOnlyReadOnlyThreads(value: unknown): boolean {
   return value;
 }
 
+function parseTestOnlyChatsDir(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.startsWith("/")) throw new Error("config.json の testOnlyChatsDir は絶対パスです（試験だけの項目）");
+  return value;
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   globalThis.crypto.getRandomValues(bytes);
@@ -181,6 +193,7 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       ...(raw.testOnlySelfUpdate !== undefined ? { testOnlySelfUpdate: parseTestOnlySelfUpdate(raw.testOnlySelfUpdate) } : {}),
       ...(parseTestOnlyIdleCheck(raw.testOnlyIdleCheck) ? { testOnlyIdleCheck: true } : {}),
       ...(parseTestOnlyReadOnlyThreads(raw.testOnlyReadOnlyThreads) ? { testOnlyReadOnlyThreads: true } : {}),
+      ...(raw.testOnlyChatsDir !== undefined ? { testOnlyChatsDir: parseTestOnlyChatsDir(raw.testOnlyChatsDir)! } : {}),
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;

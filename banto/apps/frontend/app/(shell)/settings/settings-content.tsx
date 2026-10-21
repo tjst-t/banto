@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, Puzzle, ScrollText, Server, SlidersHorizontal, Sparkles, SquareTerminal, UsersRound } from "lucide-react";
+import { ArrowUpCircle, Bell, Box, Gauge, Globe, KeyRound, MessageCircle, Puzzle, ScrollText, Server, SlidersHorizontal, Sparkles, SquareTerminal, UsersRound } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { MobileNavButton } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
@@ -18,6 +18,7 @@ import { ClaudeAccountsPanel } from "@/components/banto/settings/claude-accounts
 import { UpdatePanel } from "@/components/banto/settings/update-panel";
 import { ResourcesPanel } from "@/components/banto/settings/resources-panel";
 import { RuntimesPanel } from "@/components/banto/settings/runtimes-panel";
+import { ChatSettingsPanel } from "@/components/banto/settings/chat-settings-panel";
 import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { navigateUrl } from "@/lib/url-nav";
@@ -96,6 +97,9 @@ const RESOURCES_CATEGORY: SettingsNavItem = { section: "resources", label: "資�
 /** Project をどこで動かすか——この機械のコンテナと、登録した別のサーバ（2026-10-10、v4-security.md §1「登録と選び方」） */
 const RUNTIMES_CATEGORY: SettingsNavItem = { section: "runtimes", label: "実行場所", icon: Server };
 
+/** チャットを眠らせるまで・閉じるまで（2026-10-21、v4-frontend.md §6.53） */
+const CHAT_CATEGORY: SettingsNavItem = { section: "chat", label: "チャット", icon: MessageCircle };
+
 /** どの Skill を既定で効かせるか（2026-09-23、アーキ仕様 §5.7）。 */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "skills", label: "Skill", icon: ScrollText };
 
@@ -110,6 +114,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   ...(CONNECTED_FEATURES.skills ? [SKILLS_CATEGORY] : []),
   ...(CONNECTED_FEATURES.shellHome ? [SHELL_HOME_CATEGORY] : []),
   ...(CONNECTED_FEATURES.containerLimits ? [CONTAINER_CATEGORY] : []),
+  CHAT_CATEGORY,
   ...(CONNECTED_FEATURES.resources ? [RESOURCES_CATEGORY] : []),
   ...(CONNECTED_FEATURES.remoteRuntimes ? [RUNTIMES_CATEGORY] : []),
   ...(CONNECTED_FEATURES.globalMemory ? [GLOBAL_MEMORY_CATEGORY] : []),
@@ -134,6 +139,10 @@ const RUNTIME_DEFAULT_ENTRIES = [
 ];
 
 const NOTIFICATION_ENTRIES = [{ label: "デスクトップ通知", anchorId: "anchor-notifications-permission" }];
+const CHAT_ENTRIES = [
+  { label: "試作のコンテナを眠らせるまで", anchorId: "anchor-chat-sleep" },
+  { label: "触らなくなったチャットを閉じるまで", anchorId: "anchor-chat-close" },
+];
 
 function buildSearchEntries(): readonly SearchEntry[] {
   const roleEntries = getRoles().flatMap((role) => [
@@ -171,13 +180,17 @@ function buildSearchEntries(): readonly SearchEntry[] {
     })),
   );
 
+  // チャットの区画は実 banto に繋がっている（§6.53）——下のモックの旗に関わらず引ける
+  const chatEntries = CHAT_ENTRIES.map((e) => ({ section: "chat" as const, label: e.label, anchorId: e.anchorId }));
+
   // 索引もnavと同じ基準で絞る——検索から、繋がっていない画面へ飛べてしまわない
-  if (!CONNECTED_FEATURES.settings) return [];
+  if (!CONNECTED_FEATURES.settings) return chatEntries;
   return [
     ...roleEntries,
     ...defaultEntries,
     ...credentialEntries,
     ...notificationEntries,
+    ...chatEntries,
     ...moduleConfigEntries,
   ];
 }
@@ -209,6 +222,17 @@ function renderSection(section: SettingsSection, canvases: readonly SettingsCanv
   }
   if (section === "claude-accounts") {
     return <ClaudeAccountsPanel />;
+  }
+  if (section === "chat") {
+    return (
+      <div>
+        <SectionHeading
+          title="チャット"
+          description="サイドバーの「チャット」で始めた会話が、使っていないときに資源を取らないようにします。"
+        />
+        <ChatSettingsPanel />
+      </div>
+    );
   }
   if (section === "resources") {
     return (
