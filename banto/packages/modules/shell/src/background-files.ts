@@ -33,6 +33,13 @@ export interface JobRecord {
   unit: string;
   /** `cancelCommand` で止めると頼んだ時刻。これが無いのに止められたものは「外から止められた」 */
   cancelRequestedAt?: string;
+  /**
+   * **人が画面で止めた印**（追加・2026-10-21、Backlog #491）。`stopBackgroundCommand`（人の画面）が `cancelRequestedAt` と一緒に書く。
+   * AI の `cancelCommand` は書かない——AI に届く知らせを「人が画面で止めました」にして、AI が自分で止めたと誤らないように
+   */
+  cancelRequestedBy?: "human";
+  /** `envSecrets` の **alias 名**（`{ENV名: alias名}`。値は書かない）。人の画面に出す（追加・2026-10-21） */
+  envSecrets?: Record<string, string>;
 }
 
 /** 起動役が起きてすぐ書く。pid の使い回しは開始時刻で見分ける */

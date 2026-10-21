@@ -1792,7 +1792,7 @@ PDF の画面が分かれている」（ユーザー）。次の形に改める�
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
 | `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒。待つ形は省略時 120、待たない形は省略時は上限なし）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`runInBackground`（真偽、既定 false。下の「待たない形」） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23）。**待たない形はすぐ** `commandId`／`status: "running"`／`outputFile` を返し、終わったら結果を届ける |
-| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07） |
+| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07）・人が画面で止めたものは `cancelledBy: "human"`（追加・2026-10-21） |
 | `cancelCommand` | `commandId` | 待たずに流したコマンドを止める。**流した Thread からだけ**。止めたら頼んだ Thread に「止めました」を届けて終わる（追加・2026-10-07） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
@@ -2004,7 +2004,7 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 統合は無く、Palette に載るのは launcher への入口だけ（ターミナルを開く・バックグラウンドのコマンド——下の「人の画面」。
 後者は改訂・2026-10-21）。
 
-#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。未実装）
+#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。入口と画面の道具は実装・2026-10-21、Backlog #491。サイドバー・会話のカードから開く配線は未実装、Backlog #492）
 
 待たない形で流したコマンドは、サイドバーに呼び名と時刻が出るだけで、押しても Thread へ移るだけだった。経過時間・出力の
 末尾・止める操作は AI の tool（`listCommands`・`cancelCommand`）にしか無く、人は進み具合を見られなかった
@@ -2054,6 +2054,27 @@ Shell には数えきれない資源が無いので Command Palette の `complet
   （`docs/specs/v4-frontend.md` §6.33）も、開くときに `commandId` が渡るので成り立つ
 - **外の Shell（コンテナの外）**では待たない形を持たないので、**入口の資源を `ListResources` に出さない**（Palette にも出ない。規則13）。
   結果に `dev.banto/backgroundView` も名乗らない
+
+**実装で決めたこと**（2026-10-21、Backlog #491）：
+
+- 画面は `packages/modules/shell/src/commands-app.ts`（組み立て）と `src/ui/commands-view.ts`（ブラウザで動く JS）。見た目の土台
+  `src/ui/theme.ts` は Subagent の写し
+- **`listBackgroundCommands` の各件**は `listCommands` の各件（`cancelledBy` を含む）に、`envSecrets`（alias 名）と `timeoutSec` を
+  足したもの。置き場に残っている全部（動いているもの・終わったものの数で切らない——置き場の掃除が新しい 20 件に絞る）
+- **`readCommandOutput` の返り値**：`{ commandId, text, fromByte, toByte, size, capped }`。`fromByte` を書かなければ末尾。
+  `maxBytes` は 1 回 256 KiB まで（越えて頼まれたら上限で切る）。`capped` は保存の上限（64 MiB）を越えた印（終わったものは
+  `exit.json` の印、動いているものは大きさが上限に達したか）。切り方は `@banto/module-contract` の `readUtf8Range`（Service の
+  `readServiceLog` と同じ1つ）
+- **`stopBackgroundCommand`** は止め方・待ち方とも `cancelCommand` と同じ。返事の `note` は「頼んだ会話に『人が画面で止めました』が
+  届きます」（届ける約束が切れていればそう言う）。止める前に終わっていたら `alreadyEnded: true`
+- **AI に届く知らせ**：題は「コマンドを人が画面で止めました：<呼び名>」、本文に `cancelledBy: "human"` と、`note` に「人が画面で
+  止めました——あなた（cancelCommand）が止めたのではありません」
+- 一覧は動いているものがある間 2 秒ごと、無ければ 5 秒ごとに取り直す。出力は動いている間 2 秒ごと（終わったら最後にもう1回）。
+  経った時間は画面で1秒ごとに進める。止める確かめは文とボタンを1つの帯に（狭い画面では文の下の右にボタン）。
+  「パスをコピー」は、埋め込みの画面でクリップボードに書けなければパスを選んでおく
+- 1行が 256 KiB より長くて遡った分に改行が無いときは、捨てずに切れ端として出す（捨てると先へ遡れない）
+- 回帰試験：`background.test.ts`（admin の名乗り・人が止めた印と知らせ・出力の範囲と文字の切れ目・外の Shell は入口を出さない）・
+  `e2e/specs/shell-commands-view.spec.ts`
 
 ### 2.4 Repositories——手元のリポジトリの台帳（決定・2026-09-29〜10-01、ユーザー）
 
