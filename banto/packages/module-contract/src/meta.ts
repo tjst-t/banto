@@ -311,8 +311,11 @@ export function declaresReadEffect(x: { _meta?: Record<string, unknown> }): bool
  */
 export const RESTRICTION_META_KEY = `${VENDOR_PREFIX}/restriction`;
 
-/** 会話の制限。いまは読むだけの回だけ */
-export type ThreadRestriction = "read-only";
+/**
+ * 会話の制限。`read-only`＝読むだけの回（見回り、アーキ仕様 §4.4）・`supervisor`＝番頭の回（番頭の tool だけ、§4.5）。
+ * **`dev.banto/restriction` に刻むのは `read-only` だけ**——番頭の回は Module の tool を host が絞るので、Module に知らせる印は無い
+ */
+export type ThreadRestriction = "read-only" | "supervisor";
 
 /** 読むだけの回からの呼び出しだと host が刻んだか */
 export function isReadOnlyCall(meta: Record<string, unknown> | undefined): boolean {

@@ -149,7 +149,13 @@ export interface AutomationFields {
    * **見回り**（追加・2026-10-20、アーキ仕様 §4.4「見回り」）。無ければふつうの自動化。作ったあと変えない。見回りの届け先は
    * 専用の Fork・毎回まっさらに固定し、その Fork は読むだけの回になる
    */
-  mode?: "patrol";
+  mode?: "patrol" | "supervisor";
+  /**
+   * **番頭**（追加・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。`mode: "supervisor"` の自動化だけが持つ。同じ値の自動化（きっかけごとに
+   * 1件）が番頭1件で、届け先の専用の Fork は同じもの。一時停止・再開・消すは番頭の単位で一緒（`supervisor/supervisors.ts`）。
+   * 人・AI の入力（`parseAutomationFields`）からは作れない
+   */
+  supervisorId?: string;
   /** 見回りが1日に出せる気づきの上限（見回りだけ。既定 `PATROL_DAILY_LIMIT_DEFAULT`、1日は自動化のタイムゾーンで数える） */
   dailyFindingLimit?: number;
 }
@@ -173,6 +179,30 @@ export interface PatrolNote {
  * `unmuted`＝人が「知らせない」を外した
  */
 export type PatrolNoteChange = "notified" | "seen" | "muted" | "dismissed" | "unmuted";
+
+/**
+ * **番頭がしたこと**の1行（アーキ仕様 §4.5「記録」）。`answered`＝選択肢を選んで届けた・`deferred`＝人に回した・`refused`＝host が
+ * 断った（種類・外の文）。指示した・Factory に流した等は Backlog #508 以降で足す
+ */
+export interface SupervisorAct {
+  at: string;
+  kind: "answered" | "deferred" | "refused";
+  /** 相手の会話 */
+  threadId: string;
+  turnId?: string;
+  /** 問いの番号（1から） */
+  question?: number;
+  /** 選んだ選択肢の番号と題（`answered` だけ） */
+  choice?: number;
+  label?: string;
+  /** 問いの種類（まとめに書かれていれば） */
+  decisionKind?: string;
+  /** 番頭の理由（断ったときは host の理由） */
+  reason: string;
+}
+
+/** 番頭の記録は1件の自動化につき、これだけ fold に持つ（届ける文に添えるのは番頭の全部の自動化を合わせた直近 30 件） */
+export const SUPERVISOR_ACTS_KEPT = 100;
 
 /** 手帳は1つの見回りでこれだけ持つ。超えたら最後に見た時刻の古いものから捨てる（「知らせない」は捨てない） */
 export const PATROL_NOTEBOOK_MAX = 500;
@@ -204,6 +234,8 @@ export interface Automation extends AutomationFields {
   webhookTokenHash?: string;
   /** 見回りの手帳（見回りだけ。最後に見た時刻の新しい順） */
   notebook?: PatrolNote[];
+  /** 番頭の記録（番頭の自動化だけ。新しい順、最大 `SUPERVISOR_ACTS_KEPT` 件） */
+  supervisorActs?: SupervisorAct[];
 }
 
 export interface AutomationReadModel {
@@ -221,6 +253,7 @@ export type AutomationEvent =
   | { type: "automation.removed"; payload: { id: string } }
   | { type: "automation.received"; payload: { id: string } & AutomationReceived }
   | { type: "automation.patrol_noted"; payload: { id: string; key: string; change: PatrolNoteChange; title?: string } }
+  | { type: "automation.supervisor_acted"; payload: { id: string } & SupervisorAct }
   | {
       type: "automation.fired";
       payload: { id: string } & AutomationRun & {
@@ -292,6 +325,12 @@ export const automationFold: Fold<AutomationReadModel> = {
       case "automation.patrol_noted": {
         if (!current) return state;
         automations.set(current.id, { ...current, notebook: notePatrol(current.notebook ?? [], event.payload, raw.ts) });
+        break;
+      }
+      case "automation.supervisor_acted": {
+        if (!current) return state;
+        const { id: _id, ...act } = event.payload;
+        automations.set(current.id, { ...current, supervisorActs: [act, ...(current.supervisorActs ?? [])].slice(0, SUPERVISOR_ACTS_KEPT) });
         break;
       }
       case "automation.fired": {

@@ -89,7 +89,7 @@ export interface MockThread {
    * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。host が会話を立てたときに刻んだもの（外す口は無い）。AI が書いた URL は
    * banto が知っている場所だけリンクにする
    */
-  restriction?: "read-only";
+  restriction?: "read-only" | "supervisor";
   /** 実bantoホストのThread（決定・2026-09-03）。scriptは使わない（空のプレースホルダ）。 */
   real?: boolean;
   /** real:trueのときだけ意味を持つ。リロード時の会話表示復元用（決定・2026-09-04）

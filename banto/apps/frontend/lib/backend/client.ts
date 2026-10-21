@@ -430,7 +430,7 @@ export interface RealThread {
    * **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。この会話の AI は読むだけの tool しか使えず、書いた URL は banto が
    * 知っている場所だけリンクにする。印の無い会話には無い
    */
-  restriction?: "read-only";
+  restriction?: "read-only" | "supervisor";
   /** 冷める前の要約の予定の時刻（追加・2026-10-20、§3.1）。無ければ null。古い host は付けない */
   idleCompactionAt?: string | null;
   /** 冷める前の要約の様子（予定・帯の時刻・要約している・温め直しの回数）。古い host は付けない */
@@ -779,7 +779,7 @@ export interface RealThreadSummary {
   closedBy?: RealThreadClosedBy;
   closedReason?: string;
   /** 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4）。印の無い会話には無い */
-  restriction?: "read-only";
+  restriction?: "read-only" | "supervisor";
   permissionMode?: MockPermissionModeValue;
   model?: string;
   effort?: RealEffort;

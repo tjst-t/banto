@@ -36,6 +36,8 @@ import { AutomationEvents, EventLedger } from "./automation/events.js";
 import { awaitingAutomations, type AwaitedModule } from "./automation/keep-awake.js";
 import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
 import { Patrols } from "./automation/patrol.js";
+import { supervisorPolicy } from "./supervisor/policy.js";
+import { Supervisors } from "./supervisor/supervisors.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -776,9 +778,17 @@ async function main(): Promise<void> {
       appEvents.publish({ type: "thread.closed", threadId, projectId, by: "automation", reason }),
     // 見回りは Claude のアカウントが全部閾値を越えていたら飛ばす（§4.4）
     allAccountsOver: (projectId) => claudeLogin.allAccountsOver(projectId),
+    // 番頭の回に届ける文に、回のたびに方針を引いて添える（§4.5）
+    supervisorPolicy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
   });
   // **見回り**（アーキ仕様 §4.4）。見回りの Fork の `notify` と手帳
   const patrols = new Patrols({ automations, inbox, projectThread });
+  // **番頭**（アーキ仕様 §4.5「番頭の作り」）。作る・止める・再開する・消すは番頭の単位（自動化4件一緒）
+  const supervisors = new Supervisors({
+    automations,
+    runner: automationRunner,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+  });
   // **自動化の画面**（v4-frontend.md §6.42）は台帳が変わったら取り直す——どの Project のものかだけ流す
   automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
   // **サイドバーの Project の一覧**（アーキ仕様 §2.2）は一覧が変わったら取り直す——携帯とパソコンでそろえる
@@ -875,6 +885,9 @@ async function main(): Promise<void> {
     turns: threadTurns,
     inbox,
     turnSummaryEnabled: (projectId) => isTurnSummaryEnabled(runtimeConfig, projectId),
+    // 番頭の answer_decision は種類で絞り、したことを記録に残す（§4.5）
+    supervisorPolicy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    recordSupervisorAct: (automationId, act) => automations.recordSupervisorAct(automationId, act),
   });
   // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
   threadTurns.onChange((change) => {
@@ -3310,6 +3323,7 @@ async function main(): Promise<void> {
     automations,
     automationRunner,
     turnDecisions,
+    supervisors,
     missions: missionsService,
     patrols,
     automationWebhooks,
