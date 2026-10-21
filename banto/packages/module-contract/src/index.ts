@@ -6,3 +6,4 @@ export * from "./events.js";
 export * from "./outbox.js";
 export * from "./clone-source.js";
 export * from "./project-git.js";
+export * from "./file-range.js";
