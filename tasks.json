@@ -12407,6 +12407,29 @@
       "updatedAt": "2026-10-21T14:49:40.163Z",
       "closedAt": "2026-10-21T14:49:40.163Z",
       "extra": {}
+    },
+    {
+      "id": "closed-distribution",
+      "number": 514,
+      "kind": "story",
+      "title": "クローズドソースで配る——組み立てた物だけを一般に無償で配る",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "distribution"
+      ],
+      "body": "決定・2026-10-21、ユーザー（Fork「クローズドソースでの配布」、Memory #76083・#76215）。仕様の下書き docs/specs/v4-distribution.md（ブランチ fork/distribution、レビュー前）。\n\nソースは非公開、配る版（dist）は API キーだけで組み立てでサブスクを抜く、自分用の版（self）は今のまま。配る物は tjst-t/banto-releases の GitHub Releases に、タグを付けた版だけ。prebuilt は banto-dev-vm の自分のランナー、GitHub のランナーはタグの配る版だけ。\n\n順番は仕様 §9。リポジトリを非公開にする・公開サイトを替えるのは人の了承を得てから。",
+      "doneWhen": "新しい VM に、配布用リポジトリの Release から install.sh で配る版を入れ、API キーで会話でき、次のタグの版へ画面から更新でき、戻せる。配る版の束ねた物にサブスクのログインの文字列が無い。本人の host は非公開のリポジトリから self の版で更新できる。リポジトリは非公開で、公開サイトのリンクと install.sh は配布用リポジトリを向く。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T23:37:19.826Z",
+      "updatedAt": "2026-10-21T23:37:19.826Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
