@@ -1478,6 +1478,12 @@ async function main(): Promise<void> {
         return undefined;
       }
     }
+    // **同じ機械の中でフォルダを移している間も起こさない**（もう無い古い根をマウント元にしない）。ターンと `modules/prepare` は
+    // 移し終わるまで待ってから来るので、ここに来るのはそれ以外の道（設定の画面等）
+    if (declaration.meta.scope === "project" && forProject && projectThread.rootMoving(forProject.id)) {
+      console.log(`[host] ${connName} は起こしません（Project のフォルダを移しています）`);
+      return undefined;
+    }
     // **眠っている Project の Module は起こさない**（決定・2026-10-16、アーキ仕様 §2.2「それ以外の道では起こさない」）
     // ——設定の画面・Skills の一覧・入口の一覧を開いただけでコンテナが起きる、を作らない。起こすのは `projectSleep.wake`
     // （`modules/prepare` と `openTurn`）だけで、起きれば `sleep` が外れてここを通る。例外は出来事を待たれている Module だけ

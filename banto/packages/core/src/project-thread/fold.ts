@@ -71,9 +71,9 @@ export type ProjectThreadEvent =
   // **入れると、そこでの位置を1つの出来事で**——`order` は Project 全部の新しい並び。分けて書くと、途中で失敗したときに
   // 「入ったが場所が違う」が残る
   | { type: "project.group.assigned"; payload: { projectId: string; groupId: string | null; order?: string[] } }
-  // **スリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。状態は active のまま、`sleep` を立てる・外す
   // **試作を始めた**（チャットだけ。決定・2026-10-21、アーキ仕様 §2.2「コンテナは試作を始めたときに作る」）
   | { type: "project.prototyping.started"; payload: { id: string } }
+  // **スリープ**（決定・2026-10-16、アーキ仕様 §2.2「スリープ」）。状態は active のまま、`sleep` を立てる・外す
   | { type: "project.slept"; payload: { id: string; by: ProjectSleptBy } }
   | { type: "project.woke"; payload: { id: string; cause: ProjectWokeCause } }
   // **別の実行場所へ移す**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。started で受付を止め、
