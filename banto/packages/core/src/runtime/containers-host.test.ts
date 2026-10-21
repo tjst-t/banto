@@ -5,10 +5,12 @@ import {
   evaluateContainersHost,
   idRangesInclude,
   inspectContainersHost,
+  parseIpLinkNames,
   prepareContainersHost,
   probeContainersPrerequisites,
   reachableProject,
   sameGroups,
+  withMissingBridgeHint,
   zabblyKeyOk,
   type VmAccess,
 } from "./containers-host.js";
@@ -43,6 +45,8 @@ interface FakeVm {
   tools: Set<string>;
   /** `/sys/module/kvm_intel/parameters/nested` の中身（無ければ KVM のモジュールが読まれていない） */
   nested?: string;
+  /** VM の `ip link` にあるインターフェース（Incus が起きるとき、区画のネットワーク incusbr-1000 のブリッジを作り直す） */
+  links: Set<string>;
 }
 
 function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
@@ -63,6 +67,7 @@ function fakeVm(over: Partial<FakeVm> = {}): FakeVm {
     initialized: true,
     files: new Map(),
     tools: new Set(),
+    links: new Set(["lo", "enp5s0", "incusbr0", "incusbr-1000"]),
     ...over,
   };
 }
@@ -83,13 +88,18 @@ function accessOf(vm: FakeVm): VmAccess {
     if (cmd === "query" && rest[0] === "/1.0") {
       // incus-user は最初に繋いだときに区画を作る（制限つき・idmap はそのユーザーだけ）。区画を指定しない問い合わせでは、制限つきの
       // 証明書でも environment.project は default（本物の Incus と同じ——2026-10-20 に banto-ct-test で実測）
-      if (!vm.admin && !vm.project) vm.project = { restricted: "true", "restricted.idmap.uid": "1000", "restricted.idmap.gid": "1001" };
+      if (!vm.admin && !vm.project) {
+        vm.project = { restricted: "true", "restricted.idmap.uid": "1000", "restricted.idmap.gid": "1001", "restricted.networks.access": "incusbr-1000" };
+      }
       return ok(JSON.stringify({ environment: { server_version: vm.version, project: "default" } }));
     }
     if (cmd === "query" && rest[0] === "/1.0/projects") {
       return ok(JSON.stringify(vm.admin ? ["/1.0/projects/default", "/1.0/projects/user-1000"] : vm.project ? ["/1.0/projects/user-1000"] : []));
     }
     if (cmd === "query" && rest[0] === "/1.0/projects/user-1000") return vm.project ? ok(JSON.stringify({ config: vm.project })) : fail("not found");
+    if (cmd === "query" && rest[0] === "/1.0/profiles/default?project=user-1000") {
+      return vm.project ? ok(JSON.stringify({ devices: { eth0: { name: "eth0", network: "incusbr-1000", type: "nic" } } })) : fail("not found");
+    }
     if (cmd === "query" && rest[0] === "/1.0/storage-pools/banto") return vm.pools.has("banto") ? ok("{}") : fail("not found");
     if (!asRoot) return fail(`偽の VM は incus ${args.join(" ")} を知らない`);
     if (cmd === "storage" && rest[0] === "show") return vm.pools.has(rest[1]!) ? ok() : fail("not found");
@@ -139,6 +149,7 @@ function accessOf(vm: FakeVm): VmAccess {
     }
     if (cmd === "systemctl" && rest.join(" ") === "restart incus.service") {
       vm.restarts++;
+      vm.links.add("incusbr0").add("incusbr-1000");
       return ok();
     }
     if (cmd === "loginctl" && rest[0] === "enable-linger") {
@@ -198,6 +209,9 @@ function accessOf(vm: FakeVm): VmAccess {
       if (cmd === "cat" && rest[0] === "/sys/module/kvm_intel/parameters/nested") {
         return vm.nested !== undefined ? { code: 1, stdout: vm.nested, stderr: "cat: /sys/module/kvm_amd/parameters/nested: No such file or directory" } : fail("No such file or directory", 1);
       }
+      if (cmd === "ip" && rest.join(" ") === "-o link show") {
+        return ok([...vm.links].map((l, i) => `${i + 1}: ${l}: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state UP mode DEFAULT\\    link/ether 00:16:3e:00:00:0${i} brd ff:ff:ff:ff:ff:ff`).join("\n") + "\n");
+      }
       if (cmd === "df") return ok(`Avail\n  ${vm.availGiB}G\n`);
       return fail(`偽の VM は ${args.join(" ")} を知らない`, 127);
     },
@@ -217,6 +231,7 @@ test("まっさらな VM（sudo -n が通る）：確かめは何も変えず、
     "incus-proxy": "warn",
     "incus-idmap": "warn",
     "incus-pool": "warn",
+    "incus-network": "ok",
     linger: "warn",
     "nested-kvm": "ok",
     sudo: "ok",
@@ -274,6 +289,7 @@ test("sudo -n が通らない：何も打たず、足りないものと打つコ
     "incus-proxy": "fail",
     "incus-idmap": "fail",
     "incus-pool": "fail",
+    "incus-network": "ok",
     linger: "fail",
     "nested-kvm": "ok",
     sudo: "fail",
@@ -304,6 +320,7 @@ test("人が先に整えてあれば sudo -n が無くても使える（sudo は
     "incus-proxy": "ok",
     "incus-idmap": "ok",
     "incus-pool": "ok",
+    "incus-network": "ok",
     linger: "ok",
     "nested-kvm": "ok",
     sudo: "warn",
@@ -560,4 +577,76 @@ test("入れ子の KVM は表示だけ：有効・無効・KVM が無いを出�
   assert.ok(!item.autoFix);
 
   assert.equal((await inspectContainersHost(accessOf(fakeVm()))).nestedKvm, "missing");
+});
+
+test("区画のネットワークのブリッジが VM から消えた（#427）：繋ぐたびは断って「確かめ直す」を言い、確かめ直しの準備で Incus を起こし直して作り直す", async () => {
+  const ready = {
+    inGroup: true,
+    linger: true,
+    subuid: "root:1000:1\n",
+    subgid: "root:1001:1\n",
+    pools: new Set(["banto"]),
+    project: {
+      restricted: "true",
+      "restricted.idmap.uid": "1000",
+      "restricted.idmap.gid": "1001",
+      "restricted.devices.proxy": "allow",
+      "restricted.networks.access": "incusbr-1000",
+    },
+  };
+  const vm = fakeVm({ ...ready, links: new Set(["lo", "enp5s0", "incusbr0"]) });
+  const access = accessOf(vm);
+  const verify = await evaluateContainersHost(await inspectContainersHost(access), access, "verify");
+  const net = verify.find((c) => c.id === "incus-network")!;
+  assert.equal(net.status, "fail");
+  assert.match(net.detail!, /incusbr-1000 は Incus の記録にありますが、VM にインターフェースがありません/);
+  assert.match(net.detail!, /「確かめ直す」を押すと、banto が sudo -n で整えます/);
+  assert.equal(net.fix, "sudo systemctl restart incus.service\nsudo incus admin waitready --timeout 120");
+  assert.equal(vm.restarts, 0, "繋ぐたびの確かめで起こし直した");
+
+  // 登録の前の確かめ（sudo -n が通る）は注意
+  const check = await evaluateContainersHost(await inspectContainersHost(access), access, "check");
+  assert.equal(check.find((c) => c.id === "incus-network")!.status, "warn");
+
+  // 確かめ直し（準備）：Incus を起こし直す。ブリッジが戻れば次は何もしない
+  const { state, ran } = await prepareContainersHost(access, { mayRestartUserManager: false });
+  assert.deepEqual(ran, [
+    ["systemctl", "restart", "incus.service"],
+    ["incus", "admin", "waitready", "--timeout", "120"],
+  ]);
+  assert.ok(vm.links.has("incusbr-1000"));
+  const after = await evaluateContainersHost(state, access, "verify");
+  assert.equal(after.find((c) => c.id === "incus-network")!.status, "ok");
+  assert.deepEqual((await prepareContainersHost(access, { mayRestartUserManager: false })).ran, []);
+
+  // sudo -n が通らなければ打たずに断る（人が打つコマンドを添える）
+  const noSudo = fakeVm({ ...ready, sudo: false, links: new Set(["lo"]) });
+  const r = await prepareContainersHost(accessOf(noSudo));
+  assert.deepEqual(r.ran, []);
+  const failed = (await evaluateContainersHost(r.state, accessOf(noSudo), "check")).find((c) => c.id === "incus-network")!;
+  assert.equal(failed.status, "fail");
+  assert.match(failed.fix!, /sudo systemctl restart incus.service/);
+});
+
+test("区画に restricted.networks.access が無ければ、区画の default のプロファイルの eth0 の network を見る", async () => {
+  const vm = fakeVm({ inGroup: true, project: { restricted: "true" }, links: new Set(["lo"]) });
+  const state = await inspectContainersHost(accessOf(vm));
+  assert.deepEqual(state.networks, [{ name: "incusbr-1000", present: false }]);
+  vm.links.add("incusbr-1000");
+  assert.deepEqual((await inspectContainersHost(accessOf(vm))).networks, [{ name: "incusbr-1000", present: true }]);
+});
+
+test("parseIpLinkNames：ip -o link show の名前（veth の @ の後ろは除く）", () => {
+  const out = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\\    link/loopback 00:00:00:00:00:00\n4: incusbr-1001: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n9: veth1a2b@if8: <BROADCAST> mtu 1500\n";
+  assert.deepEqual([...parseIpLinkNames(out)], ["lo", "incusbr-1001", "veth1a2b"]);
+});
+
+test("withMissingBridgeHint：Module を起こすときにブリッジが無くて落ちたら「確かめ直す」を案内する。ほかの失敗はそのまま", () => {
+  const err = new Error('土台イメージ用の一時のコンテナを作るのに失敗しました：Error: Failed to start device "eth0": Parent device "incusbr-1001" doesn\'t exist');
+  const hinted = withMissingBridgeHint(err) as Error;
+  assert.match(hinted.message, /^土台イメージ用の一時のコンテナを作るのに失敗しました/);
+  assert.match(hinted.message, /ブリッジ incusbr-1001 が VM から消えています。設定の「実行場所」で「確かめ直す」を押すと/);
+  const other = new Error("Error: Instance not found");
+  assert.equal(withMissingBridgeHint(other), other);
+  assert.equal(withMissingBridgeHint("x"), "x");
 });

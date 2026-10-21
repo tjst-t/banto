@@ -75,6 +75,13 @@ export interface ContainersHostState {
    * `missing`。表示だけ（Proxmox を VM で立ててその中で VM を作るのに要る。v4-security.md §1「`containers` で仮想化（KVM）」の 1.）
    */
   nestedKvm: "on" | "off" | "missing";
+  /**
+   * 区画のコンテナが繋ぐネットワーク（区画の `restricted.networks.access`、無ければ区画の default のプロファイルの eth0 の
+   * `network`）と、その名前のインターフェースが VM の `ip link` にあるか。Incus の記録には残っていてもインターフェースが消える
+   * ことがある（2026-10-20、ベアメタルで dnsmasq の bind の失敗のあと）——そのままではコンテナを起こせない（Backlog #427）。
+   * 分からなければ（区画を読めない・ip が使えない）undefined
+   */
+  networks?: { name: string; present: boolean }[];
 }
 
 /** 入れ子の KVM の設定のファイルの中身（`Y`・`1` が有効） */
@@ -177,6 +184,7 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
     const status = await vm.run(["cat", `/proc/${pid}/status`]);
     if (status.code === 0) userManagerStale = !sameGroups(status.stdout, groupIds.stdout);
   }
+  const networks = projectConfig ? await containerNetworks(vm, projectConfig) : undefined;
   const names = groups.stdout.trim().split(/\s+/);
   const installed = dpkg.code === 0 ? dpkg.stdout.trim().replace(/^\d+:/, "") : "";
   // 初期化してあるか（root で読むだけ）。入れた直後は daemon が起きている途中で答えないことがある——起きるまで待ち、待っても
@@ -199,7 +207,56 @@ export async function inspectContainersHost(vm: VmAccess): Promise<ContainersHos
     sudo: sudo.code === 0,
     linger: linger.code === 0,
     nestedKvm: parseNestedKvm(nested.code === 127 ? "" : nested.stdout),
+    ...(networks ? { networks } : {}),
   };
+}
+
+/**
+ * **区画のコンテナが繋ぐネットワークと、そのインターフェースが VM にあるか**（読むだけ）。名前は区画の
+ * `restricted.networks.access`（incus-user が `incusbr-<uid>` を入れる）、無ければ区画の default のプロファイルの eth0 の `network`
+ */
+async function containerNetworks(vm: VmAccess, projectConfig: Record<string, string>): Promise<ContainersHostState["networks"]> {
+  let names = (projectConfig["restricted.networks.access"] ?? "").split(",").map((n) => n.trim()).filter(Boolean);
+  if (names.length === 0) {
+    const profile = await vm.run(["incus", "query", `/1.0/profiles/default?project=${projectNameOf(vm.uid)}`]);
+    if (profile.code !== 0) return undefined;
+    try {
+      const network = (JSON.parse(profile.stdout) as { devices?: Record<string, Record<string, string>> }).devices?.["eth0"]?.["network"];
+      names = network ? [network] : [];
+    } catch {
+      return undefined;
+    }
+  }
+  if (names.length === 0) return undefined;
+  const links = await vm.run(["ip", "-o", "link", "show"]);
+  if (links.code !== 0) return undefined;
+  const present = parseIpLinkNames(links.stdout);
+  return names.map((name) => ({ name, present: present.has(name) }));
+}
+
+/** `ip -o link show` の出力からインターフェースの名前（`veth1@if2` は `veth1`） */
+export function parseIpLinkNames(stdout: string): Set<string> {
+  const out = new Set<string>();
+  for (const line of stdout.split("\n")) {
+    const m = /^\d+:\s+([^:\s]+):/.exec(line);
+    if (m) out.add(m[1]!.split("@")[0]!);
+  }
+  return out;
+}
+
+/**
+ * **Module を起こすときに、ネットワークのブリッジが無くて落ちた**（Incus の `Parent device "<名前>" doesn't exist`）なら、
+ * 「確かめ直す」を案内する文を添える（Backlog #427）。ほかの失敗はそのまま
+ */
+export function withMissingBridgeHint(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  const m = /Parent device "([^"]+)" doesn't exist/.exec(err.message);
+  if (!m) return err;
+  const hinted = new Error(
+    `${err.message}\nIncus のネットワークのブリッジ ${m[1]} が VM から消えています。設定の「実行場所」で「確かめ直す」を押すと、banto が sudo -n で Incus を起こし直して作り直します（動いているコンテナは止まりません）。`,
+  );
+  hinted.stack = err.stack;
+  return hinted;
 }
 
 /** 入れ子の KVM の設定のファイル（Intel・AMD） */
@@ -451,6 +508,15 @@ function steps(vm: VmAccess, opts: PrepareOptions): PrepareStep[] {
       },
     },
     {
+      id: "incus-network",
+      label: "コンテナのネットワーク（区画のネットワークのブリッジが VM にある）",
+      // 区画を読めない（まだ無い・Incus に繋がらない）うちは分からない——前の項目が整えば引き直して見る
+      done: (s) => s.incus.status !== "missing" && (!s.networks || s.networks.every((n) => n.present)),
+      // Incus は起きるときに、記録にあるネットワークのブリッジを作り直す（コンテナは止まらない）
+      commands: async (s, forPerson) =>
+        needsIncus(s, forPerson) ?? [{ args: ["systemctl", "restart", "incus.service"] }, { args: ["incus", "admin", "waitready", "--timeout", "120"] }],
+    },
+    {
       id: "linger",
       label: "SSH を閉じても動き続ける設定（linger。VM を起こし直したときにコンテナの中の Service と道を戻す）",
       done: (s) => s.linger,
@@ -549,9 +615,11 @@ export async function evaluateContainersHost(
           ? `${vm.user} が incus-admin グループに入っていて、制限の無い管理の口に繋がります。incus-admin から外します（このユーザーで Incus を管理しているなら、別のユーザーで登録してください）。`
           : step.id === "user-manager"
             ? "ユーザーの systemd が古いグループのままです。"
-            : state.incus.status === "unreachable" && step.id === "incus-project"
-              ? `Incus に繋がりません（${state.incus.message}）。`
-              : "まだ整っていません。";
+            : step.id === "incus-network"
+              ? `Incus のネットワーク ${(state.networks ?? []).filter((n) => !n.present).map((n) => n.name).join("・")} は Incus の記録にありますが、VM にインターフェースがありません（コンテナを起こせません）。`
+              : state.incus.status === "unreachable" && step.id === "incus-project"
+                ? `Incus に繋がりません（${state.incus.message}）。`
+                : "まだ整っていません。";
     if (mode === "verify") {
       checks.push({
         id: step.id,

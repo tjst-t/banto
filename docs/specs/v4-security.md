@@ -595,6 +595,12 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
      で daemon が起きるのを待ち、待っても答えなければ「分からない」として初期化しない**——入れた直後の起きかけの daemon を
      「初期化していない」と取り違えない）。入れたあと版を確かめ、なお足りな
      ければ断る
+   - **コンテナのネットワーク（`containers`、追加・2026-10-21、Backlog #427）**：区画の `restricted.networks.access`（無ければ区画の
+     default のプロファイルの eth0 の `network`）の名前のインターフェースが VM の `ip -o link show` に無ければ、`systemctl restart
+     incus.service` と `incus admin waitready --timeout 120` で作り直す（Incus は起きるときに記録にあるブリッジを作り直す。動いている
+     コンテナは止まらない）。Incus の記録には残っていてもインターフェースが消えることがある（2026-10-20、ベアメタルで dnsmasq の
+     bind の失敗のあと。コンテナを起こすと `Parent device "incusbr-<uid>" doesn't exist`）。繋ぐたびの確かめは読むだけで、無ければ
+     「確かめ直すと banto が整えます」と断る。Module を起こすときにこの文で落ちたら、断りの文に「確かめ直す」を添える
    - **`incus-admin` から外す（`containers`、決定・2026-10-19、ユーザー、案A）**：`incus-admin` に入っていると、Incus は区画
      `user-<uid>` ではなく制限の無い管理の口に繋ぐ。**外すのは `incus-admin` だけ**（`gpasswd -d <ユーザー> incus-admin`）。
      ほかのグループ（`sudo`・`adm`・`lxd` 等）は触らない——`sudo` を外すと次の項目から `sudo -n` が通らない。`incus` グループに
@@ -625,7 +631,7 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
    中で動く（VM には入れない）——コンテナを作るところ（Backlog #368）で、その Project が「中で Docker を使う」ならコンテナに入れる
 6. **順番**：`machine` は道具 → 置き場の根 → sshd → linger とユーザーの systemd を続けて打ち、終わってから1回だけ引き直す（互いに
    独立なので）。`containers` は共通の項目（道具・置き場の根・sshd）を打って引き直したあと、Incus → グループ（incus-admin を外す・
-   incus に入れる・incus-user の口）→ user@ の起こし直し → 区画の proxy → idmap → 置き場 `banto` → linger を、1項目ごとに引き直し
+   incus に入れる・incus-user の口）→ user@ の起こし直し → 区画の proxy → idmap → 置き場 `banto` → ネットワークのブリッジ → linger を、1項目ごとに引き直し
    ながら（前の項目が次の項目の様子を変える）。同じ項目は打つものが変わる間3回まで
 7. **時間と見せ方**：apt と Incus を入れると数分かかる。1つのコマンドの上限は apt で 15 分（lock を最長5分待ってから入れる）、
    cloud-init の待ちは 11 分、ほかは今どおり。登録は1本の HTTP の POST のまま待つ（Caddy・Node・ブラウザのどれも応答を時間で
@@ -939,7 +945,7 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   - **実装済み（2026-10-18、Backlog #367）**：登録の画面で動かし方を選ぶ（記録の `mode`。前の記録は `machine`）。同じ host 鍵＋
     ユーザーに違う動かし方を並べようとすると、確かめ（`check`）・登録の両方で名指しして断る（409・`code: "mixed-modes"`）。
     `containers` の前提は共通の項目（CPU の種類・ログインの静けさ・道具は tar だけ・置き場・sshd の転送）に、Incus の版・区画
-    `user-<uid>` に繋がる・proxy・idmap・置き場 `banto`・linger・`sudo -n` を足す（`runtime/containers-host.ts`）。確かめ（登録の
+    `user-<uid>` に繋がる・proxy・idmap・置き場 `banto`・区画のネットワークのブリッジが VM にある（#427）・linger・`sudo -n` を足す（`runtime/containers-host.ts`）。確かめ（登録の
     前）は何も変えず、済んでいないものは sudo -n が通れば注意（「登録するときに整える」）、通らなければ打つコマンドを添えて断る。
     **登録と人の「確かめ直す」のときだけ** 済んでいない項目のコマンドを順に `sudo -n` で打ち（incus グループに入れる・区画の
     `restricted.devices.proxy=allow`・`usermod --add-subuids/--add-subgids U-U root` と区画の `restricted.idmap.uid/gid` に足す・

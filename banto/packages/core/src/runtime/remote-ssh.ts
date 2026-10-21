@@ -82,6 +82,7 @@ import {
   type VmShell,
 } from "./remote-containers.js";
 import { REMOTE_LAUNCHER_SCRIPT, moduleUnitName, type LauncherRequest } from "./remote-launcher.js";
+import { withMissingBridgeHint } from "./containers-host.js";
 import type { RemoteRuntimes } from "./remote-runtimes.js";
 import type { RemoteRuntime } from "./remote-store.js";
 import { RuntimeStopError, type PlaceAddress, type PreparedPlace, type RuntimePlace, type RuntimeProcess } from "./runtime.js";
@@ -1827,7 +1828,8 @@ export class RemoteSshRuntime {
     const virtualization = this.opts.containerVirtualization?.(conn.runtimeName, place.id);
     const virtKey = JSON.stringify(virtualization ?? null);
     if (cur && cur.root === place.root && cur.nesting === place.nesting && cur.virtualization === virtKey) return cur.ready;
-    const ready = this.createProjectContainer(conn, place, virtualization);
+    // ブリッジが VM から消えていて起こせなければ「確かめ直す」を案内する（Backlog #427）
+    const ready = this.createProjectContainer(conn, place, virtualization).catch((err: unknown) => Promise.reject(withMissingBridgeHint(err)));
     conn.container = { root: place.root, nesting: place.nesting, virtualization: virtKey, ready };
     // 失敗したら覚えない（次に使うときにやり直す）
     ready.catch(() => {
