@@ -223,3 +223,113 @@ test("サブエージェントの入口：走っている仕事の中の枠を�
   await expect(canvas.locator('[data-role="detail-status"]')).toHaveText("取り消し", { timeout: 20_000 });
   expect(pageErrors).toEqual([]);
 });
+
+// **いまの状況**（アーキ仕様 §4.1 の1〜3、Backlog #486〜#488）。偽のエージェントの [claude-like] は、同梱の claude-agent-acp と
+// 同じく仮の題（Terminal など）の tool_call のあとに本当の題・locations を tool_call_update で送り、途中の発言・やること一覧（plan）
+// も流す。見るもの（規則14）：
+//   1. 一覧の1件：題は呼び名、いまやっていること、やることの進み
+//   2. 中身の一番上：いまやっていること・やること一覧と進み・最後の発言・触ったファイル（書いた→読んだ、数）
+//   3. 経過：発言は吹き出しで tool の間に挟まる。同じ種類の tool が3つ続いたら1行に畳まれ、開くと全部出る。説明があれば説明が題で、
+//      コマンドはその下。仮の題（Terminal など）はどこにも残らない
+test("サブエージェントの入口：いまの状況にやること一覧・最後の発言・触ったファイル・いまやっていることが出て、経過は同じ種類の連続が畳まれる", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-subagent-runs-now-"));
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  await openApp(page);
+  await createProject(page, `${PROJECT_NAME} Now`, projectRoot);
+  await waitForProjectModule(page, `${PROJECT_NAME} Now`, "subagent");
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill(
+    "いまの状況を見せて。" +
+      fakeTurn({
+        tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[claude-like] [slow 90] いまの状況", label: "いまの状況の試験" } }],
+      }),
+  );
+  await composer.press("Enter");
+
+  await openPaletteEntry(page, /サブエージェント/);
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  const running = canvas.locator('[data-role="run-item"][data-status="running"]');
+  // 鍵を Vault に探しに行く承認が初回だけ出る——走っている仕事が一覧に出て、いまやっていることが sleep になるまで押し続ける
+  await expect(async () => {
+    const allow = page.getByRole("button", { name: "許可する" });
+    if ((await allow.count()) > 0) await allow.last().click();
+    await expect(running.locator('[data-role="progress"]')).toHaveText("sleep 90", { timeout: 5_000 });
+  }).toPass({ timeout: 120_000 });
+
+  // ---- 1. 一覧の1件 ----------------------------------------------------------------------------------
+  await expect(running.locator('[data-role="title"]')).toHaveText("いまの状況の試験");
+  await expect(running).toContainText("やること 2 / 3");
+  await expect(running).toContainText("ツール 7回");
+
+  // ---- 2. いまの状況 ----------------------------------------------------------------------------------
+  await running.locator('[data-role="run"]').click();
+  const detail = canvas.locator('[data-role="detail"]');
+  await expect(canvas.locator('[data-role="detail-title"]')).toHaveText("いまの状況の試験");
+  const now = detail.locator('[data-role="now"]');
+  await expect(now.locator('[data-role="now-doing-title"]')).toHaveText("sleep 90");
+  await expect(now.locator('[data-role="now-doing"]')).toContainText(/いまやっていること（\d+秒前から）/);
+  await expect(now.locator('[data-role="plan-count"]')).toHaveText("2 / 3 済み");
+  await expect(now.locator('[data-role="plan-item"]')).toHaveText(["仕様を読む", "テストを流す", "直す"]);
+  expect(await now.locator('[data-role="plan-item"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-status")))).toEqual([
+    "completed",
+    "completed",
+    "in_progress",
+  ]);
+  await expect(now.locator('[data-role="last-message-text"]')).toHaveText("直しました。");
+  // 書いたもの→読んだもの。作業場所の中は相対、外は絶対パス
+  await expect(now.locator('[data-role="files-count"]')).toHaveText("書いた 2・読んだ 2");
+  const files = now.locator('[data-role="file"]');
+  await expect(files.locator(".file-path")).toHaveText(["src/a.ts", /^\/tmp\/outside-.+\.txt$/, "src/c.ts", "src/b.ts"]);
+  await expect(files.locator(".file-count")).toHaveText(["書いた 1", "書いた 1", "読んだ 1", "読んだ 1"]);
+  await expect(now.locator('[data-role="files-more"]')).toHaveCount(0);
+
+  // ---- 3. 経過 ----------------------------------------------------------------------------------------
+  await expect(detail.locator('[data-role="trace-count"]')).toHaveText("ツール 7 回・発言 3");
+  await expect(detail.locator('[data-role="message-step"] .bubble')).toHaveText(["まず仕様を読みます。", "読み終えたので、テストを流します。", "直しました。"]);
+  const group = detail.locator('[data-role="step-group"]');
+  await expect(group).toHaveCount(1);
+  await expect(group).toHaveAttribute("data-kind", "read");
+  await expect(group.locator(".group-toggle")).toContainText("ファイルを 3 個読んだ");
+  await expect(group.locator(".group-names")).toHaveText("a.ts、b.ts、c.ts");
+  // 畳んでいる間は、読んだ3件は1件ずつは出ない。説明（テストを流す）が題、コマンドはその下
+  await expect(detail.locator('[data-role="step"] .step-title')).toHaveText(["テストを流す", /^Write \/tmp\/outside-.+\.txt$/, "Edit src/a.ts", "sleep 90"]);
+  await expect(detail.locator('[data-role="step"][data-kind="execute"]')).toHaveAttribute("data-status", "failed");
+  await expect(detail.locator('[data-role="step"][data-kind="execute"] [data-role="step-command"]')).toHaveText("npm test");
+  await expect(detail.locator('[data-role="step"][data-kind="execute"]')).toContainText("失敗");
+  await expect(detail.locator('[data-role="step"]').last()).toHaveAttribute("data-status", "in_progress");
+  await expect(detail.locator('[data-role="detail-progress"]')).toHaveText("作業中");
+  // 発言は tool の間に挟まる（並びの順）
+  const order = await detail.locator(".trace > li").evaluateAll((els) =>
+    els.map((e) => (e as HTMLElement).dataset.role ?? "").filter((r) => r !== ""),
+  );
+  expect(order).toEqual(["message-step", "step-group", "message-step", "step", "step", "step", "message-step", "step"]);
+  // 開くと全部出る
+  await group.locator(".group-toggle").click();
+  await expect(group.locator(".group-toggle")).toContainText("（畳む）");
+  await expect(detail.locator('[data-role="step"][data-kind="read"] .step-title')).toHaveText(["Read src/a.ts", "Read src/b.ts", "Read src/c.ts"]);
+  // 取り直し（1.5秒ごと・差分）を挟んでも開いたまま、増えも減りもしない
+  await page.waitForTimeout(4_000);
+  await expect(detail.locator('[data-role="step"] .step-title')).toHaveText([
+    "Read src/a.ts",
+    "Read src/b.ts",
+    "Read src/c.ts",
+    "テストを流す",
+    /^Write \/tmp\/outside-.+\.txt$/,
+    "Edit src/a.ts",
+    "sleep 90",
+  ]);
+  // 仮の題はどこにも残らない
+  await expect(detail).not.toContainText("Terminal");
+  await expect(detail).not.toContainText("Preparing file");
+  await expect(detail).not.toContainText("Read File");
+
+  // 止めて片づける。止めたあと（丸ごと読み直し）も経過と状況は残る
+  await canvas.locator(".detail-head").getByRole("button", { name: "止める" }).click();
+  await expect(canvas.locator('[data-role="detail-status"]')).toHaveText("取り消し", { timeout: 20_000 });
+  await expect(detail.locator('[data-role="message-step"]')).toHaveCount(3);
+  await expect(now.locator('[data-role="now-doing"]')).toHaveCount(0);
+  await expect(now.locator('[data-role="plan-count"]')).toHaveText("2 / 3 済み");
+  expect(pageErrors).toEqual([]);
+});
