@@ -4538,7 +4538,7 @@ GitHub の tool は #424。コードは `packages/core/src/automation/patrol.ts`
 - 変換役 documents の変換に読むだけの印を付けて、見回りで Office の文書と `asImage` を読めるようにするか（変換の置き場への書き込みを
   「Module が自分の置き場で持つ写し」と同じに扱えるか）
 
-### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。未実装。Backlog のストーリー `banto-supervisor` #505）
+### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。作る順の 1.・2. を実装・2026-10-21、Backlog #506・#507。Backlog のストーリー `banto-supervisor` #505）
 
 ユーザーの要望：「全 Project の開発を監督して、人の代行として自動で進めてほしい。release に入れて push、のような細かい判断まで
 Thread ごとに人がやるのはつらい。勝手に進んでほしい。一方で仕様やアーキテクチャの判断は人に求めてほしい」。
@@ -4587,11 +4587,13 @@ Thread ごとに人がやるのはつらい。勝手に進んでほしい。一�
 
 #### 番頭の作り
 
-- **番頭1件＝専用の Fork 1本＋単一のきっかけの自動化3件**（今の自動化の器のまま——1つの自動化に複数のきっかけは持たせない）：
+- **番頭1件＝専用の Fork 1本＋単一のきっかけの自動化4件**（今の自動化の器のまま——1つの自動化に複数のきっかけは持たせない。1件の
+  自動化は1つの出来事しか待てないので、Factory の出来事は2件に分ける）：
   1. `banto.turn-decisions`（その Project の会話の決めること。判断役と同じ出し方）
-  2. Factory の出来事（`factory.item-stopped`・`factory.run-finished`）
-  3. 時刻（`supervisor.patrolHours` ごと）の見回り
-  - 3件の届け先は同じ Fork。自動化の台帳に `mode: "supervisor"` と `supervisorId` を持たせ、**一時停止・再開・消すは番頭の単位で3件
+  2. Factory の出来事 `factory.item-stopped`
+  3. Factory の出来事 `factory.run-finished`
+  4. 時刻（`supervisor.patrolHours` ごと）の見回り
+  - 4件の届け先は同じ Fork。自動化の台帳に `mode: "supervisor"` と `supervisorId` を持たせ、**一時停止・再開・消すは番頭の単位で4件
     一緒に**。自動化の一覧の画面には出さず、番頭の画面（§6.54）で扱う。`judgeAutomationOf` のように Fork から自動化を引くところは
     「その Fork を届け先にしている番頭」を引く形に広げる
   - 前の回が終わっていないとき：時刻の回は飛ばす、出来事は今どおり溜めて空いたらまとめる
@@ -4672,12 +4674,47 @@ Thread ごとに人がやるのはつらい。勝手に進んでほしい。一�
 #### 作る順
 
 1. 方針の置き場と読み出し（全体＋Project の差分）・問いの種類（`decisions[].kind` と system prompt）
-2. 番頭の作り（専用の Fork＋自動化3件・`mode: "supervisor"`・判断役との排他・毎回まっさらと記録の添え・`restriction: "supervisor"` の4か所）
+2. 番頭の作り（専用の Fork＋自動化4件・`mode: "supervisor"`・判断役との排他・毎回まっさらと記録の添え・`restriction: "supervisor"` の4か所）
    と `answer_decision` の種類による断り
 3. `instruct_thread`（`action`・`origin.supervisor`・答えていない会話への断り・回数）と `list_stalled_threads`
 4. Factory（流す・全体の上限・止まった件に答える）
 5. 守り：自動許可の絞り・量・全部止める・記録とカード・取り消し
 6. 画面（フロント仕様 §6.54）
+
+#### 実装で決めたこと（実装・2026-10-21、Backlog #507）
+
+- **台帳**：番頭は自動化4件の束で、番頭そのものの記録は持たない（`supervisorId` が同じ自動化が番頭1件。規則3）。4件は `reviewOnDone: false`・
+  届け先は専用の Fork・毎回まっさら。名前は「番頭：決めること」「番頭：Factory の件が止まった」「番頭：Factory の実行が終わった」「番頭：見回り」、
+  Fork の名前は「番頭」。`instruction` はきっかけごとの決まった文で、方針の写しは持たない。Factory の2件は名乗りと照らさずに作る
+  （Factory の無い Project では届かないだけ）。決めることの1件は自分の回の出来事を受けない・Factory の2件は受ける。出来事のまとめる待ちは
+  自動化と同じ 30 秒。時刻の間隔は `supervisor.patrolHours` を 1〜168 の整数に丸めたもので、**作ったときと再開したときに方針から引き直す**
+  （方針を変えたら一時停止→再開で効く）。タイムゾーンは `supervisor.timeZone`、無ければ banto の動いている場所のもの
+- **口**（core は `supervisor/supervisors.ts`、HTTP は人のセッションだけ——機械の合言葉・AI からは 403）：`GET /api/supervisors`（全部）・
+  `GET /api/projects/:id/supervisor`（無ければ 404）・`POST /api/projects/:id/supervisor`（本文 `{ pauseJudges?: boolean }`。番頭がもういる・
+  判断役が動いていて `pauseJudges` が真でない、は 409 と理由）・`DELETE /api/projects/:id/supervisor`・`POST …/supervisor/pause`・`…/resume`。
+  返す形は番頭1件（`id`・`projectId`・`threadId`・`paused`（どれか1件でも止まっていれば真）・`pausedReason`・`automations`・記録の直近 30 件 `acts`）
+- **方針を書く口**（E2E と画面のため）：`GET`・`PUT /api/supervisor-policy`（全体。`{ delegate?: 行いの配列, note?: 文 }`）と
+  `GET`・`PUT /api/projects/:id/supervisor-policy`（Project。`{ delegate?: { add, remove } | null, note?: 文 | null }`——null・空は外す）。
+  人に回す種類・知らない行いは 400。読むのは効いている方針（`supervisorPolicy` の形）。人のセッションだけ
+- **一覧での扱い**：番頭の自動化は**出さない**（印を付けて分けるのではなく）——`GET /api/projects/:id/automations`・AI の `list_automations` から
+  外し、`/api/projects/:id/automations/:id` と AI の `update`・`pause`・`resume`・`remove_automation` では「無い」として扱う（404・見つからない）。
+  台帳の口でも `update` は断る。AI・人の自動化の口の `mode: "supervisor"` は断る
+- **判断役との排他**：番頭のいる Project で `banto.turn-decisions` を待つ自動化を作る・きっかけをそれに変える・一時停止した判断役を再開する、は断る。
+  `pauseJudges: true` で置くと、動いている判断役を「番頭を置いたので一時停止しました」で止める（消さない）
+- **同じ Fork**：Fork を用意する口（`AutomationRunner.prepare`）は、番頭のどれかが開いた Fork を持っていればそれに4件を揃え、無ければ1本立てる。
+  乗り換え（48 回）も4件一緒。届けている途中の重なりは番頭の単位で数える。人が Fork を閉じたら4件とも一時停止して、知らせは番頭ごとに1件
+- **前の回が終わっていない**：時刻の回は飛ばし、出来事は溜める（自動化のまま。4件が同じ Fork を見るので、ほかの1件の回が走っていても同じ）
+- **届ける文**：番頭の回の決まり・任せる行いの題・人に回す種類・方針の文・読めなかった方針の値・この回のきっかけの文・記録の直近 30 件
+  （4件を合わせた新しい順）。方針は回のたびに引く
+- **記録**：`automation.supervisor_acted`（その回の自動化に書く。1件につき 100 件まで fold に持つ）。この段では `answer_decision` の結果だけ——
+  `answered`（揃って届けたときに問いごと）・`deferred`・`refused`（host が断った——種類・外の文）
+- **番頭の会話の制限**：判定は `relay/read-only.ts` に置いた（見回りと同じ1か所）。core の tool は `answer_decision`・`list_threads`・`claude_usage`、
+  Module の tool はまだ無い（`SUPERVISOR_MODULE_TOOLS`、#509 で足す）、資源は同梱の Module のものだけ。`dev.banto/restriction` は刻まない
+  （Module に知らせるのは読むだけの印だけ）。承認は「必ず聞く」——permission mode を `default` に固定し、「承認をすべて自動で許可する」は会話の
+  印で効かせない（番頭を消したあとの Fork も）。Elicitation は人に聞く。まとめ・Memory の tool・決めることの出来事は出さない
+- **種類による断り**：番頭の自動化が届けた出来事に答えるときだけ、選ぶ前に `readExternal`（出来事の属性。読めなければ真の側）と
+  `supervisorMayAnswer(kind, 方針)` を見る。断ったら何も預からず、理由と「defer で人に回す」を返す。揃わないまま番頭のターンが終われば今どおり
+  全部人に（カードは `incomplete`）。届く文の見出しは「番頭が選んだ答え」
 
 #### まだ決めていないこと
 
