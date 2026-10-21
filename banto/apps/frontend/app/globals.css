@@ -59,6 +59,10 @@
      **ここに置くのは、実行時に読めるようにするため**——@theme inline（層C）の中だけにあると
      ユーティリティに埋め込まれて :root に残らず、Canvas に渡せない（v4-frontend.md §6.27）。
      層C はここを参照する。字は7段だけ（--text-base は定義しない） */
+  /* 書体の名前は layout.tsx が読む @fontsource のもの（以前は next/font/google が html に付けていた） */
+  --font-inter: "Inter";
+  --font-noto-jp: "Noto Sans JP";
+  --font-jetbrains: "JetBrains Mono";
   --banto-font-sans: var(--font-inter), var(--font-noto-jp), ui-sans-serif, system-ui, sans-serif;
   --banto-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
   --banto-text-xs: 11px;
