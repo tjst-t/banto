@@ -587,6 +587,75 @@ Project が増えて、サイドバーで「開発」と「開発以外」を一
   要らない。`project-activity.json` の `lastWokeAt` は持たない
 - `project.woke`／`project.slept` が自動化の回ごとに積もるのは、`automation.fired` と同じ量として許す
 
+#### チャット——Project を作る前の相談（決定・2026-10-21、ユーザー。モック `fork/draft-projects`、画面は v4-frontend.md §6.53。未実装）
+
+**何のためか**：開発の始めは、AI と相談してやりたいことを詰め、まとまったらリポジトリを作って始めることが多い。これまでは
+banto の外（Claude のチャット）で相談し、Markdown にして持ち込んでいた。banto の中で、**Claude のチャットくらい気軽に始められ、
+試作もでき、まとまったらそのまま Project として続けられる**ようにする（ユーザー要望・2026-10-20）。相談だけで終わることも多い。
+
+**中身は普通の Project、画面だけ別に扱う**（ユーザー・2026-10-21）。特別な種類の入れ物は作らない——「Base Thread が1つ・
+Memory は Project ごと・コンテナは Project ごと」の前提のあちこちに例外が要るから。チャットは Project の印 `kind: "chat"` で
+見分ける（無ければ普通の Project）。Fork・Memory・自動化・受信箱は普通の Project と同じに効く。
+
+**始め方——最初の書き込みで作る**
+
+- 画面の「＋」は**新しいチャットの画面を開くだけ**で、何も作らない（開いて離れれば何も残らない）
+- 最初の書き込みを送ったとき、画面が `POST /api/projects { kind: "chat" }` で作り、続けて同じ書き込みを最初のターンとして送る。
+  名前も根も渡さない——host が決める：
+  - **名前**は仮に「新しいチャット」。下の「題」で替える
+  - **根**は `<チャットの置き場>/<日付>-<短い id>`（置き場の既定は `~/banto/chats`、無ければ作る）。この機械のコンテナだけ
+    （別のサーバのチャットは、要ると分かってから）
+  - **Project ごとの Module の差分（`moduleOverlays` の Project 層、v4-frontend.md §6.15）に、Project のコンテナで動く Module を
+    全部 `enabled: false` で書く**（下の「コンテナは試作を始めたときに作る」）
+  - 新しい Project の3つのスイッチ（v4-frontend.md §6.51）は既定のまま書く
+- **題は AI が付ける**：最初のターンを始めたら、host が書き込みから題を1回だけ小さいモデルで作り（`project.renamed`、
+  まだ人が名前を変えていなければ）、`projects.changed` を流す。作れなければ書き込みの最初の文を縮めた題にする。小さいモデルを
+  1回呼ぶ口は、サブエージェントの「いまの様子を要約」（Backlog #490）と同じものを使う（本体の Claude のログインで、道具なし・1回）
+
+**コンテナは試作を始めたときに作る**
+
+- いまはコンテナを、Project のコンテナで動く Module を初めて繋ぐとき（Project を開いた `modules/prepare`・ターンの始まり、§5.4-0）に
+  作る（`runtime.prepare`）。**チャットはそれらを外した状態で始まる**ので、話す・Web で調べるだけならコンテナは作られない
+  （渡る道具は banto 全体の Module と、Claude 自身の WebSearch・WebFetch だけ）
+- **試作を始める**：チャットの Project でだけ、AI に道具 `start_prototyping`（banto-thread）を見せる。呼ぶと上の差分を外し
+  （普通の Project と同じ Module の組に戻す）、記録 `project.prototyping.started` を積む。承認は Project の承認の扱いに従う
+  （新しい Project は既定で「承認をすべて自動で許可する」がオン）
+  - **道具が増えるのは次のターンから**（Module の組はターンの始まりに解決する）。そこで host は、このターンが終わったら同じ Thread に
+    `banto` の届けもの「試作の道具（Shell・FileSystem など）が使えるようになりました。続けてください」を1通積み、すぐ次のターンを
+    始める（切れたターンの続きと同じ届け方）。道具が増えるとキャッシュは1回作り直しになる（実測 `docs/notes/2026-09-03-tool-addition-cache-drop.md`。
+    チャットの始めは会話が短いので費用は小さい）。ターンの途中で道具を足す（SDK の `setMcpServers`）は、測ってから考える
+  - コンテナを作るのはその次のターンの Module の起動（今の遅延起動のまま）。新しい起動の道は作らない
+- **使わなくなったら眠らせる**：試作を始めたチャットは、AI も人も使っていない時間が**設定の分**（既定 15 分）続いたら、普通の
+  Project のスリープと同じ手順で眠らせる（`project.slept { by: "auto" }`、断る条件・止めないものもスリープと同じ）。チャットの
+  一覧には残り、行の印が月になる（スリープ中の欄へは移さない）。開く・話しかけると今の起こす口（`wakeProject`）で起きる
+- **触らなくなったら閉じる**：最後に使ってから**設定の日数**（既定 14 日、7・14・30・閉じない）経ったチャットを閉じる
+  （`project.closed`、理由 `auto`）。閉じるときコンテナを消す（会話・Memory・フォルダは残す）。開き直すと、試作を始めていても
+  コンテナは無い状態から（次に Module を繋ぐとき作り直す）
+- 設定は banto 全体の runtime config `chat.sleepAfterMinutes`（5・15・60）と `chat.closeAfterDays`（7・14・30・`off`）
+
+**Project にする**
+
+- 人が画面の「Project にする」で、名前・グループ・フォルダ（置き場へ移す／今の場所のまま）・リポジトリ（GitHub に上げる・
+  手元だけ・作らない）を決める。**AI はこの画面を開かせるだけ**（作るのは人が押したとき——Module の画面が core の確かめを
+  開かせるのと同じ考え、v4-security.md の `dev.banto/open-new-project`）
+- 記録 `project.promoted { id, name }`：`kind` を外し、名前を替える。会話・Memory・試作のファイル・Fork はそのまま。
+  グループは今の `project.group.assigned`
+- **フォルダを置き場へ移す**：根を `<置き場>/<フォルダの名前>` に替える。同じ機械の中の移し替えで、会話の記録
+  （`<CLI の置き場>/projects/<作業ディレクトリ>/…`）の写しは別の実行場所へ移すときの手順（v4-security.md「Claude の会話の記録」）を
+  そのまま使う。ターンが走っている・裏の仕事があるときは移すときと同じく断る
+- **リポジトリ**：core は Repositories を名指しで知らない（v4-modules.md の「core との境目」）。フォルダを用意する Module の画面
+  （`folder-provider`）と同じ仕組みで、**今あるフォルダをリポジトリにする**画面を Module が名乗る（`_meta["dev.banto/canvas"] =
+  "folder-adopter"`、Repositories は `git init`・台帳に足す・GitHub に公開）。「Project にする」の画面はそれを枠の中に出す。
+  Repositories が無ければ「リポジトリ」の欄を出さない
+- 普通の Project をチャットに戻すことはしない
+
+**記録と口のまとめ**：`project.created` に `kind?: "chat"`、名前は今の `project.renamed`、新しく `project.promoted`・
+`project.prototyping.started`。`GET /api/projects` の各 Project に `kind`・`prototyping`（試作を始めたか）。read model の形が
+変わるので SnapshotProjection の版を上げる。`POST /api/projects/:id/promote { name, groupId?, folder? }`。
+
+**まだ決めていないこと**：チャットの置き場を設定で変えられるようにするか／別のサーバでチャットを始めるか／`start_prototyping`
+を人の承認の対象から外すか（コンテナを作るだけで、書くのはそのあとの Shell 等）。
+
 #### 設定のカスケード（決定・2026-09-01）
 
 上の3行が典型だが、**runtime config（§2.6）は既定で全項目が Project 単位に
