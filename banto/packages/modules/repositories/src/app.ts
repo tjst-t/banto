@@ -26,6 +26,8 @@ export const PREPARE_CLONE_URI = "ui://banto-repositories/prepare-clone";
 export const PREPARE_CREATE_URI = "ui://banto-repositories/prepare-create";
 /** Project の画面の入口（段階5）——この Project の Root を GitHub に公開する */
 export const PUBLISH_APP_URI = "ui://banto-repositories/publish";
+/** 「Project にする」の画面の枠の中（folder-adopter）——今あるフォルダをリポジトリにする */
+export const ADOPT_FOLDER_URI = "ui://banto-repositories/adopt-folder";
 
 const THEME_CSS = `
 :root {
@@ -393,6 +395,8 @@ const SCRIPT = String.raw`
   const PREPARE = MODE === "prepare-clone" || MODE === "prepare-create";
   /** Project の画面の入口「この Project を GitHub に公開」（段階5）——一覧は出さず、公開の画面だけ */
   const PUBLISH = MODE === "publish";
+  /** 「Project にする」の画面の枠の中——今あるフォルダをリポジトリにする（folder-adopter）。一覧は出さない */
+  const ADOPT = MODE === "adopt";
   const ICONS = __ICONS__;
 
   // ---- 親との話し方（MCP Apps） ----
@@ -418,8 +422,22 @@ const SCRIPT = String.raw`
       if (msg.error) w.reject(new Error(msg.error.message || "呼び出しに失敗しました")); else w.resolve(msg.result);
       return;
     }
-    if (msg.method === "ui/notifications/host-context-changed") applyAppearance(msg.params);
+    // host からの request（banto の拡張）——受け口があれば結果か理由を返す。知らないものは「無い」と答える
+    if (msg.id !== undefined && typeof msg.method === "string") {
+      const handler = hostRequests[msg.method];
+      if (!handler) { send({ id: msg.id, error: { code: -32601, message: "Method not found: " + msg.method } }); return; }
+      Promise.resolve().then(() => handler(msg.params)).then(
+        (result) => send({ id: msg.id, result: result || {} }),
+        (e) => send({ id: msg.id, error: { code: -32000, message: errText(e) } }),
+      );
+      return;
+    }
+    if (msg.method === "ui/notifications/host-context-changed") { applyAppearance(msg.params); onHostContext(msg.params); }
   });
+  /** host が画面に頼んでくる request の受け口（method → 関数）。面ごとに足す */
+  const hostRequests = {};
+  /** hostContext が変わったとき（面ごとに替える） */
+  let onHostContext = () => {};
   async function call(name, args) {
     const r = await request("tools/call", { name: name, arguments: args || {} });
     const t = r && r.content && r.content[0] && r.content[0].text;
@@ -514,6 +532,7 @@ const SCRIPT = String.raw`
   function render() {
     // 差し出す面は一覧を持たない（中身は clone・新しいリポジトリの本体だけ）
     if (PREPARE || PUBLISH) { reportSize(); return; }
+    if (ADOPT) { adRender(); return; }
     const kids = [];
     kids.push(head());
     if (state.loadError) kids.push(h("p", { class: "error", role: "alert", text: state.loadError }));
@@ -2460,6 +2479,240 @@ const SCRIPT = String.raw`
     }
   }
 
+  // ---- 今あるフォルダをリポジトリにする（folder-adopter、Backlog #502） ----
+  // core の「Project にする」の画面が枠の中に出す。どのフォルダか・リポジトリの名前は core が hostContext の
+  // 「dev.banto/folder-adopter」で渡し（人が名前を打ち替えたら渡し直す）、ここで人が「GitHub に上げる」「手元だけ」「作らない」を
+  // 選ぶ。**押すのは core の画面**——押したら core が request「dev.banto/adopt-folder」{ path, name } を送ってくる（フォルダを
+  // 置き場へ移したあとの場所で）。ここでリポジトリにし（adopt_folder）、GitHub なら今の公開の口（start_publish）で続け、
+  // 終わったら結果を返す。押せるかどうかは notification「dev.banto/folder-adopter-state」{ ready, choice, reason? } で言う
+  const ADOPTER_CONTEXT = "dev.banto/folder-adopter";
+  const ad = { target: null, inspection: null, inspectError: null, choice: null, targets: null, targetsError: null, login: undefined, owner: undefined, visibility: "private", nameCheck: null, nameTimer: 0, run: null, seq: 0, lastState: "" };
+  function adTargetFrom(ctx) {
+    const t = ctx && ctx[ADOPTER_CONTEXT];
+    return t && typeof t.path === "string" && t.path ? { path: t.path, name: typeof t.name === "string" ? t.name.trim() : "" } : null;
+  }
+  /** 選べるアカウント（どの持ち主にも作れないと分かっているものは除く）——公開の画面と同じ判断 */
+  function adUsable() { return ad.targets ? ad.targets.accounts.filter((a) => a.owners.some((o) => o.create !== "no")) : []; }
+  function adAccount() {
+    const usable = adUsable();
+    const l = ad.login !== undefined && usable.some((a) => a.login === ad.login) ? ad.login : (ad.targets && ad.targets.preselected) || (usable[0] && usable[0].login);
+    return l ? usable.find((a) => a.login === l) : null;
+  }
+  function adOwner() {
+    const a = adAccount();
+    if (!a) return null;
+    const ok = a.owners.filter((o) => o.create !== "no");
+    return ok.find((o) => o.login === ad.owner) || ok[0] || null;
+  }
+  function adVisibility() { const o = adOwner(); return o && o.publicOnly ? "public" : ad.visibility; }
+  /** GitHub に上げられるか（もう origin があるなら上げない） */
+  function adGithubPossible() { const i = ad.inspection; return !!i && !i.refusal && !i.github && !i.elsewhere; }
+  /** 選んでいるもの：人が選んだもの、無ければ GitHub に上げられるアカウントがあれば GitHub、なければ手元だけ */
+  function adChoice() {
+    const i = ad.inspection;
+    if (i && i.refusal) return "none";
+    if (ad.choice === "github" && !adGithubPossible()) return "local";
+    if (ad.choice) return ad.choice;
+    return adGithubPossible() && adUsable().length > 0 ? "github" : "local";
+  }
+  function adNameKey() { const a = adAccount(), o = adOwner(); return a && o && ad.target ? a.login + "|" + o.login + "|" + ad.target.name : null; }
+  /** core の画面で押せるか。押せないなら、その理由（core が押すボタンの近くに出す） */
+  function adReadiness() {
+    const choice = adChoice();
+    if (choice === "none") return { ready: true, choice: choice };
+    if (ad.run && ad.run.state === "running") return { ready: false, choice: choice, reason: "リポジトリにしています" };
+    if (ad.inspectError) return { ready: false, choice: choice, reason: "フォルダを読めませんでした：" + ad.inspectError };
+    if (!ad.inspection) return { ready: false, choice: choice, reason: "フォルダを確かめています" };
+    if (choice === "local") return { ready: true, choice: choice };
+    const a = adAccount(), o = adOwner();
+    if (!ad.targets && !ad.targetsError) return { ready: false, choice: choice, reason: "使えるアカウントを確かめています" };
+    if (!a || !o) return { ready: false, choice: choice, reason: "GitHub にリポジトリを作れるアカウントがありません" };
+    const name = ad.target ? ad.target.name : "";
+    if (!name || !NAME_OK.test(name) || name === "." || name === "..") return { ready: false, choice: choice, reason: "リポジトリの名前に使えるのは英数字と - _ . だけです（100字まで）" };
+    const check = ad.nameCheck && ad.nameCheck.key === adNameKey() ? ad.nameCheck : null;
+    if (check && check.taken) return { ready: false, choice: choice, reason: o.login + " には、もう " + name + " があります" };
+    return { ready: true, choice: choice };
+  }
+  function adReport() {
+    const r = adReadiness();
+    const key = JSON.stringify(r);
+    if (key === ad.lastState) return;
+    ad.lastState = key;
+    send({ method: "dev.banto/folder-adopter-state", params: r });
+  }
+  async function adInspect() {
+    if (!ad.target) return;
+    const seq = ++ad.seq;
+    ad.inspection = null; ad.inspectError = null; adRender();
+    try {
+      const ins = await call("inspect_adopt", { path: ad.target.path });
+      if (seq !== ad.seq) return;
+      ad.inspection = ins;
+    } catch (e) {
+      if (seq !== ad.seq) return;
+      ad.inspectError = errText(e);
+    }
+    adRender();
+    if (!adGithubPossible() || ad.targets) return;
+    try { ad.targets = await call("publish_targets", { path: ad.target.path }); }
+    catch (e) { ad.targetsError = errText(e); }
+    adRender();
+    adCheckName();
+  }
+  async function adCheckName() {
+    const a = adAccount(), o = adOwner(), key = adNameKey();
+    if (!a || !o || !key || !ad.target.name || !NAME_OK.test(ad.target.name)) return;
+    try {
+      const r = await call("check_publish_name", { login: a.login, owner: o.login, name: ad.target.name });
+      if (adNameKey() !== key) return;
+      ad.nameCheck = Object.assign({ key: key }, r);
+    } catch (e) {
+      if (adNameKey() !== key) return;
+      ad.nameCheck = { key: key, error: errText(e) };
+    }
+    adRender();
+  }
+  function adSetTarget(next) {
+    if (!next) return;
+    const prev = ad.target;
+    ad.target = next;
+    if (!prev || prev.path !== next.path) { adInspect(); return; }
+    if (prev.name !== next.name) {
+      ad.nameCheck = null; adRender();
+      window.clearTimeout(ad.nameTimer); ad.nameTimer = window.setTimeout(adCheckName, 400);
+    }
+  }
+  function adPills(label, testId, items, value, onPick, disabled) {
+    return h("div", { class: "pills", role: "radiogroup", "aria-label": label }, items.map((x) => h("button", {
+      class: "pill", type: "button", role: "radio", "aria-checked": String(value === x.value), "aria-pressed": String(value === x.value), "data-testid": testId, "data-value": x.value, disabled: disabled || x.disabled,
+      onclick: () => onPick(x.value),
+    }, x.icon ? [icon(x.icon), x.label] : [x.label])));
+  }
+  function adRender() {
+    const kids = [];
+    const ins = ad.inspection, choice = adChoice(), running = !!(ad.run && ad.run.state === "running"), locked = !!ad.run && ad.run.state !== "failed";
+    if (!ad.target) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "adopt-no-target", text: "どのフォルダかが渡ってきていません（この画面は「Project にする」の画面の中でだけ使えます）" }));
+    if (ad.inspectError) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "adopt-refusal", text: "フォルダを読めませんでした：" + ad.inspectError }));
+    if (ins && ins.refusal) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "adopt-refusal", text: ins.displayPath + " はリポジトリにできません：" + ins.refusal }));
+    if (ad.target && !(ins && ins.refusal)) {
+      const items = [];
+      if (!ins || adGithubPossible()) items.push({ value: "github", label: "GitHub に上げる" });
+      items.push({ value: "local", label: ins && ins.state !== "init" ? "手元だけ" : "手元だけ（git init）" });
+      items.push({ value: "none", label: "作らない" });
+      kids.push(adPills("リポジトリ", "adopt-choice", items, choice, (v) => { ad.choice = v; adRender(); if (v === "github") adCheckName(); }, locked));
+    }
+    const sub = [];
+    if (choice === "github" && ins && !ins.refusal) {
+      if (!ad.targets && !ad.targetsError) sub.push(h("p", { class: "help", text: "使えるアカウントを GitHub に確かめています…" }));
+      else if (ad.targetsError) sub.push(h("p", { class: "stopline", role: "alert", text: "アカウントを確かめられませんでした：" + ad.targetsError }));
+      else if (ad.targets.accounts.length === 0) sub.push(h("p", { class: "warnline", "data-testid": "adopt-no-account", text: "GitHub のアカウントが登録されていません（banto 全体の設定の Repositories で登録できます）。" }));
+      else {
+        const usable = adUsable(), a = adAccount(), o = adOwner();
+        if (usable.length === 1) sub.push(h("p", { class: "help", "data-testid": "adopt-account-one" }, [h("span", { class: "mark", "aria-hidden": "true", text: usable[0].login.slice(0, 1) }), " " + usable[0].login + " で作ります"]));
+        else if (usable.length > 1) sub.push(adPills("使うアカウント", "adopt-account", usable.map((x) => ({ value: x.login, label: x.login })), a && a.login, (v) => { ad.login = v; ad.owner = undefined; ad.nameCheck = null; adRender(); adCheckName(); }, locked));
+        for (const x of ad.targets.accounts.filter((y) => !usable.includes(y))) sub.push(h("p", { class: "blocked", text: x.login + " は使えません：" + (x.error || x.owners.map((y) => y.note).filter(Boolean).join("・")) }));
+        if (a) {
+          const ok = a.owners.filter((y) => y.create !== "no");
+          if (ok.length > 1) sub.push(adPills("持ち主", "adopt-owner", ok.map((y) => ({ value: y.login, label: y.login + (y.kind === "org" ? "（Organization）" : "") })), o && o.login, (v) => { ad.owner = v; ad.nameCheck = null; adRender(); adCheckName(); }, locked));
+          if (o && o.note) sub.push(h("p", { class: o.create === "unknown" ? "help" : "warnline", text: o.note }));
+        }
+        const publicOnly = !!(o && o.publicOnly);
+        sub.push(h("p", { class: "lbl", text: "公開範囲" }));
+        sub.push(adPills("公開範囲", "adopt-visibility", [
+          { value: "private", label: "非公開", icon: "lock", disabled: publicOnly },
+          { value: "public", label: "公開", icon: "globe" },
+        ], adVisibility(), (v) => { ad.visibility = v; adRender(); }, locked));
+        const check = ad.nameCheck && ad.nameCheck.key === adNameKey() ? ad.nameCheck : null;
+        const name = ad.target.name;
+        if (name && !NAME_OK.test(name)) sub.push(h("p", { class: "stopline", "data-testid": "adopt-name-invalid", text: "リポジトリの名前に使えるのは英数字と - _ . だけです（100字まで）" }));
+        else if (check && check.taken) sub.push(h("p", { class: "warnline", "data-testid": "adopt-name-taken", text: o.login + " には、もう " + name + " があります" + (check.suggestion ? "（" + check.suggestion + " ならあいています）" : "") + "。名前を変えてください。" }));
+        else if (check && check.error) sub.push(h("p", { class: "help", text: "GitHub に同じ名前があるかを確かめられませんでした（押すと GitHub が断ります）：" + check.error }));
+        if (o) sub.push(h("p", { class: "help", "data-testid": "adopt-github-note", text: "github.com/" + o.login + "/" + (name || "…") + " を" + (adVisibility() === "private" ? "非公開" : "公開") + "で作り、" + (ins.state === "init" ? "今あるファイルを最初のコミットにして" : "いまのブランチを") + "上げます。" }));
+      }
+    } else if (choice === "local" && ins && !ins.refusal) {
+      sub.push(h("p", { class: "help", "data-testid": "adopt-local-note", text:
+        ins.state === "init" ? "git init して、今あるファイルを最初のコミットにします。GitHub にはあとで Repositories から上げられます。"
+        : ins.state === "import" ? "もう git のリポジトリです。リポジトリの一覧に足します。"
+        : "もうリポジトリの一覧にあります。" + (ins.github ? "（github.com/" + ins.github.owner + "/" + ins.github.name + "）" : "") }));
+    } else if (choice === "none" && !(ins && ins.refusal)) {
+      sub.push(h("p", { class: "help", "data-testid": "adopt-none-note", text: "git を使わない Project にします（調べもの・書きものなど）。" }));
+    }
+    if (!ins && !ad.inspectError && ad.target) sub.push(h("p", { class: "help", text: "フォルダを確かめています…" }));
+    if (sub.length) kids.push(h("div", { class: "field", style: "gap:8px" }, sub));
+    if (ad.run) {
+      kids.push(h("ol", { class: "pub-steps", "data-testid": "adopt-steps", "aria-live": "polite" }, ad.run.steps.map((st) => h("li", { "data-step": st.key, "data-state": st.state }, [
+        icon(st.state === "done" ? "circleCheck" : st.state === "failed" ? "ban" : st.state === "running" ? "loader" : "circle"),
+        h("span", { text: st.label }),
+      ]))));
+      if (ad.run.error) kids.push(h("p", { class: "stopline", role: "alert", "data-testid": "adopt-error", text: ad.run.error }));
+      if (ad.run.state === "done") kids.push(h("p", { class: "help", "data-testid": "adopt-done" }, [icon("circleCheck"), " " + ad.run.summary]));
+    }
+    app.replaceChildren(h("div", { class: "pub", "data-testid": "adopt-panel", "data-choice": choice, "data-busy": String(running) }, kids));
+    adReport();
+    reportSize();
+  }
+  function adStep(key, state, label) {
+    const st = ad.run.steps.find((x) => x.key === key);
+    if (st) { st.state = state; if (label) st.label = label; } else ad.run.steps.push({ key: key, state: state, label: label });
+    adRender();
+  }
+  /** core が押したとき（request「dev.banto/adopt-folder」）。結果か理由を返す——返すまで core は画面を閉じない */
+  async function adRun(params) {
+    const p = params || {};
+    if (typeof p.path !== "string" || !p.path) throw new Error("path が要ります");
+    if (ad.run && ad.run.state === "running") throw new Error("いまリポジトリにしています");
+    if (ad.run && ad.run.state === "done") throw new Error("もうリポジトリにしました");
+    const name = typeof p.name === "string" ? p.name.trim() : (ad.target ? ad.target.name : "");
+    const choice = adChoice();
+    if (choice === "none") return { choice: "none", summary: "リポジトリは作りませんでした" };
+    ad.target = { path: p.path, name: name };
+    const r = adReadiness();
+    if (!r.ready) throw new Error(r.reason || "まだ押せません");
+    const a = adAccount(), o = adOwner(), priv = adVisibility() === "private";
+    ad.run = { state: "running", steps: [], error: null, summary: "" };
+    adStep("adopt", "running", ad.inspection && ad.inspection.state === "init" ? "git init して、今あるファイルを最初のコミットにする" : "リポジトリの一覧に足す");
+    let adopted;
+    try {
+      adopted = await call("adopt_folder", { path: p.path });
+    } catch (e) {
+      ad.run.state = "failed"; ad.run.error = "リポジトリにできませんでした：" + errText(e);
+      adStep("adopt", "failed");
+      throw new Error(ad.run.error);
+    }
+    adStep("adopt", "done", adopted.initialized ? (adopted.committed ? "git init して、最初のコミットを作りました" : "git init しました（中身が無いのでコミットはまだです）") + "・一覧に足しました" : adopted.alreadyListed ? "もう一覧にありました" : "一覧に足しました");
+    const base = { choice: choice, path: adopted.path, initialized: adopted.initialized, committed: adopted.committed };
+    if (choice === "local") {
+      ad.run.state = "done";
+      ad.run.summary = adopted.displayPath + " をリポジトリにしました";
+      adRender();
+      return Object.assign(base, { summary: ad.run.summary });
+    }
+    const where = o.login + "/" + name;
+    adStep("publish", "running", "GitHub に " + where + " を作って上げる（" + (priv ? "非公開" : "公開") + "）");
+    const fail = (message) => {
+      ad.run.state = "failed";
+      ad.run.error = "GitHub に上げられませんでした：" + message + "（リポジトリは手元にできています。あとで Repositories から上げられます）";
+      adStep("publish", "failed");
+      return new Error(ad.run.error);
+    };
+    let job;
+    try {
+      job = await call("start_publish", { path: adopted.path, login: a.login, owner: o.login, name: name, private: priv });
+      while (job.state === "running") {
+        await new Promise((res) => setTimeout(res, 500));
+        job = await call("publish_status", { jobId: job.id });
+      }
+    } catch (e) {
+      throw fail(errText(e));
+    }
+    if (job.state !== "done") throw fail(job.error ? job.error.message : "公開が " + job.state + " で終わりました");
+    ad.run.state = "done";
+    ad.run.summary = "github.com/" + where + " に" + (priv ? "非公開" : "公開") + "で上げました";
+    adStep("publish", "done", "GitHub に " + where + " を作って上げました");
+    return Object.assign(base, { summary: ad.run.summary, github: { owner: o.login, name: name, htmlUrl: job.target && job.target.htmlUrl } });
+  }
+  hostRequests["dev.banto/adopt-folder"] = adRun;
+
   // ---- 始める ----
   (async () => {
     try {
@@ -2473,11 +2726,16 @@ const SCRIPT = String.raw`
       document.body.dataset.mode = ctx.displayMode === "fullscreen" ? "fullscreen" : "inline";
       document.body.dataset.surface = MODE;
       send({ method: "ui/notifications/initialized", params: {} });
+      if (ADOPT) {
+        ad.target = adTargetFrom(ctx);
+        onHostContext = (next) => adSetTarget(adTargetFrom(next));
+      }
     } catch (e) {
       app.textContent = "画面を始められませんでした：" + errText(e);
       return;
     }
     render();
+    if (ADOPT) { adInspect(); return; }
     if (PUBLISH) {
       // どのフォルダかは Module が決める（押した画面の Project の Root——画面からは渡さない）
       openPublish(null);
@@ -2496,7 +2754,7 @@ const SCRIPT = String.raw`
 })();
 `;
 
-export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone" | "prepare-create" | "publish"): string {
+export function repositoriesAppHtml(mode: "launcher" | "config" | "prepare-clone" | "prepare-create" | "publish" | "adopt"): string {
   // 置き換えは関数で（文字列で渡すと `$&` などが特別な意味を持つ）
   const script = SCRIPT.replace("__MODE__", () => mode).replace("__ICONS__", () => JSON.stringify(ICONS));
   return `<!doctype html>

@@ -158,6 +158,14 @@ class InstanceOnlyModule implements ModuleClientLike {
         // 名前が無い・長すぎる——出さない
         { uri: "ui://repositories/no-name", name: "  ", mimeType: "text/html;profile=mcp-app", _meta: { "dev.banto/canvas": "folder-provider" } },
         { uri: "ui://repositories/long-name", name: "長".repeat(41), mimeType: "text/html;profile=mcp-app", _meta: { "dev.banto/canvas": "folder-provider" } },
+        // 今あるフォルダをリポジトリにする画面（「Project にする」の画面に出す、Backlog #502）
+        {
+          uri: "ui://repositories/adopt-folder",
+          name: "リポジトリ",
+          description: "このフォルダをリポジトリにします",
+          mimeType: "text/html;profile=mcp-app",
+          _meta: { "dev.banto/canvas": "folder-adopter" },
+        },
       ],
     };
   }
@@ -626,6 +634,25 @@ test("新しい Project の画面に差し出す始め方は、banto 全体の M
   // 名乗る Module が無ければ空（新しい Project の画面は「手元のフォルダ」だけになる）
   await withApp(async ({ base, headers }) => {
     assert.deepEqual(await (await fetch(`${base}/api/ui-folder-providers`, { headers })).json(), []);
+  });
+});
+
+test("「Project にする」の画面のリポジトリの欄に出す画面は、folder-adopter を名乗ったものだけ（folder-provider と混ぜない）", async () => {
+  await withApp(
+    async ({ base, headers }) => {
+      const res = await fetch(`${base}/api/ui-folder-adopters`, { headers });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), [
+        { server: "repositories", resourceUri: "ui://repositories/adopt-folder", name: "リポジトリ", description: "このフォルダをリポジトリにします" },
+      ]);
+      const providers = (await (await fetch(`${base}/api/ui-folder-providers`, { headers })).json()) as Array<{ resourceUri: string }>;
+      assert.ok(!providers.some((p) => p.resourceUri === "ui://repositories/adopt-folder"), "始め方のタブに混ざった");
+    },
+    { withInstanceOnlyModule: true },
+  );
+  // 名乗る Module が無ければ空（リポジトリの欄を出さない）
+  await withApp(async ({ base, headers }) => {
+    assert.deepEqual(await (await fetch(`${base}/api/ui-folder-adopters`, { headers })).json(), []);
   });
 });
 

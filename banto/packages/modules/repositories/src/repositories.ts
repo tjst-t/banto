@@ -350,7 +350,7 @@ export async function importRepository(store: LedgerStore, input: string, home =
   });
 }
 
-function describeRefusal(facts: Exclude<FolderFacts, { kind: "repo" }>, home: string): string {
+export function describeRefusal(facts: Exclude<FolderFacts, { kind: "repo" }>, home: string): string {
   switch (facts.kind) {
     case "missing":
       return "このフォルダはありません";

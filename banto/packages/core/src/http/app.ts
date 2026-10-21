@@ -1096,13 +1096,19 @@ async function listLauncherCanvases(
 /** core の新しい Project の画面が自分で持つタブの名前（Module が同じ名前を名乗ったら見分けがつくようにする） */
 const CORE_FOLDER_TAB_NAME = "手元のフォルダ";
 
-async function listFolderProviderCanvases(
+/**
+ * 同じ形で、**今あるフォルダをリポジトリにする画面**（`folder-adopter`、追加・2026-10-21、Backlog #502、
+ * v4-architecture.md §2.2「チャット」の「Project にする」）も集める。core の「Project にする」の画面がリポジトリの欄に
+ * 枠ごと出す——Repositories を名指ししない。名乗る Module が無ければ空（その欄を出さない）
+ */
+async function listFolderCanvases(
   modules: Array<{ name: string; client: ModuleClientLike }>,
+  kind: "folder-provider" | "folder-adopter",
 ): Promise<Array<{ server: string; resourceUri: string; name: string; description?: string; icon?: string }>> {
   const result: Array<{ server: string; resourceUri: string; name: string; description?: string; icon?: string }> = [];
   for (const { name, resources } of await listResourcesOfAll(modules)) {
     for (const r of resources) {
-      if (canvasKindOf(r) !== "folder-provider") continue;
+      if (canvasKindOf(r) !== kind) continue;
       const uri = (r as { uri?: unknown }).uri;
       if (typeof uri !== "string" || !isUiResourceMime((r as { mimeType?: unknown }).mimeType)) continue;
       // タブの名前は 1〜40 字（無い・長すぎるものは出さない——黙らずログに残す）。core の「手元のフォルダ」と同じ
@@ -1110,7 +1116,7 @@ async function listFolderProviderCanvases(
       const rawName = (r as { name?: unknown }).name;
       const tabName = typeof rawName === "string" ? rawName.trim() : "";
       if (tabName.length < 1 || tabName.length > 40) {
-        console.warn(`[host] ${name} の ${uri} はタブの名前が無いか長すぎる（1〜40 字）ので、新しい Project の画面に出しません`);
+        console.warn(`[host] ${name} の ${uri}（${kind}）は名前が無いか長すぎる（1〜40 字）ので、画面に出しません`);
         continue;
       }
       const rawDescription = (r as { description?: unknown }).description;
@@ -1121,7 +1127,7 @@ async function listFolderProviderCanvases(
       result.push({
         server: name,
         resourceUri: uri,
-        name: tabName === CORE_FOLDER_TAB_NAME ? `${tabName}（${name}）` : tabName,
+        name: kind === "folder-provider" && tabName === CORE_FOLDER_TAB_NAME ? `${tabName}（${name}）` : tabName,
         ...(description ? { description: description.length > 200 ? `${description.slice(0, 200)}…` : description } : {}),
         ...(icon ? { icon } : {}),
       });
@@ -3837,7 +3843,12 @@ export function createApp(deps: AppDeps) {
 
       // core の新しい Project の画面に差し出す始め方（banto 全体の Module が名乗ったもの、§2.4「core との境目」）
       if (url.pathname === "/api/ui-folder-providers" && req.method === "GET") {
-        json(res, 200, await listFolderProviderCanvases((await deps.resolveInstanceModuleClients?.()) ?? []));
+        json(res, 200, await listFolderCanvases((await deps.resolveInstanceModuleClients?.()) ?? [], "folder-provider"));
+        return;
+      }
+      // 「Project にする」の画面のリポジトリの欄に出す画面（banto 全体の Module が名乗ったもの、Backlog #502）
+      if (url.pathname === "/api/ui-folder-adopters" && req.method === "GET") {
+        json(res, 200, await listFolderCanvases((await deps.resolveInstanceModuleClients?.()) ?? [], "folder-adopter"));
         return;
       }
 

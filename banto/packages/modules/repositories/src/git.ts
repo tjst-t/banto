@@ -52,7 +52,7 @@ export type FolderFacts =
 type GitResult = { ok: true; stdout: string } | { ok: false; code: number | string; stderr: string };
 
 /** 待つ長さ（ms）。**試験で縮める穴**——数えるのは飾りなので、切れても行は読めたことにする */
-export const GIT_TIMEOUTS = { default: 10_000, count: 10_000, losses: 60_000 };
+export const GIT_TIMEOUTS = { default: 10_000, count: 10_000, losses: 60_000, adopt: 120_000 };
 
 /**
  * **走らせてよいサブコマンド**（先頭の語）。増やすときは、そのコマンドが設定から何を起こしうるかを見てから
@@ -83,6 +83,10 @@ export const GIT_COMMANDS: readonly string[] = [
   // 別のサーバの Project のブランチを運ぶ——host の使い捨ての置き場で bundle にする・向こうから来た中身を確かめる（`branch-sync.ts`）
   "bundle create",
   "fsck",
+  // 今あるフォルダをリポジトリにする（`adopt.ts`）——**git init したばかりのフォルダでだけ**、中身を最初のコミットにする。
+  // `.git/config` はこの Module が作ったばかりで、コマンドを指す設定はまだ無い（人の設定の段の filter 等は人のもの）
+  "add",
+  "commit",
 ];
 
 /**
@@ -366,6 +370,22 @@ export async function configuredDefaultBranch(cwd: string): Promise<string | und
   // 設定が無い——`git config --get` は 1 で終わる（git の決まり。ほかの失敗は 1 以外）
   if (r.code === 1) return undefined;
   return fail("git の既定のブランチ名", r);
+}
+
+/**
+ * **git init したばかりのフォルダの中身を、最初のコミットにする**（`adopt.ts`）。.gitignore に従って全部を足し、足すものが
+ * 無ければコミットしない（false を返す）。名前・メールは人の git の設定のもの（読む口の環境 `GIT_ENV` は人の設定の段を
+ * 読む）——無ければ git の文言のまま断る（代わりの名前で作らない）。署名は `gpg.program` を潰しているので付けない
+ */
+export async function gitCommitAll(path: string, message: string): Promise<boolean> {
+  const add = await git(path, ["add", "-A", "--", "."], GIT_TIMEOUTS.adopt);
+  if (!add.ok) throw new Error(`git add できませんでした：${add.stderr.trim() || String(add.code)}`);
+  const staged = await git(path, ["ls-files", "-z"], GIT_TIMEOUTS.adopt, GIT_ENV, 64 * 1024 * 1024);
+  if (!staged.ok) fail(`${path} の足したファイル`, staged);
+  if (staged.stdout === "") return false;
+  const commit = await git(path, ["commit", "-q", "--no-gpg-sign", "--no-verify", "-m", message], GIT_TIMEOUTS.adopt);
+  if (!commit.ok) throw new Error(`最初のコミットを作れませんでした：${commit.stderr.trim() || String(commit.code)}`);
+  return true;
 }
 
 /** 空のリポジトリを作る（フォルダも作る）。ブランチ名は呼ぶ側が決めて渡す */

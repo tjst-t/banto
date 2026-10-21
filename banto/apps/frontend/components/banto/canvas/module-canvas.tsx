@@ -16,9 +16,14 @@
 // （`_client` に null を渡し、`oncalltool` を自分で持つ）。仕様は
 // 「host が同意を求めてよい」としか言っていないが、banto は必ず通す。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { useRouter } from "next/navigation";
-import { AppBridge, PostMessageTransport, type McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
+import {
+  AppBridge,
+  McpUiResourceTeardownResultSchema,
+  PostMessageTransport,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   answerRealInboxItem,
   callRealUiTool,
@@ -46,6 +51,17 @@ import {
 } from "@/lib/backend/canvas-new-project";
 import { CLOSE_PROJECTS_METHOD, closeProjectsRequests, parseCloseProjectsParams } from "@/lib/backend/canvas-close-projects";
 import { FOLDER_PREPARED_METHOD, parseFolderPrepared, type PreparedFolder } from "@/lib/backend/canvas-folder-prepared";
+import {
+  ADOPT_FOLDER_METHOD,
+  ADOPT_FOLDER_TIMEOUT_MS,
+  FOLDER_ADOPTER_CONTEXT_KEY,
+  FOLDER_ADOPTER_STATE_METHOD,
+  parseAdoptedFolder,
+  parseFolderAdopterState,
+  type AdoptedFolder,
+  type FolderAdopterState,
+  type FolderAdopterTarget,
+} from "@/lib/backend/canvas-folder-adopter";
 import { OPEN_PROJECT_METHOD, decideOpenProject, parseOpenProjectParams } from "@/lib/backend/canvas-open-project";
 import { OPEN_SURFACE_METHOD, decideOpenSurface, parseOpenSurfaceParams, runOpenSurface } from "@/lib/backend/canvas-open-surface";
 import { currentCanvasAppearance } from "@/lib/backend/canvas-host-styles";
@@ -90,6 +106,18 @@ export interface ModuleCanvasProps {
    * 渡さなければ受けない
    */
   onFolderPrepared?: (folder: PreparedFolder) => void;
+  /**
+   * **今あるフォルダをリポジトリにする画面**として出すとき（`folder-adopter`、「Project にする」の画面の枠の中、
+   * `lib/backend/canvas-folder-adopter.ts`）。どのフォルダか・リポジトリの名前の案。変わったら画面に渡し直す
+   */
+  folderAdopter?: FolderAdopterTarget;
+  /** 画面が「押せるか」を言ってきたとき（`dev.banto/folder-adopter-state`） */
+  onFolderAdopterState?: (state: FolderAdopterState) => void;
+  /**
+   * 押したときに画面へ頼む口を、ここに入れて返す（`dev.banto/adopt-folder`）。画面が繋がるまでは null。
+   * 画面が返した結果か、理由つきの失敗（投げる）
+   */
+  adoptFolderRef?: MutableRefObject<((target: FolderAdopterTarget) => Promise<AdoptedFolder>) | null>;
 }
 
 type CallToolResult = Parameters<AppBridge["sendToolResult"]>[0];
@@ -211,6 +239,9 @@ function SandboxFrame({
   viewState,
   onViewStateChange,
   onFolderPrepared,
+  folderAdopter,
+  onFolderAdopterState,
+  adoptFolderRef,
   sandboxUrl,
   resource,
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
@@ -232,10 +263,12 @@ function SandboxFrame({
   // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
   const router = useRouter();
   const navigate = (href: string) => router.push(href);
-  const latest = useRef({ owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate });
+  const latest = useRef({ owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, folderAdopter, onFolderAdopterState, navigate });
   useEffect(() => {
-    latest.current = { owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, navigate };
+    latest.current = { owner, server, resourceUri, toolArgs, toolResult, onRequestFullscreen, viewState, onViewStateChange, onFolderPrepared, folderAdopter, onFolderAdopterState, navigate };
   });
+  // いま張っている橋と、渡している hostContext（明暗やフォルダが変わったら、全体を渡し直す——差分は橋が出す）
+  const bridgeRef = useRef<{ bridge: AppBridge; context: McpUiHostContext } | null>(null);
   // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
   // 回帰試験はこの数字が増えないことを見る
   const generation = useRef(0);
@@ -271,6 +304,8 @@ function SandboxFrame({
       // tool 起点のときだけ入れる。**無いものを作らない**——画面はこれが
       // 無いことで「人が直接開いた」と分かり、自分で必要なものを取りに行く
       ...(toolName ? { toolInfo: { tool: { name: toolName, inputSchema: { type: "object" } } } } : {}),
+      // **今あるフォルダをリポジトリにする画面**の、どのフォルダか（banto の拡張、`canvas-folder-adopter.ts`）
+      ...(latest.current.folderAdopter ? { [FOLDER_ADOPTER_CONTEXT_KEY]: { ...latest.current.folderAdopter } } : {}),
     } satisfies McpUiHostContext;
     // `_client` は null——**tool 呼び出しを素通しさせない**。下の oncalltool で
     // 受けて、host の承認ゲートへ回す
@@ -290,8 +325,11 @@ function SandboxFrame({
     // **明暗が変わったら、色と一緒に渡し直す**（§6.27）——値は明暗ごとに違うので、渡し直さないと
     // 開いたままの画面が古い色に残る。明暗は next-themes が `<html>` の class で切り替える
     // （人の切り替えも、システムの切り替えも）。変わった項目だけが通知される（`setHostContext`）
+    const held = { bridge, context: hostContext as McpUiHostContext };
+    bridgeRef.current = held;
     const themeObserver = new MutationObserver(() => {
-      bridge.setHostContext({ ...hostContext, ...currentCanvasAppearance() });
+      held.context = { ...held.context, ...currentCanvasAppearance() };
+      bridge.setHostContext(held.context);
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
@@ -367,6 +405,13 @@ function SandboxFrame({
     // なので、決まった受け口ではなく「知らない通知」の受け口で受ける。預かる場所が無い面
     // （会話の中のカード）では捨てる——知らない通知は無視してよい（JSON-RPC の通知）
     bridge.fallbackNotificationHandler = async (notification) => {
+      // 今あるフォルダをリポジトリにする画面の「押せるか」——受ける場所（「Project にする」の画面）にだけ渡す。
+      // 形が違えば押せないことにする（黙って押せることにしない）
+      if (notification.method === FOLDER_ADOPTER_STATE_METHOD) {
+        const parsed = parseFolderAdopterState(notification.params);
+        latest.current.onFolderAdopterState?.(parsed ?? { ready: false, choice: "none", reason: "リポジトリの画面の答えが読めません" });
+        return;
+      }
       if (notification.method !== VIEW_STATE_KEY) return;
       const state = (notification.params as { state?: unknown } | undefined)?.state;
       latest.current.onViewStateChange?.(state);
@@ -514,8 +559,26 @@ function SandboxFrame({
     };
     bridge.addEventListener("initialized", onInitialized);
 
+    // **押したときに画面へ頼む口**（`dev.banto/adopt-folder`）。結果の形は request の受け口では見ず（どんな object も
+    // 通す schema を使う——形を決めているのは banto の拡張で、MCP Apps に無い）、ここで確かめる
+    if (adoptFolderRef) {
+      adoptFolderRef.current = async (target) => {
+        const result = await bridge.request(
+          // 橋の型は MCP Apps の決まった method だけを知っている——banto の拡張の method はここで型を外して渡す
+          { method: ADOPT_FOLDER_METHOD, params: { path: target.path, name: target.name } } as unknown as Parameters<AppBridge["request"]>[0],
+          McpUiResourceTeardownResultSchema,
+          { timeout: ADOPT_FOLDER_TIMEOUT_MS },
+        );
+        const parsed = parseAdoptedFolder(result);
+        if ("error" in parsed) throw new Error(parsed.error);
+        return parsed;
+      };
+    }
+
     void bridge.connect(transport);
     return () => {
+      if (adoptFolderRef) adoptFolderRef.current = null;
+      if (bridgeRef.current === held) bridgeRef.current = null;
       themeObserver.disconnect();
       void bridge.close();
       // 確かめている途中で画面が替わったら、頼みは断ったことにする
@@ -526,6 +589,16 @@ function SandboxFrame({
     };
     // **画面が別物になったときだけ**組み直す（入出力とコールバックは ref から読む）
   }, [owner.kind, ownerKey(owner), server, toolName, displayMode, sandboxUrl, resource.html]);
+
+  // **フォルダ・リポジトリの名前の案が変わったら、画面に渡し直す**（橋は張り直さない）
+  const adopterPath = folderAdopter?.path;
+  const adopterName = folderAdopter?.name;
+  useEffect(() => {
+    const held = bridgeRef.current;
+    if (!held || adopterPath === undefined) return;
+    held.context = { ...held.context, [FOLDER_ADOPTER_CONTEXT_KEY]: { path: adopterPath, name: adopterName ?? "" } };
+    held.bridge.setHostContext(held.context);
+  }, [adopterPath, adopterName]);
 
   const csp = resource.csp ? `?csp=${encodeURIComponent(JSON.stringify(resource.csp))}` : "";
   return (

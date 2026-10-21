@@ -333,3 +333,29 @@ test("画面の script に同じ名前の関数宣言を2つ置かない（後�
   const twice = names.filter((n, i) => names.indexOf(n) !== i);
   assert.deepEqual(twice, [], `同じ名前の関数：${twice.join("・")}`);
 });
+
+test("今あるフォルダをリポジトリにする画面を folder-adopter として名乗り、道具は人の画面からだけ通る（Backlog #502）", async () => {
+  await withServer({ listProjects: async () => [] }, async (client, w) => {
+    const { resources } = await client.listResources();
+    const adopters = resources.filter((r) => (r._meta as Record<string, unknown> | undefined)?.[CANVAS_META_KEY] === "folder-adopter");
+    assert.deepEqual(adopters.map((r) => [r.uri, r.name]), [["ui://banto-repositories/adopt-folder", "リポジトリ"]]);
+    const html = String((((await client.readResource({ uri: adopters[0]!.uri })).contents[0]) as { text: string }).text);
+    // core と話す口：hostContext の dev.banto/folder-adopter を読み、request dev.banto/adopt-folder を受け、押せるかを通知で言う
+    for (const word of ["dev.banto/folder-adopter", "dev.banto/adopt-folder", "dev.banto/folder-adopter-state"]) assert.ok(html.includes(word), word);
+    // 埋め込んだ script が読めること（字の誤りで画面が真っ白にならない）
+    const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
+    assert.doesNotThrow(() => new Function(script));
+
+    const chat = join(w.home, "banto", "chats", "2026-10-21-x");
+    mkdirSync(chat, { recursive: true });
+    const ai = await client.callTool({ name: "adopt_folder", arguments: { path: chat }, _meta: { [CALLER_META_KEY]: { project: "p1" } } });
+    assert.equal(ai.isError, true, "AI のターンからリポジトリにできた");
+    const ins = JSON.parse(textOf(await client.callTool({ name: "inspect_adopt", arguments: { path: chat }, _meta: ADMIN })));
+    assert.equal(ins.state, "init");
+    const done = await client.callTool({ name: "adopt_folder", arguments: { path: chat }, _meta: ADMIN });
+    assert.ok(!isError(done), textOf(done));
+    assert.equal(JSON.parse(textOf(done)).initialized, true);
+    const listing = JSON.parse(textOf(await client.callTool({ name: "list_repositories", arguments: {}, _meta: ADMIN })));
+    assert.deepEqual(listing.rows.map((r: { path: string }) => r.path), [chat]);
+  });
+});

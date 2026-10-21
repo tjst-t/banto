@@ -2327,6 +2327,14 @@ export async function listRealFolderProviders(): Promise<RealFolderProvider[]> {
   return request<RealFolderProvider[]>(`/api/ui-folder-providers`);
 }
 
+/**
+ * banto 全体の Module が「今あるフォルダをリポジトリにできる」と名乗った画面の一覧（`folder-adopter`、Backlog #502）。
+ * 「Project にする」の画面がリポジトリの欄に枠ごと出す——空なら欄を出さない
+ */
+export async function listRealFolderAdopters(): Promise<RealFolderProvider[]> {
+  return request<RealFolderProvider[]>(`/api/ui-folder-adopters`);
+}
+
 export interface RealUiLauncher {
   server: string;
   resourceUri: string;

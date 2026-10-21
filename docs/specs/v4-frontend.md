@@ -595,6 +595,28 @@ Module は Project に触らない（v4-modules.md §2.4）ので、**閉じる�
   `dev.banto/open-new-project` も同じ
 - id が見つからない・もう閉じているものは数だけ言い、閉じるものに入れない
 
+#### 「Project にする」の画面に Module が差し出すリポジトリの欄（決定・2026-10-21、Backlog #502）
+
+チャットを Project にする画面（§6.53、アーキ仕様 §2.2「チャット」）のリポジトリの欄は、**今あるフォルダをリポジトリにできる
+Module の画面**を枠ごと出したもの（v4-modules.md §2.4「core との境目」）。core は「GitHub」「git init」という言葉を持たない。
+名乗る Module が無ければ欄を出さない。**押すのは core の画面**（「Project にする」）——Module の画面は選ばせるだけで、
+押されたら頼まれて動く。フォルダを置き場へ移すなら、移したあとの場所で頼む（台帳はフォルダの場所を覚えるので、
+リポジトリにしてから移すと台帳が古くなる）。
+
+| 向き | 形 |
+|---|---|
+| Module → banto（名乗り） | 資源（`ui://`、`text/html;profile=mcp-app`）の `_meta["dev.banto/canvas"] = "folder-adopter"`。名前・説明は `name`・`description`（名前は 1〜40 字） |
+| banto が集める | `GET /api/ui-folder-adopters`——banto 全体（instance）の Module のものだけ。folder-provider とは混ぜない |
+| banto → 画面（どのフォルダか） | hostContext の `dev.banto/folder-adopter` = `{ path, name }`（`name` はリポジトリの名前の案。人が打ち替えたら `ui/notifications/host-context-changed` で渡し直す） |
+| 画面 → banto（押せるか） | notification `dev.banto/folder-adopter-state` = `{ ready, choice: "github"\|"local"\|"none", reason? }`。読めなければ押せないことにする |
+| banto → 画面（押したとき） | request `dev.banto/adopt-folder` = `{ path, name }`。画面がリポジトリにし（GitHub なら上げ終わるまで、待つのは 15 分まで）、`{ choice, summary, path?, github?: { owner, name, htmlUrl? } }` を返す。失敗は JSON-RPC の error（理由をそのまま人に見せる）。`choice` が `none` 以外なら `path` が、`github` なら `github` が無ければ「できた」と読まない |
+
+- Repositories は `ui://banto-repositories/adopt-folder`：「GitHub に上げる」（アカウント・持ち主・公開範囲。名前は core の
+  `name`）・「手元だけ（git init）」・「作らない」。押されたら `adopt_folder`（git でなければ git init して中身を最初の
+  コミットに、台帳に足す）→ GitHub なら今の公開の口（`start_publish`）。GitHub に上げるのに失敗しても、手元のリポジトリは
+  残す（あとで Repositories から上げられると言う）
+- 受け口は `ModuleCanvas` の `folderAdopter`・`onFolderAdopterState`・`adoptFolderRef`（`lib/backend/canvas-folder-adopter.ts`）
+
 #### 新しい Project の画面に Module が差し出すタブ（決定・2026-10-03、Repositories 段階4）
 
 core の新しい Project の画面は「手元のフォルダ」だけを持ち、**フォルダを用意できる Module の画面**をタブとして並べる
