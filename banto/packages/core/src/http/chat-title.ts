@@ -1,7 +1,8 @@
 // **チャットの題は AI が付ける**（決定・2026-10-21、ユーザー。アーキ仕様 §2.2「チャット——Project を作る前の相談」、Backlog #498）。
 //
-// 最初のターンを始めたら、host が書き込みから題を1回だけ小さいモデルで作り、`project.renamed` を積む（一覧の `projects.changed` は
-// `renameProject` が流す）。作れなければ書き込みの最初の文を縮めた題にする。
+// 最初のターンの書き込みが記録に残ったら（ターンが終わり、止めて取り消されていなければ。呼ぶのは `app.ts` の `openTurn`）、
+// host が書き込みから題を1回だけ小さいモデルで作り、`project.renamed` を積む（一覧の `projects.changed` は `renameProject` が
+// 流す）。作れなければ書き込みの最初の文を縮めた題にする。
 //
 // **人が名前を変えていなければだけ**——名前がまだ仮の「新しいチャット」のときだけ付ける。小さいモデルを待っている間に人が
 // 変えることもあるので、積む直前にもう一度見る。「最初のターン」は名前で見分ける（題を付けたら仮の名前ではなくなる）。
@@ -63,11 +64,11 @@ export class ChatTitler {
   ) {}
 
   /**
-   * ターンを始めたときに呼ぶ（人の書き込みがあるターンだけ）。題を付けるべきなら付け始め、その終わりを返す
+   * 人の書き込みがターンの記録に残ったら呼ぶ（取り消された書き込みでは呼ばない）。題を付けるべきなら付け始め、その終わりを返す
    * （付けないなら即座に終わる）。失敗は投げない——小さいモデルが失敗したら最初の文の題にし、積めなければ警告だけ残す
    * （ターンは止めない）
    */
-  turnStarted(threadId: string, prompt: string): Promise<void> {
+  turnRecorded(threadId: string, prompt: string): Promise<void> {
     const thread = this.deps.projectThread.getThread(threadId);
     if (!thread) return Promise.resolve();
     const projectId = thread.projectId;

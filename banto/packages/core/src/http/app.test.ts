@@ -2429,8 +2429,8 @@ test("kind: chat で作ると、名前は「新しいチャット」・根は置
   }
 });
 
-// **題は AI が付ける**（アーキ仕様 §2.2「チャット」、`chat-title.ts`）——人の書き込みのあるターンを開いたら知らせる
-test("人が送ったターンを開くと、書き込みを題を付ける口に渡す", async () => {
+// **題は AI が付ける**（アーキ仕様 §2.2「チャット」、`chat-title.ts`）——人の書き込みがターンの記録に残ったら知らせる
+test("人が送ったターンが終わり書き込みが記録に残ると、書き込みを題を付ける口に渡す", async () => {
   const seen: Array<[string, string]> = [];
   await withApp(
     async (base, token, _dir, deps) => {
@@ -2445,13 +2445,49 @@ test("人が送ったターンを開くと、書き込みを題を付ける口�
     {
       threadTurns: new ThreadTurns(),
       chatTitler: {
-        turnStarted: async (threadId, prompt) => {
+        turnRecorded: async (threadId, prompt) => {
           seen.push([threadId, prompt]);
         },
       },
       runTurn: (async function* () {
         yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        yield { type: "message" as const, message: { type: "assistant", message: { content: [{ type: "text", text: "はい" }] } } } as never;
         return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});
+
+test("AI が何も出す前に人が止めて書き込みが取り消されたターンでは、題を付ける口に渡さない", async () => {
+  const seen: string[] = [];
+  let running!: () => void;
+  const started = new Promise<void>((r) => (running = r));
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("新しいチャット", "/tmp", { kind: "chat" });
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const sent = fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers: h, body: JSON.stringify({ prompt: "やっぱりなし", turnId: "turn-a" }) });
+      await started;
+      const stopped = await fetch(`${base}/api/threads/${thread.id}/stop`, { method: "POST", headers: h, body: JSON.stringify({ turnId: "turn-a" }) });
+      assert.equal(stopped.status, 200);
+      const text = await (await sent).text();
+      assert.match(text, /"withdrawn"/, "書き込みが取り消されていない（試験の前提）");
+      assert.deepEqual(deps.projectThread.getThread(thread.id)!.messages, []);
+      assert.deepEqual(seen, []);
+    },
+    {
+      threadTurns: new ThreadTurns(),
+      chatTitler: {
+        turnRecorded: async (_threadId, prompt) => {
+          seen.push(prompt);
+        },
+      },
+      runTurn: (async function* (opts: { signal?: AbortSignal }) {
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        running();
+        await new Promise<void>((resolve) => opts.signal?.addEventListener("abort", () => resolve()));
+        throw new Error("aborted");
       }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
     },
   );

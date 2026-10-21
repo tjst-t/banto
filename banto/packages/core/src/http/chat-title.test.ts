@@ -49,11 +49,11 @@ test("最初のターンのあと、小さいモデルの題で project.renamed 
     });
     let changed = 0;
     store.onProjectsChanged(() => changed++);
-    await titler.turnStarted(thread.id, "家計簿のアプリを作りたい。まず何から考えればいい？");
+    await titler.turnRecorded(thread.id, "家計簿のアプリを作りたい。まず何から考えればいい？");
     assert.deepEqual(asked, [{ projectId: project.id, prompt: "家計簿のアプリを作りたい。まず何から考えればいい？" }]);
     assert.equal(store.getProject(project.id)?.name, "家計簿アプリの相談");
     assert.equal(changed, 1);
-    await titler.turnStarted(thread.id, "二回目の書き込み");
+    await titler.turnRecorded(thread.id, "二回目の書き込み");
     assert.equal(asked.length, 1);
     assert.deepEqual(await renamedEvents(log, project.id), [{ id: project.id, name: "家計簿アプリの相談" }]);
   });
@@ -71,8 +71,8 @@ test("待っている間に次のターンが始まっても、小さいモデ�
         return new Promise<string>((resolve) => (answer = resolve));
       },
     });
-    const first = titler.turnStarted(thread.id, "一回目");
-    await titler.turnStarted(thread.id, "二回目");
+    const first = titler.turnRecorded(thread.id, "一回目");
+    await titler.turnRecorded(thread.id, "二回目");
     answer("題");
     await first;
     assert.equal(calls, 1);
@@ -86,7 +86,7 @@ test("人が先に名前を変えていれば、小さいモデルを呼ばず�
     await store.renameProject(project.id, "人が付けた名前");
     let calls = 0;
     const titler = new ChatTitler({ projectThread: store, ask: async () => (calls++, "AI の題") });
-    await titler.turnStarted(thread.id, "相談したい");
+    await titler.turnRecorded(thread.id, "相談したい");
     assert.equal(calls, 0);
     assert.equal(store.getProject(project.id)?.name, "人が付けた名前");
     assert.deepEqual(await renamedEvents(log, project.id), [{ id: project.id, name: "人が付けた名前" }]);
@@ -103,7 +103,7 @@ test("小さいモデルを待っている間に人が名前を変えたら、�
         return "AI の題";
       },
     });
-    await titler.turnStarted(thread.id, "相談したい");
+    await titler.turnRecorded(thread.id, "相談したい");
     assert.equal(store.getProject(project.id)?.name, "人が付けた名前");
     assert.equal((await renamedEvents(log, project.id)).length, 1);
   });
@@ -118,7 +118,7 @@ test("小さいモデルが失敗したら、書き込みの最初の文を縮�
         throw new Error("Not logged in");
       },
     });
-    await titler.turnStarted(thread.id, "\n  週末に行く旅行の計画を立てたい。予算は5万円くらい。\n");
+    await titler.turnRecorded(thread.id, "\n  週末に行く旅行の計画を立てたい。予算は5万円くらい。\n");
     assert.deepEqual(await renamedEvents(log, project.id), [{ id: project.id, name: "週末に行く旅行の計画を立てたい" }]);
   });
 });
@@ -127,7 +127,7 @@ test("小さいモデルの答えが題の形にならなければ（引用符�
   await withStore(async (store, _log, dir) => {
     const { project, thread } = await chat(store, dir);
     const titler = new ChatTitler({ projectThread: store, ask: async () => "「」" });
-    await titler.turnStarted(thread.id, "Plan a trip. Budget is small.");
+    await titler.turnRecorded(thread.id, "Plan a trip. Budget is small.");
     assert.equal(store.getProject(project.id)?.name, "Plan a trip");
   });
 });
@@ -140,8 +140,8 @@ test("普通の Project・閉じたチャットには題を付けない", async 
     await store.closeProject(closed.id);
     let calls = 0;
     const titler = new ChatTitler({ projectThread: store, ask: async () => (calls++, "題") });
-    await titler.turnStarted(normalThread.id, "相談");
-    await titler.turnStarted(closedThread.id, "相談");
+    await titler.turnRecorded(normalThread.id, "相談");
+    await titler.turnRecorded(closedThread.id, "相談");
     assert.equal(calls, 0);
     assert.equal((await renamedEvents(log, normal.id)).length + (await renamedEvents(log, closed.id)).length, 0);
   });

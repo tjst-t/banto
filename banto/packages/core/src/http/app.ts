@@ -413,9 +413,9 @@ export interface AppDeps {
   prepareProjectForPerson?(projectId: string, cause: ProjectWokeCause): Promise<void>;
   /**
    * **チャットの題を付ける**（決定・2026-10-21、アーキ仕様 §2.2「チャット」の「題は AI が付ける」、`chat-title.ts`）。人の書き込みが
-   * あるターンを開いたら知らせる。無ければ題を付けない（試験の最小構成）
+   * ターンの記録に残ったら（ターンが終わって、取り消されていなければ）知らせる。無ければ題を付けない（試験の最小構成）
    */
-  chatTitler?: Pick<ChatTitler, "turnStarted">;
+  chatTitler?: Pick<ChatTitler, "turnRecorded">;
   /**
    * **しばらく開いていない Project**（決定・2026-10-16、アーキ仕様 §2.2）。人の操作を数え、時計が覚えた候補を
    * `GET /api/projects` の `idle` に添え、「今はしない」を受ける。無ければ数えず、`idle` も出さない
@@ -1732,10 +1732,28 @@ export function createApp(deps: AppDeps) {
     /** 何で開くか——眠っている Project を起こす理由（`turn.started` の cause と同じ語、アーキ仕様 §2.2「起こす」） */
     cause: ProjectWokeCause = "human",
   ): AsyncGenerator<TurnStreamEvent> {
-    for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes, cause, false)) {
-      if (event.type === "stopped") stop?.markStopped(event.withdrawn);
-      yield event;
+    const turnBefore = deps.projectThread.getThread(threadId)?.lastTurn?.turnId;
+    try {
+      for await (const event of openTurnInner(threadId, prompt, permissionMode, images, stop?.signal, quotes, cause, false)) {
+        if (event.type === "stopped") stop?.markStopped(event.withdrawn);
+        yield event;
+      }
+    } finally {
+      // **チャットの題は、人の書き込みがこのターンの記録に残ってから付ける**（`chat-title.ts`）——下ごしらえの途中で止めた・
+      // AI が何も出す前に止めて書き込みを取り消したターンでは付けない（入力欄に戻った文から名前が付いて残らないように）。
+      // 待たない。失敗は chat-title.ts が片づける
+      if (deps.chatTitler && prompt.trim() !== "" && humanMessageRecorded(threadId, turnBefore)) {
+        void deps.chatTitler.turnRecorded(threadId, prompt);
+      }
     }
+  }
+
+  /** このターン（`turnBefore` の次に始めたターン）で積んだ人の発言が、取り消されずに記録に残っているか */
+  function humanMessageRecorded(threadId: string, turnBefore: string | undefined): boolean {
+    const thread = deps.projectThread.getThread(threadId);
+    const turn = thread?.lastTurn;
+    if (!thread || !turn || turn.turnId === turnBefore) return false;
+    return thread.messages.some((m) => m.role === "user" && m.origin === undefined && m.seq > turn.startedSeq);
   }
 
   async function* openTurnInner(
@@ -1797,8 +1815,6 @@ export function createApp(deps: AppDeps) {
       yield { type: "error", message: moving };
       return;
     }
-    // チャットの最初のターンなら、走らせている間に裏で題を付ける（待たない。失敗は chat-title.ts が片づける）
-    if (!idleCompaction && prompt.trim() !== "") void deps.chatTitler?.turnStarted(threadId, prompt);
     // 人が送ったなら、Module を起こす前に実行場所に足りないもの（「中で Docker を使う」の Docker）を入れる。自動化・届いたものでは
     // 入れない（Module を起こすところで今どおり断る）
     if (!idleCompaction && wakeProjectId !== undefined && deps.prepareProjectForPerson) {

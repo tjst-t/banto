@@ -3094,8 +3094,13 @@ async function main(): Promise<void> {
     if (typeof loaded.listModels === "function") {
       listModelsOverride = loaded.listModels as Parameters<typeof createApp>[0]["listModels"];
     }
-    // 小さいモデルの1回（チャットの題）も偽物に（あれば）
-    if (typeof loaded.oneShot === "function") oneShotOverride = loaded.oneShot as OneShotQuery;
+    // 小さいモデルの1回（チャットの題）も偽物に。**無ければ止まる**——本物の CLI へ黙って落ちない（規則2、試験は実 LLM を使わない）
+    if (typeof loaded.oneShot !== "function") {
+      throw new Error(
+        `BANTO_FAKE_RUNNER が指す ${fakeRunnerPath} に oneShot がありません（小さいモデルの1回が本物の CLI を呼んでしまいます）`,
+      );
+    }
+    oneShotOverride = loaded.oneShot as OneShotQuery;
   }
 
   // **画面と Module の間の流れ**（決定・2026-10-08、アーキ仕様 §5.8）。住所は画面から見た API の基点の `/api/streams`
