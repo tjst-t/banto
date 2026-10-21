@@ -12047,7 +12047,7 @@
       "number": 500,
       "kind": "task",
       "title": "core：チャットを使わなくなったら眠らせる（既定15分）・触らなくなったら閉じてコンテナを消す（既定14日）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-start-prototyping"
@@ -12057,12 +12057,12 @@
       "labels": [],
       "body": "runtime config の chat.sleepAfterMinutes（5・15・60）・chat.closeAfterDays（7・14・30・off）。眠らせるのは今の Project のスリープの手順（by: auto、断る条件も同じ）。閉じるときコンテナを消す（会話・Memory・フォルダは残す）。",
       "doneWhen": "単体：時計を進めて、試作中のチャットが既定15分で slept・14日で closed になりコンテナが消える・走っているターンがあれば眠らせない",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/chat-idle-sleep-close）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T07:13:08.661Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T07:24:09.158Z",
+      "closedAt": "2026-10-21T07:24:09.158Z",
       "extra": {}
     },
     {
