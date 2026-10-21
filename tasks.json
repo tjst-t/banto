@@ -12024,7 +12024,7 @@
       "number": 499,
       "kind": "task",
       "title": "core：start_prototyping（banto-thread、チャットだけ）——Module の差分を外し、ターンの終わりに banto の届けもので続ける",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create"
@@ -12034,12 +12034,12 @@
       "labels": [],
       "body": "project.prototyping.started を積み、moduleOverlays の enabled: false を外す。ターンが終わったら同じ Thread に banto の届けもの「試作の道具が使えるようになりました。続けてください」を1通積む。**人の承認は求めない**（決定・2026-10-21、ユーザー）。仕様の写し：ローカルの main の docs/notes/2026-10-21-chat-spec.md（正本は origin/main の v4-architecture.md §2.2「チャット」）。",
       "doneWhen": "単体：チャットでだけ道具が見える・承認を求めずに通る・呼ぶと次のターンで Shell・FileSystem の道具が渡り、コンテナが作られる・続きのターンが自動で始まる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/chat-start-prototyping）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T06:52:36.095Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T07:08:14.004Z",
+      "closedAt": "2026-10-21T07:08:14.004Z",
       "extra": {}
     },
     {
