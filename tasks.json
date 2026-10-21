@@ -12480,7 +12480,7 @@
       "number": 517,
       "kind": "task",
       "title": "banto-dev-vm に自分のランナーを置き、prebuilt.yml を移す",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [],
       "milestone": null,
@@ -12492,7 +12492,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:39:04.860Z",
       "closedAt": null,
       "extra": {}
     },
