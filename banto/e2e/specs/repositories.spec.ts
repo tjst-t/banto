@@ -1194,7 +1194,16 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
   const repoPath = join(repoHome, name);
   const login = E2E_GITHUB_DEVICE_LOGIN;
   let passed = false;
+  // **この試験が要る状態は自分で作る**（Backlog #513）——ブラウザでログインには GitHub App の client ID が要る。同じファイルの前の
+  // 試験が入れたものに頼ると、この試験だけを流したとき（`-g`）に「ブラウザでログイン」が選べずに落ちる。入れる前の値は片づけで戻す
+  const repositoriesTool = async (tool: string, args: Record<string, unknown>) => {
+    const r = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, { headers, data: { server: "repositories", tool, arguments: args } });
+    expect(r.status(), `repositories の ${tool} が通らない：${await r.text()}`).toBe(200);
+    return r.text();
+  };
+  const clientIdBefore = (await repositoriesTool("list_github_accounts", {})).match(/\\?"appClientId\\?"\s*:\s*\\?"([^"\\]+)/)?.[1];
   try {
+    await repositoriesTool("set_github_app_client_id", { clientId: E2E_GITHUB_CLIENT_ID });
     // 出すトークンの寿命を5分の余裕より短くして、使うたびに取り直しが走るようにする
     await setGithubLoginFixture({ script: ["authorized"], accessTokenTtl: 60, refreshError: null, addRepo: { owner: login, name } });
     let inner = await openRepositoriesPane(page);
@@ -1263,7 +1272,30 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
       ((await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json()) as Array<{ kind: string; message?: string }>)
         .filter((i) => i.kind === "judgment")
         .map((i) => i.message);
-    const allow = async (hasText: string) => {
+    // **中継の許可が前から残っているか**（Backlog #513）。E2E は worker ごとに core を共有し、同じ worker で先に走った spec
+    // （repositories-github-read など）が同じ組の中継を許したままにしうる——core に許可を消す口は無い。許可の鍵は
+    // Project・呼び元・宛先・種類・名前（`relay/grants-fold.ts` の `grantKey`）なので、同じ組の許可があればカードは出ない。
+    // そのときだけカードを待たない（初回は聞く、の確かめは許可が無い回で残る）
+    const projectId = projects.find((p) => p.name === name)!.id;
+    const preGranted = (callerModule: string, targetModule: string, toolName: string) =>
+      readFileSync(join(DATA_DIR, "events.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line.includes('"relay.grant_created"'))
+        .map((line) => (JSON.parse(line) as { payload: Record<string, unknown> }).payload)
+        .some(
+          (g) =>
+            g.callerModule === callerModule &&
+            g.targetModule === targetModule &&
+            g.name === toolName &&
+            g.scope === undefined &&
+            (g.projectId === undefined || g.projectId === projectId),
+        );
+    const allow = async (callerModule: string, targetModule: string, toolName: string) => {
+      const hasText = `${callerModule} が ${targetModule} の ${toolName}`;
+      if (preGranted(callerModule, targetModule, toolName)) {
+        test.info().annotations.push({ type: "pre-granted", description: `${hasText} は前の spec の許可が残っていたので、承認を待たない` });
+        return;
+      }
       const card = cards.filter({ hasText });
       await expect(card.getByRole("button", { name: "許可する" }), `${hasText} の承認を聞いていない`).toBeVisible({ timeout: 120_000 });
       // 書き戻しのカードは、どの時点でも出ていない
@@ -1277,10 +1309,10 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
     );
     await composer.press("Enter");
     // 書く前に取ってくる（ブランチごとの初回）→ その中で Repositories がトークンを引く（値を返す口の初回）
-    await allow("backlog が repositories の fetch_branch");
-    await allow("repositories が vault-local の resolveAlias");
+    await allow("backlog", "repositories", "fetch_branch");
+    await allow("repositories", "vault-local", "resolveAlias");
     // 取り直した組の書き戻しは聞かれない。書いたら送る（初回）——送る前にもう一度取り直す
-    await allow("backlog が repositories の push_branch");
+    await allow("backlog", "repositories", "push_branch");
     await expect(page.getByText("下げました。", { exact: true })).toBeVisible({ timeout: 120_000 });
     await expect(putSecretCards, "回った鍵の書き戻しで人を止めている").toHaveCount(0);
     expect(await openJudgments(), "答えていない承認が受信箱に残っている").toEqual([]);
@@ -1340,6 +1372,11 @@ test("AI のターンの中で期限の来たログインを取り直し、人�
     } finally {
       await request.delete(`${CORE_BASE_URL}/api/modules/backlog`, { headers });
       rmSync(repoHome, { recursive: true, force: true });
+      // 入れる前の client ID に戻す（前の試験が入れていればそのまま、無ければ消す）
+      await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+        headers,
+        data: { server: "repositories", tool: "set_github_app_client_id", arguments: { clientId: clientIdBefore ?? null } },
+      });
     }
   }
 });
