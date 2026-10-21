@@ -1488,25 +1488,11 @@ export class ProjectMover {
   }
 
   /**
-   * **`git worktree repair`**（Factory の `.worktrees/*` などは元の根の絶対パスを持つ）。根の中にある worktree だけを、
-   * 新しい根のパスで名指して直す
+   * **`git worktree repair`**（Factory の `.worktrees/*` などは元の根の絶対パスを持つ）。台本は `worktreeRepairScript`
    */
   private async repairWorktrees(dst: Side, oldRoot: string, newRoot: string): Promise<void> {
     // containers ではコンテナの中で（`.git/config` の `core.fsmonitor` 等が動いても中の権限だけ——条件3）
-    const script = [
-        `cd -- ${shq(newRoot)} || exit 3`,
-        `[ -d .git ] || exit 0`,
-        `command -v git >/dev/null 2>&1 || { echo 'git がありません' >&2; exit 3; }`,
-        `old=${shq(oldRoot)}; new=${shq(newRoot)}`,
-        `set --`,
-        `for f in .git/worktrees/*/gitdir; do`,
-        `  [ -f "$f" ] || continue`,
-        `  p=$(cat "$f")`,
-        `  case "$p" in "$old"/*) n="$new\${p#"$old"}"; d=$(dirname "$n"); [ -d "$d" ] && set -- "$@" "$d" ;; esac`,
-        `done`,
-        `git worktree repair "$@"`,
-        "",
-      ].join("\n");
+    const script = worktreeRepairScript(oldRoot, newRoot);
     const r = await dst.run(dst.inside ? `${onSide(dst, script)}\n` : script, 300_000);
     if (r.code !== 0) throw new SshCommandError(`${dst.label}で git worktree repair が通りませんでした`, r);
   }
@@ -1714,4 +1700,45 @@ function realOrSelf(path: string): string {
 function hostHasRsync(): boolean {
   const r = spawnSync(process.env["BANTO_RSYNC_BIN"] ?? "rsync", ["--version"], { stdio: "ignore", timeout: 10_000 });
   return !r.error && r.status === 0;
+}
+
+/**
+ * **写した先の worktree の印を直す台本**（移す先の根で流す。Backlog #467）。git 2.43 の `git worktree repair` は、写した先の
+ * worktree の `.git` ファイルが元の根を指したままだと、**元の根が同じパスで見えていれば元のほうの印**（元の
+ * `.git/worktrees/<名前>/gitdir` と元の worktree の `.git`）を書き換え、写した先は直らない（パスを名指しても同じ。2026-10-21 に
+ * git 2.43.0 で再現）。そこで、写した先の根の中にある worktree の印（`.git/worktrees/<名前>/gitdir` と、その worktree の `.git`
+ * ファイル）を、元の根のパスから写した先の根のパスへ先に書き換えてから `git worktree repair` を流す。
+ *
+ * **根の外の worktree が見えていれば repair を流さない**——repair は名指さなくても、写した先の `.git/worktrees/` の印が指す
+ * worktree を全部見て、`.git` ファイルが写した先を指していなければ写した先へ書き換える（根の外の worktree は元の Project の
+ * もの）。根の中の印は上で書き換え済みなので、流さなくても足りない分は無い
+ */
+export function worktreeRepairScript(oldRoot: string, newRoot: string): string {
+  return [
+    `cd -- ${shq(newRoot)} || exit 3`,
+    `[ -d .git ] || exit 0`,
+    `command -v git >/dev/null 2>&1 || { echo 'git がありません' >&2; exit 3; }`,
+    `old=${shq(oldRoot)}; new=${shq(newRoot)}; outside=`,
+    `set --`,
+    `for f in .git/worktrees/*/gitdir; do`,
+    // 印のファイルが symlink なら辿って書かない（触らない）
+    `  [ -f "$f" ] && [ ! -L "$f" ] || continue`,
+    `  p=$(cat "$f")`,
+    `  case "$p" in`,
+    `    "$old"/*) ;;`,
+    `    *) [ -e "$p" ] && outside="$outside $p"; continue ;;`,
+    `  esac`,
+    `  n="$new\${p#"$old"}"`,
+    `  printf '%s\\n' "$n" > "$f" || exit 3`,
+    // worktree の .git ファイル（symlink は辿らない）が元の根の印を指していれば、写した先の印へ
+    `  if [ -f "$n" ] && [ ! -L "$n" ]; then`,
+    `    g=$(sed -n '1s/^gitdir: //p' "$n")`,
+    `    case "$g" in "$old"/*) printf 'gitdir: %s\\n' "$new\${g#"$old"}" > "$n" || exit 3 ;; esac`,
+    `  fi`,
+    `  d=$(dirname "$n"); [ -d "$d" ] && set -- "$@" "$d"`,
+    `done`,
+    `if [ -n "$outside" ]; then echo "根の外の worktree が見えているので git worktree repair は流しません:$outside" >&2; exit 0; fi`,
+    `git worktree repair "$@"`,
+    "",
+  ].join("\n");
 }

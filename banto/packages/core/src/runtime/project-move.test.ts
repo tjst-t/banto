@@ -16,6 +16,7 @@ import {
   rsyncShellWord,
   runningInContainerScript,
   sessionIdsOf,
+  worktreeRepairScript,
 } from "./project-move.js";
 import { chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -166,5 +167,80 @@ test("containers：動いているものはコンテナの中のユーザーで�
     assert.notEqual(run("fail").status, 0, "Incus が答えないのに「何も動いていない」にした");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** git の作業ツリー（根の中に worktree を1つ、根の外に1つ）を作り、根を tar で写す（移す先へ写したのと同じ形） */
+function copiedRepoWithWorktrees(base: string, outside: boolean): { old: string; copy: string; out: string } {
+  const old = join(base, "old");
+  const copy = join(base, "copy");
+  const out = join(base, "outside");
+  const git = (cwd: string, ...args: string[]) => {
+    const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  mkdirSync(old, { recursive: true });
+  writeFileSync(join(old, "a.txt"), "あ\n");
+  git(old, "init", "-q");
+  git(old, "add", ".");
+  git(old, "commit", "-qm", "1");
+  git(old, "worktree", "add", "-q", ".worktrees/w1", "-b", "w1");
+  if (outside) git(old, "worktree", "add", "-q", out, "-b", "o");
+  mkdirSync(copy);
+  const tar = spawnSync("sh", ["-c", `tar -C '${old}' -cf - . | tar -C '${copy}' -xf -`], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  return { old, copy, out };
+}
+
+/** worktree の印（`.git/worktrees/<名前>/gitdir` と worktree の `.git` ファイル） */
+function marks(root: string, name: string, worktree: string): { gitdir: string; dotGit: string } {
+  return { gitdir: readFileSync(join(root, ".git", "worktrees", name, "gitdir"), "utf8"), dotGit: readFileSync(join(worktree, ".git"), "utf8") };
+}
+
+test("git worktree repair（#467）：同じ機械で元の根が見えていても、元の worktree の印は変えず、写した先の印だけを直す", () => {
+  const base = mkdtempSync(join(tmpdir(), "banto-wt-repair-"));
+  try {
+    const { old, copy } = copiedRepoWithWorktrees(base, false);
+    const before = marks(old, "w1", join(old, ".worktrees", "w1"));
+    // 写したままでは、写した先の印は元の根を指している（直す前提の確かめ）
+    assert.deepEqual(marks(copy, "w1", join(copy, ".worktrees", "w1")), before);
+
+    const r = spawnSync("sh", ["-c", worktreeRepairScript(old, copy)], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr + r.stdout, /^$/, "repair が何かを直した（先に書き換えていない）");
+    assert.deepEqual(marks(old, "w1", join(old, ".worktrees", "w1")), before, "元の worktree の印を書き換えた");
+    assert.deepEqual(marks(copy, "w1", join(copy, ".worktrees", "w1")), {
+      gitdir: `${copy}/.worktrees/w1/.git\n`,
+      dotGit: `gitdir: ${copy}/.git/worktrees/w1\n`,
+    });
+    // 写した先の git が、写した先の worktree を自分のものとして扱う
+    const list = spawnSync("git", ["worktree", "list", "--porcelain"], { cwd: copy, encoding: "utf8" });
+    assert.match(list.stdout, new RegExp(`^worktree ${copy}/.worktrees/w1$`, "m"));
+    const branch = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: join(copy, ".worktrees", "w1"), encoding: "utf8" });
+    assert.equal(branch.stdout.trim(), "w1");
+    assert.equal(spawnSync("git", ["rev-parse", "--git-common-dir"], { cwd: join(copy, ".worktrees", "w1"), encoding: "utf8" }).stdout.trim(), join(copy, ".git"));
+    // 2回流しても同じ
+    assert.equal(spawnSync("sh", ["-c", worktreeRepairScript(old, copy)], { encoding: "utf8" }).status, 0);
+    assert.deepEqual(marks(old, "w1", join(old, ".worktrees", "w1")), before);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("git worktree repair（#467）：根の外の worktree が見えていれば repair を流さず、元の Project のその印も変えない。根の中は直す", () => {
+  const base = mkdtempSync(join(tmpdir(), "banto-wt-repair-"));
+  try {
+    const { old, copy, out } = copiedRepoWithWorktrees(base, true);
+    const before = { inside: marks(old, "w1", join(old, ".worktrees", "w1")), outside: marks(old, "outside", out) };
+    const r = spawnSync("sh", ["-c", worktreeRepairScript(old, copy)], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /根の外の worktree が見えているので git worktree repair は流しません/);
+    assert.deepEqual({ inside: marks(old, "w1", join(old, ".worktrees", "w1")), outside: marks(old, "outside", out) }, before, "元の印を書き換えた");
+    assert.deepEqual(marks(copy, "w1", join(copy, ".worktrees", "w1")), {
+      gitdir: `${copy}/.worktrees/w1/.git\n`,
+      dotGit: `gitdir: ${copy}/.git/worktrees/w1\n`,
+    });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });

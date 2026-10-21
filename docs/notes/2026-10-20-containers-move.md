@@ -74,3 +74,20 @@
   ——試験の偽の VM はこの機械なので当たった（試験では repair を中のユーザーで流したかだけを見る）。同じ機械の上で元の根が
   見える移し方（試験・入れ子の SSH の相手の E2E 等）では、元の worktree の印を書き換えている見込み。直すなら repair の前に
   worktree の `.git` を新しい根へ書き換える形だが、#464 の外なので触っていない
+
+## 2026-10-21 `git worktree repair` が元のほうを直す件を直した（Backlog #467）
+
+git 2.43.0 で再現した（`/tmp` に元の根と tar で写した根を並べて）：
+
+- **写した先で `git worktree repair <写した先の worktree のパス>`（いまの形）**：写した先の worktree の `.git` ファイルが元の
+  `.git/worktrees/w1` を指しているので、git はそれを辿って**元の** `gitdir` と元の worktree の `.git` を写した先へ書き換え
+  （`repair: gitdir incorrect: <元>/.git/worktrees/w1/gitdir`・`.git file incorrect: <元>/.worktrees/w1`）、写した先は元を指したまま。
+  元の Project の worktree が写した先に乗っ取られる。**パスを名指しても防げない**（ユーザーが挙げた案2は使えない）
+- **先に写した先の印を書き換えてから repair（案1）**：根の中の worktree は直り、元は変わらない。ただし `git worktree repair` は
+  名指しても**写した先の `.git/worktrees/*` が指す worktree を全部**（リポジトリの側から）直す。根の外の worktree（元の Project の
+  もの）が見えていると、その `.git` を写した先へ書き換えた
+- **決めた形**：写した先の根の中の worktree の印（`.git/worktrees/<名前>/gitdir` と worktree の `.git` ファイル）を、元の根のパスから
+  写した先の根のパスへ書き換え、**根の外の worktree が見えていれば repair を流さない**（根の中は書き換え済みなので足りない分は無い）。
+  見えていなければ今どおり流す（本物の移し方では見えないので、ここは変わらない）。印のファイルが symlink なら辿って書かない
+- 試験：`project-move.test.ts` で根の中だけ・根の外もある形を本物の git で、`project-move-containers.test.ts` で偽の VM（元の根が
+  見える）の移す流れの結果まで見る（前は「中のユーザーで流したか」だけを見ていた）
