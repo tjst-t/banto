@@ -96,6 +96,19 @@ test("止められなければ、どの箱が残ったかを添えて投げる�
   assert.deepEqual(rt.resourceTargets(), []);
 });
 
+test("Project のコンテナを消す（使っていないチャットを閉じるとき）：名前で消し、用意したことを忘れる", async () => {
+  const removed: string[] = [];
+  const rt = new HostContainerRuntime(opts, { ok: true, problems: [] }, fakeContainers({
+    remove: async (name: string) => {
+      removed.push(name);
+    },
+  }), async () => "img");
+  await rt.prepare({ id: "p1", root: "/w", nesting: false });
+  await rt.removeProjectContainer("p1");
+  assert.deepEqual(removed, ["banto-p1"]);
+  assert.deepEqual(rt.resourceTargets(), []);
+});
+
 test("Publish のアドレス：確かに届かないは値で返し、分からないは投げる。送り元の照合は届かないなら「違う」", async () => {
   let mode: "ok" | "gone" | "broken" = "ok";
   const rt = new HostContainerRuntime(opts, { ok: true, problems: [] }, fakeContainers({

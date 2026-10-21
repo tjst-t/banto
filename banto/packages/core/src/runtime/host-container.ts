@@ -292,6 +292,15 @@ export class HostContainerRuntime implements Runtime {
     });
   }
 
+  /**
+   * **Project のコンテナを消す**（使っていないチャットを閉じるとき、アーキ仕様 §2.2「チャット」）。中に入れた道具も消える——次に
+   * Module を繋ぐとき作り直す。無ければ何もしない。消せなければ投げる
+   */
+  async removeProjectContainer(projectId: string): Promise<void> {
+    this.ready.delete(projectId);
+    await this.containers.remove(containerNameFor(projectId));
+  }
+
   // **この banto が作ったものだけ**。確かに届かない（止まっている・無い・他人のもの）は値で返し、
   // 分からない（Incus が答えない）は投げる
   /** この機械のコンテナは道を張らない（ブリッジのアドレスにサービスのポートのまま届く） */

@@ -79,6 +79,14 @@ import { AuthHttpError, type AuthService } from "../auth/service.js";
 import type { ProjectMover } from "../runtime/project-move.js";
 import { githubAccountAlias, parseStartRequest, type ProjectStarter } from "../runtime/project-start.js";
 import { ProjectSleepError, type ProjectSleep } from "../runtime/project-sleep.js";
+import {
+  CHAT_CLOSE_AFTER_KEY,
+  CHAT_SLEEP_AFTER_KEY,
+  chatIdleSettingsOf,
+  isChatCloseAfter,
+  isChatSleepAfter,
+  type ChatIdle,
+} from "../runtime/chat-idle.js";
 import { AUTO_SLEEP_KEY, autoSleepModeOf, isAutoSleepMode, type ProjectIdle } from "../runtime/project-idle.js";
 import { SshCommandError } from "../runtime/ssh.js";
 import { suspendsServicesToClose } from "../runtime/runtime-kind.js";
@@ -400,6 +408,8 @@ export interface AppDeps {
    * `GET /api/projects` の `idle` に添え、「今はしない」を受ける。無ければ数えず、`idle` も出さない
    */
   projectIdle?: Pick<ProjectIdle, "idleOf" | "noteHuman" | "dismiss" | "check">;
+  /** 使っていないチャットを眠らせる・閉じる時計（設定を変えたら1回回す） */
+  chatIdle?: Pick<ChatIdle, "check">;
   /**
    * **試験だけ：時計を好きな時刻で1回回す**（config.json の `testOnlyIdleCheck`）。無ければ `POST /api/test-only/idle-check` は 404
    */
@@ -2079,6 +2089,24 @@ export function createApp(deps: AppDeps) {
           void deps.projectIdle?.check();
         }
         return json(res, 200, { mode: autoSleepModeOf(deps.runtimeConfig) });
+      }
+
+      // **チャットを眠らせるまで・閉じるまで**（§2.2「チャット」、banto 全体の設定 `chat.sleepAfterMinutes`・`chat.closeAfterDays`）。
+      // 渡したものだけ変える。変えたら時計を1回回す
+      if (url.pathname === "/api/settings/chat" && (req.method === "GET" || req.method === "PUT")) {
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { sleepAfterMinutes?: unknown; closeAfterDays?: unknown } | undefined;
+          const sleep = body?.sleepAfterMinutes;
+          const close = body?.closeAfterDays;
+          if (sleep === undefined && close === undefined) return json(res, 400, { error: "sleepAfterMinutes か closeAfterDays を渡してください" });
+          if (sleep !== undefined && !isChatSleepAfter(sleep)) return json(res, 400, { error: "sleepAfterMinutes は 5・15・60 のどれかで渡してください" });
+          if (close !== undefined && !isChatCloseAfter(close)) return json(res, 400, { error: "closeAfterDays は 7・14・30・\"off\" のどれかで渡してください" });
+          if (sleep !== undefined) await deps.runtimeConfig.setInstanceDefault(CHAT_SLEEP_AFTER_KEY, sleep);
+          if (close !== undefined) await deps.runtimeConfig.setInstanceDefault(CHAT_CLOSE_AFTER_KEY, close);
+          void deps.chatIdle?.check();
+        }
+        return json(res, 200, chatIdleSettingsOf(deps.runtimeConfig));
       }
 
       // **試験だけ：時計を好きな時刻で、名指しの Project だけ1回回す**（E2E が「14日たった」を作る。ほかの Project には触らない）

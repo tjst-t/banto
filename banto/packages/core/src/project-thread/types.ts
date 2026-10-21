@@ -423,6 +423,8 @@ export type ProjectKind = "chat";
 
 /** 誰が眠らせたか（人・しばらく開いていないので自動で） */
 export type ProjectSleptBy = "human" | "auto";
+/** 閉じたのが人でないとき（使っていないチャットを自動で、アーキ仕様 §2.2「チャット」）。人が閉じたら付けない */
+export type ProjectClosedBy = "auto";
 /** 何で起きたか（開いた・人が送った・届いたもの・自動化の届けもの） */
 export type ProjectWokeCause = "opened" | "human" | "delivery" | "automation";
 export const PROJECT_WOKE_CAUSES: readonly ProjectWokeCause[] = ["opened", "human", "delivery", "automation"];
