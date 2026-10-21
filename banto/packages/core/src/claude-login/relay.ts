@@ -386,10 +386,13 @@ export class ClaudeLoginRelay {
    * **中継が取り直せない banto では中継を通さない**：合言葉を渡された CLI は `~/.claude` を読まず自分では取り直さないので、
    * 誰も取り直さず約8時間で本体の会話まで 401 になる。そのときは今の形（`~/.claude` を自分で読む）に付随の通信を止める
    * 印だけを足す
+   *
+   * `threadId` が無いのは Thread に属さない1回の呼び出し（小さいモデルで題を作る、`runner/one-shot.ts`）。Thread の印を付けない
+   * ——中継は温め直しの候補（§3.1）に数えない
    */
   async runnerEnvFor(
     projectId: string,
-    threadId: string,
+    threadId: string | undefined,
     session: RunnerSession,
     baseUrl: string,
     env: NodeJS.ProcessEnv = process.env,
@@ -415,7 +418,7 @@ export class ClaudeLoginRelay {
       CLAUDE_CODE_OAUTH_TOKEN: secret,
       ...(await this.accountEnvOf(accountId)),
       ...NONESSENTIAL_TRAFFIC_ENV,
-      ANTHROPIC_CUSTOM_HEADERS: `${THREAD_ID_HEADER}: ${threadId}`,
+      ...(threadId !== undefined ? { ANTHROPIC_CUSTOM_HEADERS: `${THREAD_ID_HEADER}: ${threadId}` } : {}),
     };
   }
 

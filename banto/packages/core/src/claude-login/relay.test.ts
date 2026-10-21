@@ -443,6 +443,10 @@ test("本体の環境：上流の変数を外し、中継の住所・本体用�
     // Project ごとに1つ（Thread が替わっても同じ）。コンテナ用とは別のもの。置き場には書かない
     assert.equal((await f.relay.runnerEnvFor("p1", "t2", { sessionId: "s-t2" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
     assert.notEqual((await f.relay.runnerEnvFor("p2", "t3", { sessionId: "s-t3" }, "http://x", {})).CLAUDE_CODE_OAUTH_TOKEN, secret);
+    // Thread に属さない1回の呼び出し：同じ合言葉で、Thread の印だけ付けない（温め直しの候補にしない）
+    const oneShot = await f.relay.runnerEnvFor("p1", undefined, { sessionId: "s-once" }, "http://x", {});
+    assert.equal(oneShot.CLAUDE_CODE_OAUTH_TOKEN, secret);
+    assert.equal("ANTHROPIC_CUSTOM_HEADERS" in oneShot, false);
     const container = (await f.relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
     assert.notEqual(container, secret);
     assert.doesNotMatch(readFileSync(join(f.dir, "secrets.json"), "utf8"), new RegExp(secret));
