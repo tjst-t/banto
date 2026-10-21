@@ -12201,7 +12201,7 @@
       "labels": [],
       "body": "ユーザー（2026-10-21）：「チャットのスレッドに Fork が作れるけど、UI では出てこない。チャットでは Fork はいらない」。仕様 v4-architecture.md §2.2「チャット」・v4-frontend.md §6.53（コミット 91ed5b5e、ブランチ fix/chat-no-fork）。POST /api/threads/:id/fork・発言から分ける口はチャットの Project で 409（code: chat-no-fork）、AI の start_forks はチャットでは見せず呼ばれても断る、画面の「…」の Fork の項目・発言から分ける・新しい Fork を出さない。Project にしたあとは使える。",
       "doneWhen": "単体：チャットで fork の口が 409・start_forks が道具に無い、Project にしたあとは通る。E2E chat.spec：チャットの「…」に Fork の項目が無い",
-      "resolution": "origin/main に入った（2026-10-21）。人の口 POST /api/threads/:id/fork はチャットで 409 chat-no-fork、start_forks はチャットの回で出さず呼ばれても断る、画面は「…」の Fork を開く・発言の「ここから Fork」を出さない。core・frontend の単体試験と E2E（chat と fork まわり9ファイル16件）が通った。release には未。",
+      "resolution": "origin/main（91ed5b5e・78f5a4b20）と origin/release（fef980de0、仕様の文書はぶつかったので載せていない）に入った（2026-10-21）。人の口 POST /api/threads/:id/fork はチャットで 409 chat-no-fork、start_forks はチャットの回で出さず呼ばれても断る、画面は「…」の Fork を開く・発言の「ここから Fork」を出さない。両方の版で単体試験と E2E（chat と fork まわり9ファイル16件）が通った。",
       "refs": [],
       "threads": [
         {
@@ -12210,7 +12210,7 @@
         }
       ],
       "createdAt": "2026-10-21T14:23:36.698Z",
-      "updatedAt": "2026-10-21T14:33:25.456Z",
+      "updatedAt": "2026-10-21T15:08:14.223Z",
       "closedAt": "2026-10-21T14:33:25.456Z",
       "extra": {}
     },
