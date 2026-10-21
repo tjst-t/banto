@@ -118,7 +118,14 @@ import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-o
 import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
-import { createChatProject, CHATS_DIR, promotedRootOf } from "./chat-project.js";
+import {
+  CHATS_DIR,
+  createChatProject,
+  promotedRootOf,
+  PROTOTYPING_CONTINUE_TEXT,
+  PROTOTYPING_CONTINUE_TITLE,
+  startChatPrototyping,
+} from "./chat-project.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { buildSystemPromptParts } from "../runner/system-prompt.js";
 import { splitMemory } from "../project-thread/memory-split.js";
@@ -1656,6 +1663,35 @@ export function createApp(deps: AppDeps) {
   }
 
   /**
+   * **AI が試作を始めた**（`start_prototyping`、決定・2026-10-21、アーキ仕様 §2.2「コンテナは試作を始めたときに作る」）。
+   * 差分を外して記録を積む。人の承認は求めない（ユーザー・2026-10-21）。Module の差分を書くので Configuration が要る
+   */
+  const startPrototyping = deps.runtimeConfig
+    ? (projectId: string) => startChatPrototyping({ projectThread: deps.projectThread, runtimeConfig: deps.runtimeConfig! }, projectId)
+    : undefined;
+
+  /**
+   * **試作を始めたターンの続き**。ターンの終わりを書いたあと、同じ Thread に banto の届けものを1通積む——鍵が外れたら
+   * 待ち行列（`ThreadDeliveries`）がすぐ次のターンを始め、そのターンの始まりで試作の道具（Project のコンテナの Module）が渡る。
+   * 人のターンを続けるだけなのでホップは同じ（切れたターンの続きと同じ数え方、§2.5）
+   */
+  async function continueAfterPrototyping(threadId: string): Promise<void> {
+    if (!deps.deliveries) {
+      // 起こす口が無い（試験の構成）——試作は始まっている。黙らない
+      console.warn(`[host] ${threadId} で試作を始めましたが、続きを届ける口がありません`);
+      return;
+    }
+    await deps.deliveries.deliver({
+      threadId,
+      from: "banto",
+      title: PROTOTYPING_CONTINUE_TITLE,
+      text: PROTOTYPING_CONTINUE_TEXT,
+      hop: deps.threadTurns?.hopOf(threadId) ?? 0,
+      kind: "banto",
+    });
+  }
+
+  /**
    * **眠っている Project の Module の画面を開いた**（決定・2026-10-16、アーキ仕様 §2.2「それ以外の道では起こさない」）——
    * 起こさずに「眠っています」を返す（409・`code: "asleep"`）。画面は「起こす」を出し、押すと `modules/prepare`。返したら true
    */
@@ -1818,7 +1854,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,

@@ -51,6 +51,16 @@ export interface TurnSummaryTool {
   now?(): Date;
 }
 
+/**
+ * **試作を始める**（決定・2026-10-21、アーキ仕様 §2.2「コンテナは試作を始めたときに作る」）。チャットの Project で、まだ始めて
+ * いないターンだけ渡す——渡さなければ tool を見せない。`start` は差分を外して記録を積む（`chat-project.ts`）。始めたら
+ * `started` が立ち、ターンの終わりに turn-runner が同じ Thread へ続きを届ける（道具が増えるのは次のターンから）
+ */
+export interface PrototypingTool {
+  start(): Promise<{ ok: true; already: boolean } | { ok: false; error: string }>;
+  started?: boolean;
+}
+
 /** 1回に立てられる数（仮置き・2026-09-27）。3つ並行が想定の典型で、それを少し超える余裕 */
 export const MAX_FORKS_PER_CALL = 5;
 
@@ -65,6 +75,7 @@ export const LIST_THREADS_TOOL_NAME = "list_threads";
 export const CLAUDE_USAGE_TOOL_NAME = "claude_usage";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
+export const START_PROTOTYPING_TOOL_NAME = "start_prototyping";
 /** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く */
 export const CREATE_AUTOMATION_TOOL_NAME = "create_automation";
 export const UPDATE_AUTOMATION_TOOL_NAME = "update_automation";
@@ -288,6 +299,8 @@ export function createForkMcpServer(
    * tool を見せない（ふつうの会話には出さない。番頭の会話は毎回まっさらなので、一覧が変わってもキャッシュを引き継ぐ相手がいない）
    */
   supervisorTools?: Pick<SupervisorInstructions, "instruct" | "listStalled">,
+  /** **試作を始める**（チャットだけ）。渡されなければ tool を見せない */
+  prototyping?: PrototypingTool,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -363,6 +376,34 @@ export function createForkMcpServer(
               await turnSummary.record(entry);
               return { content: [{ type: "text" as const, text: REPORT_TURN_ACCEPTED_TEXT }] };
             }),
+          ]
+        : []),
+      ...(prototyping
+        ? [
+            tool(
+              START_PROTOTYPING_TOOL_NAME,
+              [
+                "このチャットで試作を始める。ファイルを作る・コマンドを走らせる道具（Shell・FileSystem など）とコンテナを使えるようにする。",
+                "話すだけ・Web で調べるだけなら要らない。動くものを作って確かめたくなったときに呼ぶ。人の承認は要らない。",
+                "道具が使えるのは次のターンから——このターンが終わると banto が同じ会話で続きを始めるので、人への返事は短くてよい。",
+              ].join(""),
+              {},
+              async () => {
+                const result = await prototyping.start();
+                if (!result.ok) return { content: [{ type: "text" as const, text: result.error }], isError: true };
+                prototyping.started = true;
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: result.already
+                        ? "このチャットはもう試作を始めています。このターンが終わると、試作の道具が渡った状態で続きが始まる。"
+                        : "受け付けた。試作の道具は次のターンから使える。このターンが終わると banto が同じ会話で続きを始める。",
+                    },
+                  ],
+                };
+              },
+            ),
           ]
         : []),
       tool(

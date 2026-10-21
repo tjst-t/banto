@@ -269,6 +269,21 @@ export class ProjectThreadStore {
   }
 
   /**
+   * **試作を始めた印を立てる**（チャットだけ。決定・2026-10-21、アーキ仕様 §2.2「コンテナは試作を始めたときに作る」）。
+   * Module の差分を外すのは呼ぶ側（`http/chat-project.ts` の `startChatPrototyping`）——この印は記録だけ
+   */
+  async markPrototypingStarted(id: ProjectId): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.kind !== "chat") throw new NotChatProjectError("この Project はチャットではありません");
+    if (project.prototyping) return project;
+    const event = await this.log.append("project.prototyping.started", { id });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProject(id)!;
+  }
+
+  /**
    * **Project の根を変える**（決定・2026-09-11、ユーザー要望）。
    * 根は閉じ込めの範囲そのもの——変えたら、その Project の Module は
    * **立て直す**必要がある（呼び出し側が `releaseProjectModules`）。

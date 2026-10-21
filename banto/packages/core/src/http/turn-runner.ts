@@ -29,10 +29,12 @@ import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import {
   AUTOMATION_TOOL_NAMES,
   CLOSE_FORK_TOOL_NAME, CLAUDE_USAGE_TOOL_NAME,
+  START_PROTOTYPING_TOOL_NAME,
   closeForkDroppedNote,
   createForkMcpServer,
   type CloseForkReservation,
   type ForkRequest,
+  type PrototypingTool,
 } from "./fork-tool.js";
 import { backgroundItemsOf } from "./app-events.js";
 import {
@@ -188,7 +190,8 @@ export async function* runThreadTurn(
   deps.turnEvents?.begin(input.threadId, new Date().toISOString());
   // **AI が予約した Fork**（決定・2026-09-27、§2.2「AI が Fork を立てる」）。ターンの終わりに立てる
   // **AI が予約した「この Fork を閉じる」**（決定・2026-10-08、§2.2「AI が自分の Fork を閉じる」）も同じ入れ物に
-  const forks: ForkTurnState = { reserved: [], settled: false, closing: {} };
+  // **AI が始めた試作**（決定・2026-10-21、§2.2「コンテナは試作を始めたときに作る」）も同じ入れ物に
+  const forks: ForkTurnState = { reserved: [], settled: false, closing: {}, prototyping: {} };
   // **ターンの進み具合**（追加・2026-10-05、アーキ仕様 §2.5）。始めたら id が入る——終わりはここで1回だけ書く
   const turn: TurnProgress = {};
   let outcome: TurnOutcome = "failed";
@@ -240,6 +243,14 @@ export async function* runThreadTurn(
       closing.settled = true;
       await deps.settleClose?.(input.threadId, closing.reason, { ok: outcome === "completed" }).catch((err: unknown) =>
         console.warn(`[host] ${input.threadId} で予約された「Fork を閉じる」を片づけられませんでした:`, err),
+      );
+    }
+    // **試作を始めたら、ターンの終わりを書いたあとで同じ Thread に続きを届ける**——道具が増えるのは次のターンから（Module の組は
+    // ターンの始まりに解決する）。届けるのはターンが最後まで行ったときだけ（人が止めた・失敗したなら続けない——試作は始まって
+    // いるので、次に人が送ったターンから道具が渡る）
+    if (forks.prototyping.started && outcome === "completed") {
+      await deps.continueAfterPrototyping?.(input.threadId).catch((err: unknown) =>
+        console.warn(`[host] ${input.threadId} で試作を始めたあとの続きを届けられませんでした:`, err),
       );
     }
   }
@@ -309,6 +320,8 @@ interface ForkTurnState {
   settled: boolean;
   /** AI が予約した「この Fork を閉じる」（`close_fork`） */
   closing: CloseForkReservation;
+  /** AI が始めた試作（`start_prototyping`）。始めたら `started` が立つ */
+  prototyping: Pick<PrototypingTool, "started">;
 }
 
 /**
@@ -359,6 +372,13 @@ async function* runThreadTurnInner(
      * 途中で終わったら `ok: false`。渡されなければ予約は受けても閉じない（試験用）
      */
     settleClose?(threadId: string, reason: string, outcome: { ok: boolean }): Promise<void>;
+    /**
+     * **試作を始める**（決定・2026-10-21、§2.2「コンテナは試作を始めたときに作る」）。チャットの Project で、まだ始めていない
+     * ターンだけ `start_prototyping` を見せる。渡されなければ見せない（試験用）
+     */
+    startPrototyping?(projectId: string): ReturnType<PrototypingTool["start"]>;
+    /** 試作を始めたターンが最後まで行ったら、同じ Thread に banto の続きを届ける（すぐ次のターンが始まる） */
+    continueAfterPrototyping?(threadId: string): Promise<void>;
     /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
     messaging?: ThreadMessaging;
     /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
@@ -425,7 +445,7 @@ async function* runThreadTurnInner(
     supervisorModuleTools?(projectId: string): Promise<string[]>;
   },
   input: RunThreadTurnInput,
-  forks: ForkTurnState = { reserved: [], settled: false, closing: {} },
+  forks: ForkTurnState = { reserved: [], settled: false, closing: {}, prototyping: {} },
   turn: TurnProgress = {},
 ): AsyncGenerator<TurnStreamEvent> {
   const thread = deps.projectThread.getThread(input.threadId);
@@ -654,6 +674,11 @@ async function* runThreadTurnInner(
     orphanedPatrol: readOnly && deps.patrols !== undefined && !deps.patrols.patrolOf(input.threadId),
     ...(supervisor ? { supervisor: true } : {}),
   };
+  // **試作を始める**はチャットで、まだ始めていないときだけ（読むだけの回・番頭の回には出さない、§2.2「コンテナは試作を始めたときに作る」）
+  const prototypingTool: PrototypingTool | undefined =
+    !restricted && project.kind === "chat" && !project.prototyping && deps.startPrototyping
+      ? Object.assign(forks.prototyping, { start: () => deps.startPrototyping!(thread.projectId) })
+      : undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -672,6 +697,7 @@ async function* runThreadTurnInner(
     readOnlyShape,
     // 番頭の tool は番頭の回にだけ（ふつうの会話には出さない、§4.5）
     supervisor ? deps.supervisorInstructions : undefined,
+    prototypingTool,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -814,6 +840,8 @@ async function* runThreadTurnInner(
             // 任務の tool も通す——始めるのは tool の中で必ず人に聞き、予約・終わりは枠が抑える（§4.4「tool」）
             ...MISSION_TOOL_NAMES.map((name) => `mcp__banto-thread__${name}`),
             ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
+            // 試作を始めるのは人の承認の対象にしない（ユーザー・2026-10-21——書く・走らせるのはそのあとの Shell 等がそれぞれの承認を通る）
+            ...(prototypingTool ? [`mcp__banto-thread__${START_PROTOTYPING_TOOL_NAME}`] : []),
           ],
       // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
       // Elicitation も聞かずに断る
