@@ -2429,6 +2429,34 @@ test("kind: chat で作ると、名前は「新しいチャット」・根は置
   }
 });
 
+// **題は AI が付ける**（アーキ仕様 §2.2「チャット」、`chat-title.ts`）——人の書き込みのあるターンを開いたら知らせる
+test("人が送ったターンを開くと、書き込みを題を付ける口に渡す", async () => {
+  const seen: Array<[string, string]> = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("新しいチャット", "/tmp", { kind: "chat" });
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers: h, body: JSON.stringify({ prompt: "家計簿を作りたい" }) });
+      assert.equal(res.status, 200);
+      await res.text();
+      assert.deepEqual(seen, [[thread.id, "家計簿を作りたい"]]);
+    },
+    {
+      threadTurns: new ThreadTurns(),
+      chatTitler: {
+        turnStarted: async (threadId, prompt) => {
+          seen.push([threadId, prompt]);
+        },
+      },
+      runTurn: (async function* () {
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});
+
 test("kind: chat は別のサーバ・名前や根の指定・知らない kind を断り、何も作らない", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
   try {

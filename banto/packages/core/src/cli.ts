@@ -55,6 +55,8 @@ import { patrolAllowedTools, type RestrictionFor } from "./relay/read-only.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtualization } from "./runtime/containers-virt.js";
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
+import { askSmallModel, type OneShotQuery } from "./runner/one-shot.js";
+import { ChatTitler } from "./http/chat-title.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import type { WarmTicket } from "./claude-login/keep-alive.js";
 import { IdleCompactions } from "./delivery/idle-compaction.js";
@@ -3078,8 +3080,9 @@ async function main(): Promise<void> {
   const fakeRunnerPath = process.env.BANTO_FAKE_RUNNER;
   let runTurnOverride: Parameters<typeof createApp>[0]["runTurn"] | undefined;
   let listModelsOverride: Parameters<typeof createApp>[0]["listModels"] | undefined;
+  let oneShotOverride: OneShotQuery | undefined;
   if (fakeRunnerPath) {
-    const loaded = (await import(fakeRunnerPath)) as { runTurn?: unknown; listModels?: unknown };
+    const loaded = (await import(fakeRunnerPath)) as { runTurn?: unknown; listModels?: unknown; oneShot?: unknown };
     if (typeof loaded.runTurn !== "function") {
       throw new Error(
         `BANTO_FAKE_RUNNER が指す ${fakeRunnerPath} に runTurn がありません（試験用の差し替えが効きません）`,
@@ -3091,6 +3094,8 @@ async function main(): Promise<void> {
     if (typeof loaded.listModels === "function") {
       listModelsOverride = loaded.listModels as Parameters<typeof createApp>[0]["listModels"];
     }
+    // 小さいモデルの1回（チャットの題）も偽物に（あれば）
+    if (typeof loaded.oneShot === "function") oneShotOverride = loaded.oneShot as OneShotQuery;
   }
 
   // **画面と Module の間の流れ**（決定・2026-10-08、アーキ仕様 §5.8）。住所は画面から見た API の基点の `/api/streams`
@@ -3412,6 +3417,15 @@ async function main(): Promise<void> {
     releasePublishedPorts: (projectId: string) => runtime.releasePublishedPort(projectId),
     projectSleep,
     projectIdle,
+    // **チャットの題**（アーキ仕様 §2.2「題は AI が付ける」）：小さいモデルを本体のログインで1回（Thread の印なし）
+    chatTitler: new ChatTitler({
+      projectThread,
+      ask: async ({ projectId, systemPrompt, prompt }) => {
+        const sessionId = randomUUID();
+        const env = await claudeLogin.runnerEnvFor(projectId, undefined, { sessionId }, `http://127.0.0.1:${bootstrap.port}`);
+        return askSmallModel({ systemPrompt, prompt, env, sessionId }, oneShotOverride);
+      },
+    }),
     ...(bootstrap.testOnlyIdleCheck ? { testOnlyIdleCheck: true } : {}),
     ...(bootstrap.testOnlyReadOnlyThreads ? { testOnlyReadOnlyThreads: true } : {}),
     continueStoppedTurn: (noticeId) => continueStoppedTurn({ projectThread, inbox, deliveries }, noticeId),

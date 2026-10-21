@@ -126,6 +126,7 @@ import {
   PROTOTYPING_CONTINUE_TITLE,
   startChatPrototyping,
 } from "./chat-project.js";
+import type { ChatTitler } from "./chat-title.js";
 import { PROJECT_INSTRUCTION_KEY, projectInstructionOf, validateProjectInstruction } from "./project-instruction.js";
 import { buildSystemPromptParts } from "../runner/system-prompt.js";
 import { splitMemory } from "../project-thread/memory-split.js";
@@ -410,6 +411,11 @@ export interface AppDeps {
    * 投げない。無ければ何もしない
    */
   prepareProjectForPerson?(projectId: string, cause: ProjectWokeCause): Promise<void>;
+  /**
+   * **チャットの題を付ける**（決定・2026-10-21、アーキ仕様 §2.2「チャット」の「題は AI が付ける」、`chat-title.ts`）。人の書き込みが
+   * あるターンを開いたら知らせる。無ければ題を付けない（試験の最小構成）
+   */
+  chatTitler?: Pick<ChatTitler, "turnStarted">;
   /**
    * **しばらく開いていない Project**（決定・2026-10-16、アーキ仕様 §2.2）。人の操作を数え、時計が覚えた候補を
    * `GET /api/projects` の `idle` に添え、「今はしない」を受ける。無ければ数えず、`idle` も出さない
@@ -1791,6 +1797,8 @@ export function createApp(deps: AppDeps) {
       yield { type: "error", message: moving };
       return;
     }
+    // チャットの最初のターンなら、走らせている間に裏で題を付ける（待たない。失敗は chat-title.ts が片づける）
+    if (!idleCompaction && prompt.trim() !== "") void deps.chatTitler?.turnStarted(threadId, prompt);
     // 人が送ったなら、Module を起こす前に実行場所に足りないもの（「中で Docker を使う」の Docker）を入れる。自動化・届いたものでは
     // 入れない（Module を起こすところで今どおり断る）
     if (!idleCompaction && wakeProjectId !== undefined && deps.prepareProjectForPerson) {
