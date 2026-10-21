@@ -10,11 +10,12 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { replyToFingerprint, type ResumeAnswer, type ResumeQuestionItem } from "@banto/module-contract";
+import { readUtf8Range, replyToFingerprint, type FileRange, type ResumeAnswer, type ResumeQuestionItem } from "@banto/module-contract";
 import {
   EXIT_FILE,
   JOB_FILE,
   OUTPUT_FILE,
+  OUTPUT_SAVE_BYTES,
   STARTED_FILE,
   jobPath,
   readJsonIfExists,
@@ -42,6 +43,15 @@ export interface CommandView {
   signal?: string | null;
   endedAt?: string;
   outputFile: string;
+  /** 人が画面で止めた（`status` は `cancelled` のまま。追加・2026-10-21） */
+  cancelledBy?: "human";
+}
+
+/** 人の画面に出す1件（`listBackgroundCommands`）。AI の一覧に足して、秘密の alias 名と時間の上限 */
+export interface CommandAdminView extends CommandView {
+  /** `{ENV名: alias名}`。**値ではない** */
+  envSecrets?: Record<string, string>;
+  timeoutSec?: number;
 }
 
 export interface DeliverInput {
@@ -115,6 +125,8 @@ export class BackgroundCommands {
     env: NodeJS.ProcessEnv;
     timeoutSec?: number;
     secretFiles: string[];
+    /** `envSecrets` の alias 名（値ではない）。人の画面に出すために記録に残す */
+    envSecrets?: Record<string, string>;
     replyTo: string;
     requestedBy?: { projectId: string; threadId: string };
     requestedByModule?: { name: string; conn: string };
@@ -131,6 +143,7 @@ export class BackgroundCommands {
       startedAt: new Date().toISOString(),
       ...(input.timeoutSec !== undefined ? { timeoutSec: input.timeoutSec } : {}),
       ...(input.secretFiles.length > 0 ? { secretFiles: input.secretFiles } : {}),
+      ...(input.envSecrets && Object.keys(input.envSecrets).length > 0 ? { envSecrets: { ...input.envSecrets } } : {}),
       replyToFingerprint: replyToFingerprint(input.replyTo),
       ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
       ...(input.requestedByModule ? { requestedByModule: input.requestedByModule } : {}),
@@ -198,6 +211,29 @@ export class BackgroundCommands {
     return this.observe(id);
   }
 
+  /**
+   * **人の画面の一覧**（`listBackgroundCommands`、追加・2026-10-21）。全 Thread 分・置き場に残っている全部（新しい順）。
+   * AI の一覧に足して、秘密の alias 名と時間の上限
+   */
+  listAll(): CommandAdminView[] {
+    return this.observeAll().map((o) => ({
+      ...this.view(o),
+      ...(o.record.envSecrets ? { envSecrets: o.record.envSecrets } : {}),
+      ...(o.record.timeoutSec !== undefined ? { timeoutSec: o.record.timeoutSec } : {}),
+    }));
+  }
+
+  /**
+   * **人の画面が出力を読む口**（`readCommandOutput`、追加・2026-10-21）。範囲と文字の切れ目は `readUtf8Range`。`capped` は
+   * 保存の上限（64 MiB）を越えて、越えた分を書いていない
+   */
+  readOutput(id: string, range: { fromByte?: number; maxBytes?: number }): Omit<FileRange, "generation"> & { commandId: string; capped: boolean } {
+    const found = this.observe(id);
+    if (!found) throw new BackgroundCommandError(`コマンド "${id}" はありません`);
+    const { generation: _generation, ...r } = readUtf8Range(jobPath(this.deps.dir, id, OUTPUT_FILE), range);
+    return { commandId: id, ...r, capped: found.exit?.capped ?? r.size >= OUTPUT_SAVE_BYTES };
+  }
+
   /** このコマンドの終わりを届ける約束を持っているか（Shell だけが起こし直されたあとは、問われるまで持たない） */
   willDeliver(id: string): boolean {
     return this.watched.has(id);
@@ -207,11 +243,16 @@ export class BackgroundCommands {
    * 止める。止めると頼んだ時刻を先に書く（起動役が「止められた」と書いたとき、cancelCommand か外からかを分ける）。
    * 返ったら止まっている。届けるのは見張り（すぐ見に行く）
    */
-  async cancel(id: string): Promise<CommandView> {
+  async cancel(id: string, by?: "human"): Promise<CommandView> {
     const found = this.observe(id);
     if (!found) throw new BackgroundCommandError(`コマンド "${id}" はありません`);
     if (found.status !== "running") throw new BackgroundCommandError(`そのコマンドはもう動いていません（状態：${found.status}）`);
-    writeJsonAtomic(jobPath(this.deps.dir, id, JOB_FILE), { ...found.record, cancelRequestedAt: new Date().toISOString() });
+    // 人が画面で止めたなら、その印も（AI に届く知らせを分ける）
+    writeJsonAtomic(jobPath(this.deps.dir, id, JOB_FILE), {
+      ...found.record,
+      cancelRequestedAt: new Date().toISOString(),
+      ...(by ? { cancelRequestedBy: by } : {}),
+    });
     await this.deps.launcher.stop({ unit: found.record.unit, ...(found.started ? { pid: found.started.pid } : {}) });
     // 起動役が終わり方を書くまで待つ（systemd の stop は単位が止まってから返るが、試験の起こし方は待たない）
     for (let waited = 0; waited < 15_000; waited += 100) {
@@ -347,9 +388,11 @@ export class BackgroundCommands {
         : o.status === "timedOut"
           ? `コマンドが時間切れで止まりました：${head}`
           : o.status === "cancelled"
-            ? exit?.timedOut
-              ? `コマンドを止めました（その前に時間切れになっていました）：${head}`
-              : `コマンドを止めました：${head}`
+            ? o.record.cancelRequestedBy === "human"
+              ? `コマンドを人が画面で止めました：${head}`
+              : exit?.timedOut
+                ? `コマンドを止めました（その前に時間切れになっていました）：${head}`
+                : `コマンドを止めました：${head}`
             : o.status === "stopped"
               ? `コマンドが外から止められました：${head}`
               : `コマンドが途中で終わりました：${head}`;
@@ -359,6 +402,9 @@ export class BackgroundCommands {
       notes.push("終わり方の記録がありません（コンテナが起こし直された・強制的に止められた等）。出力は outputFile に途中まで残っています。");
     }
     if (o.status === "cancelled" && !exit) notes.push("止めると頼んだあと、終わり方を書く前に強制的に止まりました。");
+    if (o.status === "cancelled" && o.record.cancelRequestedBy === "human") {
+      notes.push("人が画面（バックグラウンドのコマンド）で止めました——あなた（cancelCommand）が止めたのではありません。");
+    }
     if (o.status === "cancelled" && exit?.timedOut) {
       notes.push(`timeout（${o.record.timeoutSec} 秒）で止めている途中（猶予の間）に cancelCommand で止めました。`);
     }
@@ -369,6 +415,7 @@ export class BackgroundCommands {
       exitCode: exit ? exit.code : null,
       ...(exit?.signal ? { signal: exit.signal } : {}),
       status: o.status,
+      ...(o.status === "cancelled" && o.record.cancelRequestedBy === "human" ? { cancelledBy: "human" } : {}),
       ...(exit?.timedOut ? { timedOut: true } : {}),
       commandId: o.record.id,
       ...(o.record.label ? { label: o.record.label } : {}),
@@ -393,6 +440,7 @@ export class BackgroundCommands {
       status: o.status,
       ...(o.exit ? { exitCode: o.exit.code, ...(o.exit.signal ? { signal: o.exit.signal } : {}), endedAt: o.exit.at } : {}),
       outputFile: jobPath(this.deps.dir, o.record.id, OUTPUT_FILE),
+      ...(o.status === "cancelled" && o.record.cancelRequestedBy === "human" ? { cancelledBy: "human" as const } : {}),
     };
   }
 

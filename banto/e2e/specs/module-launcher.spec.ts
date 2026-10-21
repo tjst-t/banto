@@ -38,7 +38,8 @@ test("Command Palette の「Module の入口」から、AI を介さずに画面
   await expect(entry).toBeVisible({ timeout: 15_000 });
   await expect(entry).toContainText("この Project のファイルを見る・開く・編集する");
 
-  // 名乗っていない Module（shell・vault backend 自身）の入口は出ない。
+  // 名乗っていない Module（vault backend 自身）の入口は出ない。Module の名前（shell）でも出ない——Shell が名乗る入口は
+  // 「バックグラウンドのコマンド」（2026-10-21、Backlog #491）で、出るのはその名前。
   // **VaultUI は名乗っている**ので出る（2026-09-12）——ここで数えるのは
   // 「入口だと言っていないものが出ていないこと」なので、名前で分ける
   await expect(page.getByRole("option", { name: /^shell/i })).toHaveCount(0);
