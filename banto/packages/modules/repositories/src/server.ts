@@ -40,7 +40,17 @@ import {
   callerOf,
 } from "@banto/module-contract";
 import { GithubAccounts, parsePlaceArg } from "./accounts.js";
-import { LIST_APP_URI, PREPARE_CLONE_URI, PREPARE_CREATE_URI, PUBLISH_APP_URI, SETTINGS_APP_URI, UI_APP_MIME, repositoriesAppHtml } from "./app.js";
+import { FolderAdopter } from "./adopt.js";
+import {
+  ADOPT_FOLDER_URI,
+  LIST_APP_URI,
+  PREPARE_CLONE_URI,
+  PREPARE_CREATE_URI,
+  PUBLISH_APP_URI,
+  SETTINGS_APP_URI,
+  UI_APP_MIME,
+  repositoriesAppHtml,
+} from "./app.js";
 import { setRepositoryAccount } from "./assign.js";
 import { BranchSync, isRemote, repositoryLabel, type ProjectGitAccess } from "./branch-sync.js";
 import { deleteRepository, inspectDelete } from "./delete.js";
@@ -211,6 +221,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
     ...(home ? { home } : {}),
   });
+  const adopter = new FolderAdopter(store, home);
   const branchSync = new BranchSync({
     store,
     accounts,
@@ -328,6 +339,13 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
       adminTool("publish_status", "公開の進み具合と結果", { jobId: { type: "string" } }, ["jobId"]),
       adminTool("cancel_publish", "push をやめる（GitHub に作ったリポジトリは消さない）", { jobId: { type: "string" } }, ["jobId"]),
       adminTool("retry_push", "push だけやり直す（GitHub の origin はあるが、いまのブランチが GitHub にまだ無い）", { path: { type: "string" } }, ["path"]),
+      // ── 今あるフォルダをリポジトリにする（「Project にする」の画面の枠の中、Backlog #502）。GitHub へはこのあと start_publish ──
+      adminTool("inspect_adopt", "そのフォルダをリポジトリにすると何が起きるか（git init する・台帳に足すだけ・もう台帳にある・断る理由）", {
+        path: { type: "string" },
+      }, ["path"]),
+      adminTool("adopt_folder", "そのフォルダをその場所のままリポジトリにする（git でなければ git init して中身を最初のコミットに）、台帳に足す", {
+        path: { type: "string" },
+      }, ["path"]),
       // ── Backlog のブランチ（§2.4「ブランチを送る口」）。**中継からだけ**（可視性 module）。ブランチ名を識別子として
       // 名乗る——中継のゲートは、コンテナからの呼び出しをブランチごとに初回だけ人に聞く ──
       branchTool("push_branch", "呼び出し元の Project のリポジトリの、そのブランチだけを origin へ送る（force しない）"),
@@ -501,6 +519,10 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
           );
           return json(name === "inspect_publish" ? await publisher.inspect(path) : await publisher.targets(path, callIdOf(meta)));
         }
+        case "inspect_adopt":
+          return json(await adopter.inspect(str(args.path, "path")));
+        case "adopt_folder":
+          return json(await adopter.adopt(str(args.path, "path")));
         case "check_publish_name":
           return json(await publisher.checkName({ login: str(args.login, "login"), owner: str(args.owner, "owner"), name: str(args.name, "name") }, callIdOf(meta)));
         case "start_publish":
@@ -614,6 +636,16 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
         icons: [{ src: iconDataUri(CREATE_ICON), mimeType: "image/svg+xml" }],
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "folder-provider", ui: { prefersBorder: false } },
       },
+      // **今あるフォルダをリポジトリにする画面**（Backlog #502、§2.4「core との境目」）——core の「Project にする」の画面が
+      // 枠の中に出す。core は Repositories を名指ししない：印 `folder-adopter` の画面を出し、押したら
+      // `dev.banto/adopt-folder` で頼む
+      {
+        uri: ADOPT_FOLDER_URI,
+        name: "リポジトリ",
+        description: "このフォルダを、その場所のまま git のリポジトリにします（GitHub に上げる・手元だけ）。",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "folder-adopter", ui: { prefersBorder: false } },
+      },
       {
         uri: SELF_REPORT_URI,
         name: "この Module の申告",
@@ -645,6 +677,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     if (uri === PUBLISH_APP_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("publish") }] };
     if (uri === PREPARE_CLONE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-clone") }] };
     if (uri === PREPARE_CREATE_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("prepare-create") }] };
+    if (uri === ADOPT_FOLDER_URI) return { contents: [{ uri, mimeType: UI_APP_MIME, text: repositoriesAppHtml("adopt") }] };
     throw new Error(`unknown resource: ${uri}`);
   });
 

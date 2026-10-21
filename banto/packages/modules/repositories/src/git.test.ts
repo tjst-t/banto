@@ -92,6 +92,8 @@ test("走らせてよいサブコマンドは一覧のものだけ（増やす�
     "fetch",
     "bundle create",
     "fsck",
+    "add",
+    "commit",
   ]);
 });
 

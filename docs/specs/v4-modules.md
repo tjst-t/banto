@@ -2475,6 +2475,16 @@ Project の画面からも一覧からも開く。アカウント・名前・公
   そのフォルダを入れた状態で開く**——人がそこで作る。**core に「Project を作る」口は足さない**。開く口は banto の拡張
   `dev.banto/open-new-project`（`v4-frontend.md` §6.2、段階3で作った・2026-10-02）。一覧の「Project を始める」も同じ口
 - Repositories を無効にすると「手元のフォルダ」だけになる
+- **今あるフォルダをリポジトリにする**（決定・2026-10-21、Backlog #502——チャットを Project にする画面、
+  v4-architecture.md §2.2「チャット」）：Module は印 `_meta["dev.banto/canvas"] = "folder-adopter"` の画面を名乗り
+  （Repositories は `ui://banto-repositories/adopt-folder`）、core の「Project にする」の画面がリポジトリの欄に枠ごと出す。
+  やりとりは v4-frontend.md §6.2「「Project にする」の画面に Module が差し出すリポジトリの欄」。Repositories がすること：
+  - git でないフォルダ：git init（ブランチ名は新しいリポジトリと同じ決め方）→ 中身を最初のコミットに（.gitignore に従う、
+    名前・メールは人の git の設定のまま、件名 `Initial commit`。中身が無ければコミットしない）→ 台帳に足す。コミットで
+    失敗したら、作ったばかりの `.git` を消して元に戻す
+  - もう git のリポジトリの一番上：台帳に足すだけ（**コミットしない**——人の作業の途中を勝手にコミットしない）。もう台帳に
+    あれば何もしない。リポジトリの中のフォルダ・worktree・bare 等は断る
+  - GitHub に上げるのは今の公開の口（`start_publish`、判断は1箇所）。道具 `inspect_adopt`・`adopt_folder` は人の画面からだけ
 - **例外（2026-10-20、v4-frontend.md §6.49）**：別のサーバでの新しい Project の clone だけは、core が Repositories のブラウザログインの
   alias の形（`repositories-github-<login>`・種別 oauth-token・持ち主 repositories）を知り、その Project の Shell に渡す。向こうの
   フォルダを Repositories が扱えないため（案A を採らなかった）。GitHub のユーザー名 `x-access-token` も core が持つ
