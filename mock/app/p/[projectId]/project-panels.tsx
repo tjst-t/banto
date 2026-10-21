@@ -19,33 +19,8 @@ import { isSleeping, isWaking, wakeProject } from "@/lib/mock/project-org";
 import { LoaderCircle, Moon } from "lucide-react";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
-import { closeDraft, getDraft, getDraftSettings } from "@/lib/mock/drafts";
+import { closeDraft } from "@/lib/mock/drafts";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
-import { FlaskConical, MessageCircle } from "lucide-react";
-
-/**
- * チャットの帯（モック・2026-10-21、Fork「Project 作成前の検討」）。会話の上に1行で、
- * いま資源を使っているか（コンテナの様子）だけを出す。「Project にする」はヘッダの「…」とサイドバーの行の「…」から
- */
-function DraftBand({ projectId }: { projectId: string }) {
-  useMockStoreVersion();
-  const draft = getDraft(projectId);
-  if (!draft) return null;
-  const { sleepAfterMinutes } = getDraftSettings();
-  const Icon = draft.machine === "none" ? MessageCircle : draft.machine === "running" ? FlaskConical : Moon;
-  const text =
-    draft.machine === "none"
-      ? "話す・調べるだけなので、コンテナはまだ作っていません。試作を始めると作ります"
-      : draft.machine === "running"
-        ? `試作のコンテナが動いています。${sleepAfterMinutes}分使わなければ眠らせます`
-        : "試作のコンテナは眠っています。続けて話すと起きます";
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5 text-xs text-ink-2">
-      <Icon className="size-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1">{text}</span>
-    </div>
-  );
-}
 
 /** スリープ中・起こしている途中の帯（Project の整理のモック・2026-10-16）。URL で直に開いたときなどに出る */
 function SleepBand({ projectId }: { projectId: string }) {
@@ -251,7 +226,6 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           </PanelHeader>
           {promoting ? <PromoteDialog projectId={projectId} open onOpenChange={(o) => !o && setPromoting(false)} /> : null}
           <SleepBand projectId={projectId} />
-          <DraftBand projectId={projectId} />
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}

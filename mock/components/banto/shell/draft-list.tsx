@@ -5,7 +5,7 @@
 // Claude のチャットのように、「＋」で新しいチャットの画面が開く（この時点では Project を作らない。
 // 最初の書き込みで作り、AI が書き込みから題を付ける）。中身は普通の Project。
 // 見た目は下の「Project」の一覧に合わせる：見出しの右に「畳む・開く」と「＋」、一番下に「閉じたチャット」
-// （Project の「スリープ中」と同じ形。既定で畳んであり、開くと薄い行が並び、押せば開き直す）。
+// （押すと「履歴」と同じ形の小窓が開き、そこから開き直す）。
 // 並ぶのは最近のものだけ（5件まで。残りは「ほかに N 件」）。
 // 行の右の小さな印でコンテナの様子が分かる：
 //   印なし=話すだけ（コンテナを作っていない）／緑の点=試作のコンテナが動いている／月=眠っている
@@ -29,9 +29,10 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import { closeDraft, getClosedDrafts, getDrafts, reopenDraft, type DraftMachine } from "@/lib/mock/drafts";
+import { closeDraft, getClosedDrafts, getDrafts, type DraftMachine } from "@/lib/mock/drafts";
 import { cn } from "@/lib/utils";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
+import { ClosedChatsDialog } from "./closed-chats-dialog";
 
 const SHOWN = 5;
 
@@ -143,54 +144,19 @@ export function DraftList({ activeProjectId, onNavigate }: { activeProjectId: st
               </SidebarMenuItem>
             ) : null}
             {closed.length > 0 ? (
-              <>
-                {/* 一番下の「閉じたチャット」：Project の「スリープ中」と同じ形 */}
-                <li className="relative flex h-8 items-center rounded-md">
-                  <button
-                    type="button"
-                    onClick={() => setClosedOpen((v) => !v)}
-                    aria-expanded={closedOpen}
-                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
-                  >
-                    <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
-                      <Archive className="size-3.5" />
-                    </span>
-                    <span className="truncate text-sm">閉じたチャット</span>
-                    <span className="ml-auto text-xs tabular-nums">{closed.length}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setClosedOpen((v) => !v)}
-                    aria-label={`閉じたチャットを${closedOpen ? "畳む" : "開く"}`}
-                    className="absolute top-1.5 right-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent"
-                  >
-                    <ChevronRight className={cn("size-4 transition-transform", closedOpen && "rotate-90")} />
-                  </button>
-                </li>
-                {closedOpen
-                  ? closed.map((c) => (
-                      <SidebarMenuItem key={c.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const id = reopenDraft(c.id);
-                            onNavigate?.();
-                            if (id) router.push(`/p/${id}`);
-                          }}
-                          title={`押すと開き直します（${c.closedAt}・${c.why}）`}
-                          className="flex h-8 w-full items-center gap-2 rounded-md pr-2 pl-8 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
-                        >
-                          <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                          <span className="shrink-0 text-xs">{c.closedAt}</span>
-                        </button>
-                      </SidebarMenuItem>
-                    ))
-                  : null}
-              </>
+              /* 一番下の「閉じたチャット」：押すと「履歴」と同じ形の小窓 */
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => setClosedOpen(true)} className="text-ink-3">
+                  <Archive />
+                  <span className="flex-1 truncate">閉じたチャット</span>
+                  <span className="text-xs tabular-nums">{closed.length}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             ) : null}
           </SidebarMenu>
         </SidebarGroupContent>
       ) : null}
+      <ClosedChatsDialog open={closedOpen} onOpenChange={setClosedOpen} onNavigate={onNavigate} />
       {promoteId ? (
         <PromoteDialog projectId={promoteId} open onOpenChange={(o) => !o && setPromoteId(null)} />
       ) : null}

@@ -26,7 +26,7 @@ import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 
-function ArchiveRow({
+export function ArchiveRow({
   icon: Icon,
   title,
   subtitle,
