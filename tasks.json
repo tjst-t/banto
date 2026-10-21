@@ -11925,6 +11925,33 @@
       "updatedAt": "2026-10-21T04:48:14.995Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "project-project-2",
+      "number": 495,
+      "kind": "story",
+      "title": "チャット——Project を作る前の相談をサイドバーから始め、まとまったら Project にする",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "chat",
+        "frontend"
+      ],
+      "body": "中身は普通の Project（kind: \"chat\"）で、画面だけ別に扱う。仕様：v4-architecture.md §2.2「チャット——Project を作る前の相談」、v4-frontend.md §6.53。モック：ブランチ fork/draft-projects の mock/（https://mock-drafts-2ced47c4.banto.tjstkm.net/chat/new）。\n\n調べて分かったこと（2026-10-21）：\n- Project を作るのは project.created を積むだけで、コンテナは Project のコンテナで動く Module を初めて繋ぐとき（modules/prepare・ターンの始まり、§5.4-0）に runtime.prepare で作られる。だからチャットはそれらの Module を Project 層の moduleOverlays で enabled: false にして始めれば、話すだけのときにコンテナは作られない\n- Module の組はターンの始まりに解決するので、試作を始めた道具は次のターンから。ターンの終わりに banto の届けもので続ける\n- 眠らせる・起こすは今の Project のスリープ（project.slept / wakeProject）を使える\n- 小さいモデルで1回呼ぶ口は core にまだ無い（#490 と共用で作る）",
+      "doneWhen": "本物の banto で：「＋」→書き込みでチャットができ題が付く／話すだけではコンテナが無い（incus list に無い）／試作を頼むとコンテナができ Shell が使える／15分でコンテナが止まり、話すと起きる／「Project にする」で同じ会話のまま Project の一覧に移り、GitHub に上がる",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md",
+        "docs/specs/v4-frontend.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-21T05:46:41.072Z",
+      "updatedAt": "2026-10-21T05:46:41.072Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
