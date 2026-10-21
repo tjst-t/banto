@@ -12383,6 +12383,30 @@
       "updatedAt": "2026-10-21T10:43:59.963Z",
       "closedAt": "2026-10-21T10:43:59.963Z",
       "extra": {}
+    },
+    {
+      "id": "e2e-repositories-github-read-repositorie",
+      "number": 513,
+      "kind": "bug",
+      "title": "E2E：repositories-github-read が残した中継の許可で、repositories.spec「期限の来たログインを取り直し」が落ちる",
+      "status": "ready",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "e2e",
+        "repositories"
+      ],
+      "body": "## 何が起きているか\nフル E2E で `specs/repositories.spec.ts:1180`「AI のターンの中で期限の来たログインを取り直し、人に聞かずに Vault に書き戻す——以後の更新も通る」が落ちる（2026-10-21、release＋番頭のフル E2E で2回とも。main でも再現）。\n\n## 原因（2026-10-21 に確かめた）\n- E2E は worker ごとに core を1つ持ち、同じ worker の spec は core を共有する。\n- `specs/repositories-github-read.spec.ts`（#424、2026-10-20 に追加）は、ふつうの会話の試験で repositories → vault-local の `resolveAlias` の中継を「許可する」で許し、その許可（`relay.grant_created`）は core に残る。afterAll は台帳とアカウントを戻すが、中継の許可は戻さない（core に許可を消す口が無い）。\n- そのあと同じ worker で repositories.spec の 1180 行目の試験が走ると、初回の承認のカードを待つ所（1268 行目 `allow()`：「repositories が vault-local の resolveAlias の承認を聞いていない」）でカードが出ず落ちる。\n- 再現：`BANTO_E2E_WORKERS=1 npx playwright test specs/repositories-github-read.spec.ts specs/repositories.spec.ts` で必ず落ちる。folder-adopter.spec を先にしても落ちない。repositories.spec 単体（9件）は通る。\n\n## もう1つの依存（同じ試験）\nこの試験は、ブラウザでログインに要る GitHub App の client ID を自分で入れず、同じファイルの 425 行目の試験が入れたものに頼っている。`-g` でこの試験だけ流すと 1208 行目（`gh-method-browser` が disabled で checked にならない）で必ず落ちる。\n\n## 直し方の案\n- 1180 の試験の頭で、その回で要る状態を自分で作る：client ID を `set_github_app_client_id` で入れ、`allow()` は「すでに許可がある」（その回の前から `relay.grant_created` がある）ならカードを待たない形にする。または\n- github-read の afterAll が自分の作った中継の許可を消す（core に人の口か試験用の口を足す——範囲が広がる）\n- 試験を弱めない：初回の承認を聞く・書き戻しで人を止めない、の確かめは、許可が無い状態から始められる回で残す",
+      "doneWhen": "`BANTO_E2E_WORKERS=1 npx playwright test specs/repositories-github-read.spec.ts specs/repositories.spec.ts` と、repositories.spec.ts の 1180 の試験だけを `-g` で流したものの両方が通る。初回の承認を聞く・書き戻しで人を止めない、の確かめは残っている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T14:36:48.019Z",
+      "updatedAt": "2026-10-21T14:36:48.019Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
