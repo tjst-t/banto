@@ -18,6 +18,7 @@ import {
   SHELL_HOME_SOURCE,
   CLAUDE_RELAY_CREDENTIALS,
   SUBAGENT_IMPORT_FILE,
+  FAKE_ONE_SHOT_LOG,
   SUBAGENT_IMPORTED_KEY,
 } from "./config.ts";
 import { startRegistryFixture } from "./registry-fixture.ts";
@@ -157,5 +158,7 @@ process.env.BANTO_CLAUDE_RELAY_CREDENTIALS = CLAUDE_RELAY_CREDENTIALS;
 // 鍵の取り込み元も偽物に向ける——人のものを読まない
 writeFileSync(SUBAGENT_IMPORT_FILE, JSON.stringify({ fake: { type: "api", key: SUBAGENT_IMPORTED_KEY } }));
 process.env.BANTO_SUBAGENT_FAKE_IMPORT_FILE = SUBAGENT_IMPORT_FILE;
+// 偽の小さいモデルが呼ばれた記録（`fake-runner.ts` の `oneShot`）
+process.env.BANTO_FAKE_ONE_SHOT_LOG = FAKE_ONE_SHOT_LOG;
 
 await import("../packages/core/dist/cli.js");

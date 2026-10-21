@@ -29,6 +29,9 @@ interface RunRecord extends Omit<Summary, "promptHead" | "toolCount" | "lastStep
   /** 畳んだ古い経過の数・走っている間の経過の版・差分で受けたときの元の版（`getRun` の `sinceStep`） */
   stepsOmitted?: number; stepVersion?: number; stepsSince?: number;
   plan?: PlanEntry[]; files?: TouchedFile[]; continuedAfterRestart?: true;
+  /** 人が頼んだ要約（作った順、新しい5件）・作っている間の印・最後の失敗・作っている間に終わって捨てた時刻・サイドバーにも出るか */
+  summaries?: { at: number; text: string }[]; summarizing?: { since: number }; summaryError?: { at: number; message: string };
+  summaryDiscarded?: number; summaryInSidebar?: true;
   requestedByModule?: { name: string; conn: string };
   sessionId?: string; stopReason?: string; text?: string; error?: string; notes?: string[];
   usage?: { inputTokens: number; outputTokens: number; cachedReadTokens?: number | null; cachedWriteTokens?: number | null };
@@ -115,6 +118,8 @@ const PATHS: Record<string, string[]> = {
   fetch: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z", "M2 12h20", "M12 2a15.3 15.3 0 0 1 0 20", "M12 2a15.3 15.3 0 0 0 0 20"],
   other: ["M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"],
   back: ["m15 18-6-6 6-6"],
+  rotate: ["M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8", "M21 3v5h-5"],
+  alert: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z", "M12 8v4", "M12 16h.01"],
   spark: ["M9.94 14.06 4 20", "M20 4l-5.94 5.94", "M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.5L5 9l5.5-1.5Z"],
   message: ["M7.9 20A9 9 0 1 0 4 16.1L2 22Z"],
   circle: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"],
@@ -195,8 +200,10 @@ const state: {
   limit: number; finishedTotal: number;
   /** 人が開いたもの（畳んだ経過の頭の番号・`message`＝最後の発言の全文・`files`＝触ったファイルの全部）。取り直しても持ち越す */
   opened: Set<string>;
+  /** この窓で「要約」を押して、まだ答えが返っていない仕事（次の取り直しを待たずに「要約しています」を出す） */
+  summarizing: Set<string>;
 } = {
-  agents: [], runs: [], selected: null, detail: null, loaded: false, limit: PAGE, finishedTotal: 0, opened: new Set(),
+  agents: [], runs: [], selected: null, detail: null, loaded: false, limit: PAGE, finishedTotal: 0, opened: new Set(), summarizing: new Set(),
 };
 const app = document.getElementById("app")!;
 const wide = () => window.innerWidth >= 720;
@@ -499,12 +506,81 @@ function renderTrace(r: RunRecord): HTMLElement {
   return ol;
 }
 
+/** 要約を頼む（人が押したときだけ）。答えは記録に残るので、取り直して描く——失敗の理由も記録から出す */
+async function summarize(id: string): Promise<void> {
+  state.summarizing.add(id);
+  render();
+  try {
+    await call("summarizeRun", { id });
+    state.error = undefined;
+  } catch (err) {
+    // 記録に残らない断り（終わった仕事・host の口が無い）は下の欄に出す。作れなかった理由は記録の summaryError に出る
+    const message = (err as Error).message;
+    state.summarizing.delete(id);
+    await refresh();
+    if (state.detail?.id !== id || state.detail.summaryError?.message !== message) {
+      state.error = `要約できませんでした：${message}`;
+      render();
+    }
+    return;
+  }
+  state.summarizing.delete(id);
+  await refresh();
+}
+
+const FAILED_PREFIX = "要約を作れませんでした";
+
+/**
+ * **要約**（アーキ仕様 §4.1「4.」）——「いまやっていること」の下。走っている仕事だけボタンを出す（自動では作らない）。
+ * なし／作っています／できた（作り直す）／失敗（もう一度）。作っている間に仕事が終わったら「捨てました」
+ */
+function renderSummary(r: RunRecord): HTMLElement | null {
+  const running = r.status === "running";
+  const latest = r.summaries?.at(-1);
+  const working = running && (Boolean(r.summarizing) || state.summarizing.has(r.id));
+  const failed = running && !working && r.summaryError && (!latest || r.summaryError.at > latest.at) ? r.summaryError : undefined;
+  const parts: Child[] = [];
+  const button = (label: string, iconName: string, cls: string) => {
+    const b = h("button", { type: "button", class: cls, "data-role": "summarize", "data-focus": `summarize:${r.id}` }, [icon(iconName), label]);
+    b.addEventListener("click", () => void summarize(r.id));
+    return b;
+  };
+  if (working) {
+    parts.push(h("div", { class: "summary-working", "data-role": "summary-working" }, [h("span", { class: "glyph glyph-running", "aria-hidden": "true" }), "要約しています…"]));
+  } else if (failed) {
+    const reason = failed.message.startsWith(FAILED_PREFIX) ? failed.message : `${FAILED_PREFIX}：${failed.message}`;
+    parts.push(h("div", { class: "summary-failed", "data-role": "summary-error" }, [icon("alert"), h("span", { text: reason }), button("もう一度", "rotate", "btn btn-quiet summary-retry")]));
+  } else if (running && !latest) {
+    parts.push(
+      h("div", { class: "summary-ask" }, [
+        button("いまの様子を要約", "spark", "btn"),
+        h("span", { class: "muted summary-hint", text: "押したときだけ、小さいモデルで2文にまとめます。本体の Claude の使用量に数えます。" }),
+      ]),
+    );
+  }
+  if (latest) {
+    parts.push(
+      h("div", { class: "summary", "data-role": "summary" }, [
+        h("span", { class: "summary-head" }, [
+          icon("spark"),
+          h("span", { "data-role": "summary-when", text: `要約（${when(latest.at)}）` }),
+          running && !working ? button("作り直す", "rotate", "link summary-redo") : null,
+        ]),
+        h("p", { class: "summary-text", "data-role": "summary-text", text: latest.text }),
+        h("span", { class: "muted summary-note", "data-role": "summary-note", text: `${r.summaryInSidebar ? "サイドバーのバックグラウンドの一覧にも出ています。" : ""}AI には渡しません。` }),
+      ]),
+    );
+  }
+  if (r.summaryDiscarded) parts.push(h("p", { class: "muted summary-discarded", "data-role": "summary-discarded", text: "仕事が終わったので要約を捨てました" }));
+  return parts.length ? h("div", { class: "summary-box", "data-role": "summary-box" }, parts) : null;
+}
+
 /** 触ったファイルの上から見せる数 */
 const FILES_SHOWN = 8;
 
 /**
  * **いまの状況**（アーキ仕様 §4.1 の3）——1件の中身の一番上。いまやっていること・やること一覧と進み・最後の発言・触ったファイル。
- * 要約（§4.1 の4）はまだ無い——足すときは「いまやっていること」の下に置く
+ * 要約（§4.1 の4）は「いまやっていること」の下
  */
 function renderNow(r: RunRecord): HTMLElement | null {
   const running = r.status === "running";
@@ -512,7 +588,8 @@ function renderNow(r: RunRecord): HTMLElement | null {
   const said = [...r.steps].reverse().find(isMessage);
   const plan = r.plan ?? [];
   const files = [...(r.files ?? [])].sort((a, b) => (b.wrote > 0 ? 1 : 0) - (a.wrote > 0 ? 1 : 0) || b.wrote - a.wrote || b.read - a.read || b.lastAt - a.lastAt);
-  if (!running && plan.length === 0 && !said && files.length === 0) return null;
+  const summary = renderSummary(r);
+  if (!running && plan.length === 0 && !said && files.length === 0 && !summary) return null;
 
   const box = h("section", { class: "now", "data-role": "now", "aria-label": "いまの状況" });
   if (running) {
@@ -528,6 +605,7 @@ function renderNow(r: RunRecord): HTMLElement | null {
       ]),
     );
   }
+  if (summary) box.append(summary);
   const cols = h("div", { class: "now-cols" });
   if (plan.length) {
     const done = plan.filter((p) => p.status === "completed").length;

@@ -94,6 +94,15 @@ function touchOf(kind: string | undefined): "wrote" | "read" | undefined {
   return undefined;
 }
 
+/** 要約の1件（時刻と文） */
+export interface RunSummaryText {
+  at: number;
+  text: string;
+}
+
+/** 記録に残す要約の数（新しいほうから） */
+export const SUMMARIES_KEPT = 5;
+
 export interface RunRecord {
   id: string;
   agent: string;
@@ -140,6 +149,17 @@ export interface RunRecord {
    * ——画面はそう断る
    */
   continuedAfterRestart?: true;
+  /**
+   * **人が頼んだ要約**（追加・2026-10-21、アーキ仕様 §4.1「4.」、Backlog #490）。新しい順ではなく作った順に、新しい
+   * `SUMMARIES_KEPT` 件まで。**AI には渡さない**——返り値（`RunResult`）にも届けにも入らない、この記録と人の画面だけ
+   */
+  summaries?: RunSummaryText[];
+  /** **要約を作っている間**（走っている間だけ。2つの窓から押しても1つ、開き直した画面にも「要約しています」） */
+  summarizing?: { since: number };
+  /** 最後の要約の失敗（理由はそのまま画面に出す）。次に作れたら消える。走っている間だけ */
+  summaryError?: { at: number; message: string };
+  /** 要約を作っている間に仕事が終わったので、その要約を捨てた（終わった時刻） */
+  summaryDiscarded?: number;
   sessionId?: string;
   stopReason?: string;
   text?: string;
@@ -380,6 +400,10 @@ export class RunLog {
     this.running.delete(id);
     const base = { ...r.record, finishedAt: Date.now() };
     delete base.lastProgress;
+    // 要約を作っている間に終わった——その要約は捨てる（届いても記録に足さない、アーキ仕様 §4.1「4.」）。失敗の印は走っている間だけ
+    if (base.summarizing) base.summaryDiscarded = base.finishedAt;
+    delete base.summarizing;
+    delete base.summaryError;
     // 版は走っている間の差分取りのためだけ——終わった仕事の画面は丸ごと読む
     delete base.stepVersion;
     base.steps = base.steps.map(({ v: _v, ...step }) => step);
@@ -417,6 +441,33 @@ export class RunLog {
   }
 
   private appendedSinceCompact = 0;
+
+  /**
+   * **要約を作り始める**（アーキ仕様 §4.1「4.」）。走っている仕事だけ。もう作っていれば `busy`——作るのは1つ
+   */
+  beginSummary(id: string): "started" | "busy" | "not-running" {
+    const r = this.running.get(id);
+    if (!r) return "not-running";
+    if (r.record.summarizing) return "busy";
+    r.record.summarizing = { since: Date.now() };
+    return "started";
+  }
+
+  /**
+   * **要約が届いた・失敗した**。その間に仕事が終わっていたら捨てる（`discarded`——終わった記録には `finish` が印を付けた）
+   */
+  endSummary(id: string, outcome: { summary: string } | { error: string }): "kept" | "failed" | "discarded" {
+    const r = this.running.get(id);
+    if (!r) return "discarded";
+    delete r.record.summarizing;
+    if ("error" in outcome) {
+      r.record.summaryError = { at: Date.now(), message: outcome.error };
+      return "failed";
+    }
+    delete r.record.summaryError;
+    r.record.summaries = [...(r.record.summaries ?? []), { at: Date.now(), text: outcome.summary }].slice(-SUMMARIES_KEPT);
+    return "kept";
+  }
 
   /** 人が画面から止める（AI の口は、頼んだ Thread を確かめてから呼ぶ）。走っていなければ、そう言う */
   cancel(id: string): boolean {

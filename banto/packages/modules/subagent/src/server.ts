@@ -32,6 +32,8 @@ import {
   threadOf,
   callerModuleOf,
   type ResumeAnswer,
+  type SummarizeBackgroundWorkInput,
+  type SummarizeBackgroundWorkReply,
 } from "@banto/module-contract";
 import {
   describeAgent,
@@ -53,6 +55,7 @@ import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
 import { clipLine, LABEL_MAX, labelOf, RunLog, STEP_TITLE_MAX } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
 import { stopOwnedGroup } from "./process-group.js";
+import { summaryMaterialOf } from "./summary.js";
 import { compileSchema, extractJson, fixPrompt, schemaInstruction, STRUCTURED_RETRIES, type CompiledSchema } from "./structured.js";
 
 export interface SubagentServerDeps {
@@ -71,6 +74,11 @@ export interface SubagentServerDeps {
    * host の中継の `relayDeliverToThread`。無ければ待たない形は断る
    */
   deliver?: (input: { replyTo: string; title: string; text: string; final?: boolean }) => Promise<unknown>;
+  /**
+   * **走っている仕事の要約を core に作ってもらう**（追加・2026-10-21、アーキ仕様 §4.1「4.」・§4.2「2.」、Backlog #490）。host の口
+   * `relaySummarizeBackgroundWork`。断り・失敗は理由の文で投げる。無ければ要約は断る
+   */
+  summarize?: (input: SummarizeBackgroundWorkInput) => Promise<SummarizeBackgroundWorkReply>;
   /**
    * ログインが切れて断られたとき、同じ会話で続けるまでの待ち（回ごと。尽きたら失敗として返す）。既定は
    * `LOGIN_RETRY_DELAYS_MS`。試験で縮める
@@ -146,6 +154,9 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   // 起動したときに残っているものは前の走行で切れた仕事で、起き直した host に問われたら続ける（`resumeAfterRestart`）
   const running = new RunningStore(deps.moduleDataDir);
   const interrupted = new Map(running.list().map((r) => [r.replyToFingerprint, r] as const));
+  // **待たない形で走っている仕事の札**（仕事の id → 札）。要約を頼むときに添える——まだ返事待ちならサイドバーのその1件にも
+  // 出る（§4.2「2.」）。札そのものはファイルに書かない（`running.ts` の決まり）ので、メモリだけ。届けたら消す
+  const replyToOfRun = new Map<string, string>();
   const server = new Server({ name: "banto-module-subagent", version: "0.1.0" }, { capabilities: { tools: {}, resources: {} } });
 
   // **自分が何者かを名乗る**（host は宣言と突き合わせる）。AI には見せない（admin）。
@@ -336,6 +347,14 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
       {
+        name: "summarizeRun",
+        description:
+          "走っている仕事の、いまの様子の要約を作る（人がボタンを押したときだけ。banto 側から見えたことを材料に、core が小さいモデルで作る）。" +
+          "作っている間にもう一度呼ぶと、作っている印だけを返す",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
         name: "cancelRun",
         description: "走っている仕事を止める（エージェントに session/cancel を送る）",
         inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
@@ -476,7 +495,12 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         const sinceStep = typeof args.sinceStep === "number" && args.sinceStep >= 0 ? args.sinceStep : undefined;
         const record = runs.view(String(args.id), sinceStep);
         if (!record) throw new SubagentError(`仕事 "${String(args.id)}" はありません`);
-        return text(record);
+        // 要約がサイドバーにも出るか：待たない形で Thread が頼んで、まだ走っている仕事（Module が頼んだ仕事は札が Thread に無い）
+        const inSidebar = record.status === "running" && replyToOfRun.has(record.id) && record.requestedBy && !record.requestedByModule;
+        return text(inSidebar ? { ...record, summaryInSidebar: true } : record);
+      }
+      if (request.params.name === "summarizeRun") {
+        return text(await summarizeRun(String(args.id ?? "")));
       }
       if (request.params.name === "cancelRun") {
         if (!runs.cancel(String(args.id))) throw new SubagentError("その仕事はもう走っていません");
@@ -638,6 +662,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         }
 
         // 待たない形：走らせたまま返す。終わったら（止められても・失敗しても）札で届ける
+        replyToOfRun.set(run.id, replyTo!);
         void work().then(
           (final) => deliverEnd(run.id, replyTo!, endTitle(agent.title, final), JSON.stringify({ runId: run.id, ...final })),
           (err: unknown) => {
@@ -738,6 +763,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
    * ——host が落ちていた等。起き直した host に問われたら、走らせ直さずにそれを届ける（§2.5「2.」）
    */
   async function deliverEnd(runId: string, replyTo: string, title: string, body: string): Promise<void> {
+    replyToOfRun.delete(runId);
     try {
       await deps.deliver!({ replyTo, title, text: body });
       running.remove(runId);
@@ -770,6 +796,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     const note = `banto を起こし直したため途中で切れ、続きから再開しました（${record.resumes + 1} 回目）`;
     running.update(record.id, (r) => void (r.resumes += 1));
     const run = runs.start({ ...runInputOf(record), continues: { id: record.id, startedAt: record.startedAt, notes: [note] } });
+    replyToOfRun.set(run.id, replyTo);
     const report = (message: string) => runs.progress(run.id, message);
     const fail = (message: string) => {
       runs.finish(run.id, { error: message });
@@ -821,6 +848,37 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     } catch (err) {
       await fail(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * **いまの様子を要約する**（アーキ仕様 §4.1「4.」）。人が仕事の画面のボタンを押したときだけ呼ばれる——自動では作らない。
+   * 走っている仕事だけ。作っている印はこの Module が仕事ごとに持つ（2つの窓から押しても作るのは1つ）。材料は banto 側から
+   * 見えたことだけ（`summary.ts`）で、作るのは core。**作っている間に仕事が終わったら、その要約は捨てる**。できた要約は記録の
+   * `summaries` に残す——AI に返す結果・届けには入れない
+   */
+  async function summarizeRun(id: string): Promise<{ summary: string; at: number } | { summarizing: true; since: number } | { discarded: true; note: string }> {
+    const record = runs.get(id);
+    if (!record) throw new SubagentError(`仕事 "${id}" はありません`);
+    if (!deps.summarize) throw new SubagentError("要約を作れません：この Module は host の要約の口に繋がっていません");
+    const began = runs.beginSummary(id);
+    if (began === "not-running") throw new SubagentError("終わった仕事は要約しません（返答を見てください）");
+    if (began === "busy") return { summarizing: true, since: runs.get(id)!.summarizing!.since };
+    const replyTo = replyToOfRun.get(id);
+    let outcome: { summary: string } | { error: string };
+    try {
+      const reply = await deps.summarize({ ...(replyTo ? { replyTo } : {}), material: { workId: id, text: summaryMaterialOf(runs.get(id)!) } });
+      outcome =
+        typeof reply?.summary === "string" && reply.summary.trim() !== ""
+          ? { summary: reply.summary.trim() }
+          : { error: "要約を作れませんでした：host の答えに要約がありませんでした" };
+    } catch (err) {
+      outcome = { error: err instanceof Error ? err.message : String(err) };
+    }
+    const kept = runs.endSummary(id, outcome);
+    if (kept === "discarded") return { discarded: true, note: "仕事が終わったので要約を捨てました" };
+    if ("error" in outcome) throw new SubagentError(outcome.error);
+    const latest = runs.get(id)!.summaries!.at(-1)!;
+    return { summary: latest.text, at: latest.at };
   }
 
   /**
@@ -1052,6 +1110,7 @@ if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
     moduleDataDir,
     relayClient,
     deliver: (input) => relayClient.deliverToThread(input),
+    summarize: (input) => relayClient.summarizeBackgroundWork(input),
   });
   await server.connect(new StdioServerTransport());
 }
