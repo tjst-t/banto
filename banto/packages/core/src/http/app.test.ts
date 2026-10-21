@@ -2632,6 +2632,34 @@ test("Project にする：kind が消えて名前が替わり、グループに�
   }
 });
 
+test("チャットでは人の Fork の口を 409 chat-no-fork で断り（発言から分けるのも）、「Project にする」と通る（アーキ仕様 §2.2「チャット」）", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string };
+        const baseThread = await projectThread.createBaseThread(chat.id);
+        for (const body of [{}, { fromSeq: 1 }, { fresh: true, title: "調べもの" }]) {
+          const res = await fetch(`${base}/api/threads/${baseThread.id}/fork`, { method: "POST", headers, body: JSON.stringify(body) });
+          assert.equal(res.status, 409, JSON.stringify(body));
+          assert.deepEqual(await res.json(), { code: "chat-no-fork", error: "チャットでは Fork を作れません。Project にすると使えます" });
+        }
+        assert.equal(projectThread.listThreadsForProject(chat.id).length, 1, "断ったのに Fork が立っている");
+
+        const promoted = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "電力の見える化" }) });
+        assert.equal(promoted.status, 200, await promoted.clone().text());
+        const res = await fetch(`${base}/api/threads/${baseThread.id}/fork`, { method: "POST", headers, body: JSON.stringify({}) });
+        assert.equal(res.status, 201, await res.clone().text());
+        assert.equal(projectThread.listThreadsForProject(chat.id).length, 2);
+      },
+      { chatsDir: join(scratch, "chats") },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("Project にする：名前・グループ・フォルダの名前がおかしければ断り、何も変えない", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
   try {

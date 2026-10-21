@@ -131,8 +131,11 @@ import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, va
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
 import {
+  CHAT_NO_FORK_CODE,
+  CHAT_NO_FORK_ERROR,
   CHATS_DIR,
   createChatProject,
+  isChatThread,
   promotedRootOf,
   PROTOTYPING_CONTINUE_TEXT,
   PROTOTYPING_CONTINUE_TITLE,
@@ -3474,6 +3477,9 @@ export function createApp(deps: AppDeps) {
         if (body.fresh === true && body.fromSeq !== undefined) {
           return json(res, 400, { error: "fresh と fromSeq は一緒に指定できません" });
         }
+        // **チャットでは Fork を作らない**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。発言から分けるのも同じ口。
+        // 「Project にする」で印が外れたら通る
+        if (isChatThread(deps.projectThread, forkMatch[1]!)) return json(res, 409, { code: CHAT_NO_FORK_CODE, error: CHAT_NO_FORK_ERROR });
         const title = typeof body.title === "string" ? body.title.trim().slice(0, 120) : "";
         try {
           const thread = await deps.projectThread.forkThread(forkMatch[1]!, {
