@@ -11887,6 +11887,34 @@
       "updatedAt": "2026-10-20T20:31:10.541Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "fork-close-fork",
+      "number": 494,
+      "kind": "task",
+      "title": "見回りが消えたあとの見回りの Fork で close_fork だけ許す",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "patrol"
+      ],
+      "body": "決定・2026-10-21、ユーザー。見回りの専用の Fork はどの起こし方でも読むだけの回で、自分の会話を閉じることもできない。見回りの自動化が消えたあとは、その Fork でも `close_fork` だけ許す。ほかの書く・走らせる tool は読むだけのまま（読んだ外の文が会話に残るため）。一時停止中は足さない。\n\n仕様：v4-architecture.md §4.4「見回りが消えたあとの Fork」、v4-frontend.md §6.47（帯の文）。ブランチ fork/patrol-close-fork。\n\n作り：in-process の banto-thread サーバに close_fork を入れる・allowedTools・PreToolUse の hook の通す一覧に足す（relay/read-only.ts に判定を1か所）。画面の帯の文を替える。",
+      "doneWhen": "単体試験：見回りがある読むだけの回では close_fork が無く、見回りを消した読むだけの回では close_fork があり hook も通し、ほかの書く tool は無いまま。本物で：見回りを1つ作って1回動かし、設定を消してから、その Fork で自分の会話を閉じられ、ほかの書く道具は見えないままであることを確かめる。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "22154d89-32e6-4813-9862-9bf48cce4709"
+        }
+      ],
+      "createdAt": "2026-10-21T04:41:49.658Z",
+      "updatedAt": "2026-10-21T04:41:49.658Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
