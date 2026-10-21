@@ -12230,7 +12230,7 @@
       "number": 508,
       "kind": "task",
       "title": "番頭：instruct_thread（書き手 supervisor）と list_stalled_threads",
-      "status": "backlog",
+      "status": "done",
       "parent": "banto-supervisor",
       "dependsOn": [
         "mode-supervisor-answer-decision"
@@ -12240,12 +12240,12 @@
       "labels": [],
       "body": "§4.5「番頭の tool」。instruct_thread({threadId, action, note?, reason})：action は任せるものだけ、文は host が組み note は囲む、外から来た回は note 不可、答えていない決めることがある会話は断る、その Project の Base・Fork だけ、origin.supervisor（automation は付けない）、書き手 supervisor、ホップは宛先の最後＋2、同じ会話・同じ理由に2回・会話ごと1日5回、始まる前に人が発言・全部止めたら捨てる。list_stalled_threads：理由ごと、deferred・断られた・incomplete・readExternal の会話を外す、まとめと状態だけ。",
       "doneWhen": "単体：他 Project を断る・前置きとホップ・止まった理由ごとに出る。E2E：止まった会話に指示が届き進む",
-      "resolution": null,
+      "resolution": "main 5b6c4d4c・7f8530d9・f17b7587。instruct_thread（行いから host が文を組む・note は囲む・答えていない決めることがある会話は断る〈最後のまとめも見る〉・始まる直前に見直して人が先に話したら捨てる・ホップ超えは届けず断る・回数）と list_stalled_threads（4つの理由と外すもの）、受信箱の instructed、任務の回の境目を人の発言と同じに。見回りを今すぐ動かす人の口 POST /api/projects/:id/supervisor/patrol。core 1300（失敗0）、E2E supervisor 2本と関係する10本が通過（サブエージェント）。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T08:03:00.934Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T09:03:48.644Z",
+      "closedAt": "2026-10-21T09:03:48.644Z",
       "extra": {}
     },
     {
