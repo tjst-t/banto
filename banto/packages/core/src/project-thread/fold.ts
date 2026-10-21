@@ -14,6 +14,7 @@ import type {
   ProjectThreadReadModel,
   ProjectState,
   ProjectGroupColor,
+  ProjectKind,
   ProjectSleptBy,
   ProjectWokeCause,
   ThreadPermissionMode,
@@ -43,7 +44,8 @@ import type { SessionSkillSet } from "../skills/types.js";
 
 export type ProjectThreadEvent =
   // `runtime`：別のサーバなら `remote:<名前>`（追加・2026-10-10）。無ければこの機械のコンテナ
-  | { type: "project.created"; payload: { id: string; name: string; root: string; runtime?: string } }
+  // `kind`：チャット（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project
+  | { type: "project.created"; payload: { id: string; name: string; root: string; runtime?: string; kind?: ProjectKind } }
   | { type: "project.closed"; payload: { id: string } }
   // **人が付けた名前**（決定・2026-09-11、ユーザー要望）。Project は作るときに
   // 名前を付けるが、後から直せなかった
@@ -404,6 +406,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           name: event.payload.name,
           root: event.payload.root,
           ...(event.payload.runtime ? { runtime: event.payload.runtime } : {}),
+          ...(event.payload.kind ? { kind: event.payload.kind } : {}),
           status: "active",
           memory: [],
           createdAt: raw.ts,

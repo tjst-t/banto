@@ -344,6 +344,15 @@ export interface ProjectState {
    */
   runtime?: string;
   /**
+   * **チャット**（決定・2026-10-21、アーキ仕様 §2.2「チャット——Project を作る前の相談」）。中身は普通の Project で、画面だけ別に
+   * 扱う。無ければ普通の Project。作るときに決まる
+   */
+  kind?: ProjectKind;
+  /**
+   * **試作を始めた**（チャットだけ。`project.prototyping.started` で立つ、アーキ仕様 §2.2「コンテナは試作を始めたときに作る」）
+   */
+  prototyping?: true;
+  /**
    * **いま別の実行場所へ移している**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。
    * `project.runtime_move_started` で立ち、`runtime_moved`・`runtime_move_failed` で消える。立っている間はターンを断り、
    * 届いたものは留める
@@ -408,6 +417,9 @@ export interface ClaudeAccountSwitchReasonRecord {
   resetsAt?: string;
   claim?: string;
 }
+
+/** Project の印。いまはチャットだけ（アーキ仕様 §2.2「チャット」） */
+export type ProjectKind = "chat";
 
 /** 誰が眠らせたか（人・しばらく開いていないので自動で） */
 export type ProjectSleptBy = "human" | "auto";

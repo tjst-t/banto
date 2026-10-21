@@ -819,7 +819,7 @@ test("Fork が引き継いだ会話は、スナップショットに1度だけ�
     await store.save();
 
     const { stat } = await import("node:fs/promises");
-    const size = (await stat(join(dir, "project-thread.v9.snapshot.json"))).size;
+    const size = (await stat(join(dir, "project-thread.v10.snapshot.json"))).size;
     assert.ok(size < 5 * 100_000 * 2, `会話が Fork の数だけ写されている（${size} bytes）`);
 
     const again = new ProjectThreadStore(dir, log);
@@ -845,7 +845,7 @@ test("前の形（会話をそのまま書いた）スナップショットも�
     // 前の形で書く（pack を通さない）
     const { writeFile: wf } = await import("node:fs/promises");
     const replacer = (_k: string, v: unknown) => (v instanceof Map ? { __banto_map__: true, entries: [...v.entries()] } : v);
-    await wf(join(dir, "project-thread.v9.snapshot.json"), JSON.stringify({ seq: 999999, state: (store as unknown as { projection: { current: unknown } }).projection.current }, replacer));
+    await wf(join(dir, "project-thread.v10.snapshot.json"), JSON.stringify({ seq: 999999, state: (store as unknown as { projection: { current: unknown } }).projection.current }, replacer));
     const again = new ProjectThreadStore(dir, log);
     await again.load();
     assert.equal(again.getThread(fork.id)!.messages[0], again.getThread(base.id)!.messages[0]);
