@@ -50,7 +50,7 @@ import { prepareAgentLaunch } from "./agent-home.js";
 import { resolveStoredKeys, type StoredKeysRelay } from "./credentials.js";
 import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
-import { RunLog } from "./runs.js";
+import { clipLine, RunLog, STEP_TITLE_MAX } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
 import { stopOwnedGroup } from "./process-group.js";
 import { compileSchema, extractJson, fixPrompt, schemaInstruction, STRUCTURED_RETRIES, type CompiledSchema } from "./structured.js";
@@ -321,8 +321,10 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       },
       {
         name: "getRun",
-        description: "頼んだ仕事1つの中身",
-        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        description:
+          "頼んだ仕事1つの中身。sinceStep（前に受けた stepVersion）を渡すと、走っている仕事なら、その後に変わった経過だけを返す" +
+          "（stepsSince が付く。ほかの欄は丸ごと）",
+        inputSchema: { type: "object", properties: { id: { type: "string" }, sinceStep: { type: "number" } }, required: ["id"] },
         _meta: { [VISIBILITY_META_KEY]: "admin" },
       },
       {
@@ -463,7 +465,8 @@ export function createSubagentServer(deps: SubagentServerDeps) {
         return text(runs.page(limit));
       }
       if (request.params.name === "getRun") {
-        const record = runs.get(String(args.id));
+        const sinceStep = typeof args.sinceStep === "number" && args.sinceStep >= 0 ? args.sinceStep : undefined;
+        const record = runs.view(String(args.id), sinceStep);
         if (!record) throw new SubagentError(`仕事 "${String(args.id)}" はありません`);
         return text(record);
       }
@@ -677,15 +680,27 @@ export function createSubagentServer(deps: SubagentServerDeps) {
       onProgress: opts.onProgress,
       onSession: (sessionId) => record((r) => void (r.sessionId = sessionId)),
       onSpawn: (agentProcess) => record((r) => void (r.agentProcess = agentProcess)),
-      onToolCall: (title, kind, toolCallId) => {
-        runs.toolCall(runId, title, kind);
+      onToolCall: (call) => {
+        runs.toolCall(runId, call);
         progressed = true;
         record((r) => {
           r.progressed = true;
-          r.toolsInFlight.push({ ...(toolCallId ? { id: toolCallId } : {}), title });
+          r.toolsInFlight.push({ id: call.toolCallId, title: clipLine(call.title, STEP_TITLE_MAX) });
+        });
+      },
+      onToolUpdate: (toolCallId, changes) => {
+        runs.toolUpdate(runId, toolCallId, changes);
+        // 起こし直したあとの続きの指示に使う控えも本当の題に（変わったときだけ書く）
+        if (changes.title === undefined) return;
+        const title = clipLine(changes.title, STEP_TITLE_MAX);
+        record((r) => {
+          const inFlight = r.toolsInFlight.find((t) => t.id === toolCallId);
+          if (inFlight) inFlight.title = title;
         });
       },
       onToolDone: (toolCallId) => record((r) => void (r.toolsInFlight = r.toolsInFlight.filter((t) => t.id !== toolCallId))),
+      onMessage: (chunk) => runs.message(runId, chunk),
+      onPlan: (entries) => runs.plan(runId, entries),
       onText: (textSoFar) => {
         runs.text(runId, textSoFar);
         markProgressed();

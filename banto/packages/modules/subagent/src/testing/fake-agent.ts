@@ -29,6 +29,11 @@
 //                 errorKind authentication_failed）で断り、そのあとも書き続ける（相手が閉じた口に書いて EPIPE で落ちる——本物と
 //                 同じ）。同じ会話の次の頼み（session/load して続けたとき）は、ふつうに答える
 //   [login-expired-always]  何度頼まれても上と同じ形で断る
+//   [claude-like]  同梱の claude-agent-acp と同じ送り方で、途中の発言・やること一覧（plan）・tool を流す：tool は仮の題
+//                 （「Read File」「Terminal」「Preparing file…」「Edit」）と status pending の tool_call のあと、本当の題・種類・
+//                 locations・rawInput を tool_call_update で送り、終わりの status を別の tool_call_update で送る。読むのは作業場所の
+//                 src/a.ts・b.ts・c.ts（同じ種類が3つ続く）、コマンドは「npm test」（説明「テストを流す」）、書くのは作業場所の外の
+//                 /tmp/outside-<sessionId>.txt と src/a.ts。取りこぼしを拾えているかの試験用（アーキ仕様 §4.1）
 // それ以外は「受け取った：<頼まれた文>」と返す。
 //
 // 会話は `$HOME/.fake-agent/<sessionId>.json` に残す——別プロセスでの再開（session/load）を試せる。頼まれた文は
@@ -172,6 +177,7 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
         update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
       });
     }
+    if (text.includes("[claude-like]")) await claudeLike(cx, sessionId, s.cwd);
     const thenSlow = previous.map((t) => /\[then-slow (\d+)\]/.exec(t.user)).find((m) => m !== null);
     const slow = reviewer ? null : (/\[slow (\d+)\]/.exec(text) ?? thenSlow ?? null);
     if (slow) {
@@ -273,6 +279,48 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
   } finally {
     running.delete(sessionId);
   }
+}
+
+/** `[claude-like]`：claude-agent-acp（同梱の版の `toolCallNotification`・`streamedInputRefinement`）と同じ順で送る */
+async function claudeLike(cx: AgentContext, sessionId: string, cwd: string) {
+  const update = (u: Record<string, unknown>) =>
+    cx.notify(methods.client.session.update, { sessionId, update: u as never });
+  const tool = async (
+    first: { title: string; kind: string },
+    real: { title: string; kind: string; rawInput: Record<string, unknown>; locations?: { path: string; line?: number }[] },
+    status: "completed" | "failed" = "completed",
+  ) => {
+    const toolCallId = `toolu_${randomUUID()}`;
+    await update({ sessionUpdate: "tool_call", toolCallId, title: first.title, kind: first.kind, status: "pending", rawInput: {} });
+    await update({ sessionUpdate: "tool_call_update", toolCallId, ...real });
+    await update({ sessionUpdate: "tool_call_update", toolCallId, status: "in_progress" });
+    await update({ sessionUpdate: "tool_call_update", toolCallId, status, rawOutput: "ok" });
+  };
+  const plan = (states: string[]) =>
+    update({
+      sessionUpdate: "plan",
+      entries: ["仕様を読む", "テストを流す", "直す"].map((content, i) => ({ content, status: states[i], priority: "medium" })),
+    });
+  await say(cx, sessionId, "まず仕様を");
+  await say(cx, sessionId, "読みます。");
+  await plan(["in_progress", "pending", "pending"]);
+  for (const name of ["a", "b", "c"]) {
+    const path = join(cwd, "src", `${name}.ts`);
+    await tool({ title: "Read File", kind: "read" }, { title: `Read src/${name}.ts`, kind: "read", rawInput: { file_path: path }, locations: [{ path, line: 1 }] });
+  }
+  await plan(["completed", "in_progress", "pending"]);
+  await say(cx, sessionId, "読み終えたので、テストを流します。");
+  await tool(
+    { title: "Terminal", kind: "execute" },
+    { title: "npm test", kind: "execute", rawInput: { command: "npm test", description: "テストを流す" } },
+    "failed",
+  );
+  const outside = `/tmp/outside-${sessionId}.txt`;
+  await tool({ title: "Preparing file…", kind: "edit" }, { title: `Write ${outside}`, kind: "edit", rawInput: { file_path: outside }, locations: [{ path: outside }] });
+  const a = join(cwd, "src", "a.ts");
+  await tool({ title: "Edit", kind: "edit" }, { title: "Edit src/a.ts", kind: "edit", rawInput: { file_path: a }, locations: [{ path: a }] });
+  await plan(["completed", "completed", "in_progress"]);
+  await say(cx, sessionId, "直しました。");
 }
 
 agent({ name: "fake-agent" })

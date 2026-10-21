@@ -7,6 +7,7 @@
 // ACP の口は `@agentclientprotocol/sdk` の `client()`（旧 `ClientSideConnection` は非推奨）。
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { isAbsolute, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { startTicksOf } from "./process-group.js";
 import {
@@ -26,6 +27,7 @@ import {
   type Usage,
 } from "@agentclientprotocol/sdk";
 import { inWorkScope } from "@banto/module-contract";
+import { clipLine, STEP_TITLE_MAX, type PlanEntry, type StepStatus, type ToolCallView } from "./runs.js";
 
 export interface AgentLaunch {
   command: string;
@@ -60,8 +62,17 @@ export interface RunDeps {
   mode?: string;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
-  /** エージェントが tool を呼んだ（題と種類と id）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う */
-  onToolCall?: (title: string, kind?: string, toolCallId?: string) => void;
+  /** エージェントが tool を呼んだ（`tool_call`）。仕事の記録（`runs.ts`）が途中の様子を持つのに使う。題は仮のことがある */
+  onToolCall?: (call: ToolCallView) => void;
+  /**
+   * tool の呼び出しが書き換わった（`tool_call_update`。届いた欄だけ）。claude-agent-acp は呼び始めに仮の題（「Terminal」）で
+   * `tool_call` を送り、本当の題・種類・触るファイル・引数はこちらで送る（追加・2026-10-21、アーキ仕様 §4.1）
+   */
+  onToolUpdate?: (toolCallId: string, changes: Partial<Omit<ToolCallView, "toolCallId">>) => void;
+  /** 途中の発言の一片（`agent_message_chunk`）。経過に発言として入れる——返答の全文（`onText`）とは別 */
+  onMessage?: (chunk: string) => void;
+  /** やること一覧（`plan`。届くたびに丸ごと） */
+  onPlan?: (entries: PlanEntry[]) => void;
   /**
    * tool が終わった（`tool_call_update` の completed・failed）。走っている仕事の記録が「切れたとき実行中だった tool」を
    * 持つのに使う（追加・2026-10-05、アーキ仕様 §2.5「2.」）
@@ -101,6 +112,33 @@ export interface RunResult {
   permissions: { title: string; answer: string }[];
   /** 黙って落とさずに伝えること（例：モードを掛けられなかった） */
   notes: string[];
+}
+
+/**
+ * **`tool_call`・`tool_call_update` から、経過に持つ欄を取り出す**（届いた欄だけ）。エージェントに依らない読み方だけ：説明は
+ * `rawInput.description` が文字列のとき、触ったファイルは `locations` のパス（作業場所の中は相対、外は絶対パスのまま）
+ */
+export function toolFieldsOf(
+  update: { title?: string | null; kind?: string | null; status?: string | null; rawInput?: unknown; locations?: { path: string }[] | null },
+  cwd: string,
+): Partial<Omit<ToolCallView, "toolCallId">> {
+  const description = (update.rawInput as { description?: unknown } | undefined)?.description;
+  return {
+    ...(typeof update.title === "string" ? { title: update.title } : {}),
+    ...(typeof update.kind === "string" ? { kind: update.kind } : {}),
+    ...(typeof update.status === "string" ? { status: update.status as StepStatus } : {}),
+    ...(typeof description === "string" && description.trim() !== "" ? { description } : {}),
+    ...(Array.isArray(update.locations) && update.locations.length > 0
+      ? { files: update.locations.filter((l) => typeof l?.path === "string").map((l) => displayPath(l.path, cwd)) }
+      : {}),
+  };
+}
+
+function displayPath(path: string, cwd: string): string {
+  if (!isAbsolute(path)) return path;
+  const rel = relative(cwd, path);
+  if (rel === "") return ".";
+  return rel.startsWith("..") || isAbsolute(rel) ? path : rel;
 }
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
@@ -323,6 +361,8 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
   };
   // `session/load` は履歴を `session/update` で再生してから返る——**このターンの分だけ**を拾う
   let collecting = false;
+  /** toolCallId → `result.toolCalls` の何番目か（本当の題が後から届いたら書き換える） */
+  const toolCallIndex = new Map<string, number>();
   let lastProgress = Date.now();
   const progress = (message: string) => {
     lastProgress = Date.now();
@@ -335,16 +375,36 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
       case "agent_message_chunk":
         if (update.content.type === "text") {
           result.text += update.content.text;
+          deps.onMessage?.(update.content.text);
           deps.onText?.(result.text);
         }
         break;
-      case "tool_call":
-        result.toolCalls.push(update.title);
-        deps.onToolCall?.(update.title, update.kind, update.toolCallId);
-        progress(`ツール：${update.title}`);
+      case "tool_call": {
+        const fields = toolFieldsOf(update, deps.cwd);
+        const call: ToolCallView = { toolCallId: update.toolCallId, ...fields, title: fields.title ?? "" };
+        toolCallIndex.set(update.toolCallId, result.toolCalls.length);
+        result.toolCalls.push(clipLine(call.title, STEP_TITLE_MAX));
+        deps.onToolCall?.(call);
+        progress(`ツール：${clipLine(call.title, STEP_TITLE_MAX)}`);
         break;
-      case "tool_call_update":
+      }
+      case "tool_call_update": {
+        const changes = toolFieldsOf(update, deps.cwd);
+        // AI に返る一覧と進み具合の知らせも本当の題に（「Terminal」は AI にも役に立たない）
+        const index = toolCallIndex.get(update.toolCallId);
+        if (changes.title !== undefined && index !== undefined) {
+          const title = clipLine(changes.title, STEP_TITLE_MAX);
+          if (result.toolCalls[index] !== title) {
+            result.toolCalls[index] = title;
+            progress(`ツール：${title}`);
+          }
+        }
+        if (Object.keys(changes).length > 0) deps.onToolUpdate?.(update.toolCallId, changes);
         if (update.status === "completed" || update.status === "failed") deps.onToolDone?.(update.toolCallId);
+        break;
+      }
+      case "plan":
+        deps.onPlan?.(update.entries.map((e) => ({ content: e.content, status: e.status })));
         break;
       case "usage_update":
         result.context = { used: update.used, size: update.size };

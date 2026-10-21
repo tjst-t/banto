@@ -11,8 +11,10 @@ interface Summary {
   id: string; agent: string; agentTitle: string; status: Status; startedAt: number; finishedAt?: number;
   lastProgress?: string; cost?: { amount: number; currency: string }; model?: string;
   promptHead: string; toolCount: number; lastStep?: Step;
+  /** いまやっていること（動いている tool の説明か題、無ければ最後の発言の頭） */
+  current?: { kind: string; title: string };
 }
-interface RunRecord extends Omit<Summary, "promptHead" | "toolCount" | "lastStep"> {
+interface RunRecord extends Omit<Summary, "promptHead" | "toolCount" | "lastStep" | "current"> {
   prompt: string; effort?: string; resumedFrom?: string; toolCalls: string[]; steps: Step[];
   sessionId?: string; stopReason?: string; text?: string; error?: string; notes?: string[];
   usage?: { inputTokens: number; outputTokens: number; cachedReadTokens?: number | null; cachedWriteTokens?: number | null };
@@ -275,8 +277,8 @@ function renderRow(r: Summary): HTMLElement {
       ]),
       r.status === "running"
         ? h("span", { class: "run-live", "data-role": "progress" }, [
-            icon(r.lastStep?.kind ?? "spark"),
-            h("span", { class: "truncate", text: r.lastStep ? r.lastStep.title : (r.lastProgress ?? "起こしています…") }),
+            icon(r.current?.kind ?? "spark"),
+            h("span", { class: "truncate", text: r.current ? r.current.title : (r.lastProgress ?? "起こしています…") }),
           ])
         : null,
     ]),
@@ -355,7 +357,8 @@ function renderTrace(r: RunRecord): HTMLElement {
       h("span", { class: "step-at", text: new Date(r.startedAt).toLocaleTimeString("ja-JP") }),
     ]),
   );
-  for (const s of r.steps) {
+  // 途中の発言（kind `message`）は経過の吹き出しにする（Backlog #488）——それまでは tool だけ
+  for (const s of r.steps.filter((st) => st.kind !== "message")) {
     ol.append(
       h("li", { class: "step", "data-role": "step", "data-kind": s.kind ?? "other" }, [
         h("span", { class: "node", title: KIND_LABEL[s.kind ?? "other"] ?? "ツール" }, [icon(s.kind ?? "other")]),

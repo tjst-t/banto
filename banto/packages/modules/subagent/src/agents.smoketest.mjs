@@ -90,7 +90,7 @@ try {
       agent: c.agent,
       model: c.model,
       envSecrets: c.envSecrets,
-      prompt: `いまのフォルダに ${file} というファイルを作り、中身をちょうど hi にして。終わったら「できた」とだけ言って。`,
+      prompt: `まずシェルで ls を流して。次に、いまのフォルダに ${file} というファイルを作り、中身をちょうど hi にして。終わったら「できた」とだけ言って。`,
     });
     check(!r1.isError, "仕事が返る", r1.isError ? r1.text.slice(0, 500) : `${Math.round((Date.now() - started) / 1000)}秒`);
     if (r1.isError) continue;
@@ -99,6 +99,14 @@ try {
     console.log(`     usage=${JSON.stringify(res1.usage ?? null)} cost=${JSON.stringify(res1.cost ?? null)} context=${JSON.stringify(res1.context ?? null)}`);
     const written = existsSync(join(project, file)) ? readFileSync(join(project, file), "utf8").trim() : null;
     check(written === "hi", "閉じ込めの中から Project の根に書けた", `中身=${JSON.stringify(written)} 返答=${JSON.stringify(res1.text.slice(0, 80))}`);
+    // **経過に仮の題だけが残らない**（アーキ仕様 §4.1——claude-agent-acp は仮の題「Terminal」などのあと本当の題を
+    // tool_call_update で送る。以前はそれを捨て、経過の 86% が「Terminal」だった）
+    const run = JSON.parse((await call("getRun", { id: res1.runId })).text);
+    const tools = run.steps.filter((st) => st.kind !== "message");
+    const placeholders = tools.filter((st) => ["Terminal", "Preparing file…", "Edit", "Read File", ""].includes(st.title));
+    check(tools.length > 0 && placeholders.length === 0, "経過の題が仮の題（Terminal など）のままでない",
+      tools.map((st) => `${st.kind}:${st.title}${st.description ? `（${st.description}）` : ""}[${st.status}]`).join(" / "));
+    check((run.files ?? []).some((f) => f.path === file && f.wrote > 0), "書いたファイルが触ったファイルに数えられる", JSON.stringify(run.files ?? null));
 
     const r2 = await call("runSubagent", {
       agent: c.agent,
