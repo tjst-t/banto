@@ -3,7 +3,7 @@
 // 公開の承認と同じ形の試験用 Module（`fixtures/ask-human-module`）を banto 全体に足し、AI にその tool を呼ばせる。
 // 見るもの（規則14）：
 //   1. Thread の行の名前の下に、人の番の行（手のアイコン）で Module が名乗った題「試験の承認：A」。人の番の色
-//   2. 同時にサブエージェントにも待たずに頼むと、裏の仕事の行（「fake に頼んだ仕事」）も別の行で出る——片方がもう片方を隠さない
+//   2. 同時にサブエージェントにも待たずに頼むと、裏の仕事の行（呼び名「長い仕事の呼び名」）も別の行で出る——片方がもう片方を隠さない
 //   3. もう1つ人を待つと「あなたの答えを待っています（2 件）」。一覧は「あなたの答えを待っているもの（2）」と
 //      「バックグラウンドで動いているもの（1）」に分かれ、人を待つほうが先
 //   4. 別の Project を開くと、元の Project の行の数は人の番の色（data-human）で、数は全部（3）
@@ -61,7 +61,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
       fakeTurn({
         tools: [
           { server: MODULE, name: "askHuman", args: { what: "A" } },
-          { server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[slow 150] 長い仕事", runInBackground: true } },
+          { server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[slow 150] 長い仕事", label: "長い仕事の呼び名", runInBackground: true } },
         ],
       }),
   );
@@ -82,7 +82,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
   await expect(page.locator('[data-slot="tool-fallback-result"]'), "承認と関係のない tool のカードが勝手に開いている").toHaveCount(0);
 
   await expect(humanLine, "人を待つ行が出ない").toHaveText("試験の承認：A", { timeout: 30_000 });
-  await expect(workLine, "裏の仕事の行が、人を待つ行に隠れた").toHaveText("fake に頼んだ仕事");
+  await expect(workLine, "裏の仕事の行が、人を待つ行に隠れた").toHaveText("長い仕事の呼び名");
   // 人の番の色（受信箱のバッジと同じ役色）——裏の仕事の行とは違う色
   const colorOf = (l: typeof humanLine) => l.evaluate((el) => getComputedStyle(el).color);
   const turnColor = await page.evaluate(() => {
@@ -101,7 +101,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
   await composer.press("Enter");
   await waitTurnEnded(page, threadId, 2);
   await expect(humanLine).toHaveText("あなたの答えを待っています（2 件）", { timeout: 30_000 });
-  await expect(workLine).toHaveText("fake に頼んだ仕事");
+  await expect(workLine).toHaveText("長い仕事の呼び名");
   await humanLine.click();
   const sections = list.locator("section");
   await expect(sections).toHaveCount(2);
@@ -136,7 +136,7 @@ test("人の答えを待っているものは、バックグラウンドと分�
   const removed = await page.request.delete(`${CORE_BASE_URL}/api/modules/${encodeURIComponent(MODULE)}`, { headers });
   expect(removed.status()).toBeLessThan(400);
   await expect(humanLine, "Module を外しても人を待つ行が残っている").toHaveCount(0, { timeout: 60_000 });
-  await expect(workLine).toHaveText("fake に頼んだ仕事");
+  await expect(workLine).toHaveText("長い仕事の呼び名");
 
   // 裏の仕事も終われば消える。そのあと、この試験が出させたお知らせを片づける（後の spec の受信箱の数を狂わせない）
   await expect(workLine, "裏の仕事が終わったのに行が残っている").toHaveCount(0, { timeout: 180_000 });

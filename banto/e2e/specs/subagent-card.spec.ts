@@ -61,12 +61,13 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   // ---- 1. 待つ形：走っている間にカードが出る ------------------------------------------------------
   await composer.fill(
     "待って頼んで。" +
-      fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[slow 20] 一つ目の仕事" } }] }),
+      fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: "[slow 20] 一つ目の仕事", label: "一つ目の呼び名" } }] }),
   );
   await composer.press("Enter");
   await expect(cards.first()).toBeVisible({ timeout: 60_000 });
   await expect(cards).toHaveCount(1);
-  await expect(cards.first()).toContainText("fake に頼んだ仕事");
+  // 題は呼び名、説明は頼んだ文（アーキ仕様 §4.1 の2）
+  await expect(cards.first()).toContainText("一つ目の呼び名");
   await expect(cards.first()).toContainText("[slow 20] 一つ目の仕事");
   await expect(cards.first()).toHaveAttribute("data-module", "subagent");
   expect(await lastTurnOutcome(page, threadId), "カードが出たのはターンが終わってから（走っている間に出ていない）").toBeUndefined();
@@ -96,8 +97,9 @@ test("サブエージェントの呼び出しは会話にカードで残り、�
   );
   await composer.press("Enter");
   await expect(cards).toHaveCount(2, { timeout: 60_000 });
-  await expect(cards.nth(1)).toContainText("fake に頼んだ仕事");
+  // 呼び名が無ければ、題は頼んだ文
   await expect(cards.nth(1)).toContainText("二つ目の仕事");
+  await expect(cards.nth(1)).not.toContainText("に頼んだ仕事");
   // 終わって届いたもので AI が起きるまで待つ（走っている途中のリロードを避ける）
   await waitTurnEnded(page, threadId, 3, 120_000);
 

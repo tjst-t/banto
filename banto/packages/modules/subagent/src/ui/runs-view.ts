@@ -8,7 +8,7 @@
 type Status = "running" | "done" | "cancelled" | "error";
 interface Step { at: number; title: string; kind?: string }
 interface Summary {
-  id: string; agent: string; agentTitle: string; status: Status; startedAt: number; finishedAt?: number;
+  id: string; agent: string; agentTitle: string; label?: string; status: Status; startedAt: number; finishedAt?: number;
   lastProgress?: string; cost?: { amount: number; currency: string }; model?: string;
   promptHead: string; toolCount: number; lastStep?: Step;
   /** いまやっていること（動いている tool の説明か題、無ければ最後の発言の頭） */
@@ -258,11 +258,12 @@ function renderRow(r: Summary): HTMLElement {
   const row = h("button", {
     type: "button", class: "run", "data-role": "run", "data-run": r.id, "data-status": r.status, "data-focus": `run:${r.id}`,
     "aria-current": r.id === state.selected ? "true" : undefined,
-    "aria-label": `${STATUS_LABEL[r.status]}：${r.promptHead}`,
+    "aria-label": `${STATUS_LABEL[r.status]}：${r.label ?? r.promptHead}`,
   }, [
     statusGlyph(r.status),
     h("span", { class: "run-main" }, [
-      h("span", { class: "run-prompt", "data-role": "prompt", text: r.promptHead }),
+      // 題は呼び名、無ければ頼んだ文の頭（アーキ仕様 §4.1 の2）
+      h("span", { class: "run-prompt", "data-role": "title", text: r.label ?? r.promptHead }),
       // 付帯情報は**ひとかたまりずつ折り返さない**（「ツ／ール」のように語の途中で折れない）
       h("span", { class: "run-meta" }, [
         h("span", { "data-role": "status", class: `status-word status-${r.status}`, text: STATUS_LABEL[r.status] }),

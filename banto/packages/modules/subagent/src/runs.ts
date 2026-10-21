@@ -77,6 +77,16 @@ export function clipLine(s: string, max: number): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** 呼び名の長さの上限（字）。カードの題が畳むのと同じ長さ（Shell の `label` と同じ決まり） */
+export const LABEL_MAX = 80;
+
+/** 呼び名を1行に収めて `LABEL_MAX` 字で切る。空白だけなら無いのと同じ（カードの題も頼んだ文に戻る） */
+export function labelOf(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const line = clipLine(raw, LABEL_MAX);
+  return line === "" ? undefined : line;
+}
+
 /** 書いた（edit・delete・move）か読んだ（read）か。ほかの種類（search・execute・fetch…）は数えない */
 function touchOf(kind: string | undefined): "wrote" | "read" | undefined {
   if (kind === "edit" || kind === "delete" || kind === "move") return "wrote";
@@ -89,6 +99,8 @@ export interface RunRecord {
   agent: string;
   agentTitle: string;
   prompt: string;
+  /** **呼び名**（追加・2026-10-21、`runSubagent` の `label`。1行・`LABEL_MAX` 字に整えたもの）。一覧・カード・サイドバーの題。無ければ頼んだ文の頭 */
+  label?: string;
   model?: string;
   effort?: string;
   /** 続きから頼んだときの元の session id */
@@ -142,7 +154,7 @@ export interface RunRecord {
 /** 一覧に出す分（本文は詳細で取る——一覧を軽くする） */
 export type RunSummary = Pick<
   RunRecord,
-  "id" | "agent" | "agentTitle" | "status" | "startedAt" | "finishedAt" | "lastProgress" | "cost" | "model"
+  "id" | "agent" | "agentTitle" | "label" | "status" | "startedAt" | "finishedAt" | "lastProgress" | "cost" | "model"
 > & {
   promptHead: string;
   toolCount: number;
@@ -231,7 +243,7 @@ export class RunLog {
   }
 
   start(
-    input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "model" | "effort" | "resumedFrom" | "requestedBy" | "requestedByModule" | "cwd"> & {
+    input: Pick<RunRecord, "agent" | "agentTitle" | "prompt" | "label" | "model" | "effort" | "resumedFrom" | "requestedBy" | "requestedByModule" | "cwd"> & {
       /**
        * 起こし直しのあと続ける仕事は、前の id と頼んだ時刻のまま（追加・2026-10-05）。画面の一覧で同じ仕事が続いて見える
        */
@@ -429,6 +441,7 @@ export class RunLog {
       id: r.id,
       agent: r.agent,
       agentTitle: r.agentTitle,
+      ...(r.label ? { label: r.label } : {}),
       status: r.status,
       startedAt: r.startedAt,
       ...(r.finishedAt ? { finishedAt: r.finishedAt } : {}),

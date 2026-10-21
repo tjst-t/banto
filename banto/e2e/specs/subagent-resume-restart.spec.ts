@@ -90,7 +90,7 @@ test("待たずに頼んだサブエージェントの仕事の途中で host �
     const composer = page.getByPlaceholder(/に送る/);
     await composer.fill(
       "サブエージェントに待たずに頼んで。" +
-        fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: PROMPT, runInBackground: true } }] }),
+        fakeTurn({ tools: [{ server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: PROMPT, label: "続ける仕事", runInBackground: true } }] }),
     );
     await composer.press("Enter");
     // 鍵を使うエージェントは初回に Vault の在りかを聞く（Project ごとに1回）
@@ -128,11 +128,11 @@ test("待たずに頼んだサブエージェントの仕事の途中で host �
       .toEqual([true]);
     // 続けている間、サイドバーに「起こし直しのあと続けています」
     const line = page.locator('[data-sidebar="sidebar"]').getByTestId("thread-background");
-    await expect(line, "起き直したあとバックグラウンドの印が出ない").toHaveText("fake に頼んだ仕事", { timeout: 60_000 });
+    await expect(line, "起き直したあとバックグラウンドの印が出ない").toHaveText("続ける仕事", { timeout: 60_000 });
     await line.click();
     const item = page.getByTestId("background-list").getByTestId("background-item");
     await expect(item).toHaveCount(1);
-    await expect(item).toContainText("fake に頼んだ仕事");
+    await expect(item).toContainText("続ける仕事");
     await expect(item.getByTestId("background-item-kept")).toHaveText(/^起こし直しのあと続けています（(いま|\d+分前)から）$/);
     // 続けている間：前の走行のエージェントと子は居ない。居るのは続けた1本だけ
     await expect.poll(() => agentProcesses(project.id).agents.length, { timeout: 30_000, message: "続けたエージェントが走っていない" }).toBe(1);

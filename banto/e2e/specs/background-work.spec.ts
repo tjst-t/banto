@@ -3,11 +3,11 @@
 // 見るもの（規則14——押せたで終わらせず、画面に出る中身まで）：
 //   1. 待たずに2つ頼むと、Base Thread の行の名前の下に「バックグラウンドで 2 件」
 //   2. リロードしても出ている（繋いだときの hello から）
-//   3. 押すと一覧：見出しの件数・2件の題（カードと同じ「fake に頼んだ仕事」）・頼んだ内容・Module 名
+//   3. 押すと一覧：見出しの件数・2件の題（カードと同じ——呼び名、無ければ頼んだ文の頭）・頼んだ内容・Module 名
 //   4. 1件を押すと、Canvas にサブエージェントの画面が開き、その仕事が選ばれている
 //   5. 別の Project を開くと、元の Project の行の頭文字の右下に「2」。いま開いている Project の行には出ない。
 //      押すと一覧が Thread ごと（「Base Thread」の見出し）に出て、1件を押すと元の Project でその仕事が開く
-//   6. 1つ届くと「fake に頼んだ仕事」（1件のときは題）に、全部届くと印が消える（開いたままの画面で）
+//   6. 1つ届くと残った1件の題（呼び名の無い二つ目なので頼んだ文）に、全部届くと印が消える（開いたままの画面で）
 import { test, expect, type Page } from "../test-base.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +23,8 @@ const OTHER_NAME = "E2E Background Other";
 const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 const FIRST = "[slow 70] 一つ目の仕事";
 const SECOND = "[slow 120] 二つ目の仕事";
+// 一つ目だけ呼び名を付ける（アーキ仕様 §4.1 の2——題は呼び名、無ければ頼んだ文の頭）
+const FIRST_LABEL = "一つ目の呼び名";
 
 test("待たずに頼んだ仕事が、どの Thread で動いているかサイドバーに出て、押すとその仕事が開く", async ({ page }) => {
   const pageErrors: string[] = [];
@@ -48,7 +50,7 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
     "2つ待たずに頼んで。" +
       fakeTurn({
         tools: [
-          { server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: FIRST, runInBackground: true } },
+          { server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: FIRST, label: FIRST_LABEL, runInBackground: true } },
           { server: "subagent", name: "runSubagent", args: { agent: "fake", prompt: SECOND, runInBackground: true } },
         ],
       }),
@@ -82,11 +84,13 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
   await expect(list).toBeVisible();
   await expect(list).toContainText("バックグラウンドで動いているもの（2）");
   await expect(items).toHaveCount(2);
-  await expect(items.nth(0)).toContainText("fake に頼んだ仕事");
-  await expect(items.nth(0)).toContainText(FIRST);
+  await expect(items.nth(0)).toContainText(FIRST_LABEL);
+  await expect(items.nth(0).getByTestId("background-item-description")).toHaveText(FIRST);
   await expect(items.nth(0)).toContainText(/subagent・(いま|\d+分前に)頼んだ/);
-  await expect(items.nth(1)).toContainText("fake に頼んだ仕事");
+  // 呼び名が無ければ題は頼んだ文——説明と同じ文なので説明は出ない（v4-frontend.md §6.33）
   await expect(items.nth(1)).toContainText(SECOND);
+  await expect(items.nth(1).getByTestId("background-item-description")).toHaveCount(0);
+  await expect(items.nth(1)).not.toContainText("に頼んだ仕事");
   await expect(list, "開いている Thread の一覧に Thread の見出しが出ている").not.toContainText("Base Thread");
 
   // ---- 4. 1件を押すと、その仕事が開く ------------------------------------------------------------------
@@ -116,7 +120,7 @@ test("待たずに頼んだ仕事が、どの Thread で動いているかサイ
   await page.getByRole("button", { name: "Canvas を閉じる" }).click();
 
   // ---- 6. 届くと減り、全部届くと消える（開いたままの画面で） ----------------------------------------------
-  await expect(line, "1つ届いたのに減らない").toHaveText("fake に頼んだ仕事", { timeout: 120_000 });
+  await expect(line, "1つ届いたのに減らない").toHaveText(SECOND, { timeout: 120_000 });
   await line.click();
   await expect(items).toHaveCount(1);
   await expect(items.first()).toContainText(SECOND);
