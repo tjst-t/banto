@@ -11745,7 +11745,7 @@
       "number": 488,
       "kind": "task",
       "title": "サブエージェントの仕事の画面：「いまの状況」と経過の畳み・発言の吹き出し",
-      "status": "ready",
+      "status": "done",
       "parent": "item-3",
       "dependsOn": [
         "subagent-acp-capture",
@@ -11756,12 +11756,12 @@
       "labels": [],
       "body": "仕様 §4.1 の3。runs-view.ts。",
       "doneWhen": "E2E（偽のエージェント）で、いまの状況にやること一覧・最後の発言・触ったファイル・いまやっていることが出る。同じ種類の連続が1行に畳まれ、開くと全部出る",
-      "resolution": null,
+      "resolution": "fork/bgv-subagent ee48cdb6。E2E subagent-runs 3/3 通過、明暗・幅 420/1000 の見た目を確認",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-21T10:34:09.423Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T10:59:02.030Z",
+      "closedAt": "2026-10-21T10:59:02.030Z",
       "extra": {}
     },
     {
