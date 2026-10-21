@@ -11958,7 +11958,7 @@
       "number": 496,
       "kind": "task",
       "title": "core：kind \"chat\" の Project を作る（名前・根を host が決め、コンテナの Module を外して始める）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [],
       "milestone": null,
@@ -11970,7 +11970,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T06:17:25.974Z",
+      "updatedAt": "2026-10-21T06:17:35.926Z",
       "closedAt": null,
       "extra": {}
     },
