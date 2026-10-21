@@ -11892,7 +11892,7 @@
       "number": 493,
       "kind": "task",
       "title": "Service：入口の画面「サービス」（一覧・ログ・起動／止める／起こし直す／消す）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "shell-service",
       "dependsOn": [],
       "milestone": null,
@@ -11902,9 +11902,14 @@
       "doneWhen": "E2E で、入口から状態・ポート・ログが見え、止める・起動・起こし直すが効き、消すと確かめの一言が出る。readServiceLog の範囲・世代・列に並ばないことを単体で確かめる",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "6be652d3-f1d5-47b1-b137-7e2d8bdec6ed"
+        }
+      ],
       "createdAt": "2026-10-20T20:30:06.580Z",
-      "updatedAt": "2026-10-21T10:33:53.290Z",
+      "updatedAt": "2026-10-21T10:35:49.287Z",
       "closedAt": null,
       "extra": {}
     },
