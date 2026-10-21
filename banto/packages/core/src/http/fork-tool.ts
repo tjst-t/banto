@@ -30,6 +30,7 @@ import {
   type SupervisorInstructions,
 } from "../supervisor/instruct.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
+import { WITHOUT_SUMMARIES } from "../delivery/background-summaries.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
   REPORT_TURN_DESCRIPTION,
@@ -187,7 +188,8 @@ export function validateCloseFork(store: ProjectThreadStore, threadId: string): 
   if (thread.kind !== "fork") {
     return "Base Thread は閉じられません（閉じられるのは、いま話している Fork Thread 自身だけです）。";
   }
-  const items = backgroundItemsOf(thread.awaitingReplies);
+  // AI に返す文——要約は重ねない（§4.1「4.」）
+  const items = backgroundItemsOf(thread.awaitingReplies, WITHOUT_SUMMARIES);
   if (items.length > 0) {
     return [
       "この Fork が頼んだ裏の仕事がまだ残っているので、閉じられません。閉じても仕事は止まらず、結果は閉じた Fork に溜まるだけで誰も読みません。",

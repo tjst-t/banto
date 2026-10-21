@@ -34,6 +34,14 @@ export interface RealBackgroundItem {
   keptAt?: string;
   /** Module との接続が切れたあと続けている（追加・2026-10-17、Backlog #362）。無ければ起こし直しのあと */
   keptAfter?: "disconnect";
+  /**
+   * **結果で名乗った画面**（追加・2026-10-21、アーキ仕様 §4.2「結果で名乗る画面」、Backlog #489）。定義に画面（`resourceUri`）を
+   * 持たない tool だけ。押すとその Module の入口を `canvasView`＝`select` で開く
+   */
+  view?: { resourceUri: string; select?: unknown };
+  /** **人が頼んだ要約**と作った時刻（ISO。追加・2026-10-21、Backlog #489）。host のメモリにだけあり、起こし直すと消える */
+  summary?: string;
+  summaryAt?: string;
 }
 
 export type RealAppEvent =

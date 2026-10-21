@@ -43,6 +43,7 @@ import {
   visibilityOf,
   RESUME_AFTER_RESTART_TOOL,
   RELAY_EMIT_EVENT_TOOL,
+  RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL,
   RELAY_PROJECT_GIT_BUNDLE_TOOL,
   RELAY_PROJECT_GIT_ORIGIN_TOOL,
   RELAY_PROJECT_GIT_UNBUNDLE_TOOL,
@@ -286,6 +287,15 @@ export interface HostRelayServerOptions {
     input: { replyTo: string; title: string; text: string; final: boolean },
   ): Promise<{ ok: true; deliveryId: string; wake?: string } | { ok: false; error: string }>;
   /**
+   * **裏の仕事の要約を core が作る**（追加・2026-10-21、アーキ仕様 §4.2「札の手がかりを Module があとから足す」の 2.、Backlog #489）。
+   * 札の確かめ（渡した相手と同じ Module か）・回数・置き場は受け手（`delivery/background-summaries.ts`）。頼める相手は
+   * `maySummarizeBackgroundWork` が決める。渡さなければこの口は断る
+   */
+  summarizeBackgroundWork?(
+    caller: CallerIdentity,
+    input: { replyTo?: unknown; material?: unknown },
+  ): Promise<{ summary: string } | { error: string }>;
+  /**
    * **Module 宛ての札**（追加・2026-10-05、アーキ仕様 §4.2「Module 宛ての返事」）。中継で「終わったら届ける」 tool
    * （`dev.banto/deliversLater`）を呼ぶとき、呼んだ Module が受け口（`dev.banto/receivesReplies`）を名乗っていれば札を出して
    * 宛先に渡す。渡さなければ札は出ない（宛先は「届ける先がない」と断る）
@@ -482,6 +492,17 @@ const SUBAGENT_SETTINGS_ROLE = "subagent-settings";
 export function mayEmitEvent(identity: CallerIdentity): string | undefined {
   if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが出せる";
   if (identity.projectId === undefined || identity.toolsContainer) return "Project ごとの Module だけが出せる";
+  return undefined;
+}
+
+/**
+ * **裏の仕事の要約を頼んでよい呼び出し元**（追加・2026-10-21、Backlog #489）。**同梱の Module だけ**——要約は人の本体の Claude の
+ * ログインで作り、使用量もそこに数える。第三者のコードに、人のログインで好きな文を小さいモデルに送らせない。コンテナの中の
+ * Module（サブエージェント）は頼める（札は持ち主だけ照らし、回数は札か仕事ごとに絞る）。Module の名前では分けない
+ */
+export function maySummarizeBackgroundWork(identity: CallerIdentity): string | undefined {
+  if (identity.meta.origin !== "bundled") return "banto 自身のコード（同梱）だけが頼める";
+  if (identity.toolsContainer) return "道具用のコンテナの Module は頼めない";
   return undefined;
 }
 
@@ -913,6 +934,29 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         },
       },
       {
+        // **裏の仕事の要約を core が作る**（追加・2026-10-21、アーキ仕様 §4.2、Backlog #489）。頼める相手は
+        // `maySummarizeBackgroundWork` が決める。札を添えると、サイドバーの1件にも出る（AI には渡さない）
+        name: RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL,
+        description:
+          "裏の仕事の材料から、いまの様子の要約（日本語で1行・2文まで）を banto が作って返す。replyTo（その仕事で受け取った札）を添えると、" +
+          "まだ返事待ちならサイドバーのその1件にも出る。同じ仕事は同時に1つ・10 秒あける。答えは {summary}",
+        inputSchema: {
+          type: "object",
+          properties: {
+            replyTo: { type: "string", description: "その仕事を頼んだ呼び出しで host が _meta で渡した札（任意）" },
+            material: {
+              type: "object",
+              properties: {
+                workId: { type: "string", description: "Module の中のその仕事の id" },
+                text: { type: "string", description: "要約の材料（24,000 字を超えた分は banto が切る）" },
+              },
+              required: ["workId", "text"],
+            },
+          },
+          required: ["material"],
+        },
+      },
+      {
         // **終わったら呼び出し元の Thread に届ける**（追加・2026-09-25、アーキ仕様 §4.2）。宛先は host が渡した
         // 返信用の札（`dev.banto/replyTo`）でしか指せない。届いたらその Thread の AI が起きる
         // **宛先が Module の札も同じ口で届ける**（追加・2026-10-05）——送り手は宛先を知らず、host が札で振り分ける
@@ -1116,6 +1160,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
           .catch(() => undefined);
       });
       return { content: [{ type: "text", text: JSON.stringify(placed) }] };
+    }
+
+    // **宛先は host 自身**。要約は人に見せるもので AI には渡らず、値も通らないので承認は通さず、頼める相手を絞る
+    if (request.params.name === RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL) {
+      const why = maySummarizeBackgroundWork(identity);
+      if (why) throw new Error(`${identity.moduleName} は裏の仕事の要約を頼めません（${why}）`);
+      if (!opts.summarizeBackgroundWork) throw new Error("この banto は裏の仕事の要約を作る口を持っていません");
+      const r = await opts.summarizeBackgroundWork(identity, { replyTo: args.replyTo, material: args.material });
+      if ("error" in r) throw new Error(r.error);
+      return { content: [{ type: "text", text: JSON.stringify({ summary: r.summary }) }] };
     }
 
     // **他の Module ではなく host に届ける**——承認ゲートは通さない：宛先は札が決めていて、札はこの Module が
