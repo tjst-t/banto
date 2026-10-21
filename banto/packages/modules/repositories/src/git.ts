@@ -17,7 +17,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
-import { dirname, sep } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { parseRemoteUrl, type RemoteLocation } from "./remote.js";
 
 /** フォルダから読めたこと */
@@ -386,6 +386,18 @@ export async function gitCommitAll(path: string, message: string): Promise<boole
   const commit = await git(path, ["commit", "-q", "--no-gpg-sign", "--no-verify", "-m", message], GIT_TIMEOUTS.adopt);
   if (!commit.ok) throw new Error(`最初のコミットを作れませんでした：${commit.stderr.trim() || String(commit.code)}`);
   return true;
+}
+
+/**
+ * **上のリポジトリ `top` が、そのフォルダの中のファイルを1つでも追っているか**（`adopt.ts`——入れ子のリポジトリに
+ * してよいかを見る）。パスは字のまま（`:(literal)`——`*` 等を glob と読ませない）。読めなかったら投げる
+ */
+export async function tracksUnder(top: string, path: string): Promise<boolean> {
+  const rel = relative(top, path);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`${path} は ${top} の中ではありません`);
+  const r = await git(top, ["ls-files", "-z", "--", `:(literal)${rel}`], GIT_TIMEOUTS.adopt, GIT_ENV, 64 * 1024 * 1024);
+  if (!r.ok) fail(`${top} が ${rel} の中で追っているファイル`, r);
+  return r.stdout !== "";
 }
 
 /** 空のリポジトリを作る（フォルダも作る）。ブランチ名は呼ぶ側が決めて渡す */

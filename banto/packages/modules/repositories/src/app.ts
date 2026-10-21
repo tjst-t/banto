@@ -2637,6 +2637,8 @@ const SCRIPT = String.raw`
     } else if (choice === "none" && !(ins && ins.refusal)) {
       sub.push(h("p", { class: "help", "data-testid": "adopt-none-note", text: "git を使わない Project にします（調べもの・書きものなど）。" }));
     }
+    // 上のリポジトリの中に作る（チャットの置き場 ~/banto/chats が、~/banto のリポジトリの中にある形）
+    if (ins && ins.nestedIn && choice !== "none") sub.push(h("p", { class: "help", "data-testid": "adopt-nested-note", text: ins.nestedIn + " のリポジトリの中ですが、そちらはこのフォルダを追っていないので、別のリポジトリとして作ります（" + ins.nestedIn + " の履歴は変えません）。" }));
     if (!ins && !ad.inspectError && ad.target) sub.push(h("p", { class: "help", text: "フォルダを確かめています…" }));
     if (sub.length) kids.push(h("div", { class: "field", style: "gap:8px" }, sub));
     if (ad.run) {

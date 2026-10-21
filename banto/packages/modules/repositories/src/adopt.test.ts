@@ -108,17 +108,51 @@ test("もう git のリポジトリの一番上なら、コミットせずに台
   }
 });
 
-test("リポジトリの中のフォルダ・無いフォルダは断る（理由つき）", async () => {
+test("上のリポジトリが追っていないフォルダ（~/banto そのものが clone で、chats/ が .gitignore に無い形）は、入れ子のリポジトリにする——上の履歴は変えない", async () => {
+  const w = world();
+  try {
+    // この機械の形：~/banto は banto を clone したリポジトリ、chats/ は追っておらず .gitignore にも無い
+    const banto = w.folder("banto", { "README.md": "banto" });
+    w.git(banto, "init", "-q");
+    w.git(banto, "add", "README.md");
+    w.git(banto, "commit", "-q", "-m", "banto");
+    const chat = w.folder("banto/chats/2026-10-21-abcd", { "index.html": "<p>試作</p>", ".gitignore": "secret.txt\n", "secret.txt": "x" });
+    assert.equal(w.git(chat, "rev-parse", "--show-toplevel").trim(), banto, "前提：chats の中は ~/banto のリポジトリの中と読まれる");
+    const parentHead = w.git(banto, "rev-parse", "HEAD").trim();
+
+    const ins = await w.adopter.inspect(chat);
+    assert.equal(ins.refusal, undefined);
+    assert.equal(ins.state, "init");
+    assert.equal(ins.nestedIn, "~/banto");
+
+    const r = await w.adopter.adopt(chat);
+    assert.deepEqual({ initialized: r.initialized, committed: r.committed, path: r.path }, { initialized: true, committed: true, path: chat });
+    assert.equal(w.git(chat, "rev-parse", "--show-toplevel").trim(), chat);
+    assert.deepEqual(w.git(chat, "ls-files").trim().split("\n").sort(), [".gitignore", "index.html"]);
+    assert.deepEqual((await w.store.entries()).map((e) => e.path), [chat]);
+    // 上のリポジトリは何も変わらない（コミットも、追うファイルも）
+    assert.equal(w.git(banto, "rev-parse", "HEAD").trim(), parentHead);
+    assert.equal(w.git(banto, "ls-files").trim(), "README.md");
+  } finally {
+    w.done();
+  }
+});
+
+test("上のリポジトリが中のファイルを追っているフォルダ・無いフォルダは断る（理由つき）", async () => {
   const w = world();
   try {
     const top = w.folder("work/mono", { "pkg/a.txt": "1" });
     w.git(top, "init", "-q");
+    w.git(top, "add", "pkg/a.txt");
     const inner = join(top, "pkg");
     const ins = await w.adopter.inspect(inner);
     assert.equal(ins.state, undefined);
-    assert.match(ins.refusal ?? "", /リポジトリの中のフォルダです/);
-    await assert.rejects(w.adopter.adopt(inner), /リポジトリにできません/);
+    assert.match(ins.refusal ?? "", /~\/work\/mono のリポジトリが、このフォルダの中のファイルを追っています/);
+    await assert.rejects(w.adopter.adopt(inner), /リポジトリにできません（~\/work\/mono のリポジトリが/);
     assert.equal(existsSync(join(inner, ".git")), false);
+    // glob の字を含む名前でも字のまま見る（`*` が隣のフォルダに当たって「追っている」と読まない）
+    const star = w.folder("work/mono/p*", { "b.txt": "1" });
+    assert.equal((await w.adopter.inspect(star)).state, "init");
     assert.match((await w.adopter.inspect(join(w.home, "nowhere"))).refusal ?? "", /ありません/);
     assert.deepEqual(await w.store.entries(), []);
   } finally {

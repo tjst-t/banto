@@ -6,16 +6,20 @@
 //
 // - git でないフォルダ：`git init`（ブランチ名は新しいリポジトリと同じ決め方）→ 中身を最初のコミットに → 台帳に足す。
 //   コミットで失敗したら、作ったばかりの `.git` を消して元に戻す（半分だけリポジトリになったフォルダを残さない）
+// - **上のリポジトリの中にあるが、上のリポジトリがその中を何も追っていないフォルダ**：入れ子のリポジトリとして、
+//   git でないフォルダと同じに git init する（2026-10-21、レビュー）。チャットの置き場 `~/banto/chats/…` は、`~/banto`
+//   そのものがリポジトリ（banto を clone した場所）のことがあり、そこで断ると「Project にする」で「今の場所のまま」を
+//   選んだとき必ず失敗する。上のリポジトリには「追っていないフォルダ」として見えるだけで、上の履歴は変えない
 // - もう git のリポジトリの一番上：台帳に足すだけ（コミットはしない——人の作業の途中を勝手にコミットしない）
 // - もう台帳にある：何もしない（そう返す）
-// - それ以外（リポジトリの中のフォルダ・worktree・bare 等）は断る
+// - それ以外（上のリポジトリが中のファイルを追っているフォルダ・worktree・bare 等）は断る
 //
 // GitHub に上げるのは、このあと画面が今の公開の口（`start_publish`）で続ける——判断は1箇所（`publish.ts`）。
 
-import { rm } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { configuredDefaultBranch, gitCommitAll, gitInit, readFolder, type FolderFacts } from "./git.js";
+import { configuredDefaultBranch, gitCommitAll, gitInit, readFolder, tracksUnder, type FolderFacts } from "./git.js";
 import type { LedgerStore } from "./ledger.js";
 import { displayPath, resolveUserPath } from "./paths.js";
 import { assignAccount, describeRefusal, newEntry, place, type Place } from "./repositories.js";
@@ -34,6 +38,8 @@ export interface AdoptInspection extends Place {
   github?: { owner: string; name: string };
   /** origin が GitHub の外を指している（GitHub には上げない） */
   elsewhere?: string;
+  /** 上のリポジトリの中にある（`init` は、その中の入れ子のリポジトリとして作る）——上のリポジトリの一番上の見せる形 */
+  nestedIn?: string;
 }
 
 export interface AdoptResult extends Place {
@@ -53,6 +59,23 @@ function remoteOf(facts: Extract<FolderFacts, { kind: "repo" }>): Pick<AdoptInsp
   return {};
 }
 
+/**
+ * git init してよいフォルダか。git でない——よい。上のリポジトリの中——上がその中を何も追っていなければよい
+ * （入れ子のリポジトリにする）。それ以外は断る理由
+ */
+async function initPlan(path: string, facts: FolderFacts, home: string): Promise<{ init: true; nestedIn?: string } | { init: false; refusal?: string }> {
+  if (facts.kind === "not-git") return { init: true };
+  if (facts.kind !== "inside") return { init: false };
+  // readFolder の top は realpath——比べる側も realpath に
+  if (await tracksUnder(facts.top, await realpath(path))) {
+    return {
+      init: false,
+      refusal: `${displayPath(facts.top, home)} のリポジトリが、このフォルダの中のファイルを追っています（入れ子のリポジトリにすると、同じファイルを2つのリポジトリが追うことになります）`,
+    };
+  }
+  return { init: true, nestedIn: facts.top };
+}
+
 export class FolderAdopter {
   /** いまリポジトリにしているフォルダ（同じフォルダを2回同時に git init しない） */
   private readonly busy = new Set<string>();
@@ -66,8 +89,11 @@ export class FolderAdopter {
   async inspect(input: string): Promise<AdoptInspection> {
     const resolved = resolveUserPath(input, this.home);
     const facts = await readFolder(resolved);
-    if (facts.kind === "not-git") return { ...place(resolved, this.home), state: "init" };
-    if (facts.kind !== "repo") return { ...place(resolved, this.home), refusal: describeRefusal(facts, this.home) };
+    if (facts.kind !== "repo") {
+      const plan = await initPlan(resolved, facts, this.home);
+      if (plan.init) return { ...place(resolved, this.home), state: "init", ...(plan.nestedIn ? { nestedIn: displayPath(plan.nestedIn, this.home) } : {}) };
+      return { ...place(resolved, this.home), refusal: plan.refusal ?? describeRefusal(facts, this.home) };
+    }
     const known = (await this.store.entries()).some((e) => e.path === facts.path);
     return { ...place(facts.path, this.home), state: known ? "known" : "import", ...remoteOf(facts) };
   }
@@ -82,7 +108,8 @@ export class FolderAdopter {
       let initialized = false;
       let committed = false;
       let branch: string | undefined;
-      if (facts.kind === "not-git") {
+      const plan = facts.kind === "repo" ? { init: false as const } : await initPlan(resolved, facts, this.home);
+      if (plan.init) {
         branch = (await configuredDefaultBranch(resolved)) ?? "main";
         await gitInit(resolved, branch);
         initialized = true;
@@ -99,7 +126,8 @@ export class FolderAdopter {
         if (facts.kind !== "repo") throw new Error(`git init したフォルダが読めません（${facts.kind}）`);
       }
       if (facts.kind !== "repo") {
-        throw new Error(`${displayPath(resolved, this.home)} はリポジトリにできません（${describeRefusal(facts, this.home)}）`);
+        const why = "refusal" in plan && plan.refusal ? plan.refusal : describeRefusal(facts, this.home);
+        throw new Error(`${displayPath(resolved, this.home)} はリポジトリにできません（${why}）`);
       }
       const repo = facts;
       const accounts = await this.store.accounts();
