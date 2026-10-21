@@ -12157,6 +12157,29 @@
       "updatedAt": "2026-10-21T07:25:53.898Z",
       "closedAt": "2026-10-21T07:25:53.898Z",
       "extra": {}
+    },
+    {
+      "id": "banto-supervisor",
+      "number": 505,
+      "kind": "story",
+      "title": "番頭：方針に沿って細かい判断をし、Project の仕事を人の代わりに進める",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "supervisor"
+      ],
+      "body": "決定・2026-10-21、ユーザー（案C）。方針と番頭の帳面は banto 全体で1つ、番頭は Project ごと。任せる＝決まった手順と今の仕様に収まる小さな設計判断、人へ＝仕様の向き・公開・お金・消す操作。出来事と数時間おきの見回りで起き、止まった会話に指示し、ready のタスクを Factory に流して知らせる。\n\n仕様：v4-architecture.md §4.5、v4-frontend.md §6.54（ブランチ fork/banto-supervisor、下書き・レビュー前）。経緯：docs/notes/2026-10-21-banto-supervisor.md。\n\n番頭が動き始めたら Memory #58965 を「banto開発では番頭が release まで進めてよい（載せ方と試験は今どおり）」に改める。",
+      "doneWhen": "banto開発に番頭を置き、本物のモデルで1日動かして：(1) 手順・小さな設計の決めることに番頭が答えて会話が進む (2) spec・publish・money・destructive と外の文を読んだターンの問いは人に回る (3) 止まった会話に指示して進む (4) ready のタスクを Factory に流し受信箱に知らせが出る (5) 「全部止める」で止まり、取り消しが元の会話に届く——を確かめる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-21T07:35:20.174Z",
+      "updatedAt": "2026-10-21T07:35:20.174Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
