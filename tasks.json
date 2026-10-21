@@ -12114,7 +12114,7 @@
       "number": 503,
       "kind": "task",
       "title": "画面：サイドバーの「チャット」・新しいチャットの画面・閉じたチャットの小窓・「…」の Project にする・設定の「チャット」",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create",
@@ -12129,12 +12129,12 @@
       "labels": [],
       "body": "モック fork/draft-projects の mock/ の形（v4-frontend.md §6.53）。",
       "doneWhen": "E2E：＋→書き込み→チャットの行が「題を考えています…」から題に替わる／畳む・開く／閉じたチャットの小窓から開き直す／Project にするで Project の一覧へ移り同じ会話が続く／設定の2項目が保存される",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/chat-frontend）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T07:26:06.471Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T08:55:40.535Z",
+      "closedAt": "2026-10-21T08:55:40.535Z",
       "extra": {}
     },
     {
