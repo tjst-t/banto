@@ -10019,7 +10019,7 @@
       "number": 414,
       "kind": "task",
       "title": "別のサーバ（machine）で「中で Docker を使う」Project を作る・開くときだけ、banto が Docker を入れる",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -10029,11 +10029,16 @@
       ],
       "body": "決定・2026-10-20（ユーザー）。仕様 docs/specs/v4-security.md §1「足りないものは banto が入れる」の 5a.。\n\n- 登録では Docker を入れない（使わない VM で dockerd が資源を食うため）。\n- machine：その実行場所で「中で Docker を使う」を入れた Project を、人が作る・開く（人が送った）ときに、Docker が無い・このユーザーで使えないなら、sudo -n で apt-get install docker.io（host-autoprep.ts の apt の手順＝cloud-init の待ち・NEEDRESTART_MODE=l・lock 5分）と usermod -aG docker、グループを替えたらユーザーの systemd を起こし直す。自動化・届いたもので起きたときは入れず今どおり断る。sudo -n が通らなければ今どおり打つコマンドを添えて断る。\n- 行ったことは banto のログと実行場所の確かめの一覧（「banto が向こうで行ったこと」）に残す。\n- containers は対象外（コンテナの中に入れる——#368 で扱う）。\n\n実装の場所の見当：Project の Docker の前提を断っているところ（remote-ssh.ts の前提の確かめ・「中で Docker を使う」の判定）と host-autoprep.ts。",
       "doneWhen": "単体テストで、Docker が無い machine の実行場所の「中で Docker を使う」Project を人が開くと docker.io を入れて docker グループに足し user@ を起こし直すこと、sudo -n が通らない・自動化で起きたときは入れずに断ることを確かめる。関係する E2E（remote-runtime-ssh 等）が通る。",
-      "resolution": null,
+      "resolution": "2026-10-21 main に入れた（人が作る・開くときだけ docker.io を入れ docker グループと user@ の起こし直し）。残り：本物の Ubuntu の VM での確かめ。",
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "9ed57dd6-3308-43fc-935a-e39aa695ede8"
+        }
+      ],
       "createdAt": "2026-10-20T01:41:27.210Z",
-      "updatedAt": "2026-10-20T01:41:27.210Z",
+      "updatedAt": "2026-10-21T05:16:11.533Z",
       "closedAt": null,
       "extra": {}
     },
