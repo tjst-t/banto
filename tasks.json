@@ -12570,7 +12570,7 @@
       "number": 521,
       "kind": "task",
       "title": "公開サイトと README を配布用リポジトリに向け、リポジトリを非公開にする",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [
         "dist-install-and-update",
@@ -12585,7 +12585,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:39:41.724Z",
       "closedAt": null,
       "extra": {}
     }
