@@ -52,6 +52,13 @@ export interface AutomationRunnerDeps {
    * **その Project の番頭の方針**（アーキ仕様 §4.5、番頭の回に届ける文に添える）。回のたびに引く。無ければ方針の既定
    */
   supervisorPolicy?(projectId: string): SupervisorPolicy;
+  /**
+   * **番頭の回を飛ばす理由**（アーキ仕様 §4.5「量」、Backlog #510——アカウントの閾値・全体の1時間の回の上限。`supervisor/guard.ts`）。
+   * 無ければ飛ばさない
+   */
+  supervisorSkipReason?(projectId: string): string | undefined;
+  /** 番頭の回を量で飛ばしたあと（記録と、届いていた決めることを人に残す）。届けなかった受けたものを渡す */
+  supervisorSkipped?(automation: Automation, received: readonly AutomationReceived[], reason: string): Promise<void>;
   now?: () => Date;
 }
 
@@ -231,6 +238,15 @@ export class AutomationRunner {
     if (project.status === "closed") return skip("この Project は閉じられています");
     if (project.move) return skip("この Project はいま別の実行場所へ移しています");
     if (automation.mode === "patrol" && this.deps.allAccountsOver?.(automation.projectId)) return skip(PATROL_SKIPPED_OVER_THRESHOLD);
+    // **番頭の量**：飛ばした回の受けたものは届けずに片づける——その間の決めることは人に残る（見回りと同じく `skipped` と理由）
+    const supervisorSkip = automation.mode === "supervisor" ? this.deps.supervisorSkipReason?.(automation.projectId) : undefined;
+    if (supervisorSkip !== undefined) {
+      const skipped = await skip(supervisorSkip);
+      await this.deps
+        .supervisorSkipped?.(automation, received, supervisorSkip)
+        .catch((err: unknown) => console.warn(`[host] 番頭の回を飛ばしたことを残せませんでした（${automation.id}）:`, err));
+      return skipped;
+    }
 
     // 作ったときに立てていなかった（立てる口を繋ぐ前に作ったもの）なら、ここで立てる
     let current = automation;

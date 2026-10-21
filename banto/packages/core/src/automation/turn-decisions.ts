@@ -274,6 +274,9 @@ export interface TurnDecisionsDeps {
 
 const targetKey = (thread: string, turnId: string) => `${thread}\0${turnId}`;
 
+/** カードの決めに添える「番頭のもの」の印（判断役の「人に任せました」と見分ける、Backlog #510） */
+const byOf = (session: JudgeSession): { by?: "supervisor" } => (session.supervisor ? { by: "supervisor" } : {});
+
 export class TurnDecisions {
   /** 判断役のターン（判断役の会話 → そのターンが受けた出来事）。走っている間だけ持つ */
   private readonly sessions = new Map<string, JudgeSession>();
@@ -384,7 +387,7 @@ export class TurnDecisions {
 
     if (input.defer === true) {
       target.settled = "人に任せました";
-      await this.judge(target.thread, { kind: "deferred", automation: session.automation, reason, at: this.now().toISOString() });
+      await this.judge(target.thread, { kind: "deferred", automation: session.automation, ...byOf(session), reason, at: this.now().toISOString() });
       await this.recordAct(session, { kind: "deferred", threadId: target.thread, turnId: target.turnId, question: input.question, reason, ...kindOf(decision) });
       return {
         ok: true,
@@ -463,6 +466,7 @@ export class TurnDecisions {
     await this.judge(target.thread, {
       kind: "decided-by-automation",
       automation: session.automation,
+      ...byOf(session),
       answers: answers.map((a) => ({ question: a.question, choice: a.choice, label: a.label, reason: a.reason })),
       ...(judgedTurn ? { turn: judgedTurn } : {}),
       at: this.now().toISOString(),
@@ -486,6 +490,7 @@ export class TurnDecisions {
       await this.judge(t.thread, {
         kind: "incomplete",
         automation: session.automation,
+        ...byOf(session),
         answered: t.answers.size,
         total: t.count,
         at: this.now().toISOString(),

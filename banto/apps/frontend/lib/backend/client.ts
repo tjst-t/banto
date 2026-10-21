@@ -601,6 +601,8 @@ export interface RealInboxReview {
 export interface RealReviewJudge {
   kind: "decided-by-automation" | "deferred" | "incomplete" | "instructed";
   automation: { id: string; name: string };
+  /** 番頭のもの（判断役の「人に任せました」と見分ける。追加・2026-10-21、Backlog #510）。無ければ判断役 */
+  by?: "supervisor";
   /** 問い・選択肢の番号は 1 から */
   answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
   reason?: string;

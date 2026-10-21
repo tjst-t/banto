@@ -33,6 +33,7 @@ import type { Automation } from "../automation/fold.js";
 import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
 import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } from "../supervisor/supervisors.js";
 import type { SupervisorInstructions } from "../supervisor/instruct.js";
+import { SupervisorInputError, type SupervisorControls, type SupervisorUndoExec } from "../supervisor/guard.js";
 import {
   HUMAN_ONLY_KINDS,
   SUPERVISOR_KEYS,
@@ -265,6 +266,11 @@ export interface AppDeps {
    * **番頭**（追加・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。`/api/supervisors`・`/api/projects/:id/supervisor` の口。無ければ 404
    */
   supervisors?: Supervisors;
+  /**
+   * **番頭の守り**（追加・2026-10-21、アーキ仕様 §4.5「守り」、Backlog #510）。全部止める・全部再開する・記録・取り消し・1日のまとめ・
+   * 全体の上限の数え。無ければその口は 404
+   */
+  supervisorControls?: SupervisorControls;
   /** **番頭の instruct_thread・list_stalled_threads**（アーキ仕様 §4.5）。番頭の回のターンに渡す。無ければ tool は無い */
   supervisorInstructions?: Pick<SupervisorInstructions, "instruct" | "listStalled" | "screen">;
   /**
@@ -1935,6 +1941,37 @@ export function createApp(deps: AppDeps) {
     }
     return true;
   });
+
+  /**
+   * **人の発言として送る**（番頭の取り消し、アーキ仕様 §4.5「取り消し」、Backlog #510）。人が画面から送ったのと同じターンを host が開く
+   * ——走っていれば並んで待つ。受け付けたら返し、ターンの終わりは待たない（画面が繋がっていなくても最後まで回す）
+   */
+  const sendAsHuman = (threadId: string, text: string): void => {
+    const moving = movingReason(threadId);
+    if (moving) throw new SupervisorConflictError(moving);
+    const stop = turnStops.open(threadId);
+    void (async () => {
+      try {
+        await deps.awaitRestartRecovery?.(threadId);
+        const release = deps.threadTurns ? await deps.threadTurns.acquire(threadId, 0, stop.signal) : undefined;
+        if (stop.signal.aborted) {
+          release?.();
+          stop.markStopped({ text, images: [] });
+          return;
+        }
+        stop.markRunning();
+        try {
+          for await (const event of openTurn(threadId, text, undefined, [], stop, [])) {
+            if (event.type === "error") console.warn(`[host] 番頭の取り消しで送った ${threadId} のターンが失敗しました: ${event.message}`);
+          }
+        } finally {
+          release?.();
+        }
+      } finally {
+        stop.finish();
+      }
+    })().catch((err: unknown) => console.warn(`[host] 番頭の取り消しを ${threadId} に送れませんでした:`, err));
+  };
 
   // **届いたもので起こすターン**（決定・2026-09-25、アーキ仕様 §4.2）。画面が繋がっていなくても最後まで回す
   // ——途中経過は `turnEvents` に残るので、開いた画面は繋ぎ直せる。permissionMode はその Thread の設定のまま
@@ -4627,7 +4664,69 @@ export function createApp(deps: AppDeps) {
 
       if (url.pathname === "/api/supervisors" && req.method === "GET") {
         if (!deps.supervisors) return json(res, 404, { error: "not found" });
-        return json(res, 200, { supervisors: deps.supervisors.list() });
+        // 守りの今（全部止めているか・全体の上限の数え）を添える——画面の見出しと「この時間は人に回しています」
+        return json(res, 200, { supervisors: deps.supervisors.list(), ...(deps.supervisorControls ? { guard: deps.supervisorControls.status() } : {}) });
+      }
+      // **番頭の守りの人の口**（アーキ仕様 §4.5「止める」「記録」「取り消し」、Backlog #510）。人のセッションだけ（読むものも——
+      // 番頭の記録は全 Project を跨いで見せる）
+      const guardMatch = url.pathname.match(/^\/api\/supervisors\/(stop-all|resume-all|log|daily|log\/([^/]+)\/undo)$/);
+      if (guardMatch) {
+        const controls = deps.supervisorControls;
+        if (!controls) return json(res, 404, { error: "not found" });
+        const sub = guardMatch[1]!;
+        const isGet = sub === "log" || sub === "daily";
+        if (req.method !== (isGet ? "GET" : "POST")) return json(res, 405, { error: "method not allowed" });
+        try {
+          if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
+          if (sub === "log") {
+            const limit = url.searchParams.get("limit");
+            const kinds = url.searchParams.get("kind");
+            return json(res, 200, {
+              acts: controls.log({
+                ...(url.searchParams.get("project") ? { projectId: url.searchParams.get("project")! } : {}),
+                ...(url.searchParams.get("thread") ? { threadId: url.searchParams.get("thread")! } : {}),
+                ...(kinds ? { kinds: kinds.split(",").map((k) => k.trim()).filter((k) => k !== "") } : {}),
+                ...(limit !== null && Number.isFinite(Number(limit)) ? { limit: Number(limit) } : {}),
+              }),
+            });
+          }
+          if (sub === "daily") return json(res, 200, controls.daily(url.searchParams.get("date") ?? undefined));
+          if (sub === "stop-all") {
+            // 走っている番頭のターンは、人が止めるのと同じ口で止める（§6.31）
+            return json(res, 200, await controls.stopAll({ stopTurn: (threadId) => turnStops.stop(threadId) }));
+          }
+          if (sub === "resume-all") return json(res, 200, { supervisors: await controls.resumeAll() });
+          // 取り消し
+          const body = ((await readJsonBody(req)) ?? {}) as { text?: unknown };
+          if (body.text !== undefined && typeof body.text !== "string") return json(res, 400, { error: "text は文字列で渡してください" });
+          const exec: SupervisorUndoExec = {
+            sendAsHuman: async (threadId, text) => sendAsHuman(threadId, text),
+            cancelFactory: async (projectId, runId, reason) => {
+              const modules = (await deps.resolveModuleClientsForProject?.(projectId)) ?? [];
+              const factory = modules.find((m) => m.bundled && m.roles?.includes("factory"));
+              if (!factory) throw new SupervisorConflictError("この Project の Factory が繋がっていません（取りやめられません）");
+              // 人が画面で押した呼び出しとして呼ぶ（Factory の画面の「取りやめる」と同じ道）
+              const call = beginCanvasCall(deps, factory.connName, undefined, projectId);
+              try {
+                const result = (await factory.client.callTool({ name: "cancelFactory", arguments: { runId, reason }, _meta: call.meta }, undefined, UI_CALL_OPTIONS)) as {
+                  content?: Array<{ text?: string }>;
+                  isError?: boolean;
+                };
+                if (result.isError) throw new SupervisorConflictError(`Factory が取りやめを断りました：${result.content?.[0]?.text ?? ""}`);
+              } finally {
+                call.end();
+              }
+            },
+          };
+          const undone = await controls.undo(decodeURIComponent(guardMatch[2]!), typeof body.text === "string" ? { text: body.text } : {}, exec);
+          return json(res, 202, undone);
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof SupervisorInputError) return json(res, 400, { error: err.message });
+          if (err instanceof SupervisorConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof SupervisorNotFoundError) return json(res, 404, { error: err.message });
+          throw err;
+        }
       }
       const supervisorMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/supervisor(\/pause|\/resume|\/patrol)?$/);
       if (supervisorMatch) {

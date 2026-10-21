@@ -108,6 +108,10 @@ export interface SupervisorView {
   /** どれか1件でも止まっていれば止まっている（止める・再開するは4件一緒） */
   paused: boolean;
   pausedReason?: string;
+  /** 番頭を全部止めたことで止まっている（全部を再開する口が再開する。Project ごとに止めたものは偽、Backlog #510） */
+  stoppedAll: boolean;
+  /** いま番頭の回を飛ばす理由（アカウントの閾値・全体の上限——「この時間は人に回しています」、Backlog #510）。無ければ動ける */
+  handedToHuman?: string;
   createdAt: string;
   automations: Automation[];
   /** 番頭の記録（4件を合わせた新しい順、直近 `SUPERVISOR_ACTS_IN_PROMPT` 件） */
@@ -148,9 +152,16 @@ const ACT_LABEL: Record<SupervisorAct["kind"], string> = {
   dropped: "頼んだ手順が捨てられた",
   "factory-started": "Factory に流した",
   "factory-answered": "Factory に答えた",
+  skipped: "回を飛ばした",
+  undone: "人が取り消した",
 };
 
 function describeAct(act: SupervisorAct): string {
+  if (act.kind === "skipped") return `- ${act.at} ${ACT_LABEL[act.kind]}——${act.reason}`;
+  if (act.kind === "undone") {
+    const what = act.runId !== undefined ? `Factory の実行 ${act.runId}` : `会話 ${act.threadId}`;
+    return `- ${act.at} ${ACT_LABEL[act.kind]}：${what} への番頭のしたこと（${(act.undoes ?? []).length} 件）——${act.reason}`;
+  }
   if (act.kind === "factory-started") return `- ${act.at} ${ACT_LABEL[act.kind]}：実行 ${act.runId ?? "?"}（${(act.items ?? []).join("・")}）——${act.reason}`;
   if (act.kind === "factory-answered") {
     return `- ${act.at} ${ACT_LABEL[act.kind]}：実行 ${act.runId ?? "?"} の ${act.item ?? "?"}（段 ${act.stage ?? "?"}）→ ${act.action ?? "?"}——${act.reason}`;
@@ -209,6 +220,8 @@ export interface SupervisorsDeps {
   policy(projectId: string): SupervisorPolicy;
   /** 方針にタイムゾーンが無いときの既定。無ければ banto が動いている場所のもの */
   defaultTimeZone?: string;
+  /** その Project の番頭の回をいま飛ばす理由（`supervisor/guard.ts` の `supervisorSkipReason`）。無ければ出さない */
+  handedToHuman?(projectId: string): string | undefined;
 }
 
 /** 番頭を作る・止める・再開する・消す口（HTTP の口がここを通る） */
@@ -272,9 +285,11 @@ export class Supervisors {
     return this.mustView(supervisorId);
   }
 
-  /** **一時停止**（4件一緒）。走っているターンは止めない */
+  /**
+   * **一時停止**（4件一緒）。走っているターンは止めない。全部止めて止まっているものは、Project ごとに止め直す（全部を再開しても残す）
+   */
   async pause(supervisorId: string, reason = "人が一時停止しました"): Promise<SupervisorView> {
-    for (const a of this.mustAutomations(supervisorId)) if (!a.paused) await this.deps.automations.pause(a.id, reason);
+    for (const a of this.mustAutomations(supervisorId)) await this.deps.automations.pause(a.id, reason);
     return this.mustView(supervisorId);
   }
 
@@ -338,12 +353,15 @@ export class Supervisors {
     if (!first) return undefined;
     const paused = list.find((a) => a.paused);
     const threadId = first.target.kind === "dedicated" ? first.target.threadId : undefined;
+    const handedToHuman = this.deps.handedToHuman?.(first.projectId);
     return {
       id: supervisorId,
       projectId: first.projectId,
       ...(threadId ? { threadId } : {}),
       paused: paused !== undefined,
       ...(paused?.pausedReason ? { pausedReason: paused.pausedReason } : {}),
+      stoppedAll: paused !== undefined && list.every((a) => !a.paused || a.pausedScope === "stop-all"),
+      ...(handedToHuman ? { handedToHuman } : {}),
       createdAt: first.createdAt,
       automations: list.map(({ webhookTokenHash: _hash, ...a }) => a),
       acts: supervisorActsOf(this.deps.automations, supervisorId),

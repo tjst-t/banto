@@ -89,6 +89,11 @@ export interface ReviewMission {
 export interface ReviewJudge {
   kind: "decided-by-automation" | "deferred" | "incomplete" | "instructed";
   automation: { id: string; name: string };
+  /**
+   * **番頭のもの**（追加・2026-10-21、Backlog #510）。判断役（ふつうの自動化）の「人に任せました」等と、番頭が人に回したもの・番頭の
+   * 指示を見分ける。無ければ判断役
+   */
+  by?: "supervisor";
   /** 決めたもの（`decided-by-automation`）。問い・選択肢の番号は 1 から */
   answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
   /** 人に任せた理由（`deferred`） */
