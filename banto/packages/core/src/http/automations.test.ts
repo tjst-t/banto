@@ -18,6 +18,7 @@ import { AutomationWebhooks } from "../automation/webhook.js";
 import { createApp } from "./app.js";
 import { Supervisors } from "../supervisor/supervisors.js";
 import { supervisorPolicy } from "../supervisor/policy.js";
+import { RuntimeConfigStore } from "../config/runtime.js";
 
 /** いま開いている試験の口（認証の要らない `/hooks/` を叩くのに使う） */
 let lastBase = "";
@@ -38,6 +39,8 @@ async function withApp(
     await inbox.load();
     const automations = new AutomationStore(dir, log);
     await automations.load();
+    const runtimeConfig = new RuntimeConfigStore(dir, log);
+    await runtimeConfig.load();
     const threadTurns = new ThreadTurns();
     const token = "test-token";
     const ran: string[] = [];
@@ -66,7 +69,8 @@ async function withApp(
       resolveModulesForThread: async () => [],
       threadTurns,
       automations,
-      supervisors: new Supervisors({ automations, policy: (id) => supervisorPolicy(undefined, id), defaultTimeZone: "Asia/Tokyo" }),
+      runtimeConfig,
+      supervisors: new Supervisors({ automations, policy: (id) => supervisorPolicy(runtimeConfig, id), defaultTimeZone: "Asia/Tokyo" }),
       ...(opts.withRunner
         ? {
             automationRunner: {
@@ -299,5 +303,30 @@ test("番頭：作る・一覧・一時停止・再開・消すは番頭の単�
     assert.equal((await call(path, "DELETE")).status, 200);
     assert.equal((await call(path)).status, 404);
     assert.equal((await call(`${path}/pause`, "POST")).status, 404);
+  });
+});
+
+test("番頭の方針：全体は任せる行いと文、Project は足す・外すの差分と追記。人に回す種類は書けない。読むのは効いている方針", async () => {
+  await withApp(async (call, { projectThread }) => {
+    const p = await projectThread.createProject("p", tmpdir());
+    const put = await call("/api/supervisor-policy", "PUT", { delegate: ["continue", "rerun-tests", "merge"], note: "全体の文" });
+    assert.equal(put.status, 200);
+    assert.deepEqual(put.body.delegate, ["continue", "rerun-tests", "merge"]);
+    assert.equal(put.body.note, "全体の文");
+    assert.deepEqual(put.body.problems, []);
+    assert.equal((await call("/api/supervisor-policy", "PUT", { delegate: ["spec"] })).status, 400);
+    assert.equal((await call("/api/supervisor-policy", "PUT", { delegate: ["nope"] })).status, 400);
+
+    const path = `/api/projects/${p.id}/supervisor-policy`;
+    const project = await call(path, "PUT", { delegate: { add: ["release"], remove: ["merge"] }, note: "Project の文" });
+    assert.equal(project.status, 200);
+    assert.deepEqual(project.body.delegate, ["continue", "rerun-tests", "release"]);
+    assert.equal(project.body.note, "全体の文\n\nProject の文");
+    assert.equal((await call(path, "PUT", { delegate: { add: ["money"] } })).status, 400);
+    const cleared = await call(path, "PUT", { delegate: null, note: null });
+    assert.deepEqual(cleared.body.delegate, ["continue", "rerun-tests", "merge"]);
+    assert.equal(cleared.body.note, "全体の文");
+    assert.deepEqual((await call(path)).body.delegate, ["continue", "rerun-tests", "merge"]);
+    assert.equal((await call("/api/projects/nope/supervisor-policy")).status, 404);
   });
 });
