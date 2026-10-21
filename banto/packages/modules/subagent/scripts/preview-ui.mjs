@@ -28,14 +28,38 @@ const { RUNS_APP_HTML } = await import("../dist/runs-app.js");
 const { CONFIG_APP_HTML } = await import("../dist/config-app.js");
 
 const now = Date.now();
-const steps = (list) => list.map(([sec, title, kind]) => ({ at: now - 200_000 + sec * 1000, title, kind }));
+const steps = (list) =>
+  list.map(([sec, title, kind, extra], n) => ({ at: now - 200_000 + sec * 1000, title, kind, n, status: "completed", ...(extra ?? {}) }));
 const runs = [
   {
     id: "r1", agent: "claude-code", agentTitle: "Claude Code", model: "opus[1m]", status: "running", startedAt: now - 200_000,
+    label: "#466 parser のテストを直す", cwd: "/project/.worktrees/parser-fix", requestedByModule: { name: "factory", conn: "factory-p1" },
     prompt: "テストが落ちている原因を調べて、直せるなら直して。npm test の出力も見て、直したら何を変えたかを短く教えて。",
-    toolCalls: [], lastProgress: "ツール：npm test",
-    steps: steps([[4, "package.json", "read"], [11, "describe(\"parser\"", "search"], [26, "src/parser.ts", "read"], [58, "npm test -- parser", "execute"], [142, "src/parser.ts", "edit"], [171, "npm test", "execute"]]),
-    text: "原因は parser.ts の空行の扱いでした。末尾の空行で",
+    toolCalls: [], lastProgress: "ツール：npm test", stepVersion: 12,
+    steps: steps([
+      [2, "まず CLAUDE.md と package.json を読んで、テストの流し方を確かめます。", "message"],
+      [4, "Read CLAUDE.md", "read", { files: ["CLAUDE.md"] }],
+      [5, "Read package.json", "read", { files: ["package.json"] }],
+      [8, "Read src/parser.ts", "read", { files: ["src/parser.ts"] }],
+      [11, "grep \"describe(parser\"", "search"],
+      [58, "npm test -- parser", "execute", { description: "parser の単体試験を流す", status: "failed" }],
+      [80, "末尾の空行で区切りを1つ多く数えています。直します。", "message"],
+      [142, "Edit src/parser.ts", "edit", { files: ["src/parser.ts"] }],
+      [171, "npm test", "execute", { description: "全部の試験を流す", status: "in_progress" }],
+    ]),
+    plan: [
+      { content: "テストの流し方を確かめる", status: "completed" },
+      { content: "落ちている原因を探す", status: "completed" },
+      { content: "parser.ts を直す", status: "completed" },
+      { content: "全部の試験を流す", status: "in_progress" },
+      { content: "変えたことをまとめる", status: "pending" },
+    ],
+    files: [
+      { path: "src/parser.ts", wrote: 1, read: 1, lastAt: now - 58_000 },
+      { path: "CLAUDE.md", wrote: 0, read: 1, lastAt: now - 196_000 },
+      { path: "package.json", wrote: 0, read: 1, lastAt: now - 195_000 },
+    ],
+    text: "まず CLAUDE.md と package.json を読んで、テストの流し方を確かめます。末尾の空行で区切りを1つ多く数えています。直します。",
   },
   {
     id: "r2", agent: "opencode", agentTitle: "OpenCode", model: "opencode-go/qwen3.6-plus", status: "done", startedAt: now - 3_600_000, finishedAt: now - 3_560_000,
@@ -57,9 +81,11 @@ const runs = [
   },
 ];
 const summaries = runs.map((r) => ({
-  id: r.id, agent: r.agent, agentTitle: r.agentTitle, status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt,
+  id: r.id, agent: r.agent, agentTitle: r.agentTitle, label: r.label, status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt,
   lastProgress: r.lastProgress, cost: r.cost, model: r.model, promptHead: r.prompt.slice(0, 80), toolCount: r.steps.length,
   lastStep: r.status === "running" ? r.steps.at(-1) : undefined,
+  current: r.status === "running" ? { kind: "execute", title: "全部の試験を流す" } : undefined,
+  plan: r.plan ? { done: r.plan.filter((p) => p.status === "completed").length, total: r.plan.length } : undefined,
 }));
 const agents = [
   { id: "claude-code", title: "Claude Code", hostLogin: { loggedIn: true, subscriptionType: "max" } },
@@ -83,7 +109,11 @@ const empty = process.env.PREVIEW_EMPTY === "1";
 const tools = {
   listAgents: () => ({ agents }),
   listRuns: () => ({ runs: empty ? [] : summaries }),
-  getRun: (a) => runs.find((r) => r.id === a.id),
+  // 差分取り（sinceStep）：見本は変わらないので、変わった経過は無い
+  getRun: (a) => {
+    const r = runs.find((x) => x.id === a.id);
+    return a.sinceStep !== undefined && r?.status === "running" ? { ...r, steps: [], stepsSince: a.sinceStep } : r;
+  },
   getCredentials: () => credentials,
 };
 

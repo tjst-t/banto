@@ -2,20 +2,34 @@
 // banto を知らない——MCP Apps の約束（postMessage の JSON-RPC）だけで親と話す。
 //
 // 形：狭いとき（会話の隣）は「一覧 → 選ぶと中身」、広いとき（720px〜）は左右2枚。
-// **この画面の芯は「経過」**——サブエージェントが何をどの順に、いつしたかを縦の線でたどる。
+// 1件の中身は**いまの状況**（いまやっていること・やること一覧・最後の発言・触ったファイル）を上に、その下に**経過**——
+// サブエージェントが何をどの順に、いつしたかを縦の線でたどる（発言は吹き出し、同じ種類の tool の連続は1行に畳む）。
 // 会話の側では途中経過が見えないので、走っている間の様子（書きかけの返答まで）はここでしか見えない。
 
 type Status = "running" | "done" | "cancelled" | "error";
-interface Step { at: number; title: string; kind?: string }
+type StepStatus = "pending" | "in_progress" | "completed" | "failed";
+/** 経過の1件——tool の呼び出しか、途中の発言（kind `message`）。`n` は通しの番号（差分を重ねる鍵） */
+interface Step {
+  at: number; title: string; kind?: string; n?: number; toolCallId?: string; status?: StepStatus; finishedAt?: number;
+  description?: string; files?: string[]; truncated?: true;
+}
+interface PlanEntry { content: string; status: "pending" | "in_progress" | "completed" }
+interface TouchedFile { path: string; wrote: number; read: number; lastAt: number }
 interface Summary {
   id: string; agent: string; agentTitle: string; label?: string; status: Status; startedAt: number; finishedAt?: number;
   lastProgress?: string; cost?: { amount: number; currency: string }; model?: string;
   promptHead: string; toolCount: number; lastStep?: Step;
   /** いまやっていること（動いている tool の説明か題、無ければ最後の発言の頭） */
   current?: { kind: string; title: string };
+  /** やること一覧の進み */
+  plan?: { done: number; total: number };
 }
-interface RunRecord extends Omit<Summary, "promptHead" | "toolCount" | "lastStep" | "current"> {
-  prompt: string; effort?: string; resumedFrom?: string; toolCalls: string[]; steps: Step[];
+interface RunRecord extends Omit<Summary, "promptHead" | "toolCount" | "lastStep" | "current" | "plan"> {
+  prompt: string; effort?: string; resumedFrom?: string; toolCalls: string[]; steps: Step[]; cwd?: string;
+  /** 畳んだ古い経過の数・走っている間の経過の版・差分で受けたときの元の版（`getRun` の `sinceStep`） */
+  stepsOmitted?: number; stepVersion?: number; stepsSince?: number;
+  plan?: PlanEntry[]; files?: TouchedFile[]; continuedAfterRestart?: true;
+  requestedByModule?: { name: string; conn: string };
   sessionId?: string; stopReason?: string; text?: string; error?: string; notes?: string[];
   usage?: { inputTokens: number; outputTokens: number; cachedReadTokens?: number | null; cachedWriteTokens?: number | null };
   context?: { used: number; size: number };
@@ -102,6 +116,10 @@ const PATHS: Record<string, string[]> = {
   other: ["M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"],
   back: ["m15 18-6-6 6-6"],
   spark: ["M9.94 14.06 4 20", "M20 4l-5.94 5.94", "M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.5L5 9l5.5-1.5Z"],
+  message: ["M7.9 20A9 9 0 1 0 4 16.1L2 22Z"],
+  circle: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"],
+  chevronRight: ["m9 18 6-6-6-6"],
+  chevronDown: ["m6 9 6 6 6-6"],
 };
 function icon(name: string, cls = "icon"): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -124,6 +142,13 @@ const KIND_LABEL: Record<string, string> = {
   read: "読む", edit: "書く", delete: "消す", move: "動かす", search: "探す",
   execute: "実行", think: "考える", fetch: "取得", switch_mode: "切替", other: "ツール",
 };
+/** 同じ種類の tool が続いたときの1行（`{n}` に数） */
+const KIND_GROUP: Record<string, string> = {
+  read: "ファイルを {n} 個読んだ", edit: "ファイルを {n} 個書いた", delete: "ファイルを {n} 個消した", move: "ファイルを {n} 個動かした",
+  search: "{n} 回探した", execute: "コマンドを {n} 回流した", fetch: "{n} 回取得した", think: "{n} 回考えた",
+};
+/** 同じ種類がいくつ続いたら1行に畳むか */
+const GROUP_MIN = 3;
 const STATUS_LABEL: Record<Status, string> = { running: "実行中", done: "完了", cancelled: "取り消し", error: "失敗" };
 const STATUS_TONE: Record<Status, string | undefined> = { running: "accent", done: "ok", cancelled: undefined, error: "danger" };
 
@@ -168,8 +193,10 @@ const state: {
   agents: Agent[]; agentsError?: string; runs: Summary[]; selected: string | null; detail: RunRecord | null; error?: string; loaded: boolean;
   /** いま見せている終わった仕事の数と、Module が覚えている総数 */
   limit: number; finishedTotal: number;
+  /** 人が開いたもの（畳んだ経過の頭の番号・`message`＝最後の発言の全文・`files`＝触ったファイルの全部）。取り直しても持ち越す */
+  opened: Set<string>;
 } = {
-  agents: [], runs: [], selected: null, detail: null, loaded: false, limit: PAGE, finishedTotal: 0,
+  agents: [], runs: [], selected: null, detail: null, loaded: false, limit: PAGE, finishedTotal: 0, opened: new Set(),
 };
 const app = document.getElementById("app")!;
 const wide = () => window.innerWidth >= 720;
@@ -180,11 +207,12 @@ const wide = () => window.innerWidth >= 720;
 // 結果）が届く。結果には仕事の id があるのでそれで開く。**待つ形で走っている間は結果がまだ無い**ので、頼んだ
 // 内容（の頭）が同じ仕事を一覧から探す——走っているものが先、あとは新しい順に並んでいるので、最初に合ったもの
 const HEAD = 80; // runs.ts の promptHead と同じ切り方
+const headOfPrompt = (prompt: string) => (prompt.length > HEAD ? `${prompt.slice(0, HEAD)}…` : prompt);
 const want: { runId?: string; promptHead?: string; done: boolean } = { done: false };
 function wantFromInput(params: unknown): void {
   const prompt = (params as { arguments?: { prompt?: unknown } } | undefined)?.arguments?.prompt;
   if (typeof prompt !== "string" || want.runId) return;
-  want.promptHead = prompt.length > HEAD ? `${prompt.slice(0, HEAD)}…` : prompt;
+  want.promptHead = headOfPrompt(prompt);
   pickWanted();
 }
 function wantFromResult(params: unknown): void {
@@ -270,6 +298,7 @@ function renderRow(r: Summary): HTMLElement {
         ...[
           r.model ? `${r.agentTitle}（${shortModel(r.model)}）` : r.agentTitle,
           duration(r.startedAt, r.finishedAt),
+          r.plan ? `やること ${r.plan.done} / ${r.plan.total}` : undefined,
           r.toolCount ? `ツール ${r.toolCount}回` : undefined,
           money(r.cost),
         ]
@@ -348,7 +377,68 @@ function fact(label: string, value: string | undefined, attrs: Record<string, st
   return h("div", { class: "fact" }, [h("dt", { text: label }), h("dd", { ...attrs, text: value })]);
 }
 
-/** **経過**——呼んだ tool を順に、始めてからの時刻と種類つきで。最後に結末（返答・失敗・取り消し・いま） */
+/** 状態の無い前の版の経過は、仕事が終わっていれば済みとして見せる（アーキ仕様 §4.1） */
+function statusOf(s: Step, r: RunRecord): StepStatus | undefined {
+  return s.status ?? (r.status === "running" ? undefined : "completed");
+}
+const isMessage = (s: Step) => s.kind === "message";
+/** 動いている tool（回る印を付ける）——仕事が走っている間だけ */
+const isLive = (s: Step, r: RunRecord) => r.status === "running" && (s.status === "pending" || s.status === "in_progress");
+/** 画面の題：説明があれば説明、コマンド（題）はその下に小さく */
+const headOf = (s: Step) => s.description ?? s.title;
+
+function toggle(key: string): void {
+  if (state.opened.has(key)) state.opened.delete(key);
+  else state.opened.add(key);
+  render();
+}
+
+/** tool の1件 */
+function renderToolStep(s: Step, r: RunRecord): HTMLElement {
+  const status = statusOf(s, r);
+  const kind = s.kind ?? "other";
+  const live = isLive(s, r);
+  return h("li", { class: `step${live ? " step-live" : ""}`, "data-role": "step", "data-kind": kind, "data-status": status }, [
+    live
+      ? h("span", { class: "node" }, [h("span", { class: "glyph glyph-running", "aria-hidden": "true" })])
+      : h("span", { class: `node${status === "failed" ? " node-failed" : ""}`, title: KIND_LABEL[kind] ?? "ツール" }, [icon(kind)]),
+    h("span", { class: "step-kind", text: KIND_LABEL[kind] ?? "ツール" }),
+    h("span", { class: "step-main" }, [
+      h("span", { class: "step-line" }, [
+        h("span", { class: `step-title${s.description ? "" : " mono"}`, title: s.title, text: headOf(s) }),
+        status === "failed" ? h("span", { class: "step-failed", text: "失敗" }) : null,
+      ]),
+      s.description ? h("span", { class: "step-sub mono", "data-role": "step-command", title: s.title, text: s.title }) : null,
+    ]),
+    h("span", { class: "step-at mono", text: offset(r.startedAt, s.at) }),
+  ]);
+}
+
+/** 途中の発言——吹き出しで、tool の間に挟む */
+function renderMessageStep(s: Step, r: RunRecord): HTMLElement {
+  return h("li", { class: "step step-message", "data-role": "message-step" }, [
+    h("span", { class: "node node-message" }, [icon("message")]),
+    h("p", { class: "bubble", text: s.title }),
+    h("span", { class: "step-at mono", text: offset(r.startedAt, s.at) }),
+  ]);
+}
+
+/**
+ * 経過を描く単位に分ける：発言は1件ずつ、tool は**同じ種類が続いたら**ひとまとめ（動いている・失敗したものは畳まない
+ * ——いま何をしているか・何が落ちたかが畳みの中に隠れないように）
+ */
+function groupSteps(steps: Step[], r: RunRecord): Step[][] {
+  const groups: Step[][] = [];
+  const plain = (s: Step) => !isMessage(s) && !isLive(s, r) && statusOf(s, r) !== "failed";
+  for (const s of steps) {
+    const last = groups.at(-1);
+    if (last && plain(s) && last.every(plain) && last[0]!.kind === s.kind) last.push(s);
+    else groups.push([s]);
+  }
+  return groups;
+}
+
+/** **経過**——呼んだ tool と途中の発言を順に、始めてからの時刻つきで。最後に結末（返答・失敗・取り消し・いま） */
 function renderTrace(r: RunRecord): HTMLElement {
   const ol = h("ol", { class: "trace", "aria-label": "経過" });
   ol.append(
@@ -358,16 +448,38 @@ function renderTrace(r: RunRecord): HTMLElement {
       h("span", { class: "step-at", text: new Date(r.startedAt).toLocaleTimeString("ja-JP") }),
     ]),
   );
-  // 途中の発言（kind `message`）は経過の吹き出しにする（Backlog #488）——それまでは tool だけ
-  for (const s of r.steps.filter((st) => st.kind !== "message")) {
+  // 起こし直しのあと続けた仕事は、その前の経過を持たない（アーキ仕様 §4.1）。上限を越えて畳んだ古い経過は数だけ
+  if (r.continuedAfterRestart) ol.append(h("li", { class: "step step-note", "data-role": "trace-restarted" }, [h("span", { class: "node" }), h("span", { class: "muted", text: "起こし直しより前の経過はありません（banto を起こし直したあと続けた仕事）" })]));
+  if (r.stepsOmitted) ol.append(h("li", { class: "step step-note", "data-role": "trace-omitted" }, [h("span", { class: "node" }), h("span", { class: "muted", text: `ほか ${r.stepsOmitted} 件（古い経過は記録の上限で畳みました）` })]));
+  for (const group of groupSteps(r.steps, r)) {
+    const first = group[0]!;
+    if (isMessage(first)) {
+      ol.append(renderMessageStep(first, r));
+      continue;
+    }
+    if (group.length < GROUP_MIN) {
+      for (const s of group) ol.append(renderToolStep(s, r));
+      continue;
+    }
+    const key = `group:${r.id}:${first.n ?? first.at}`;
+    const open = state.opened.has(key);
+    const kind = first.kind ?? "other";
+    const label = (KIND_GROUP[kind] ?? "ツールを {n} 回使った").replace("{n}", String(group.length));
+    const button = h("button", { type: "button", class: "group-toggle", "aria-expanded": String(open), "data-focus": key }, [
+      icon(open ? "chevronDown" : "chevronRight"),
+      h("span", { class: "nowrap", text: open ? `${label}（畳む）` : label }),
+      // 触ったファイルがあればその名前、無ければ題
+      open ? null : h("span", { class: "group-names truncate", text: group.map((s) => (s.files?.[0] ?? headOf(s)).split("/").pop()).join("、") }),
+    ]);
+    button.addEventListener("click", () => toggle(key));
     ol.append(
-      h("li", { class: "step", "data-role": "step", "data-kind": s.kind ?? "other" }, [
-        h("span", { class: "node", title: KIND_LABEL[s.kind ?? "other"] ?? "ツール" }, [icon(s.kind ?? "other")]),
-        h("span", { class: "step-kind", text: KIND_LABEL[s.kind ?? "other"] ?? "ツール" }),
-        h("span", { class: "step-title mono", text: s.title }),
-        h("span", { class: "step-at mono", text: offset(r.startedAt, s.at) }),
+      h("li", { class: "step step-group", "data-role": "step-group", "data-kind": kind, "data-count": String(group.length) }, [
+        h("span", { class: "node" }, [icon(kind)]),
+        button,
+        h("span", { class: "step-at mono", text: `${offset(r.startedAt, first.at)}〜${offset(r.startedAt, group.at(-1)!.at)}` }),
       ]),
     );
+    if (open) for (const s of group) ol.append(renderToolStep(s, r));
   }
   const end = h("li", { class: `step step-end step-${r.status}` });
   if (r.status === "running") {
@@ -387,6 +499,98 @@ function renderTrace(r: RunRecord): HTMLElement {
   return ol;
 }
 
+/** 触ったファイルの上から見せる数 */
+const FILES_SHOWN = 8;
+
+/**
+ * **いまの状況**（アーキ仕様 §4.1 の3）——1件の中身の一番上。いまやっていること・やること一覧と進み・最後の発言・触ったファイル。
+ * 要約（§4.1 の4）はまだ無い——足すときは「いまやっていること」の下に置く
+ */
+function renderNow(r: RunRecord): HTMLElement | null {
+  const running = r.status === "running";
+  const tool = running ? [...r.steps].reverse().find((s) => !isMessage(s) && isLive(s, r)) : undefined;
+  const said = [...r.steps].reverse().find(isMessage);
+  const plan = r.plan ?? [];
+  const files = [...(r.files ?? [])].sort((a, b) => (b.wrote > 0 ? 1 : 0) - (a.wrote > 0 ? 1 : 0) || b.wrote - a.wrote || b.read - a.read || b.lastAt - a.lastAt);
+  if (!running && plan.length === 0 && !said && files.length === 0) return null;
+
+  const box = h("section", { class: "now", "data-role": "now", "aria-label": "いまの状況" });
+  if (running) {
+    const doing = tool ? headOf(tool) : said ? said.title : (r.lastProgress ?? "起こしています…");
+    box.append(
+      h("div", { class: "now-doing", "data-role": "now-doing" }, [
+        h("span", { class: "glyph glyph-running", "aria-hidden": "true" }),
+        h("div", { class: "now-doing-main" }, [
+          h("span", { class: "now-label", text: tool ? `いまやっていること（${duration(tool.at)}前から）` : "いまやっていること" }),
+          h("span", { class: `now-doing-title${tool ? "" : " clamp-2"}`, "data-role": "now-doing-title", text: doing }),
+          tool?.description ? h("span", { class: "now-doing-sub mono", text: tool.title }) : null,
+        ]),
+      ]),
+    );
+  }
+  const cols = h("div", { class: "now-cols" });
+  if (plan.length) {
+    const done = plan.filter((p) => p.status === "completed").length;
+    cols.append(
+      h("div", { class: "now-block", "data-role": "plan" }, [
+        h("h3", { class: "now-head" }, ["やること", h("span", { class: "now-count", "data-role": "plan-count", text: `${done} / ${plan.length} 済み` })]),
+        (() => {
+          const bar = h("div", { class: "bar", "aria-hidden": "true" }, [h("span", {})]);
+          (bar.firstChild as HTMLElement).style.width = `${Math.round((done / plan.length) * 100)}%`;
+          return bar;
+        })(),
+        h("ol", { class: "plan" }, plan.map((p) =>
+          h("li", { class: `plan-item plan-${p.status}`, "data-role": "plan-item", "data-status": p.status }, [
+            p.status === "completed" ? icon("check") : p.status === "in_progress" && running ? h("span", { class: "glyph glyph-running", "aria-hidden": "true" }) : icon("circle"),
+            h("span", { text: p.content }),
+          ]),
+        )),
+      ]),
+    );
+  }
+  const side = h("div", { class: "now-block now-side" });
+  if (said) {
+    const key = `message:${r.id}`;
+    const open = state.opened.has(key);
+    const more = h("button", { type: "button", class: "link", "data-focus": key, text: open ? "畳む" : "全文を読む" });
+    more.addEventListener("click", () => toggle(key));
+    side.append(
+      h("div", { class: "now-sub", "data-role": "last-message" }, [
+        h("h3", { class: "now-head" }, ["最後の発言", h("span", { class: "now-count", text: when(said.at) })]),
+        h("p", { class: `quote${open ? "" : " clamp-3"}`, "data-role": "last-message-text", text: said.title }),
+        said.title.length > 120 ? more : null,
+      ]),
+    );
+  }
+  if (files.length) {
+    const key = `files:${r.id}`;
+    const open = state.opened.has(key);
+    const wrote = files.filter((f) => f.wrote > 0).length;
+    const read = files.filter((f) => f.wrote === 0 && f.read > 0).length;
+    const shown = open ? files : files.slice(0, FILES_SHOWN);
+    const list = h("ul", { class: "files" }, shown.map((f) =>
+      h("li", { class: "file", "data-role": "file", "data-touch": f.wrote > 0 ? "wrote" : "read" }, [
+        icon(f.wrote > 0 ? "edit" : "read", `icon ${f.wrote > 0 ? "file-wrote" : "file-read"}`),
+        h("span", { class: "file-path mono truncate", title: f.path, text: f.path }),
+        h("span", { class: "file-count", text: f.wrote > 0 ? `書いた ${f.wrote}` : `読んだ ${f.read}` }),
+      ]),
+    ));
+    const rest = files.length - FILES_SHOWN;
+    const more = rest > 0 ? h("button", { type: "button", class: "link", "data-role": "files-more", "data-focus": key, text: open ? "畳む" : `ほか ${rest} 件を見る` }) : null;
+    more?.addEventListener("click", () => toggle(key));
+    side.append(
+      h("div", { class: "now-sub", "data-role": "files" }, [
+        h("h3", { class: "now-head" }, ["触ったファイル", h("span", { class: "now-count", "data-role": "files-count", text: `書いた ${wrote}・読んだ ${read}` })]),
+        list,
+        more,
+      ]),
+    );
+  }
+  if (side.childElementCount) cols.append(side);
+  if (cols.childElementCount) box.append(cols);
+  return box;
+}
+
 function renderDetail(): HTMLElement {
   const pane = h("section", { class: "detail", "aria-label": "仕事の中身" });
   const r = state.detail;
@@ -400,15 +604,28 @@ function renderDetail(): HTMLElement {
       back.addEventListener("click", () => { state.selected = null; state.detail = null; keepViewState(); render(); });
       return back;
     })(),
-    h("span", { class: "pill", "data-tone": STATUS_TONE[r.status], "data-role": "detail-status" }, [h("span", { class: "dot" }), STATUS_LABEL[r.status]]),
-    h("span", { class: "detail-agent", text: `${r.agentTitle}${r.model ? `（${r.model}）` : ""}` }),
-    h("span", { class: "grow" }),
-    r.status === "running" ? stopButton(r.id) : null,
+    // 題は呼び名、無ければ頼んだ文の頭（アーキ仕様 §4.1 の2）。下に誰に・どこで・誰が頼んだか
+    h("div", { class: "detail-name" }, [
+      h("span", { class: "detail-title", "data-role": "detail-title", text: r.label ?? headOfPrompt(r.prompt) }),
+      h("span", { class: "detail-agent", text: [
+        `${r.agentTitle}${r.model ? `（${r.model}）` : ""}`,
+        r.cwd ? `作業場所 ${r.cwd}` : undefined,
+        r.requestedByModule ? `頼んだのは ${r.requestedByModule.name}` : undefined,
+      ].filter(Boolean).join("・") }),
+    ]),
+    h("span", { class: "detail-state" }, [
+      h("span", { class: "pill", "data-tone": STATUS_TONE[r.status], "data-role": "detail-status" }, [h("span", { class: "dot" }), STATUS_LABEL[r.status]]),
+      h("span", { class: "detail-time", text: duration(r.startedAt, r.finishedAt) }),
+      r.status === "running" ? stopButton(r.id) : null,
+    ]),
   ]);
+  const tools = r.steps.filter((st) => !isMessage(st)).length;
+  const said = r.steps.length - tools;
   const body = h("div", { class: "detail-body", "data-role": "detail", "data-run": r.id, "data-scroll-key": `detail:${r.id}` }, [
+    renderNow(r),
     h("h2", { class: "section-label", text: "頼んだ内容" }),
     h("blockquote", { class: "prompt", "data-role": "detail-prompt", "data-scroll-key": `prompt:${r.id}`, text: r.prompt }),
-    h("h2", { class: "section-label", text: "経過" }),
+    h("h2", { class: "section-label" }, ["経過", tools || said ? h("span", { class: "section-count", "data-role": "trace-count", text: [tools ? `ツール ${tools} 回` : "", said ? `発言 ${said}` : ""].filter(Boolean).join("・") }) : null]),
     renderTrace(r),
     r.text !== undefined && r.text !== ""
       ? h("div", { class: `reply${r.status === "running" ? " reply-live" : ""}` }, [
@@ -481,11 +698,28 @@ function paint(): void {
 }
 
 // ---- 取り直す ---------------------------------------------------------------------------
+/**
+ * **走っている仕事の中身は差分で読み足す**（アーキ仕様 §4.1「画面の取り直しは差分で」）。前に受けた版（`stepVersion`）を
+ * `sinceStep` に渡し、変わった経過だけを番号 `n` で重ねる。終わった仕事・別の仕事・版の無いもの（前の版の Module）は丸ごと
+ */
+async function fetchDetail(id: string): Promise<RunRecord> {
+  const prev = state.detail;
+  const incremental = prev && prev.id === id && prev.status === "running" && prev.stepVersion !== undefined;
+  const got = await call<RunRecord>("getRun", incremental ? { id, sinceStep: prev.stepVersion } : { id });
+  if (!incremental || got.stepsSince === undefined) return got;
+  const byN = new Map<number, Step>();
+  for (const st of prev.steps) if (st.n !== undefined) byN.set(st.n, st);
+  for (const st of got.steps) if (st.n !== undefined) byN.set(st.n, st);
+  const omitted = got.stepsOmitted ?? 0;
+  const steps = [...byN.entries()].filter(([n]) => n >= omitted).sort((a, b) => a[0] - b[0]).map(([, st]) => st);
+  return { ...got, steps };
+}
+
 async function select(id: string): Promise<void> {
   state.selected = id;
   keepViewState();
   try {
-    state.detail = await call<RunRecord>("getRun", { id });
+    state.detail = await fetchDetail(id);
     state.error = undefined;
   } catch (err) {
     state.error = `読めませんでした：${(err as Error).message}`;
@@ -508,7 +742,7 @@ async function refresh(): Promise<void> {
     pickWanted();
     // 広いときは、何も選んでいなければ一番上（走っているもの→新しいもの）を開いておく
     if (!state.selected && wide() && state.runs[0]) state.selected = state.runs[0].id;
-    state.detail = state.selected ? await call<RunRecord>("getRun", { id: state.selected }) : null;
+    state.detail = state.selected ? await fetchDetail(state.selected) : null;
     state.error = undefined;
   } catch (err) {
     state.error = `読み込めませんでした：${(err as Error).message}`;
