@@ -10,6 +10,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore } from "../project-thread/store.js";
 import { GlobalMemoryStore } from "../global-memory/store.js";
@@ -25,11 +27,13 @@ import { AppEventBus, type AppEvent } from "./app-events.js";
 import {
   CLOSE_FORK_TOOL_NAME,
   composeForkInstruction,
+  createForkMcpServer,
   FORK_SERVER_NAME,
   FORK_TOOL_NAME,
   MAX_FORKS_PER_CALL,
   validateForkRequests,
 } from "./fork-tool.js";
+import { CHAT_NO_FORK_ERROR } from "./chat-project.js";
 
 type RunnerOpts = {
   prompt: string;
@@ -331,6 +335,37 @@ test("予約の確かめ：空・重複・数の上限", async () => {
     const many = Array.from({ length: MAX_FORKS_PER_CALL }, (_, i) => f(`n${i}`));
     assert.equal(validateForkRequests(store, base.id, many, 0), undefined);
     assert.match(validateForkRequests(store, base.id, many, 1)!, /まで/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("チャットでは start_forks を出さず、呼ばれても立てない。「Project にする」と次の回から出る（アーキ仕様 §2.2「チャット」）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-fork-chat-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const store = new ProjectThreadStore(dir, log);
+    await store.load();
+    const chat = await store.createProject("新しいチャット", "/tmp", { kind: "chat" });
+    const base = await store.createBaseThread(chat.id);
+    const toolNames = async () => {
+      const [s, c] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "t", version: "0.0.0" });
+      const server = createForkMcpServer(store, base.id, []);
+      await Promise.all([(server as unknown as { instance: { connect(t: unknown): Promise<void> } }).instance.connect(s), client.connect(c)]);
+      return (await client.listTools()).tools.map((t) => t.name);
+    };
+    const names = await toolNames();
+    assert.ok(!names.includes(FORK_TOOL_NAME), "チャットの回に start_forks が出ている");
+    // ほかの道具はそのまま（Fork を閉じる・一覧などは消さない）
+    assert.ok(names.includes(CLOSE_FORK_TOOL_NAME));
+    // 万一呼ばれても立てない（同じ文で断る）
+    assert.equal(validateForkRequests(store, base.id, [{ title: "a", instruction: "x" }], 0), CHAT_NO_FORK_ERROR);
+
+    await store.promoteProject(chat.id, "電力の見える化");
+    assert.ok((await toolNames()).includes(FORK_TOOL_NAME), "Project にしたのに start_forks が出ない");
+    assert.equal(validateForkRequests(store, base.id, [{ title: "a", instruction: "x" }], 0), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -61,6 +61,20 @@ export async function createChatProject(deps: {
   return project;
 }
 
+/**
+ * **チャットでは Fork を作らない**（決定・2026-10-21、ユーザー「チャットでは Fork はいらない」。アーキ仕様 §2.2「チャット」）。
+ * 人の口（`POST /api/threads/:id/fork`、発言から分けるのも同じ口）は 409 でこの code と文、AI の `start_forks` は同じ文で断る
+ * （道具はチャットの回には出さない）。「Project にする」で `kind` が外れたら普通に通る
+ */
+export const CHAT_NO_FORK_CODE = "chat-no-fork";
+export const CHAT_NO_FORK_ERROR = "チャットでは Fork を作れません。Project にすると使えます";
+
+/** この会話の Project がチャットか（Fork を作らない）。会話・Project が無ければ false——無いことは呼び手が別に断る */
+export function isChatThread(store: Pick<ProjectThreadStore, "getThread" | "getProject">, threadId: string): boolean {
+  const thread = store.getThread(threadId);
+  return thread !== undefined && store.getProject(thread.projectId)?.kind === "chat";
+}
+
 /** 試作を始めたあと、同じ Thread に banto が届ける続き（アーキ仕様 §2.2「コンテナは試作を始めたときに作る」） */
 export const PROTOTYPING_CONTINUE_TITLE = "試作の道具が使えるようになりました";
 export const PROTOTYPING_CONTINUE_TEXT = "試作の道具（Shell・FileSystem など）が使えるようになりました。続けてください";

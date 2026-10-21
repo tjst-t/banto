@@ -9,6 +9,8 @@
 //   4. 「Project にする」：名前・フォルダとリポジトリの名前・フォルダを置き場へ移す・リポジトリ（Module の画面）を決めて押すと、
 //      チャットの欄から Project の一覧へ移り、根が置き場の下へ移り、同じ会話が続く（前の発言が見え、次のターンが返る）
 //   5. 設定の「チャット」の2項目を押すと保存され（host の値）、読み込み直しても選ばれたまま
+//   6. チャットでは Fork を作らない：会話の「…」に Fork の項目が無く、発言から分けるボタンも無い。host も 409 chat-no-fork で
+//      断る。「Project にする」と同じ場所に出る（4. の終わりで見る——出ない側だけ見ても、まだ描かれていないのと見分けられない）
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test, expect, type Page } from "../test-base.js";
@@ -176,6 +178,34 @@ test("閉じる→「閉じたチャット」の小窓から探して開き直�
   await expect(page.locator('[data-role="assistant"]').getByText(FIRST_REPLY)).toBeVisible({ timeout: 30_000 });
 });
 
+test("チャットでは Fork を作らない：会話の「…」に Fork の項目が無く、発言から分けるボタンも無い。host も 409 で断る", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+  await openChat(page, chatId);
+  // 発言が描かれてから見る（描かれる前なら、ボタンが無いのは当たり前）
+  const lastReply = page.locator('[data-role="assistant"]').filter({ hasText: FIRST_REPLY }).last();
+  await expect(lastReply).toBeVisible({ timeout: 30_000 });
+  await expect(lastReply.getByRole("button", { name: "Copy" })).toBeVisible();
+  await expect(page.getByTestId("fork-from-message"), "チャットの発言に「ここから Fork」が出ている").toHaveCount(0);
+
+  await page.getByRole("button", { name: "Thread の操作" }).click();
+  await expect(page.getByRole("menuitem", { name: "このチャットを閉じる" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Project にする…" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Clear" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /Fork/ }), "チャットの「…」に Fork の項目がある").toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // host：人の口も断る（発言から分けるのも同じ口）。Fork は立たない
+  for (const data of [{}, { fromSeq: 1 }]) {
+    const res = await page.request.post(`${CORE_BASE_URL}/api/threads/${baseThreadId}/fork`, { headers, data });
+    expect(res.status(), JSON.stringify(data)).toBe(409);
+    expect(await res.json()).toEqual({ code: "chat-no-fork", error: "チャットでは Fork を作れません。Project にすると使えます" });
+  }
+  const threads = (await (await page.request.get(`${CORE_BASE_URL}/api/projects/${chatId}/threads`, { headers })).json()) as Array<{ id: string }>;
+  expect(threads.map((t) => t.id)).toEqual([baseThreadId]);
+  expect(pageErrors).toEqual([]);
+});
+
 test("Project にする：Project の一覧へ移り、根が置き場へ移り、同じ会話が続く", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
@@ -253,7 +283,10 @@ test("Project にする：Project の一覧へ移り、根が置き場へ移り�
   await page.getByRole("button", { name: "Thread の操作" }).click();
   await expect(page.getByRole("menuitem", { name: "Clear" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Project にする…" })).toHaveCount(0);
+  // Fork も使えるようになる（チャットの間は出なかった、6.）
+  await expect(page.getByRole("menuitem", { name: "Fork を開く" })).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: FIRST_REPLY }).last().getByTestId("fork-from-message")).toBeVisible();
   const composer = page.getByPlaceholder(`${PROJECT_NAME} の Base Thread に送る`);
   await composer.fill(`続けて「続きの返事 ${stamp}」と返して`);
   await composer.press("Enter");

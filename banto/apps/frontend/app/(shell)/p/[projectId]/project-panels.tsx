@@ -46,6 +46,7 @@ import {
 import { reportFailure } from "@/lib/report-failure";
 import { useIncomingForkRequest, type ForkStartMode } from "@/lib/fork-request";
 import { closeProject, getProject, hydrateRealProjects, isChat, prepareProjectModules, renameProject } from "@/lib/mock/projects";
+import { forkActionsAllowed } from "@/lib/chat-fork";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
 import {
   foldForkThread,
@@ -466,13 +467,14 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             ) : null}
             <ThreadActionsMenu
               threadId={project.baseThreadId}
-              onFork={() => requestFork(project.baseThreadId, { start: "choose" })}
               onClear={() => handleClear(project.baseThreadId)}
               onCompact={CONNECTED_FEATURES.compaction ? () => addMarker(project.baseThreadId, "compact") : undefined}
-              // **チャットの会話の画面**（§6.53）：「Project にする…」と「このチャットを閉じる」を足す
+              // **チャットの会話の画面**（§6.53）：「Project にする…」と「このチャットを閉じる」を足す。**Fork の操作は出さない**
+              // （チャットでは Fork を作らない——host も断る、アーキ仕様 §2.2「チャット」）
               {...(isChat(project)
                 ? { onPromote: () => setPromoteOpen(true), onCloseChat: () => void handleCloseChat() }
                 : {})}
+              {...(forkActionsAllowed(project) ? { onFork: () => requestFork(project.baseThreadId, { start: "choose" }) } : {})}
             />
           </PanelHeader>
           {/* 別の実行場所へ移している間・移せなかったとき（追加・2026-10-12、Backlog #270） */}
@@ -493,7 +495,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
               onOpenFork={(id) => stack.open({ fork: id })}
-              onForkFrom={(seq) => requestFork(project.baseThreadId, { fromSeq: seq, start: "continue" })}
+              // 発言から分けるのもチャットでは出さない（§6.53）
+              onForkFrom={forkActionsAllowed(project) ? (seq) => requestFork(project.baseThreadId, { fromSeq: seq, start: "continue" }) : undefined}
               markers={markersByThread[project.baseThreadId]}
             />
           </div>
@@ -531,7 +534,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                   {/* **Fork からも Fork を作れる**（2026-10-11、ユーザー）。「Fork を開く」と Close は「…」の中（2026-10-20、ユーザー要望） */}
                   <ThreadActionsMenu
                     threadId={threadId}
-                    onFork={!closed ? () => requestFork(threadId, { start: "choose" }) : undefined}
+                    // チャットに前から残る Fork でも、そこから Fork は作らない（閉じるのはできる、§6.53）
+                    onFork={!closed && forkActionsAllowed(project) ? () => requestFork(threadId, { start: "choose" }) : undefined}
                     onCloseFork={
                       CONNECTED_FEATURES.threadCloseReopen && !closed
                         ? () => confirmClose(threadId, thread?.title ?? threadId, () => void handleCloseFork(threadId))
@@ -558,7 +562,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 // **Fork の会話からも Canvas を開ける**（2026-10-01、ユーザー報告）。渡していなかったので、Fork の中では
                 // 画面つき tool のカードに「開く」も「大きく開く」も出なかった。開くと Fork はそのまま細く残る
                 onOpenCanvas={(moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })}
-                onForkFrom={(seq) => requestFork(threadId, { fromSeq: seq, start: "continue" })}
+                onForkFrom={forkActionsAllowed(project) ? (seq) => requestFork(threadId, { fromSeq: seq, start: "continue" }) : undefined}
                 markers={markersByThread[threadId]}
               />
             </div>

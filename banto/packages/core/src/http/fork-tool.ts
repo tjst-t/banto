@@ -30,6 +30,7 @@ import {
   type SupervisorInstructions,
 } from "../supervisor/instruct.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
+import { CHAT_NO_FORK_ERROR, isChatThread } from "./chat-project.js";
 import {
   REPORT_TURN_ACCEPTED_TEXT,
   REPORT_TURN_DESCRIPTION,
@@ -209,6 +210,8 @@ export function validateForkRequests(
 ): string | undefined {
   const thread = store.getThread(threadId);
   if (!thread) return "この Thread が見つかりません。";
+  // チャットの回には道具を出さないが、万一呼ばれても立てない（アーキ仕様 §2.2「チャットでは Fork を作らない」）
+  if (isChatThread(store, threadId)) return CHAT_NO_FORK_ERROR;
   if (forks.length === 0) return "立てる Fork が1つもありません。";
   if (alreadyReserved + forks.length > MAX_FORKS_PER_CALL) {
     return `1ターンに立てられる Fork は ${MAX_FORKS_PER_CALL} つまでです（このターンで予約済み ${alreadyReserved}）。`;
@@ -679,6 +682,12 @@ export function createForkMcpServer(
     name: FORK_SERVER_NAME,
     // 遅延ロードの裏に隠すと自発的に使われない（memory-tool.ts と同じ理由）
     alwaysLoad: true,
-    tools: readOnly ? tools.filter((t) => readOnlyNames.includes(t.name)) : tools,
+    // **チャットの回には `start_forks` を出さない**（アーキ仕様 §2.2「チャットでは Fork を作らない」）。会話の Project は
+    // ターンの始まりに決まる——「Project にする」と次のターンから出る
+    tools: readOnly
+      ? tools.filter((t) => readOnlyNames.includes(t.name))
+      : isChatThread(store, threadId)
+        ? tools.filter((t) => t.name !== FORK_TOOL_NAME)
+        : tools,
   });
 }
