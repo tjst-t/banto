@@ -33,13 +33,14 @@ async function connect(prepare: () => Promise<void>) {
   return { client, cleanup: async () => { await client.close(); await rm(base, { recursive: true, force: true }); } };
 }
 
-test("道具は8本。6本は AI に見せ、移す前・閉じるときに止めておく2本は人の管理操作だけ。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
+test("道具は9本。6本は AI に見せ、移す前・閉じるときに止めておく2本と画面がログを読む readServiceLog は人の管理操作だけ。使い方（alias 名で渡す・runCommand との違い）が説明にある", async () => {
   const { client, cleanup } = await connect(async () => {});
   try {
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), [
       "disableAllServices",
       "listServices",
+      "readServiceLog",
       "readServiceLogs",
       "removeService",
       "restartService",
@@ -48,7 +49,7 @@ test("道具は8本。6本は AI に見せ、移す前・閉じるときに止�
       "suspendAllServices",
     ]);
     for (const t of tools) {
-      const visibility = t.name === "disableAllServices" || t.name === "suspendAllServices" ? "admin" : "agent";
+      const visibility = ["disableAllServices", "suspendAllServices", "readServiceLog"].includes(t.name) ? "admin" : "agent";
       assert.equal((t._meta as Record<string, unknown>)["dev.banto/visibility"], visibility, t.name);
     }
     const start = tools.find((t) => t.name === "startService")!;
@@ -83,6 +84,39 @@ test("頼み方の誤りは理由を AI に返す（例外にしない）", asyn
     const r = await client.callTool({ name: "startService", arguments: { name: "Bad Name", command: "x" } });
     assert.equal(r.isError, true);
     assert.match(JSON.stringify(r.content), /英小文字/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("入口「サービス」を launcher として名乗り（人の画面だけ）、読むと画面の HTML が返る", async () => {
+  const { client, cleanup } = await connect(async () => {});
+  try {
+    const { resources } = await client.listResources();
+    const app = resources.find((r) => r.uri === "ui://banto-service/services");
+    assert.ok(app, "入口の資源が無い");
+    assert.equal(app.name, "サービス");
+    assert.deepEqual(
+      [(app._meta as Record<string, unknown>)["dev.banto/visibility"], (app._meta as Record<string, unknown>)["dev.banto/canvas"]],
+      ["admin", "launcher"],
+    );
+    const read = await client.readResource({ uri: "ui://banto-service/services" });
+    const html = (read.contents[0] as { text: string }).text;
+    assert.match(html, /readServiceLog/);
+    assert.match(html, /listServices/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("readServiceLog は systemd の用意を待たない（用意が終わらなくてもログは読める）", async () => {
+  // 用意がいつまでも終わらない——ほかの道具はそこで待つ
+  const { client, cleanup } = await connect(() => new Promise(() => {}));
+  try {
+    const r = await client.callTool({ name: "readServiceLog", arguments: { name: "web" } });
+    // 登録が無いので断る——が、待たずに答えが返る
+    assert.equal(r.isError, true);
+    assert.match(JSON.stringify(r.content), /登録されていません/);
   } finally {
     await cleanup();
   }

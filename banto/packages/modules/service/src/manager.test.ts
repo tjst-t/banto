@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ServiceManager } from "./manager.js";
@@ -524,6 +524,65 @@ test("起こした呼び出しの印を登録と起動役の置き場（cause.js
     await manager.start({ name: "web" });
     assert.equal(await cause(), undefined);
     assert.equal(await registered(), undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("readLog：範囲・全体の大きさ・世代を返し、回したら世代が変わる。log.1 も読める。名前と file を確かめる", async () => {
+  const { base, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    const log = join(base, "state/web/log");
+    await writeFile(log, "2026-10-21T00:00:00.000Z 一行目\n2026-10-21T00:00:01.000Z 二行目\n");
+    const tail = await manager.readLog({ name: "web" });
+    assert.equal(tail.file, "log");
+    assert.equal(tail.fromByte, 0);
+    assert.equal(tail.size, tail.toByte);
+    assert.match(tail.text, /一行目\n.*二行目\n$/s);
+    const part = await manager.readLog({ name: "web", fromByte: 4, maxBytes: 10 });
+    assert.equal(part.fromByte, 4);
+    assert.equal(part.toByte, 14);
+    assert.equal(part.size, tail.size);
+    // 回す（log-wrapper.ts と同じ——名前を付け替えて新しく作る）
+    await rename(log, `${log}.1`);
+    await writeFile(log, "2026-10-21T00:00:02.000Z 三行目\n");
+    const after = await manager.readLog({ name: "web", fromByte: tail.toByte });
+    assert.notEqual(after.generation, tail.generation, "回したのに世代が変わらない");
+    assert.ok(after.size < tail.toByte);
+    const old = await manager.readLog({ name: "web", file: "log.1" });
+    assert.equal(old.generation, tail.generation);
+    assert.match(old.text, /二行目/);
+    await assert.rejects(manager.readLog({ name: "web", file: "../services.json" }), ServiceError);
+    await assert.rejects(manager.readLog({ name: "nope" }), /登録されていません/);
+    await assert.rejects(manager.readLog({ name: "web", fromByte: -1 }), ServiceError);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("readLog は操作の列（serialize）に並ばない——起動・停止が systemd を待っている間も読める", async () => {
+  const { base, sc, manager, cleanup } = await setup();
+  try {
+    await manager.start({ name: "web", command: "x" });
+    await writeFile(join(base, "state/web/log"), "動いている\n");
+    // 止めるのを systemd が返さない間（操作の列が詰まっている）
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const run = sc.run.bind(sc);
+    sc.run = async (args) => {
+      if (args[0] === "stop") await held;
+      return run(args);
+    };
+    const stopping = manager.stop("web");
+    await new Promise((r) => setTimeout(r, 20));
+    const read = await Promise.race([
+      manager.readLog({ name: "web" }).then((r) => r.text),
+      new Promise<string>((r) => setTimeout(() => r("待たされた"), 1000)),
+    ]);
+    assert.equal(read, "動いている\n");
+    release();
+    await stopping;
   } finally {
     await cleanup();
   }

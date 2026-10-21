@@ -3229,7 +3229,7 @@ Shell の `grep` で足りる）。
 - 資源の上限（§5 の残りと同じく Incus の `limits.*` が候補）
 - ~~人の画面（一覧・ログ・起動と停止）~~ **→ 決めた**（2026-10-20、下の「人の画面——サービス」）
 
-#### 人の画面——サービス（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。未実装）
+#### 人の画面——サービス（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。実装・2026-10-21、Backlog #493）
 
 Service には人の画面が無く（上の「まだ決めていないこと」にあった）、状態・ログ・起動と停止は AI の tool でしか扱えなかった。
 Service は Thread に紐付かないので、サイドバーのバックグラウンドの印にも出ない（2026-10-20、ユーザー要望。案の比較は
@@ -3251,6 +3251,26 @@ Service は Thread に紐付かないので、サイドバーのバックグラ�
   起動・停止の操作を待たせない・待たない）。読み方の切れ目は Shell の `readCommandOutput` と同じ（文字の切れ目で切る・行の頭に揃えるのは
   画面）。**AI の口 `readServiceLogs` は変えない**（末尾を読むだけのまま。前の下書きの `beforeByte` の追加はやめた）
 - **公開の URL はこの画面に出さない**——公開は Publish の持ち物で、その画面（入口「公開」）にある
+
+**実装で決めたこと**（2026-10-21、Backlog #493）：
+
+- 画面は `packages/modules/service/src/services-app.ts`（組み立て）と `src/ui/services-view.ts`（ブラウザで動く JS）。見た目の土台
+  `src/ui/theme.ts` は Subagent の写し（Module は互いの中を import しない）
+- **`readServiceLog` の返り値**：`{ name, file, text, fromByte, toByte, size, generation }`。`fromByte` を書かなければ末尾。
+  `maxBytes` は 1 回 256 KiB まで（越えて頼まれたら上限で切る——返す `toByte` で分かる）。**世代は `<dev>:<ino>`**（開いたファイルの
+  `fstat` から——名前を見てから開く間に回されても、読んだものと食い違わない）。ファイルが無ければ空で `generation: null`。
+  切り方は `@banto/module-contract` の `readUtf8Range`（Shell の `readCommandOutput` と同じ1つ）
+- **`readServiceLog` は systemd の用意も待たない**（`serialize` の列に並ばないのと同じ理由——用意は列の中で走る）。登録の読みも列を
+  通さない（`services.json` は置き換えで書くので、書きかけを読まない）
+- 一覧（`listServices`）は 5 秒ごと（登録と systemd の写しを突き合わせるので細かくしない）、ログは 2 秒ごとに読み足す。読み足したとき
+  ファイルが縮んでいた・世代が違ったら、末尾から読み直す。遡るのは `log` の頭まで来たら `log.1` の末尾から。遡っている間に
+  もう一度回ったら（`log.1` の世代が変わったら）そこで止めて、そう書く
+- ログの行は起動役が付けた時刻（UTC の ISO 8601）を**手元の時刻（時:分:秒.ミリ秒）**にして頭に出す（元の時刻は行の title）。
+  標準エラーの行（`[stderr]`）は色で分ける
+- 作業場所が Project の根のときは `.`（登録は空の文字列で持つ）
+- 選んだサービスは「見ている場所」（`{ name }`）として預ける——開き直しても同じサービスに戻る
+- 回帰試験：`manager.test.ts`（範囲・世代・列に並ばない）・`server.test.ts`（入口の名乗り・`admin`・用意を待たない）・
+  `@banto/module-contract` の `file-range.test.ts`（文字の切れ目）・`e2e/specs/service-view.spec.ts`
 
 ### 4.3 Publish——動いているものに届く URL を生やす（決定・2026-09-27）
 
