@@ -23,6 +23,8 @@ import { RelayApprovalCard } from "@/components/banto/thread/relay-approval-card
 import { RelayTargetsTable } from "@/components/banto/thread/relay-targets-table";
 import { splitTargets } from "@/lib/relay-targets";
 import { ShellCommandCard } from "@/components/banto/thread/shell-command-card";
+import { ShellBackgroundViewCard } from "@/components/banto/thread/shell-background-view-card";
+import { shellBackgroundCommandOf } from "@/lib/shell-background-command";
 import {
   HUMAN_TOOL_NAME,
   MODULE_RELAY_TOOL_NAME,
@@ -184,6 +186,10 @@ function InlineViewForPart({ index }: { index: number }) {
   // **カードだけの tool は、呼んだ時点から出す**（決定・2026-10-01、ユーザー）——走っている間の様子を
   // 見に行く入口なので、結果を待ってから出すのでは遅い（待つ呼び出しはターンの終わりまで返らない）
   if (part.result === undefined && !real?.card) return null;
+  // **Shell の待たない形**は「画面で見る」のカードを足す（Backlog #492）。tool のカード（折りたたみの中の一般のカード）はそのまま。
+  // 待つ形には足さない
+  const shellBackground = real ? undefined : shellBackgroundCommandOf(part.toolName, part.args, part.result);
+  if (shellBackground) return <ShellBackgroundViewCard command={shellBackground} args={part.args} />;
   if (real) {
     return (
       <RealInlineModuleView

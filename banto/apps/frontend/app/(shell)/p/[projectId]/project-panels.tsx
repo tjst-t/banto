@@ -16,7 +16,7 @@ import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { AutomationsView } from "@/components/banto/automation/automations-view";
 import { AutomationBand } from "@/components/banto/automation/automation-band";
 import { AUTOMATIONS_CANVAS, useAutomations } from "@/lib/backend/automations";
-import { parseViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
+import { parseViewState, serializeViewState, VIEW_STATE_PARAM, writeViewStateToUrl } from "@/lib/backend/canvas-view-state";
 import { seedThreadModel } from "@/lib/backend/thread-model";
 import {
   getRealInlineView,
@@ -218,6 +218,22 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
   const searchParams = useSearchParams();
+  // **入口の画面を、外から別の「見ている場所」で開き直す**（追加・2026-10-21、Backlog #492、v4-frontend.md §6.2「見ている場所」）。
+  // 見ている場所は開いたときに1回渡るだけなので、入口が開いたままサイドバーの1件・会話の「画面で見る」・別の画面の
+  // open-surface が別の場所（`canvasView`）で開くと、URL だけ替わって画面は前のままだった（実測・2026-10-21）。
+  // URL の値が、画面が自分で預けた値と違えば外からの頼み——入口の画面を作り直して、新しい場所を渡す
+  const viewParam = searchParams.get(VIEW_STATE_PARAM) ?? undefined;
+  const [keptViewParam, setKeptViewParam] = useState<string | undefined>(undefined);
+  const [seenViewParam, setSeenViewParam] = useState(viewParam);
+  const [launcherMount, setLauncherMount] = useState(0);
+  if (viewParam !== seenViewParam) {
+    setSeenViewParam(viewParam);
+    if (viewParam !== undefined && viewParam !== keptViewParam) setLauncherMount((n) => n + 1);
+  }
+  const keepLauncherViewState = (state: unknown) => {
+    setKeptViewParam(serializeViewState(state));
+    writeViewStateToUrl(state);
+  };
   // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
@@ -609,12 +625,13 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               // 人が入口から開いた面——tool の結果は無い。Canvas が自分で
               // 必要なものを取りに行く（§6.2「launcher も同じ形」）
               <ModuleCanvas
+                key={launcherMount}
                 owner={{ kind: "project", id: projectId }}
                 server={moduleId}
                 resourceUri={launcherUri}
                 displayMode="fullscreen"
                 viewState={viewState}
-                onViewStateChange={writeViewStateToUrl}
+                onViewStateChange={keepLauncherViewState}
               />
             ) : realView ? (
               <ModuleCanvas

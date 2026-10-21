@@ -318,7 +318,8 @@ class OutputView {
 }
 
 // ---- 状態 ------------------------------------------------------------------------------
-const state: { commands: Command[]; loaded: boolean; selected: string | null; error?: string; confirmStop: boolean; stopping: boolean } = {
+// `missing`：別の所（サイドバーの1件・会話のカード）から選ぶよう頼まれたのに、置き場に無かったコマンド（一覧の上に一言）
+const state: { commands: Command[]; loaded: boolean; selected: string | null; error?: string; missing?: string; confirmStop: boolean; stopping: boolean } = {
   commands: [], loaded: false, selected: null, confirmStop: false, stopping: false,
 };
 let output: OutputView | null = null;
@@ -380,13 +381,19 @@ function renderRow(c: Command): HTMLElement {
       c.status !== "running" && c.endedAt ? h("span", { class: "muted", "data-role": "ended", text: ago(c.endedAt) }) : null,
     ]),
   ]);
-  row.addEventListener("click", () => select(c.commandId));
+  row.addEventListener("click", () => {
+    state.missing = undefined;
+    select(c.commandId);
+  });
   return row;
 }
 
 function renderList(): HTMLElement {
   const list = h("section", { class: "list", "data-scroll-key": "list", "aria-label": "コマンドの一覧" });
   if (!state.loaded) return list;
+  if (state.missing) {
+    list.append(h("p", { class: "notice", role: "status", "data-role": "missing", text: "開こうとしたコマンドの記録は、もう残っていません（古いものから消えます）。一覧から選んでください。" }));
+  }
   if (state.commands.length === 0) {
     list.append(
       h("div", { class: "empty", "data-role": "empty" }, [
@@ -517,10 +524,12 @@ async function refresh(): Promise<void> {
   try {
     state.commands = (await call<{ commands: Command[] }>("listBackgroundCommands")).commands;
     state.loaded = true;
-    if (wanted && state.commands.some((c) => c.commandId === wanted)) {
+    if (wanted) {
       const w = wanted;
       wanted = undefined;
-      if (state.selected !== w) select(w);
+      // 置き場に無ければ一覧を出して一言（黙って別の1件を開かない）
+      if (!state.commands.some((c) => c.commandId === w)) state.missing = w;
+      else if (state.selected !== w) select(w);
     }
     if (state.selected && !state.commands.some((c) => c.commandId === state.selected)) select(null);
     // 広いときは、何も選んでいなければ一番上（動いているもの→新しいもの）を開いておく
@@ -532,7 +541,7 @@ async function refresh(): Promise<void> {
   // 見ているものが終わったら、最後の出力をもう一度だけ読み足す
   const now = state.commands.find((c) => c.commandId === state.selected);
   if (wasRunning && now && now.status !== "running") void output?.poll();
-  const snapshot = JSON.stringify([state.commands, state.error, state.selected, state.confirmStop, state.stopping]);
+  const snapshot = JSON.stringify([state.commands, state.error, state.missing, state.selected, state.confirmStop, state.stopping]);
   if (snapshot !== painted) {
     painted = snapshot;
     render();

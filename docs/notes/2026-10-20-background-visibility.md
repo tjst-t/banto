@@ -101,3 +101,27 @@ Shell と Service：
   パスを1つのファイル名に写すので、HOME の深い機械では 255 字を越えて「file name too long」で起きなかった（`subagent` で 253 字）
   ——名前を短くした
 - **狭い画面の境目は携帯の Drawer と同じ**（`useIsMobile`、768px 未満）。一覧の1件を押したら Drawer も閉じる（`onNavigate`）
+
+## Shell の名乗りと会話のカードで決めたこと（2026-10-21、Backlog #492）
+
+- **仕様と実態の食い違い（訂正）**：仕様は「会話のカードの『画面で見る』は専用のカード（`shell-command-card.tsx`、承認の段から結果まで
+  1枚）に足す」「定義に `ui.resourceUri` を書くと、その専用のカードが使えなくなる」と書いていた。実際には `shell-command-card.tsx` は
+  モックの会話（tool 名 `banto_shell_run_command`）だけで描かれ、本物の会話の `mcp__shell__runCommand` は一般のカード（`ToolFallback`）で
+  描かれていた（`human-tool-card.tsx` の分岐は `banto_shell_run_command` しか見ない。E2E も `tool-fallback-trigger` で Shell のカードを
+  探している）。定義に書かない理由は「待つ形のカードまで埋め込みの画面になる」に直し、「画面で見る」は一般のカードとは別の1枚にした。
+  本物の会話に Shell 専用のカード（承認の段から結果まで1枚）を持たせるかは、この Backlog の外（決めていない）
+- **カードは結果の本文から読む**：結果の `_meta`（`dev.banto/backgroundView`）は host が AI に渡す前に外すので、画面も見られない。
+  サイドバーの手がかり（`view`）は返事待ちの間だけなので、終わったあともカードから開けるよう本文の `commandId` を使う。どの呼び出しかは
+  tool 名（`mcp__<Module名>__runCommand`）・引数の `runInBackground: true`・本文の `commandId` で見る。入口の URI は画面の側も1か所で知る
+- **開き方の関数を1つに**：サイドバーの `hrefOf` にあった「入口を `canvasView`＝`select` で」を `lib/backend/background-view.ts` の
+  `backgroundViewHref` に出して、カードと共有した。カードの Thread が開いている Fork ならその Fork のまま開く
+- **「画面で見る」は折りたたみの外**：最初は一般のカードの下に足したが、tool のカードは「N tool call(s)」の折りたたみの中にあり、
+  畳まれたまま（既定）では見えなかった（E2E で 0 件）。inline の画面と同じ決まり（人が見に行く入口は畳める所に入れない、§6.2）で
+  `InlineViewForPart` に置き、`OpenableCard`（カードだけの tool の入口と同じ形）にした
+- **置き場に無い `commandId`**：一覧と一言。黙って別の1件（広い画面の「一番上を開いておく」）だけを見せない
+- **入口が開いたままの「画面で見る」**：入口がすでに開いているとき、別のコマンドの「画面で見る」を押すと URL の `canvasView` は
+  替わるのに画面は前のまま（E2E で実測）。見ている場所は `ui/initialize` の hostContext で1回渡るだけで、入口の `ModuleCanvas` は
+  作り直されないため（サイドバーの1件・Factory の「経過を見る」も同じ穴を持っていた）。比べた案：(a) 開いている画面に
+  `host-context-changed` で新しい場所を送る——Module ごとに受け口が要り、受けない Module（今の Subagent）は黙って替わらない。
+  (b) 外からの頼みのときだけ入口の画面を作り直す——Module に手が要らない。(b) を採った。外からかは「URL の値が、画面が自分で
+  預けた値と違うか」で見る（画面の中で選び直すたびに作り直さない）

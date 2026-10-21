@@ -13,6 +13,7 @@ import {
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
+  BACKGROUND_VIEW_META_KEY,
   CANVAS_META_KEY,
   CARD_META_KEY,
   FILE_RANGE_MAX_BYTES,
@@ -470,7 +471,13 @@ export function createShellServer(deps: ShellServerDeps) {
           ...text(started),
           // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる
           // 結果の場所（Backlog #324）——起こし直しで Shell に繋がらないまま打ち切られても、人と AI が出力を読みに行ける
-          _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: started.outputFile },
+          // 結果で名乗る画面（Backlog #492）——サイドバーの1件と会話のカードから、入口がこの1件を選んで開く。
+          // tool の定義には ui.resourceUri を書かない（待つ形のカードは専用のカードのまま。v4-modules.md §2.3「人の画面」）
+          _meta: {
+            [PENDING_REPLY_META_KEY]: true,
+            [RESULT_LOCATION_META_KEY]: started.outputFile,
+            [BACKGROUND_VIEW_META_KEY]: { resourceUri: COMMANDS_APP_URI, select: { commandId: started.commandId } },
+          },
         };
       }
 
