@@ -11769,7 +11769,7 @@
       "number": 489,
       "kind": "task",
       "title": "host：要約を core が作る口（relaySummarizeBackgroundWork）・要約のメモリの表・結果で名乗る画面（dev.banto/backgroundView と select）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "item-3",
       "dependsOn": [],
       "milestone": null,
@@ -11779,9 +11779,14 @@
       "doneWhen": "core の単体：違う Module の札は断る・回数を減らさない・toModule/済んだ札では表に置かない・10 秒の間隔、backgroundItemsOf が表を重ねる。E2E：小さいモデルを偽物にして口を呼ぶとサイドバーの一覧に「要約：…」が出る。backgroundView を名乗った待たない結果の1件を押すと入口がその select で開く",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "6be652d3-f1d5-47b1-b137-7e2d8bdec6ed"
+        }
+      ],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-21T10:33:06.347Z",
+      "updatedAt": "2026-10-21T10:35:40.847Z",
       "closedAt": null,
       "extra": {}
     },
