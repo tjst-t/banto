@@ -12024,7 +12024,7 @@
       "number": 499,
       "kind": "task",
       "title": "core：start_prototyping（banto-thread、チャットだけ）——Module の差分を外し、ターンの終わりに banto の届けもので続ける",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create"
@@ -12038,7 +12038,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T06:17:11.383Z",
+      "updatedAt": "2026-10-21T06:52:36.095Z",
       "closedAt": null,
       "extra": {}
     },
