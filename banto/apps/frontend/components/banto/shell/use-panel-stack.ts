@@ -12,7 +12,8 @@ import { navigateUrl } from "@/lib/url-nav";
 import { VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
 import { settingsCloseHref } from "@/lib/settings-link";
 
-export type OverlayKind = "inbox" | "palette" | "archive" | null;
+/** `supervisor`＝番頭の画面（v4-frontend.md §6.54。受信箱と同じ前面の1枚） */
+export type OverlayKind = "inbox" | "supervisor" | "palette" | "archive" | null;
 
 export interface PanelStackState {
   projectId: string;

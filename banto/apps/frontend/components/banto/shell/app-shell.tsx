@@ -12,6 +12,7 @@ import { SettingsContent } from "@/app/(shell)/settings/settings-content";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxPage } from "@/components/banto/inbox/inbox-page";
+import { SupervisorPage } from "@/components/banto/supervisor/supervisor-page";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 import { usePanelStack } from "./use-panel-stack";
@@ -74,6 +75,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
   const settingsOpen = SHOW_INSTANCE_SETTINGS && isSettingsOpen(pathname, searchParams);
   const inboxOpen = CONNECTED_FEATURES.inbox && stack.overlay === "inbox";
+  const supervisorOpen = stack.overlay === "supervisor";
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。**開いているときにもう一度押すと閉じる**
   // （決定・2026-09-30、ユーザー要望）。ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
@@ -116,6 +118,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
         onResize={(next) => setSidebarWidth(next, { persist: false })}
         onResizeEnd={(next) => setSidebarWidth(next)}
         onOpenInbox={() => stack.open({ overlay: "inbox", settings: false })}
+        onOpenSupervisor={() => stack.open({ overlay: "supervisor", settings: false })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
         onOpenArchive={() => stack.open({ overlay: "archive" })}
       />
@@ -126,8 +129,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
       <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           className="flex min-h-0 flex-1 flex-col"
-          inert={settingsOpen || inboxOpen}
-          aria-hidden={settingsOpen || inboxOpen || undefined}
+          inert={settingsOpen || inboxOpen || supervisorOpen}
+          aria-hidden={settingsOpen || inboxOpen || supervisorOpen || undefined}
         >
           {children}
         </div>
@@ -135,7 +138,16 @@ function AppShellInner({ children }: { children: ReactNode }) {
           // **受信箱は会話と同じ前面の1枚**（決定・2026-10-15、v4-frontend.md §6.41）。下の会話は捨てずに隠すだけ（inert）
           // ——閉じれば読んでいた位置のまま戻る。設定の面（z-30）より下
           <div className="absolute inset-0 z-20 flex flex-col">
-            <InboxPage onClose={() => stack.close("overlay")} />
+            <InboxPage onClose={() => stack.close("overlay")} onOpenSupervisor={() => stack.open({ overlay: "supervisor", settings: false })} />
+          </div>
+        ) : null}
+        {supervisorOpen ? (
+          // **番頭の画面も受信箱と同じ前面の1枚**（v4-frontend.md §6.54）。banto 全体のもの——どの Project を見ていても同じ
+          <div className="absolute inset-0 z-20 flex flex-col">
+            <SupervisorPage
+              onClose={() => stack.close("overlay")}
+              onOpenInbox={() => stack.open({ overlay: "inbox", settings: false })}
+            />
           </div>
         ) : null}
         {settingsOpen ? (

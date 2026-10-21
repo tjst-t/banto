@@ -88,6 +88,9 @@ export function CommandPalette({
       case "open-inbox":
         stack?.open({ overlay: "inbox", settings: false });
         break;
+      case "open-supervisor":
+        stack?.open({ overlay: "supervisor", settings: false });
+        break;
       case "open-project-settings":
         // 設定画面は1つ（§6.16）——この Project の層を開いた状態で行く
         if (projectId) navigateUrl(router, settingsOpenHref(pathname, withoutPalette(), { project: projectId }));

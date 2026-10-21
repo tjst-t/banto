@@ -12,6 +12,7 @@
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import type { RealNewProjectSettings } from "@/lib/backend/client";
+import { SUPERVISOR_LABEL } from "@/lib/supervisor-label";
 
 export type ProjectAiSwitchKey = keyof Required<RealNewProjectSettings>;
 
@@ -89,6 +90,15 @@ export function ProjectAiSwitchRow({
   );
 }
 
+/**
+ * **番頭を置く**（追加・2026-10-21、v4-frontend.md §6.54。Backlog #511）——新しい Project の画面だけ。初めはオフ。作ったあとに
+ * 番頭を置く（設定には持たない——番頭は番頭の画面で足し外しする）
+ */
+export const NEW_PROJECT_SUPERVISOR_SWITCH = {
+  label: `${SUPERVISOR_LABEL}を置く`,
+  description: `banto 全体の方針の範囲で、この Project の決めることに答え・止まった会話に決まった手順を頼む AI を置く（${SUPERVISOR_LABEL}の画面で外せます）`,
+} as const;
+
 /** 新しい Project の画面の3行（値は呼ぶ側が持つ） */
 export function NewProjectAiSwitches({
   value,
@@ -111,5 +121,20 @@ export function NewProjectAiSwitches({
         />
       ))}
     </section>
+  );
+}
+
+/**
+ * 「番頭を置く」の1行（3行の並びのすぐ下に置く——「この Project の AI」の3つは設定と同じ並びなので、そこには混ぜない）
+ */
+export function NewProjectSupervisorSwitch({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: (next: boolean) => void }) {
+  return (
+    <div data-testid="new-project-supervisor-row" className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="new-project-supervisor">{NEW_PROJECT_SUPERVISOR_SWITCH.label}</Label>
+        <p className="text-xs text-ink-3">{NEW_PROJECT_SUPERVISOR_SWITCH.description}</p>
+      </div>
+      <Switch id="new-project-supervisor" data-testid="new-project-supervisor" checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   );
 }
