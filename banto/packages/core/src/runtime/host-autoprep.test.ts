@@ -2,8 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import type { IncusResult } from "@banto/container";
-import { aptUsable, cloudInitWait, commonFixes, markAutoFixes, runFixes, runRootCommand, SSHD_CONF, sshdFix, AutoFixError, SUDO, type RootRun } from "./host-autoprep.js";
-import { probePrerequisites, type BaseProbe, type RuntimeCheck } from "./ssh.js";
+import {
+  aptUsable,
+  cloudInitWait,
+  commonFixes,
+  dockerFixCommands,
+  markAutoFixes,
+  mayInstallDocker,
+  runFixes,
+  runRootCommand,
+  SSHD_CONF,
+  sshdFix,
+  AutoFixError,
+  SUDO,
+  type RootRun,
+} from "./host-autoprep.js";
+import { installDockerOnMachine, probePrerequisites, type BaseProbe, type RuntimeCheck } from "./ssh.js";
 
 const values = (over: Record<string, string> = {}) =>
   new Map(
@@ -216,4 +230,113 @@ test("machine：sudo -n が通らない・ログインで何か出る相手に�
   const check = await probePrerequisites(target, files, "ssh-ed25519", "~/x", { stage: "check", run: host.run, base: host.base });
   assert.deepEqual(host.ran, []);
   assert.equal(check.checks.find((c) => c.id === "tools")!.status, "warn");
+});
+
+/** 偽の machine：Docker の様子を持ち、打たれた sudo で変える（docker グループは新しい接続から効く——様子を引き直すと見える） */
+function fakeDockerHost(over: Record<string, string> = {}) {
+  const v = values({ groups: "banto", ...over });
+  const ran: string[][] = [];
+  const base = async (): Promise<BaseProbe> => ({ probe: { before: "", values: new Map(v) }, forwarding: allForwarding, result: { code: 0, stdout: "", stderr: "" } });
+  const run = async (args: string[]): Promise<IncusResult> => {
+    assert.equal(args[0], SUDO);
+    if (v.get("sudo") !== "1") return { code: 1, stdout: "", stderr: "sudo: a password is required" };
+    const cmd = args.slice(2);
+    ran.push(cmd);
+    if (cmd.includes("install") && cmd.includes("docker.io")) v.set("tool.docker", "1");
+    if (cmd[0] === "usermod") v.set("groups", `${v.get("groups")} docker`);
+    if (cmd.join(" ") === "systemctl restart user@1000.service" && v.get("tool.docker") === "1" && /\bdocker\b/.test(v.get("groups")!)) v.set("docker", "1");
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { base: base as never, run, ran, v };
+}
+
+test("mayInstallDocker：人が開いた・人が送ったときだけ。自動化・届いたものでは入れない（#414）", () => {
+  assert.equal(mayInstallDocker("opened"), true);
+  assert.equal(mayInstallDocker("human"), true);
+  assert.equal(mayInstallDocker("automation"), false);
+  assert.equal(mayInstallDocker("delivery"), false);
+});
+
+test("「中で Docker を使う」Project を人が開く（machine・Docker が無い）：docker.io を入れ、docker グループに足し、ユーザーの systemd を起こし直す（#414）", async () => {
+  const host = fakeDockerHost({ cloudinit: "1" });
+  const { ran, skipped } = await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "opened", run: host.run, base: host.base });
+  assert.equal(skipped, undefined);
+  const apt = ["env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "apt-get", "-o", "DPkg::Lock::Timeout=300"];
+  assert.deepEqual(host.ran, [
+    ["timeout", "600", "cloud-init", "status", "--wait"],
+    [...apt, "update", "-q"],
+    [...apt, "install", "-y", "-q", "--no-install-recommends", "docker.io"],
+    ["systemctl", "enable", "--now", "docker.service"],
+    ["usermod", "-aG", "docker", "banto"],
+    ["systemctl", "restart", "user@1000.service"],
+  ]);
+  // 行ったことは「banto が向こうで行ったこと」の行になる（呼び手が確かめの一覧の最後に出す）
+  assert.deepEqual(ran.map((r) => r.display), [
+    "sudo cloud-init status --wait（cloud-init が終わるまで待つ）",
+    "sudo apt-get update",
+    "sudo apt-get install --no-install-recommends docker.io",
+    "sudo systemctl enable --now docker.service",
+    "sudo usermod -aG docker banto",
+    "sudo systemctl restart user@1000.service",
+  ]);
+  assert.equal(host.v.get("docker"), "1");
+
+  // 2回目（使えるようになった）は何もしない
+  host.ran.length = 0;
+  assert.deepEqual((await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "human", run: host.run, base: host.base })).ran, []);
+  assert.deepEqual(host.ran, []);
+});
+
+test("Docker は入っているがこのユーザーで使えない：入れ直さず、docker グループに足して起こし直すだけ。グループに居れば起こし直さない（#414）", async () => {
+  const host = fakeDockerHost({ "tool.docker": "1" });
+  await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "human", run: host.run, base: host.base });
+  assert.deepEqual(host.ran, [
+    ["systemctl", "enable", "--now", "docker.service"],
+    ["usermod", "-aG", "docker", "banto"],
+    ["systemctl", "restart", "user@1000.service"],
+  ]);
+  assert.deepEqual(dockerFixCommands(values({ "tool.docker": "1", groups: "banto docker" })).map((c) => c.args), [["systemctl", "enable", "--now", "docker.service"]]);
+});
+
+test("入れない：自動化・届いたもので起きた／sudo -n が通らない／apt の無い OS——何も打たない（呼び手は今どおり断る）（#414）", async () => {
+  for (const cause of ["automation", "delivery"] as const) {
+    const host = fakeDockerHost();
+    let probed = false;
+    const base = async () => {
+      probed = true;
+      return (host.base as unknown as () => Promise<BaseProbe>)();
+    };
+    const r = await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause, run: host.run, base: base as never });
+    assert.deepEqual(r.ran, []);
+    assert.match(r.skipped!, /人が作る・開くときではない/);
+    assert.equal(probed, false, "自動で起きたときに向こうへ繋いだ");
+    assert.deepEqual(host.ran, []);
+  }
+  const noSudo = fakeDockerHost({ sudo: "0" });
+  const r = await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "opened", run: noSudo.run, base: noSudo.base });
+  assert.deepEqual(r, { ran: [], skipped: "sudo -n が通らない" });
+  assert.deepEqual(noSudo.ran, []);
+  const noApt = fakeDockerHost({ apt: "0", "os.id": "fedora", "os.like": "" });
+  assert.equal((await installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "opened", run: noApt.run, base: noApt.base })).skipped, "apt で入れられない OS");
+  assert.deepEqual(noApt.ran, []);
+});
+
+test("入れている途中で落ちたら、どのコマンドが何と言ったかと、それまでに行ったことを添えて投げる（#414）", async () => {
+  const host = fakeDockerHost();
+  const run = async (args: string[]): Promise<IncusResult> =>
+    args.includes("docker.io") ? { code: 100, stdout: "", stderr: "E: Unable to locate package docker.io" } : host.run(args);
+  await assert.rejects(
+    installDockerOnMachine(target, files, "ssh-ed25519", "~/x", { cause: "opened", run, base: host.base }),
+    (err: unknown) =>
+      err instanceof AutoFixError && /docker\.io が失敗しました（終了コード 100）：E: Unable to locate package docker\.io/.test(err.message) && err.ran.length === 2,
+  );
+});
+
+test("machine の登録・確かめ直し（prepare）では Docker を入れない——使わない VM で dockerd を動かさない（#414）", async () => {
+  const host = fakeDockerHost();
+  const r = await probePrerequisites(target, files, "ssh-ed25519", "~/x", { stage: "prepare", run: host.run, base: host.base });
+  assert.ok(!host.ran.some((c) => c.includes("docker.io") || c.includes("docker")), JSON.stringify(host.ran));
+  const docker = r.checks.find((c) => c.id === "docker")!;
+  assert.equal(docker.status, "warn");
+  assert.match(docker.detail!, /人が作る・開くときに、sudo -n が通れば banto が入れます/);
 });

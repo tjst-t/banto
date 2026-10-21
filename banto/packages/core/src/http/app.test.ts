@@ -2810,6 +2810,37 @@ test("眠っている Project の会話に人が送ると、ターンを開く�
   );
 });
 
+test("人が開いた（prepare）・人が送ったときは、Module を起こす前に実行場所に足りないものを入れる口を、きっかけを添えて呼ぶ（#414）", async () => {
+  const order: string[] = [];
+  const seen: Array<{ prompt: string }> = [];
+  await withApp(
+    async (base, token, dir, deps) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("demo", dir);
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      assert.equal((await fetch(`${base}/api/projects/${project.id}/modules/prepare`, { method: "POST", headers })).status, 200);
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "やって" }) });
+      assert.equal(res.status, 200);
+      await res.text();
+      assert.deepEqual(order, [`prepare ${project.id} opened`, `clients ${project.id}`, `prepare ${project.id} human`, `modules ${thread.id}`]);
+    },
+    {
+      runTurn: recordingRunner(seen),
+      prepareProjectForPerson: async (id: string, cause: ProjectWokeCause) => {
+        order.push(`prepare ${id} ${cause}`);
+      },
+      resolveModuleClientsForProject: async (id: string) => {
+        order.push(`clients ${id}`);
+        return [];
+      },
+      resolveModulesForThread: async (id: string) => {
+        order.push(`modules ${id}`);
+        return [];
+      },
+    },
+  );
+});
+
 test("上限で止まった帯の印（rateLimitStop）は記録から導く——Clear・閉じた Fork で畳んだターンには出さない（v4-frontend.md §6.46）", () => {
   const base = { turnId: "t", startedSeq: 1, startedAt: "2026-10-18T00:00:00.000Z", cause: "human" as const, attempt: 0 };
   const of = (turn: Record<string, unknown> | undefined) => rateLimitStopOf({ lastTurn: turn as never });

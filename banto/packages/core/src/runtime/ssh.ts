@@ -13,7 +13,18 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { commonFixes, markAutoFixes, preparedCheck, runFixes, type RanCommand, type RootRun } from "./host-autoprep.js";
+import {
+  aptUsable,
+  commonFixes,
+  dockerFixCommands,
+  markAutoFixes,
+  mayInstallDocker,
+  preparedCheck,
+  runFixes,
+  type RanCommand,
+  type RootRun,
+} from "./host-autoprep.js";
+import type { ProjectWokeCause } from "../project-thread/types.js";
 
 /** 繋ぐ先（登録した1件の、SSH に要る分） */
 export interface SshTarget {
@@ -266,6 +277,8 @@ function probeScript(dataRoot: string, opts: { sudo?: boolean } = {}): string {
     `uid=$(id -u); user=$(id -un)`,
     `printf 'uid=%s\\nuser=%s\\nhome=%s\\n' "$uid" "$user" "$HOME"`,
     `printf 'gid=%s\\n' "$(id -g)"`,
+    // 補助のグループ（「中で Docker を使う」Project を人が開くときに、docker グループに足すか決める）
+    `printf 'groups=%s\\n' "$(id -nG)"`,
     `if [ -S "/run/user/$uid/bus" ]; then printf 'bus=1\\n'; else printf 'bus=0\\n'; fi`,
     `if [ -e "/var/lib/systemd/linger/$user" ]; then printf 'linger=1\\n'; else printf 'linger=0\\n'; fi`,
     `root=${remotePathExpr(dataRoot)}`,
@@ -443,7 +456,8 @@ export function evaluateProbe(
     ...(docker
       ? {}
       : {
-          detail: "Docker がないか、このユーザーでは使えません。「中で Docker を使う」Project では断ります。",
+          detail:
+            "Docker がないか、このユーザーでは使えません。「中で Docker を使う」Project を人が作る・開くときに、sudo -n が通れば banto が入れます（通らなければ断ります）。",
           fix: `sudo apt install docker.io && sudo usermod -aG docker ${user}`,
         }),
   });
@@ -517,6 +531,34 @@ export async function probePrerequisites(
   // 整えたあとに残ったものは、入れても直らなかった——「登録するときに入れます」とは言わない
   const checks = markAutoFixes(evaluateProbe(probe, forwarding, hostPlatform()), ran.length > 0 ? [] : fixes, stage, sudo);
   return { checks: ran.length > 0 ? [...checks, preparedCheck(ran)] : checks, result, ran };
+}
+
+/**
+ * **「中で Docker を使う」Project を人が作る・開くときに、Docker を入れる**（`machine`。v4-security.md §1「足りないものは banto が
+ * 入れる」の 5a.、Backlog #414）。登録では入れない（使わない VM で dockerd が資源を使わないよう）。使えていれば何もしない。
+ * 自動化・届いたもので起きたとき・sudo -n が通らない・apt の無い OS では入れずに `skipped` を返す（呼び手は今どおり断る）。
+ * 途中で落ちたら `AutoFixError`（それまでに行ったことを添える）
+ */
+export async function installDockerOnMachine(
+  t: SshTarget,
+  files: SshFiles,
+  hostKeyType: string,
+  dataRoot: string,
+  opts: { cause: ProjectWokeCause; run?: RootRun; log?: (line: string) => void; base?: typeof probeBase },
+): Promise<{ ran: RanCommand[]; skipped?: string }> {
+  if (!mayInstallDocker(opts.cause)) return { ran: [], skipped: "人が作る・開くときではない" };
+  const { probe } = await (opts.base ?? probeBase)(t, files, hostKeyType, dataRoot, { sudo: true });
+  if (!probe) return { ran: [], skipped: "向こうの様子を引けない" };
+  const v = probe.values;
+  const commands = dockerFixCommands(v);
+  if (commands.length === 0) return { ran: [] };
+  if (v.get("sudo") !== "1") return { ran: [], skipped: "sudo -n が通らない" };
+  if (!aptUsable(v) && v.get("tool.docker") !== "1") return { ran: [], skipped: "apt で入れられない OS" };
+  const ran = await runFixes(opts.run ?? sshRun(t, files, hostKeyType), [{ id: "docker", commands }], {
+    labelOf: () => "Docker（中で Docker を使う）",
+    ...(opts.log ? { log: opts.log } : {}),
+  });
+  return { ran };
 }
 
 /**

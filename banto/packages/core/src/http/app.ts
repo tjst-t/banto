@@ -375,6 +375,12 @@ export interface AppDeps {
    */
   projectSleep?: Pick<ProjectSleep, "sleep" | "wake" | "preview" | "noteHuman" | "partlyAwake">;
   /**
+   * **Module を起こす前に、人が開いた・送ったときだけ実行場所に足りないものを入れる**（v4-security.md §1「足りないものは banto が
+   * 入れる」の 5a.、Backlog #414——`machine` の「中で Docker を使う」Project の Docker）。きっかけ（`cause`）で決めるのは呼ばれた側。
+   * 投げない。無ければ何もしない
+   */
+  prepareProjectForPerson?(projectId: string, cause: ProjectWokeCause): Promise<void>;
+  /**
    * **しばらく開いていない Project**（決定・2026-10-16、アーキ仕様 §2.2）。人の操作を数え、時計が覚えた候補を
    * `GET /api/projects` の `idle` に添え、「今はしない」を受ける。無ければ数えず、`idle` も出さない
    */
@@ -1713,6 +1719,14 @@ export function createApp(deps: AppDeps) {
       yield { type: "error", message: moving };
       return;
     }
+    // 人が送ったなら、Module を起こす前に実行場所に足りないもの（「中で Docker を使う」の Docker）を入れる。自動化・届いたものでは
+    // 入れない（Module を起こすところで今どおり断る）
+    if (!idleCompaction && wakeProjectId !== undefined && deps.prepareProjectForPerson) {
+      if ((await unlessStopped(deps.prepareProjectForPerson(wakeProjectId, cause))) === STOPPED) {
+        yield withdrawnNow();
+        return;
+      }
+    }
     const modulesOrStopped = await unlessStopped(deps.resolveModulesForThread(threadId));
     if (modulesOrStopped === STOPPED) {
       yield withdrawnNow();
@@ -2794,7 +2808,11 @@ export function createApp(deps: AppDeps) {
       if (prepareMatch && req.method === "POST") {
         // **眠っていれば起こす**（決定・2026-10-16、アーキ仕様 §2.2「起こす」の (a)）——画面が Project を開いた・「起こす」を
         // 押した。起こす専用の口は作らない。眠らせている途中なら、終わるまで待ってから
-        if (deps.projectThread.getProject(prepareMatch[1]!)) await deps.projectSleep?.wake(prepareMatch[1]!, "opened");
+        if (deps.projectThread.getProject(prepareMatch[1]!)) {
+          await deps.projectSleep?.wake(prepareMatch[1]!, "opened");
+          // 人が開いた——Module を起こす前に実行場所に足りないもの（「中で Docker を使う」の Docker）を入れる（Backlog #414）
+          await deps.prepareProjectForPerson?.(prepareMatch[1]!, "opened");
+        }
         const clients = (await deps.resolveModuleClientsForProject?.(prepareMatch[1]!)) ?? [];
         json(res, 200, { connected: clients.map((c) => c.name) });
         return;

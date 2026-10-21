@@ -115,6 +115,7 @@ import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { RateLimitContinuations } from "./delivery/rate-limit-continuation.js";
 import { rateLimitWaitOf } from "./project-thread/rate-limit-wait.js";
+import type { ProjectWokeCause } from "./project-thread/types.js";
 import { ReviewToolCounter, reviewDueAfterTurn } from "./inbox/review-turn.js";
 import { acknowledgesReviewsOnStart, planAutomationReview } from "./inbox/automation-review.js";
 import { Missions, planMissionReview } from "./mission/missions.js";
@@ -2703,6 +2704,19 @@ async function main(): Promise<void> {
     return connectedModules.has(declaration.name) ? declaration.name : undefined;
   }
 
+  /**
+   * **人が作る・開く・送ったときだけ、Module を起こす前に実行場所に足りないものを入れる**（v4-security.md §1「足りないものは banto が
+   * 入れる」の 5a.、Backlog #414）。いまは `machine` の「中で Docker を使う」Project の Docker だけ。入れたら、その Project の Module の
+   * 試し直しの間を忘れる（Docker が無くて断ったのを覚えていると、入れたあとも間が明けるまで起こさない）。投げない
+   */
+  async function prepareProjectForPerson(projectId: string, cause: ProjectWokeCause): Promise<void> {
+    if (!remoteSsh.handles(projectId)) return;
+    if (!(await remoteSsh.installDockerForPerson(projectId, projectNesting(projectId), cause))) return;
+    for (const d of loadModuleDeclarations(runtimeConfig, projectId)) {
+      if (d.meta.scope === "project") connectBackoff.clear(`${d.name}-${projectId}`);
+    }
+  }
+
   async function resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]> {
     const thread = projectThread.getThread(threadId);
     if (!thread) return [];
@@ -3137,6 +3151,8 @@ async function main(): Promise<void> {
     wakeShell: async (projectId) => {
       const project = projectThread.getProject(projectId);
       if (!project) throw new Error("Project がありません");
+      // 人が作った Project の始め方——Shell を起こす前に、足りないもの（「中で Docker を使う」の Docker）を入れる（Backlog #414）
+      await prepareProjectForPerson(projectId, "human");
       const declaration = loadModuleDeclarations(runtimeConfig, projectId).find(
         (d) => d.meta.scope === "project" && (d.meta.satisfies as string[]).includes("shell"),
       );
@@ -3387,6 +3403,7 @@ async function main(): Promise<void> {
       },
     },
     resolveModulesForThread,
+    prepareProjectForPerson,
     resolveSessionSkills,
     // **Shell 専用のホームに写すもの**（決定・2026-09-23）。変えたら、立っている Shell にも写し直す
     shellHome: {
