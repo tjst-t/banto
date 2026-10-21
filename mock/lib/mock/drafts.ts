@@ -30,6 +30,8 @@ export interface DraftInfo {
   files: number;
   /** AI が付けた名前か（人が付けたら false） */
   autoTitled: boolean;
+  /** 最初の書き込みから AI が題を考えている途中 */
+  titling?: boolean;
 }
 
 export interface ClosedDraft {
@@ -231,6 +233,62 @@ export function createDraft(): MockProject {
       [id]: { projectId: id, lastUsed: "たった今", rank: Math.min(0, ...ranks) - 1, machine: "none", files: 0, autoTitled: true },
     },
   });
+  return project;
+}
+
+/** 題の候補（モックでは書き込みの最初の文を縮めたもの。本物は小さいモデルが1回で決める） */
+function titleFrom(text: string): string {
+  const first = text.split(/[。？?！!\n]/)[0].trim() || text.trim();
+  return first.length > 22 ? `${first.slice(0, 21)}…` : first;
+}
+
+/**
+ * 新しいチャットの最初の書き込み。**ここで初めて Project を作る**（新しいチャットの画面を開いただけでは作らない）。
+ * 作ったあと AI が書き込みから題を決める（モックでは 1.5 秒後に付く）
+ */
+export function startDraftWithMessage(text: string): MockProject {
+  const n = state.counter;
+  const id = `d-new-${n}`;
+  const project: MockProject = {
+    id,
+    name: "新しいチャット",
+    initial: "新",
+    baseThreadId: `${id}-base`,
+    basePath: `~/banto/chats/2026-10-21-${n}`,
+    status: "active",
+    draft: true,
+  };
+  addProjectRecord(project);
+  addThreadRecord({
+    id: `${id}-base`,
+    projectId: id,
+    kind: "base",
+    title: project.name,
+    parentThreadId: null,
+    script: {
+      seed: [
+        U(text),
+        T("いいですね。まず、誰がどんなときに使うものかを教えてください。それによって、話して決めるだけで足りるか、小さく試作して確かめるのがよいかが変わります。"),
+      ],
+      replies: genericReplies,
+    },
+    status: "open",
+  });
+  const ranks = Object.values(state.drafts).map((d) => d.rank);
+  set({
+    counter: n + 1,
+    drafts: {
+      ...state.drafts,
+      [id]: { projectId: id, lastUsed: "たった今", rank: Math.min(0, ...ranks) - 1, machine: "none", files: 0, autoTitled: true, titling: true },
+    },
+  });
+  setTimeout(() => {
+    const title = titleFrom(text);
+    updateProjectRecord(id, { name: title, initial: title.slice(0, 1) });
+    renameThreadRecord(`${id}-base`, title);
+    const d = state.drafts[id];
+    if (d) set({ drafts: { ...state.drafts, [id]: { ...d, titling: false } } });
+  }, 1500);
   return project;
 }
 

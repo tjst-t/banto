@@ -177,6 +177,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
+  useMockStoreVersion(); // チャットの題は最初の書き込みのあと AI が付ける——付いたらヘッダも替える
   const [promoting, setPromoting] = useState(false);
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
 

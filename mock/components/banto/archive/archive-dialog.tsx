@@ -11,8 +11,7 @@
 // 開く（use-panel-stack.ts の "archive"）。
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Clock, FolderGit2, GitFork, MessageCircle, RotateCcw, Search, type LucideIcon } from "lucide-react";
-import { getClosedDrafts, getDraftSettings, reopenDraft } from "@/lib/mock/drafts";
+import { ChevronRight, Clock, FolderGit2, GitFork, RotateCcw, Search, type LucideIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -138,10 +137,7 @@ export function ArchiveDialog({
     ? getClosedForksForProject(projectId).filter((t) => t.title.toLowerCase().includes(q))
     : [];
   const closedProjects = getClosedProjects().filter((p) => p.name.toLowerCase().includes(q));
-  // 閉じたチャット（モック・2026-10-21）：Project と同じ「終わっただけ、開き直せる」もの
-  const closedChats = getClosedDrafts().filter((c) => c.title.toLowerCase().includes(q));
-  const { cleanup } = getDraftSettings();
-  const isEmpty = closedForks.length === 0 && closedProjects.length === 0 && closedChats.length === 0;
+  const isEmpty = closedForks.length === 0 && closedProjects.length === 0;
 
   function toggle(id: string) {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -208,36 +204,6 @@ export function ArchiveDialog({
                   onReopen={() => handleReopenFork(thread.id)}
                 >
                   <ThreadOverviewContent thread={thread} />
-                </ArchiveRow>
-              ))}
-            </div>
-          ) : null}
-
-          {closedChats.length > 0 ? (
-            <div className="mb-3">
-              <p className="mb-1 px-1 text-xs font-medium text-ink-3">
-                閉じたチャット
-                <span className="ml-2 font-normal">
-                  {cleanup === "off" ? "自動では閉じません" : `${cleanup}日触らなかったものは自動で閉じます`}（設定の「チャット」）
-                </span>
-              </p>
-              {closedChats.map((c) => (
-                <ArchiveRow
-                  key={c.id}
-                  icon={MessageCircle}
-                  title={c.title}
-                  subtitle={`${c.closedAt}・${c.why}`}
-                  expanded={expandedId === c.id}
-                  onToggle={() => toggle(c.id)}
-                  onReopen={() => {
-                    const id = reopenDraft(c.id);
-                    setQuery("");
-                    if (id) router.push(`/p/${id}`);
-                  }}
-                >
-                  <p className="text-xs text-ink-2">
-                    会話とフォルダは残っています。コンテナは閉じたときに消したので、開き直すと話すだけの状態から始まり、試作を続けるときに作り直します。
-                  </p>
                 </ArchiveRow>
               ))}
             </div>

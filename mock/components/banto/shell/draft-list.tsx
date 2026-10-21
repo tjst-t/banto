@@ -2,15 +2,17 @@
 
 // サイドバーの「チャット」（モック・2026-10-21、Fork「Project 作成前の検討」）。
 //
-// Claude のチャットのように、押せばすぐ始まる。名前もフォルダも聞かない。中身は普通の Project。
-// 見出しを押すと畳める（Project の一覧を広く使いたいとき）。畳んでいても「＋」で始められる。
-// 並ぶのは最近のものだけ（5件まで。残りは「ほかに N 件」）。閉じたチャットは「履歴」に出る。
+// Claude のチャットのように、「＋」で新しいチャットの画面が開く（この時点では Project を作らない。
+// 最初の書き込みで作り、AI が書き込みから題を付ける）。中身は普通の Project。
+// 見た目は下の「Project」の一覧に合わせる：見出しの右に「畳む・開く」と「＋」、一番下に「閉じたチャット」
+// （Project の「スリープ中」と同じ形。既定で畳んであり、開くと薄い行が並び、押せば開き直す）。
+// 並ぶのは最近のものだけ（5件まで。残りは「ほかに N 件」）。
 // 行の右の小さな印でコンテナの様子が分かる：
 //   印なし=話すだけ（コンテナを作っていない）／緑の点=試作のコンテナが動いている／月=眠っている
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronRight, MessageSquarePlus, Moon, MoreHorizontal, Plus, Rocket, X } from "lucide-react";
+import { Archive, ChevronRight, ChevronsDownUp, ChevronsUpDown, Moon, MoreHorizontal, Plus, Rocket, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,7 +22,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   SidebarGroup,
-  SidebarGroupAction,
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuButton,
@@ -28,7 +29,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import { closeDraft, createDraft, getDrafts, type DraftMachine } from "@/lib/mock/drafts";
+import { closeDraft, getClosedDrafts, getDrafts, reopenDraft, type DraftMachine } from "@/lib/mock/drafts";
 import { cn } from "@/lib/utils";
 import { PromoteDialog } from "@/components/banto/project/promote-dialog";
 
@@ -53,57 +54,76 @@ export function MachineMark({ machine }: { machine: DraftMachine }) {
   );
 }
 
+const ICON_BUTTON = "flex size-5 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground";
+
 export function DraftList({ activeProjectId, onNavigate }: { activeProjectId: string | null; onNavigate?: () => void }) {
   useMockStoreVersion();
   const router = useRouter();
   const drafts = getDrafts();
+  const closed = getClosedDrafts();
   const [open, setOpen] = useState(true);
+  const [closedOpen, setClosedOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [promoteId, setPromoteId] = useState<string | null>(null);
   const shown = showAll ? drafts : drafts.slice(0, SHOWN);
   const running = drafts.filter((d) => d.info.machine === "running").length;
 
-  function startNew() {
-    const p = createDraft();
-    setOpen(true);
-    onNavigate?.();
-    router.push(`/p/${p.id}`);
-  }
-
   return (
     <SidebarGroup>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 hover:bg-sidebar-accent"
-      >
-        <span>チャット</span>
-        <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden />
-        {!open && drafts.length > 0 ? (
-          <span className="ml-1 font-normal text-ink-3">
-            {drafts.length}
-            {running > 0 ? `（試作中 ${running}）` : ""}
-          </span>
-        ) : null}
-      </button>
-      <SidebarGroupAction onClick={startNew} aria-label="新しいチャット" title="新しいチャット">
-        <Plus />
-      </SidebarGroupAction>
+      {/* 見出し：「Project」の見出しと同じ形 */}
+      <div className="group/heading flex h-8 shrink-0 items-center gap-0.5 rounded-md px-2 text-xs font-medium text-sidebar-foreground/70">
+        <span className="flex-1">
+          チャット
+          {!open && drafts.length > 0 ? (
+            <span className="ml-1.5 font-normal text-ink-3">
+              {drafts.length}
+              {running > 0 ? `（試作中 ${running}）` : ""}
+            </span>
+          ) : null}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={open ? "チャットの一覧を畳む" : "チャットの一覧を開く"}
+              aria-expanded={open}
+              onClick={() => setOpen((v) => !v)}
+              className={ICON_BUTTON}
+            >
+              {open ? <ChevronsDownUp className="size-4" /> : <ChevronsUpDown className="size-4" />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{open ? "畳む" : "開く"}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="新しいチャット"
+              onClick={() => {
+                onNavigate?.();
+                router.push("/chat/new");
+              }}
+              className={ICON_BUTTON}
+            >
+              <Plus className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">新しいチャット</TooltipContent>
+        </Tooltip>
+      </div>
       {open ? (
         <SidebarGroupContent>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton onClick={startNew} className="text-foreground">
-                <MessageSquarePlus />
-                <span className="truncate">新しいチャット</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
             {shown.map(({ project, info }) => (
               <SidebarMenuItem key={project.id} className="group/draft">
                 <SidebarMenuButton asChild isActive={project.id === activeProjectId} className="pr-7">
                   <Link href={`/p/${project.id}`} onClick={onNavigate}>
-                    <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                    {info.titling ? (
+                      <span className="min-w-0 flex-1 animate-pulse truncate text-ink-3">題を考えています…</span>
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                    )}
                     <MachineMark machine={info.machine} />
                   </Link>
                 </SidebarMenuButton>
@@ -121,6 +141,52 @@ export function DraftList({ activeProjectId, onNavigate }: { activeProjectId: st
                   <span>{showAll ? "最近のものだけ" : `ほかに ${drafts.length - SHOWN} 件`}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+            ) : null}
+            {closed.length > 0 ? (
+              <>
+                {/* 一番下の「閉じたチャット」：Project の「スリープ中」と同じ形 */}
+                <li className="relative flex h-8 items-center rounded-md">
+                  <button
+                    type="button"
+                    onClick={() => setClosedOpen((v) => !v)}
+                    aria-expanded={closedOpen}
+                    className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-8 pl-2 text-left text-ink-3 hover:bg-accent hover:text-foreground"
+                  >
+                    <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
+                      <Archive className="size-3.5" />
+                    </span>
+                    <span className="truncate text-sm">閉じたチャット</span>
+                    <span className="ml-auto text-xs tabular-nums">{closed.length}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClosedOpen((v) => !v)}
+                    aria-label={`閉じたチャットを${closedOpen ? "畳む" : "開く"}`}
+                    className="absolute top-1.5 right-1 flex size-5 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent"
+                  >
+                    <ChevronRight className={cn("size-4 transition-transform", closedOpen && "rotate-90")} />
+                  </button>
+                </li>
+                {closedOpen
+                  ? closed.map((c) => (
+                      <SidebarMenuItem key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const id = reopenDraft(c.id);
+                            onNavigate?.();
+                            if (id) router.push(`/p/${id}`);
+                          }}
+                          title={`押すと開き直します（${c.closedAt}・${c.why}）`}
+                          className="flex h-8 w-full items-center gap-2 rounded-md pr-2 pl-8 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
+                        >
+                          <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                          <span className="shrink-0 text-xs">{c.closedAt}</span>
+                        </button>
+                      </SidebarMenuItem>
+                    ))
+                  : null}
+              </>
             ) : null}
           </SidebarMenu>
         </SidebarGroupContent>

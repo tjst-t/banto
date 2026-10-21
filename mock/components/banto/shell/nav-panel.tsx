@@ -315,6 +315,7 @@ export function NavPanel({
 }) {
   const judgmentCount = getJudgmentCount();
   const navSearchParams = useSearchParams();
+  const navPathname = usePathname();
   const hostSnap = getResourcesSnapshot(parseResourcesDemo(navSearchParams.get("resources-demo")));
   const { containerRef, onKeyDown } = useRovingFocus<HTMLUListElement>();
   // 開いている Project の目次は既定で開く。人が畳んだ／開いたときだけ、その
@@ -428,7 +429,7 @@ export function NavPanel({
               設定に辿り着けない状態を避ける。instance 設定は Project の
               外側にあるので、Project 一覧とは分けてここに置く */}
           <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={activeProjectId === null}>
+            <SidebarMenuButton asChild isActive={navPathname.startsWith("/settings")}>
               <Link
                 href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
                 onClick={onNavigate}

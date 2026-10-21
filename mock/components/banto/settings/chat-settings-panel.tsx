@@ -46,7 +46,7 @@ export function ChatSettingsPanel() {
           ]}
         />
         <p className="text-xs text-ink-3">
-          閉じるとコンテナを消し、会話とフォルダは残します。履歴から開き直せます。Project にしたものは閉じません。
+          閉じるとコンテナを消し、会話とフォルダは残します。サイドバーの「閉じたチャット」から開き直せます。Project にしたものは閉じません。
         </p>
       </section>
     </div>
