@@ -37,8 +37,9 @@ export default function BackgroundWorkMockPage() {
   // サイドバーの1件から開いたときは、狭い画面でも一覧でなくその1件の中身から見せる（本物は toolCallId で1件を選んで開く）
   const [fromSidebar, setFromSidebar] = useState(false);
   return (
-    <div className="flex min-h-dvh flex-col bg-background">
-      <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap border-b border-border bg-surface-2 px-4 py-2 text-xs text-ink-2">
+    // 見本の共通の layout は body を overflow-hidden にしている（本物の画面と同じ）ので、このページは自分で縦に送る
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background">
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap border-b border-border bg-surface-2 px-4 py-2 text-xs text-ink-2">
         <span className="shrink-0 font-medium text-foreground">見本の場面：</span>
         {(
           [
