@@ -13,10 +13,75 @@ import type { RunResult } from "./acp-run.js";
 
 export type RunStatus = "running" | "done" | "cancelled" | "error";
 
+/** 経過の1件の状態（ACP の `ToolCallStatus`）。**前の版の記録には無い**——仕事が終わっていれば済みとして見せる */
+export type StepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/**
+ * **経過の1件**（改訂・2026-10-21、アーキ仕様 §4.1「仕事の画面で、いま何をしているかを分かるようにする」）。tool の呼び出し
+ * ごとに1件（`toolCallId` で引き当て、`tool_call_update` で題・説明・触ったファイル・状態を書き換える）か、途中の発言1つ
+ * （種類 `message`。tool の呼び出しを挟むたびに区切る。題がその文）
+ */
 export interface RunStep {
   at: number;
   title: string;
+  /** ACP の `kind`（read・edit・execute…）か `message`（途中の発言） */
   kind?: string;
+  toolCallId?: string;
+  status?: StepStatus;
+  /** 終わった時刻（completed・failed が届いたとき） */
+  finishedAt?: number;
+  /** tool の引数の `description`（Claude の Bash の「テストを流す」など）。エージェントが持たせたときだけ */
+  description?: string;
+  /** 触ったファイル（`locations`。作業場所からの相対、外は絶対パス） */
+  files?: string[];
+  /** 大きさの上限で切った */
+  truncated?: true;
+  /** **走っている間だけ**の版（何番目の書き換えで最後に変わったか）。画面の差分取り（`sinceStep`）に使い、終われば消す */
+  v?: number;
+}
+
+/** やること一覧の1項目（ACP の `plan` の entry） */
+export interface PlanEntry {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/** 触ったファイル（書いた・読んだ回数と最後の時刻） */
+export interface TouchedFile {
+  path: string;
+  wrote: number;
+  read: number;
+  lastAt: number;
+}
+
+/** tool の呼び出しの始まり（`acp-run.ts` が ACP の `tool_call` から作る） */
+export interface ToolCallView {
+  toolCallId: string;
+  title: string;
+  kind?: string;
+  status?: StepStatus;
+  description?: string;
+  files?: string[];
+}
+
+/** **記録の大きさの上限**（アーキ仕様 §4.1。数字は最初の値） */
+export const STEPS_MAX = 1000;
+export const STEP_TITLE_MAX = 300;
+export const STEP_DESCRIPTION_MAX = 200;
+export const MESSAGE_MAX = 2000;
+export const STEP_BYTES_MAX = 16 * 1024;
+
+/** 1行に収めて max 字で切る（越えたら「…」） */
+export function clipLine(s: string, max: number): string {
+  const line = s.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+/** 書いた（edit・delete・move）か読んだ（read）か。ほかの種類（search・execute・fetch…）は数えない */
+function touchOf(kind: string | undefined): "wrote" | "read" | undefined {
+  if (kind === "edit" || kind === "delete" || kind === "move") return "wrote";
+  if (kind === "read") return "read";
+  return undefined;
 }
 
 export interface RunRecord {
@@ -48,8 +113,21 @@ export interface RunRecord {
   /** 走っている間の最後の様子（`ツール：…`・`作業中（…）` など） */
   lastProgress?: string;
   toolCalls: string[];
-  /** 呼んだ tool の順と時刻と種類（ACP の `kind`：read・edit・execute…）——画面の「経過」 */
+  /** 経過——呼んだ tool と途中の発言を順に（新しい `STEPS_MAX` 件まで） */
   steps: RunStep[];
+  /** 上限を越えて畳んだ古い経過の数（画面の「ほか n 件」。経過の番号は `stepsOmitted + 何番目`） */
+  stepsOmitted?: number;
+  /** 走っている間の経過の版（書き換えるたびに1つ進む）。画面は `getRun` の `sinceStep` にこれを渡して差分を取る */
+  stepVersion?: number;
+  /** やること一覧（`plan` の最新。置き換えで持つ） */
+  plan?: PlanEntry[];
+  /** 触ったファイル（tool の種類で書いた・読んだを数える） */
+  files?: TouchedFile[];
+  /**
+   * **起こし直しのあと続けた仕事**（追加・2026-10-21）。起こし直しより前の経過・やること・触ったファイルを持たない
+   * ——画面はそう断る
+   */
+  continuedAfterRestart?: true;
   sessionId?: string;
   stopReason?: string;
   text?: string;
@@ -65,7 +143,15 @@ export interface RunRecord {
 export type RunSummary = Pick<
   RunRecord,
   "id" | "agent" | "agentTitle" | "status" | "startedAt" | "finishedAt" | "lastProgress" | "cost" | "model"
-> & { promptHead: string; toolCount: number; lastStep?: RunStep };
+> & {
+  promptHead: string;
+  toolCount: number;
+  lastStep?: RunStep;
+  /** 走っている間の「いまやっていること」（動いている tool の説明か題。無ければ最後の発言の頭） */
+  current?: { kind: string; title: string };
+  /** やること一覧の進み（済んだ数／全部） */
+  plan?: { done: number; total: number };
+};
 
 const HEAD = 80;
 
@@ -77,6 +163,33 @@ export interface RunPage {
   runs: RunSummary[];
   /** 覚えている終わった仕事の総数 */
   finishedTotal: number;
+}
+
+function findLast<T>(items: T[], match: (item: T) => boolean): T | undefined {
+  for (let i = items.length - 1; i >= 0; i--) if (match(items[i]!)) return items[i];
+  return undefined;
+}
+
+/** いまやっていること：動いている tool の最後（説明があれば説明）、無ければ最後の発言の頭 */
+function currentOf(r: RunRecord): { kind: string; title: string } | undefined {
+  const tool = findLast(r.steps, (s) => s.kind !== "message" && (s.status === "pending" || s.status === "in_progress"));
+  if (tool) return { kind: tool.kind ?? "other", title: tool.description ?? tool.title };
+  const said = findLast(r.steps, (s) => s.kind === "message");
+  return said ? { kind: "message", title: clipLine(said.title, 120) } : undefined;
+}
+
+const bytesOf = (step: RunStep) => Buffer.byteLength(JSON.stringify(step));
+
+/** 1件を `STEP_BYTES_MAX` に収める。越えたら触ったファイルを後ろから落とし、それでも越えれば題を詰める（切った印を付ける） */
+function fitStep(step: RunStep): void {
+  if (bytesOf(step) <= STEP_BYTES_MAX) return;
+  step.truncated = true;
+  // 越えた割合だけまとめて落とす（1つずつ量り直さない）
+  while (step.files && step.files.length > 0 && bytesOf(step) > STEP_BYTES_MAX) {
+    const keep = Math.floor((step.files.length * STEP_BYTES_MAX) / bytesOf(step)) - 1;
+    step.files.length = Math.max(0, Math.min(step.files.length - 1, keep));
+  }
+  while (bytesOf(step) > STEP_BYTES_MAX && step.title.length > 0) step.title = step.title.slice(0, Math.floor(step.title.length / 2));
 }
 
 export class RunLog {
@@ -139,7 +252,7 @@ export class RunLog {
         startedAt: continues?.startedAt ?? Date.now(),
         toolCalls: [],
         steps: [],
-        ...(continues ? { notes: continues.notes } : {}),
+        ...(continues ? { notes: continues.notes, continuedAfterRestart: true as const } : {}),
       },
       abort,
     });
@@ -151,11 +264,96 @@ export class RunLog {
     if (r) r.record.lastProgress = message;
   }
 
-  toolCall(id: string, title: string, kind?: string): void {
+  /** tool の呼び出しが始まった——経過に1件足す（題は仮のことがある。本当の題は `toolUpdate` で届く） */
+  toolCall(id: string, call: ToolCallView): void {
     const r = this.running.get(id);
     if (!r) return;
-    r.record.toolCalls.push(title);
-    r.record.steps.push({ at: Date.now(), title, ...(kind ? { kind } : {}) });
+    const at = Date.now();
+    r.record.toolCalls.push(clipLine(call.title, STEP_TITLE_MAX));
+    const step: RunStep = { at, title: "", toolCallId: call.toolCallId, status: call.status ?? "pending" };
+    this.push(r.record, step);
+    this.applyTool(r.record, step, call, at);
+  }
+
+  /** tool の呼び出しの書き換え（`tool_call_update`）。届いた欄だけ変える。知らない呼び出しは何もしない */
+  toolUpdate(id: string, toolCallId: string, changes: Partial<Omit<ToolCallView, "toolCallId">>): void {
+    const r = this.running.get(id);
+    if (!r) return;
+    const step = findLast(r.record.steps, (s) => s.toolCallId === toolCallId);
+    if (!step) return;
+    // 走っている間の `toolCalls` は数を見るだけ（終われば `acp-run.ts` が本当の題で返した一覧に置き換わる）
+    this.applyTool(r.record, step, changes, Date.now());
+  }
+
+  /** 途中の発言の一片。直前の経過が発言ならそこに足し、tool を挟んでいたら新しい1件にする */
+  message(id: string, chunk: string): void {
+    const r = this.running.get(id);
+    if (!r || chunk === "") return;
+    const last = r.record.steps.at(-1);
+    if (last && last.kind === "message") {
+      if (last.truncated) return;
+      const joined = last.title + chunk;
+      last.title = joined.length > MESSAGE_MAX ? `${joined.slice(0, MESSAGE_MAX)}…` : joined;
+      if (joined.length > MESSAGE_MAX) last.truncated = true;
+      this.bump(r.record, last);
+      return;
+    }
+    const step: RunStep = { at: Date.now(), kind: "message", title: chunk.slice(0, MESSAGE_MAX) };
+    if (chunk.length > MESSAGE_MAX) {
+      step.title += "…";
+      step.truncated = true;
+    }
+    this.push(r.record, step);
+  }
+
+  /** やること一覧（届くたびに丸ごと置き換える） */
+  plan(id: string, entries: PlanEntry[]): void {
+    const r = this.running.get(id);
+    if (r) r.record.plan = entries.map((e) => ({ content: clipLine(e.content, STEP_TITLE_MAX), status: e.status }));
+  }
+
+  private push(record: RunRecord, step: RunStep): void {
+    record.steps.push(step);
+    if (record.steps.length > STEPS_MAX) {
+      const over = record.steps.length - STEPS_MAX;
+      record.steps.splice(0, over);
+      record.stepsOmitted = (record.stepsOmitted ?? 0) + over;
+    }
+    this.bump(record, step);
+  }
+
+  private bump(record: RunRecord, step: RunStep): void {
+    record.stepVersion = (record.stepVersion ?? 0) + 1;
+    step.v = record.stepVersion;
+  }
+
+  /** 題・種類・状態・説明・触ったファイルを書き、新しく触ったファイルを数え、1件の大きさを上限に収める */
+  private applyTool(record: RunRecord, step: RunStep, changes: Partial<Omit<ToolCallView, "toolCallId">>, at: number): void {
+    if (changes.title !== undefined) step.title = clipLine(changes.title, STEP_TITLE_MAX);
+    if (changes.kind !== undefined) step.kind = changes.kind;
+    if (changes.description !== undefined) step.description = clipLine(changes.description, STEP_DESCRIPTION_MAX);
+    if (changes.status !== undefined) {
+      step.status = changes.status;
+      if ((changes.status === "completed" || changes.status === "failed") && step.finishedAt === undefined) step.finishedAt = at;
+    }
+    if (changes.files !== undefined) {
+      const before = new Set(step.files ?? []);
+      const touch = touchOf(step.kind);
+      for (const path of changes.files) {
+        if (before.has(path) || !touch) continue;
+        const files = (record.files ??= []);
+        const found = files.find((f) => f.path === path);
+        if (found) {
+          found[touch] += 1;
+          found.lastAt = at;
+        } else {
+          files.push({ path, wrote: touch === "wrote" ? 1 : 0, read: touch === "read" ? 1 : 0, lastAt: at });
+        }
+      }
+      step.files = [...new Set([...(step.files ?? []), ...changes.files])];
+    }
+    fitStep(step);
+    this.bump(record, step);
   }
 
   /** 書きかけの返答（走っている間だけ。終わったら返り値の全文で置き換わる） */
@@ -170,6 +368,9 @@ export class RunLog {
     this.running.delete(id);
     const base = { ...r.record, finishedAt: Date.now() };
     delete base.lastProgress;
+    // 版は走っている間の差分取りのためだけ——終わった仕事の画面は丸ごと読む
+    delete base.stepVersion;
+    base.steps = base.steps.map(({ v: _v, ...step }) => step);
     const record: RunRecord =
       "result" in outcome
         ? {
@@ -237,11 +438,27 @@ export class RunLog {
       promptHead: r.prompt.length > HEAD ? `${r.prompt.slice(0, HEAD)}…` : r.prompt,
       toolCount: r.toolCalls.length,
       ...(r.status === "running" && r.steps.length ? { lastStep: r.steps[r.steps.length - 1] } : {}),
+      ...(r.status === "running" && currentOf(r) ? { current: currentOf(r)! } : {}),
+      ...(r.plan?.length ? { plan: { done: r.plan.filter((p) => p.status === "completed").length, total: r.plan.length } } : {}),
     });
     const running = [...this.running.values()].map((r) => r.record).sort((a, b) => b.startedAt - a.startedAt);
     // 同じ時刻なら後から足したほうを先に（並べ替えは安定なので、逆順にしてから並べる）
     const finished = [...this.finished].reverse().sort((a, b) => b.startedAt - a.startedAt);
     return [...running, ...finished].map(summarize);
+  }
+
+  /**
+   * **画面に渡す1件**（`getRun`）。`sinceStep` を渡すと、走っている仕事なら**その版より後に変わった経過だけ**を返す
+   * （`stepsSince` に受けた版。いまの状況の欄——やること・触ったファイル・返答…——は丸ごと）。終わった仕事は丸ごと
+   * （`stepsSince` を付けない）。経過の1件には番号 `n`（`stepsOmitted + 何番目`）を付ける——画面は差分を番号で重ねる
+   */
+  view(id: string, sinceStep?: number): (Omit<RunRecord, "steps"> & { steps: (RunStep & { n: number })[]; stepsSince?: number }) | undefined {
+    const record = this.get(id);
+    if (!record) return undefined;
+    const omitted = record.stepsOmitted ?? 0;
+    const numbered = record.steps.map((step, i) => ({ ...step, n: omitted + i }));
+    if (sinceStep === undefined || record.status !== "running") return { ...record, steps: numbered };
+    return { ...record, steps: numbered.filter((s) => (s.v ?? 0) > sinceStep), stepsSince: sinceStep };
   }
 
   get(id: string): RunRecord | undefined {

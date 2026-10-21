@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LoginExpiredError, runSubagent, SubagentError, type RunDeps } from "./acp-run.js";
+import { RunLog } from "./runs.js";
 
 const fakeAgent = join(dirname(fileURLToPath(import.meta.url)), "testing", "fake-agent.js");
 
@@ -211,5 +212,65 @@ test("無音が続いたら、作業中の進捗を送る", async () => {
     assert.ok(seen.some((m) => m.startsWith("作業中（")), seen.join(" | "));
   } finally {
     cleanup();
+  }
+});
+
+// アーキ仕様 §4.1「仕事の画面で、いま何をしているかを分かるようにする」の1：claude-agent-acp は仮の題（「Terminal」など）で
+// tool_call を送り、本当の題・種類・locations・rawInput を直後の tool_call_update で送る。偽のエージェントの [claude-like] が
+// 同じ順で送る——それを仕事の記録（RunLog）まで通して、取りこぼしが無いことを見る
+test("仮の題のあとに届く tool_call_update で、経過の題・説明・触ったファイルが書き換わり、発言と plan も記録に残る", async () => {
+  const { deps, cleanup } = setup();
+  const dir = mkdtempSync(join(tmpdir(), "subagent-log-"));
+  try {
+    const log = new RunLog(join(dir, "runs.jsonl"));
+    const run = log.start({ agent: "fake", agentTitle: "Fake", prompt: "[claude-like]" });
+    const progress: string[] = [];
+    const r = await runSubagent(
+      { prompt: "[claude-like]" },
+      {
+        ...deps,
+        askPermission: neverAsked,
+        onProgress: (m) => progress.push(m),
+        onToolCall: (call) => log.toolCall(run.id, call),
+        onToolUpdate: (id, changes) => log.toolUpdate(run.id, id, changes),
+        onMessage: (chunk) => log.message(run.id, chunk),
+        onPlan: (entries) => log.plan(run.id, entries),
+      },
+    );
+    // AI に返る一覧と進み具合も本当の題（仮の題は残らない）
+    const outside = `/tmp/outside-${r.sessionId}.txt`;
+    assert.deepEqual(r.toolCalls, ["Read src/a.ts", "Read src/b.ts", "Read src/c.ts", "npm test", `Write ${outside}`, "Edit src/a.ts"]);
+    assert.ok(progress.includes("ツール：npm test"), progress.join(" | "));
+    // 返り値の text は連結のまま変えない
+    assert.match(r.text, /^まず仕様を読みます。読み終えたので、テストを流します。直しました。受け取った：/);
+
+    const live = log.get(run.id)!;
+    const shape = live.steps.map((s) => [s.kind, s.title, s.status ?? null, s.description ?? null, s.files ?? null]);
+    assert.deepEqual(shape, [
+      ["message", "まず仕様を読みます。", null, null, null],
+      ["read", "Read src/a.ts", "completed", null, ["src/a.ts"]],
+      ["read", "Read src/b.ts", "completed", null, ["src/b.ts"]],
+      ["read", "Read src/c.ts", "completed", null, ["src/c.ts"]],
+      ["message", "読み終えたので、テストを流します。", null, null, null],
+      ["execute", "npm test", "failed", "テストを流す", null],
+      ["edit", `Write ${outside}`, "completed", null, [outside]],
+      ["edit", "Edit src/a.ts", "completed", null, ["src/a.ts"]],
+      ["message", `直しました。${r.text.slice(r.text.indexOf("受け取った"))}`, null, null, null],
+    ]);
+    assert.ok(live.steps.every((s) => s.title !== "Terminal" && s.title !== "Read File" && s.title !== "Edit"));
+    assert.ok(live.steps.filter((s) => s.kind !== "message").every((s) => s.finishedAt !== undefined));
+    assert.deepEqual(live.plan, [
+      { content: "仕様を読む", status: "completed" },
+      { content: "テストを流す", status: "completed" },
+      { content: "直す", status: "in_progress" },
+    ]);
+    // 書いた（edit）・読んだ（read）を数える。作業場所の外は絶対パスのまま。execute は数えない
+    assert.deepEqual(
+      live.files?.map((f) => [f.path, f.wrote, f.read]),
+      [["src/a.ts", 1, 1], ["src/b.ts", 0, 1], ["src/c.ts", 0, 1], [outside, 1, 0]],
+    );
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

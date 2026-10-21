@@ -210,8 +210,11 @@ test("仕事の記録：終わった仕事は一覧と中身に出る。起こ�
     assert.equal(done.sessionId, r.sessionId);
     assert.match(done.text, /書いた：memo\.txt/);
     assert.deepEqual(done.toolCalls, ["write memo.txt"]);
-    // 経過：呼んだ順・種類・時刻
-    assert.deepEqual(done.steps.map((st) => [st.title, st.kind]), [["write memo.txt", "other"]]);
+    // 経過：呼んだ順・種類・時刻。途中の発言も別の件として入る（アーキ仕様 §4.1）
+    assert.deepEqual(done.steps.map((st) => [st.title, st.kind]), [
+      ["write memo.txt", "other"],
+      ["書いた：memo.txt（model=fake-large effort=low mode=auto）", "message"],
+    ]);
     assert.ok(done.steps[0]!.at >= done.startedAt);
     assert.equal(done.model, "fake-large");
     assert.equal(done.usage.outputTokens, 20);
@@ -260,7 +263,7 @@ test("エージェントの状態：Vault に置いた既定の鍵の有無を�
 test("書きかけの返答は、走っている間の中身に出る", async () => {
   await withServer(async (call) => {
     const pending = call("runSubagent", { agent: "fake", prompt: "[slow 3] [draft] 長い仕事" });
-    type Live = { id: string; status: string; text?: string; steps: { title: string }[] };
+    type Live = { id: string; status: string; text?: string; steps: { title: string }[]; stepVersion?: number };
     let live: Live | undefined;
     for (let i = 0; i < 50 && !live?.text; i++) {
       await new Promise((r) => setTimeout(r, 100));
@@ -270,7 +273,12 @@ test("書きかけの返答は、走っている間の中身に出る", async ()
     assert.ok(live, "走っている仕事が一覧に出ない");
     assert.equal(live.status, "running");
     assert.equal(live.text, "書きかけ…");
-    assert.deepEqual(live.steps.map((st) => st.title), ["sleep 3"]);
+    assert.deepEqual(live.steps.map((st) => st.title), ["sleep 3", "書きかけ…"]);
+    // 差分取り：受けた版を渡すと、その後に変わった経過だけ（ここでは無い）
+    const diff = JSON.parse((await call("getRun", { id: live.id, sinceStep: live.stepVersion })).text) as Live & { stepsSince?: number };
+    assert.equal(diff.stepsSince, live.stepVersion);
+    assert.deepEqual(diff.steps, []);
+    assert.equal(diff.text, "書きかけ…");
     await pending;
     const done = JSON.parse((await call("getRun", { id: live.id })).text) as { status: string; text: string; model?: string };
     assert.equal(done.status, "done");
