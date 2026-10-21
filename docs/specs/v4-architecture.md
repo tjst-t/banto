@@ -4143,7 +4143,7 @@ GitHub の tool は #424。コードは `packages/core/src/automation/patrol.ts`
 - 変換役 documents の変換に読むだけの印を付けて、見回りで Office の文書と `asImage` を読めるようにするか（変換の置き場への書き込みを
   「Module が自分の置き場で持つ写し」と同じに扱えるか）
 
-### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。作る順の 1.〜4. を実装・2026-10-21、Backlog #506・#507・#508・#509。Backlog のストーリー `banto-supervisor` #505）
+### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。作る順の 1.〜4. を実装・2026-10-21、Backlog #506・#507・#508・#509。5. の守りを自動許可の絞りを除いて実装・2026-10-21、Backlog #510。Backlog のストーリー `banto-supervisor` #505）
 
 ユーザーの要望：「全 Project の開発を監督して、人の代行として自動で進めてほしい。release に入れて push、のような細かい判断まで
 Thread ごとに人がやるのはつらい。勝手に進んでほしい。一方で仕様やアーキテクチャの判断は人に求めてほしい」。
@@ -4417,11 +4417,64 @@ Thread ごとに人がやるのはつらい。勝手に進んでほしい。一�
   きっかけ（`source`）から引く**——手順を足しても前に置いた番頭に古い文が届かない（規則3）
 - Factory の出来事の2件が `allowSelfTriggered: true` であることは #507 のまま（確かめた）
 
+#### 実装で決めたこと（実装・2026-10-21、Backlog #510）
+
+作る順の 5.「守り」のうち、**自動許可の絞り（Publish・Project をまたぐ送信・秘密を返す中継・`destructiveHint` を人に聞く）はまだ作っていない**
+（人の決定待ち。上の「守り」の文はそのまま）。ほかは次のとおり。本体は `supervisor/guard.ts`（`SupervisorControls`）。
+
+- **量で飛ばす**：番頭の回を始める前（`AutomationRunner` の届ける手前）に、その Project の Claude のアカウントが全部閾値を越えている、または
+  全部の番頭の直近1時間の回が `runsPerHour` に届いていれば飛ばす（回の記録は `skipped` と理由。見回りの閾値と同じ扱い）。数えるのは番頭の
+  自動化の回のうち届けたもの（`skipped`・`rejected` は数えない）——fold の回の記録から数え、数えを別に持たない。**ちょうどで飛ばす**（N 回
+  走ったら N+1 回目は飛ばす）、窓は今から1時間で、一番古い回が窓を出れば戻る。今すぐ見回る（`cause: "manual"`）も同じく飛ばす
+- **飛ばした回に届いていた決めること**：受けたものは溜めずに片づけ（溜めると空いたときに番頭に届いてしまう）、その会話の開いているカードに
+  判断役の「人に任せました」と同じ `judge { kind: "deferred", by: "supervisor" }`（理由「番頭はこの回を飛ばしました（…）。人が決めてください」）
+  を付け、記録に `skipped`（番頭の Fork）と会話ごとの `deferred` を残す——止まった会話の一覧から外れ（人が見るまで）、1日のまとめの
+  「人に回した」に入る
+- **指示の上限**：`instruct_thread` が、全部の番頭の直近1時間の `instructed` の記録が `instructionsPerHour` に届いていれば断る（`refused`）
+- **画面が引く値**：番頭1件（`GET /api/supervisors`・`/api/projects/:id/supervisor`）に `handedToHuman`（いま回を飛ばす理由——「この時間は
+  人に回しています」。無ければ動ける）と `stoppedAll`。`GET /api/supervisors` に `guard { stoppedAll, runs: { used, limit }, instructions:
+  { used, limit }, runsFreeAt?, instructionsFreeAt? }`（`…FreeAt`＝上限に届いているとき1つ空く時刻）。どれも読むたびに記録から組む
+- **全部止める**（`POST /api/supervisors/stop-all`、人のセッションだけ）：(a) 動いている番頭の自動化を全部、理由「番頭を全部止めました（人が
+  再開するまで動きません）」・印 `pausedScope: "stop-all"` で一時停止し、番頭の Fork で走っているターンを人が止めるのと同じ口で止める
+  (c) を先に——その Fork の `answer_decision` の預かりを `TurnDecisions.endTurn` で人に回す（カードは `incomplete`、番頭の印つき）。その後に
+  答えても断る (b) 全部の会話の、まだ始まっていない番頭の指示（`origin.supervisor` の届けもの）を捨て、記録に `dropped`（理由「番頭を全部
+  止めたので、始まる前の指示を捨てました」）。ほかの届けものは残す。番頭が流した Factory の件には触らない。返すのは一時停止した番頭・止めた
+  ターン・捨てた指示と番頭の一覧
+- **全部再開**（`POST /api/supervisors/resume-all`）：`pausedScope: "stop-all"` の番頭だけを Project ごとの再開と同じ口で再開する。前から
+  Project ごとに止めていたもの・Fork を閉じて止まったものは全部止めても印を上書きせず、全部止めたあとに Project ごとに止め直したものは印を外す
+  ——どれも全部再開では再開しない。全部止めている間に新しく置いた番頭は止まっていない（人が置いたもの）
+- **記録の種類**：`answered`・`deferred`・`refused`・`instructed`・`dropped`・`factory-started`・`factory-answered` に `skipped`（回を飛ばした）・
+  `undone`（人が取り消した。`undoes`＝取り消した記録の id）を足した。**記録の id**（`actId`）は書くときに持たず、fold が出来事の seq から
+  `act-<seq>` を付ける（導出できる値を保存しない。snapshot の版を 3 に上げた）
+- **記録の口**（`GET /api/supervisors/log?project=&thread=&kind=&limit=`、人のセッションだけ）：全部の番頭の記録を新しい順に。`kind` は
+  カンマ区切りで複数、`limit` は既定 200・最大 1000。1件に `actId`・`supervisorId`・`projectId`・`automationId`・`undoable`・`undoneBy`
+  （取り消した `undone` の id）を添える（読むたびに組む）
+- **受信箱のカード**：`ReviewJudge` に `by: "supervisor"` を足した——番頭の `answer_decision` が付ける `deferred`・`incomplete`・
+  `decided-by-automation`、指示の `instructed`、量で飛ばした `deferred`。無ければ判断役。カードの中身はそれ以外 #508 のままで足りている。
+  受信箱に Factory の知らせ・1日のまとめは出さない
+- **取り消し**（`POST /api/supervisors/log/:actId/undo`、本文 `{ text? }`、人のセッションだけ、202）：
+  - 選んだ答え（`answered`）は、**同じ会話・同じターンに一緒に届けた問いを全部まとめて**取り消す（届けたのは1回なので）。既定の文は
+    「番頭の選んだ「〈選択肢〉」は取り消して。その前に戻して」（複数なら「「A」（問い 1）・「B」（問い 2）」）。頼んだ手順（`instructed`）は
+    「番頭の頼み「〈行いの題〉」は取り消して。その前に戻して」。`text`（2000字まで、空は 400）で人が直せる
+  - **人の発言として送る**：画面から送ったのと同じターンを host が開く（届けものの印は付かない。走っていれば並ぶ。受け付けたら返し、ターンの
+    終わりは待たない）。人の発言なので、宛先にまだ始まっていない番頭の指示があれば今どおり捨てる。閉じた会話には送れない（409）
+  - Factory に流したもの（`factory-started`）は、その Project の同梱の Factory の `cancelFactory`（実行ごと、`runId`）を人が画面で押した呼び出しと
+    同じ道で呼ぶ。`text` は付けられない（400）。Factory が断ったら 409 で、記録は書かない
+  - 送れた・取りやめられたら記録に `undone`（元の記録の自動化に、`undoes`・`threadId`・`runId`/`actionId`）。同じもの（一緒に取り消した問いも）は
+    2回取り消せない（409）。始まる前に捨てられた頼み、ほかの種類（`refused` 等）は取り消せない（409）
+- **1日のまとめ**（`GET /api/supervisors/daily?date=YYYY-MM-DD`、人のセッションだけ）：`supervisor.timeZone`（無ければ動いている場所）の日付で、
+  今いる番頭ごとに（0 件でも行を出す）記録の種類ごとの件数 `counts`（選んだ `answered`・頼んだ `instructed`・流した `factory-started`・人に回した
+  `deferred`・断られた `refused` ほか全部の種類）。`date` が無ければ今日。記録は1件の自動化につき直近 100 件までなので、それより古い分は数えない
+- **残したこと**：全部止めた時点で番頭の Fork に積まれたまま留めている（`held`）番頭の回の届けものは捨てていない（留めが解けると回が走りうる。
+  起きるのは連鎖の上限・眠っている Project 等で留めたときだけ）
+
 #### まだ決めていないこと
 
 - 番頭に Backlog の項目を作らせる・並べ替えさせるか（今回は流すだけ）
 - 番頭を消したあとも走っている、その番頭が流した Factory の件を全体の上限に数えるか（今は記録ごと消えるので数えない）
-- 全体の `instructionsPerHour`・`runsPerHour` と「この時間は人に回しています」（作る順の 5.）
+- 自動許可の絞り（作る順の 5.「守り」の残り。人の決定待ち）
+- 全部止めた時点で留めている（`held`）番頭の回の届けものを捨てるか
+- 1日のまとめを、記録の件数の上限（1件の自動化につき 100 件）を越えて数えるか
 - 止まった会話の判定に Backlog の in-progress を使う口（core から Backlog の Module を引く）
 - 画面の呼び名（「番頭」か一般的な語か）
 - 番頭が出来事を逃した決めること（`decision-missed`）に、出来事を出し直して答えさせる口（今は人が答えるか次の出来事を待つ）
