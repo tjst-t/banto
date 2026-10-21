@@ -11911,7 +11911,7 @@
       "labels": [
         "patrol"
       ],
-      "body": "決定・2026-10-21、ユーザー。見回りの専用の Fork はどの起こし方でも読むだけの回で、自分の会話を閉じることもできない。見回りの自動化が消えたあとは、その Fork でも `close_fork` だけ許す。ほかの書く・走らせる tool は読むだけのまま（読んだ外の文が会話に残るため）。一時停止中は足さない。\n\n仕様：v4-architecture.md §4.4「見回りが消えたあとの Fork」、v4-frontend.md §6.47（帯の文）。\n\n実装（2026-10-21、main に入った・717fc872）：relay/read-only.ts の `ORPHANED_PATROL_CORE_TOOLS`・`ReadOnlyTurnShape`。turn-runner が「読むだけで、届け先にしている見回りが無い」ときに in-process のサーバ・allowedTools・PreToolUse に close_fork だけ足す。画面の帯は見回りが消えていれば「見回りは消えました。…（この会話を閉じることはできます）」。単体（core 全部）と patrol.spec（消したあとに runCommand は断られ、close_fork で閉じる）は通った。\n\n残り：release に入れて host で反映したあと、本物のモデルで完了条件を確かめる。",
+      "body": "決定・2026-10-21、ユーザー。見回りの専用の Fork はどの起こし方でも読むだけの回で、自分の会話を閉じることもできない。見回りの自動化が消えたあとは、その Fork でも `close_fork` だけ許す。ほかの書く・走らせる tool は読むだけのまま（読んだ外の文が会話に残るため）。一時停止中は足さない。\n\n仕様：v4-architecture.md §4.4「見回りが消えたあとの Fork」、v4-frontend.md §6.47（帯の文）。\n\n実装（2026-10-21）：main は 717fc872、release は 5f225b12。relay/read-only.ts の `ORPHANED_PATROL_CORE_TOOLS`・`ReadOnlyTurnShape`。turn-runner が「読むだけで、届け先にしている見回りが無い」ときに in-process のサーバ・allowedTools・PreToolUse に close_fork だけ足す。画面の帯は見回りが消えていれば「見回りは消えました。…（この会話を閉じることはできます）」。main と release の版それぞれで、core の単体試験と patrol.spec（消したあとに runCommand は断られ、close_fork で閉じる）が通った。\n\n残り：host で反映したあと、本物のモデルで完了条件を確かめる。",
       "doneWhen": "単体試験：見回りがある読むだけの回では close_fork が無く、見回りを消した読むだけの回では close_fork があり hook も通し、ほかの書く tool は無いまま。本物で：見回りを1つ作って1回動かし、設定を消してから、その Fork で自分の会話を閉じられ、ほかの書く道具は見えないままであることを確かめる。",
       "resolution": null,
       "refs": [],
@@ -11922,7 +11922,7 @@
         }
       ],
       "createdAt": "2026-10-21T04:41:49.658Z",
-      "updatedAt": "2026-10-21T04:48:14.995Z",
+      "updatedAt": "2026-10-21T06:20:59.154Z",
       "closedAt": null,
       "extra": {}
     },
