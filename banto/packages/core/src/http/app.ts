@@ -33,6 +33,15 @@ import type { Automation } from "../automation/fold.js";
 import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
 import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } from "../supervisor/supervisors.js";
 import {
+  HUMAN_ONLY_KINDS,
+  SUPERVISOR_KEYS,
+  isSupervisorAction,
+  serializeInstanceDelegate,
+  serializeProjectDelegate,
+  supervisorPolicy,
+  type SupervisorAction,
+} from "../supervisor/policy.js";
+import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
   InvalidProjectGroupError,
@@ -761,6 +770,9 @@ export class BodyTooLargeError extends Error {}
 
 /** 道具用のコンテナで動く Module の、パッケージを入れているか・入れられなかったか（設定の画面に出す） */
 export type ToolsInstallView = { state: "installing" } | { state: "failed"; reason: string };
+
+/** 番頭の方針の入力が決まりに合わない（画面に理由を返す） */
+class SupervisorPolicyInputError extends Error {}
 
 export async function readJsonBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -4384,6 +4396,54 @@ export function createApp(deps: AppDeps) {
 
       // **番頭**（決定・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。作る・消す・一時停止・再開は番頭の単位（自動化4件一緒）。
       // **人の画面だけ**（AI の tool からは作れない——`create_automation` は mode: supervisor を断る）
+      // **番頭の方針を書く**（アーキ仕様 §4.5「方針を書けるのは画面の人だけ」）。全体は任せる行いの配列と文、Project は足す・外すの差分と
+      // 追記。人に回す種類は書けない（400）。読むのは Project で効いている方針（全体＋差分）
+      const policyMatch = url.pathname.match(/^\/api(?:\/projects\/([^/]+))?\/supervisor-policy$/);
+      if (policyMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = policyMatch[1];
+        if (!deps.runtimeConfig) return json(res, 501, { error: "この banto は設定を持っていません" });
+        if (projectId && !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        try {
+          // 全体の方針は Project の層を読まない形で組む
+          const config = deps.runtimeConfig;
+          const instanceOnly = { layerValue: (key: string, p?: string) => (p ? undefined : config.layerValue(key)) };
+          const current = () => (projectId ? supervisorPolicy(config, projectId) : supervisorPolicy(instanceOnly, "-"));
+          if (req.method === "GET") return json(res, 200, current());
+          if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
+          const body = ((await readJsonBody(req)) ?? {}) as { delegate?: unknown; note?: unknown };
+          const actions = (v: unknown, where: string): SupervisorAction[] => {
+            if (!Array.isArray(v)) throw new SupervisorPolicyInputError(`${where} は行いの配列で渡してください`);
+            return v.map((a) => {
+              if (isSupervisorAction(a)) return a;
+              if ((HUMAN_ONLY_KINDS as readonly unknown[]).includes(a)) throw new SupervisorPolicyInputError(`「${String(a)}」は人に回す種類なので任せられません`);
+              throw new SupervisorPolicyInputError(`知らない行いです: ${String(a)}`);
+            });
+          };
+          if (body.note !== undefined && body.note !== null && typeof body.note !== "string") {
+            throw new SupervisorPolicyInputError("note は文字列で渡してください");
+          }
+          if (!projectId) {
+            if (body.delegate !== undefined) await config.setInstanceDefault(SUPERVISOR_KEYS.delegate, serializeInstanceDelegate(actions(body.delegate, "delegate")));
+            if (typeof body.note === "string") await config.setInstanceDefault(SUPERVISOR_KEYS.note, body.note);
+            return json(res, 200, current());
+          }
+          if (body.delegate === null) await config.unsetProjectOverride(projectId, SUPERVISOR_KEYS.delegate);
+          else if (body.delegate !== undefined) {
+            const d = body.delegate as { add?: unknown; remove?: unknown };
+            if (typeof d !== "object" || Array.isArray(d)) throw new SupervisorPolicyInputError("delegate は { add, remove } で渡してください");
+            const diff = { add: actions(d.add ?? [], "delegate.add"), remove: actions(d.remove ?? [], "delegate.remove") };
+            await config.setProjectOverride(projectId, SUPERVISOR_KEYS.delegate, serializeProjectDelegate(diff));
+          }
+          if (body.note === null || body.note === "") await config.unsetProjectOverride(projectId, SUPERVISOR_KEYS.note);
+          else if (typeof body.note === "string") await config.setProjectOverride(projectId, SUPERVISOR_KEYS.note, body.note);
+          return json(res, 200, current());
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof SupervisorPolicyInputError) return json(res, 400, { error: err.message });
+          throw err;
+        }
+      }
+
       if (url.pathname === "/api/supervisors" && req.method === "GET") {
         if (!deps.supervisors) return json(res, 404, { error: "not found" });
         return json(res, 200, { supervisors: deps.supervisors.list() });
