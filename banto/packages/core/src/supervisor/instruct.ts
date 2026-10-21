@@ -92,14 +92,46 @@ export interface StalledThread {
 }
 
 /** 番頭の回（呼んだ会話）の手がかり */
-interface SupervisorTurn {
+export interface SupervisorTurn {
   supervisorId: string;
   projectId: string;
   /** その回を届けた番頭の自動化 */
   automation: Pick<Automation, "id" | "name">;
   runId: string;
-  /** その回の届けものに外から来たもの（出来事の本文・別の会話からのメッセージ）がある */
+  /**
+   * その回の届けものに外から来たもの（出来事の本文・別の会話からのメッセージ・Module が届けた返事——Factory の結果など）がある。
+   * 番頭の回で外から来ていないと言えるのは、番頭の自動化の指示だけで起きた回
+   */
   readExternal: boolean;
+}
+
+/**
+ * **呼んだ会話が番頭の回なら、その手がかり**（`instruct_thread`・`list_stalled_threads`・Factory の tool が引く）。番頭の印・その回を届けた
+ * 自動化が番頭のもの・届け先がこの会話、を全部見る
+ */
+export function supervisorTurnOf(
+  deps: { projectThread: Pick<ProjectThreadStore, "getThread">; automations: Pick<AutomationStore, "get"> },
+  callerThreadId: string,
+): SupervisorTurn | undefined {
+  const thread = deps.projectThread.getThread(callerThreadId);
+  if (!thread || thread.restriction !== "supervisor") return undefined;
+  const run = automationRunOfLastTurn(thread);
+  const automation = run ? deps.automations.get(run.id) : undefined;
+  if (!run || !automation || automation.mode !== "supervisor" || !automation.supervisorId) return undefined;
+  if (automation.target.kind !== "dedicated" || automation.target.threadId !== thread.id) return undefined;
+  return {
+    supervisorId: automation.supervisorId,
+    projectId: automation.projectId,
+    automation: { id: automation.id, name: automation.name },
+    runId: run.runId,
+    readExternal: readExternalOf(thread) || deliveredOtherThanAutomation(thread),
+  };
+}
+
+/** そのターンに、自動化の指示のほかに届いたもの（Module の返事など）を積んだか */
+function deliveredOtherThanAutomation(thread: Pick<ThreadState, "lastTurn" | "messages">): boolean {
+  const startedSeq = thread.lastTurn?.startedSeq ?? Number.MAX_SAFE_INTEGER;
+  return thread.messages.some((m) => m.seq > startedSeq && m.role === "user" && m.origin !== undefined && m.origin.automation === undefined);
 }
 
 export interface InstructInput {
@@ -322,21 +354,8 @@ export class SupervisorInstructions {
 
   // ---- 内側 ---------------------------------------------------------------------------------------------------
 
-  /** 呼んだ会話が番頭の回なら、その手がかり。番頭の印・届けた自動化が番頭のもの・届け先がこの会話、を全部見る */
   private supervisorTurn(callerThreadId: string): SupervisorTurn | undefined {
-    const thread = this.deps.projectThread.getThread(callerThreadId);
-    if (!thread || thread.restriction !== "supervisor") return undefined;
-    const run = automationRunOfLastTurn(thread);
-    const automation = run ? this.deps.automations.get(run.id) : undefined;
-    if (!run || !automation || automation.mode !== "supervisor" || !automation.supervisorId) return undefined;
-    if (automation.target.kind !== "dedicated" || automation.target.threadId !== thread.id) return undefined;
-    return {
-      supervisorId: automation.supervisorId,
-      projectId: automation.projectId,
-      automation: { id: automation.id, name: automation.name },
-      runId: run.runId,
-      readExternal: readExternalOf(thread),
-    };
+    return supervisorTurnOf(this.deps, callerThreadId);
   }
 
   /** 宛先にできない理由（できるなら undefined）。一覧からも同じ決まりで外す */

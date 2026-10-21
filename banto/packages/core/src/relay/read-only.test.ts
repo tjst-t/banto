@@ -19,11 +19,14 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { markBundled, parseModuleMeta } from "@banto/module-contract";
-import { buildAgentProxy } from "./agent-proxy.js";
+import { buildAgentProxy, type SupervisorGateInput } from "./agent-proxy.js";
+import { supervisorModuleToolNames } from "../http/patrol-tools.js";
 import {
   READ_ONLY_REFUSAL,
+  SUPERVISOR_MODULE_TOOLS,
   SUPERVISOR_REFUSAL,
   mayCallInReadOnly,
+  mayCallInSupervisor,
   mayReadResourcesInReadOnly,
   mayRelayOwnCredentialInReadOnly,
   parsePatrolAllowedTools,
@@ -194,8 +197,9 @@ test("代理：制限の無い会話は今までどおり（全部見せ・通�
   assert.equal(called.length, 1);
 });
 
-// **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5）。Module の tool はいま1つも使えない（Factory・Backlog は Backlog #509 で足す）——
-// 同梱で読むだけと名乗った tool も、人が見回りで許した tool も通さない。資源は同梱の Module のものだけ。自動で許可は刻まない
+// **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5）。Module の tool は同梱の Factory・Backlog の決まったものだけ（#509、下の試験）——
+// ほかの役割の Module は、同梱で読むだけと名乗った tool も、人が見回りで許した tool も通さない。資源は同梱の Module のものだけ。
+// 自動で許可は刻まない
 test("PreToolUse の最後の網（番頭の回）：組み込みは資源の3つ、core は answer_decision・list_threads・claude_usage だけ", () => {
   const shape = { supervisor: true };
   for (const ok of ["ReadMcpResourceTool", "mcp__banto-thread__answer_decision", "mcp__banto-thread__list_threads", "mcp__banto-thread__claude_usage"]) {
@@ -225,4 +229,109 @@ test("代理：番頭の回は Module の tool を見せず・通さず（同梱
   assert.deepEqual((await thirdParty.runner.listResources()).resources, []);
   await assert.rejects(() => thirdParty.runner.readResource({ uri: "fake://doc" }), /番頭の回では使えません/);
   assert.equal(thirdParty.read.length, 0);
+});
+
+// **番頭の回の Factory・Backlog**（追加・2026-10-21、アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。一覧は役割で引く1か所
+// （`SUPERVISOR_MODULE_TOOLS`）——AI の代理の tools/list・tools/call、allowedTools と PreToolUse の名前（`supervisorModuleToolNames`）が同じものを
+// 見る。cancelFactory は渡さない（取りやめは人）。番頭の照らし合わせ（`supervisorGate`）は Module へ渡す手前で引く
+test("番頭の回の Module の tool：同梱の Factory の runFactory・listFactoryRuns・answerFactory と Backlog の listItems・getItem だけ。cancelFactory は無い", () => {
+  assert.deepEqual(SUPERVISOR_MODULE_TOOLS, {
+    factory: ["runFactory", "listFactoryRuns", "answerFactory"],
+    backlog: ["listItems", "getItem"],
+  });
+  for (const [roles, name, ok] of [
+    [["factory"], "runFactory", true],
+    [["factory"], "listFactoryRuns", true],
+    [["factory"], "answerFactory", true],
+    [["factory"], "cancelFactory", false],
+    [["factory"], "getSettings", false],
+    [["backlog"], "listItems", true],
+    [["backlog"], "getItem", true],
+    [["backlog"], "updateItem", false],
+    [["backlog"], "createItem", false],
+    // 役割が違えば同じ名前でも通さない
+    [["shell"], "runFactory", false],
+  ] as const) {
+    assert.equal(mayCallInSupervisor({ bundled: true, roles, tool: { name } }), ok, `${roles.join(",")}/${name}`);
+  }
+  // 第三者の Module は役割を名乗っても通さない
+  assert.equal(mayCallInSupervisor({ bundled: false, roles: ["factory"], tool: { name: "runFactory" } }), false);
+});
+
+async function factoryModule(opts: { bundled: boolean; gate?: (input: SupervisorGateInput) => Promise<{ refuse: string } | Record<string, never>>; after?: string[] }) {
+  const tools = ["runFactory", "listFactoryRuns", "answerFactory", "cancelFactory", "getSettings"];
+  const called: string[] = [];
+  const server = new Server({ name: "factory", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: tools.map((name) => ({ name, inputSchema: { type: "object" as const, properties: {} }, _meta: name === "getSettings" ? { "dev.banto/visibility": "admin" } : plain })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    called.push(req.params.name);
+    return { content: [{ type: "text", text: JSON.stringify({ ran: req.params.name }) }] };
+  });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(st), moduleClient.connect(ct)]);
+  const raw = parseModuleMeta({ satisfies: ["factory"], dependsOn: [], isolation: "subprocess" }, "factory");
+  const meta = opts.bundled ? markBundled(raw, "factory") : raw;
+  const gated: SupervisorGateInput[] = [];
+  const proxy = buildAgentProxy(
+    // 識別子は banto が採番する（目録の名前と違ってよい）——役割で引く
+    { name: "factory-x-p1", declaredName: "factory-x", client: moduleClient, meta },
+    {
+      projectId: "p1",
+      threadId: "t1",
+      restrictionFor: () => "supervisor",
+      supervisorGate: async (input) => {
+        gated.push(input);
+        const d = (await opts.gate?.(input)) ?? {};
+        if ("refuse" in d) return d;
+        return {
+          after: async (r) => void opts.after?.push(`${input.tool}:${r.isError}:${r.text}`),
+          release: () => void opts.after?.push(`release:${input.tool}`),
+        };
+      },
+    },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+  return { runner, called, gated, moduleClient };
+}
+
+test("代理（番頭の回）：同梱の Factory は決まった3つだけを見せ・通し、cancelFactory は Module を呼ばずに断る。4か所の名前は同じ一覧から引く", async () => {
+  const after: string[] = [];
+  const { runner, called, gated, moduleClient } = await factoryModule({ bundled: true, after });
+  const listed = (await runner.listTools()).tools.map((t) => t.name).sort();
+  assert.deepEqual(listed, ["answerFactory", "listFactoryRuns", "runFactory"]);
+  const refused = await runner.callTool({ name: "cancelFactory", arguments: { runId: "r1" } });
+  assert.equal(refused.isError, true);
+  assert.equal(textOf(refused), SUPERVISOR_REFUSAL);
+  assert.equal(called.length, 0, "cancelFactory が Module に届いた");
+
+  // 通したものは照らし合わせを通り、結果を after に渡し、終わったら release
+  assert.equal(textOf(await runner.callTool({ name: "runFactory", arguments: { items: ["a"] } })), JSON.stringify({ ran: "runFactory" }));
+  assert.deepEqual(gated.map((g) => [g.role, g.tool, g.projectId, g.threadId, g.args]), [["factory", "runFactory", "p1", "t1", { items: ["a"] }]]);
+  assert.deepEqual(after, [`runFactory:false:${JSON.stringify({ ran: "runFactory" })}`, "release:runFactory"]);
+
+  // allowedTools と PreToolUse の名前（`mcp__<識別子>__<tool>`）は、代理が見せるものと同じ
+  const names = await supervisorModuleToolNames([{ name: "factory-x", client: moduleClient, bundled: true, roles: ["factory"] }]);
+  assert.deepEqual(names, listed.map((t) => `mcp__factory-x__${t}`));
+  assert.equal(readOnlyHookAllows("mcp__factory-x__runFactory", new Set(names), { supervisor: true }), true);
+  assert.equal(readOnlyHookAllows("mcp__factory-x__cancelFactory", new Set(names), { supervisor: true }), false);
+  // 第三者の Module は名前に入らない
+  assert.deepEqual(await supervisorModuleToolNames([{ name: "factory-x", client: moduleClient, bundled: false, roles: ["factory"] }]), []);
+});
+
+test("代理（番頭の回）：照らし合わせが断ったら Module を呼ばずに理由を返す。第三者の Factory は見せない", async () => {
+  const { runner, called } = await factoryModule({ bundled: true, gate: async () => ({ refuse: "流せません：上限" }) });
+  const r = await runner.callTool({ name: "runFactory", arguments: { items: ["a"] } });
+  assert.equal(r.isError, true);
+  assert.equal(textOf(r), "流せません：上限");
+  assert.equal(called.length, 0, "断ったのに Module に届いた");
+
+  const thirdParty = await factoryModule({ bundled: false });
+  assert.deepEqual((await thirdParty.runner.listTools()).tools, []);
+  assert.equal((await thirdParty.runner.callTool({ name: "runFactory", arguments: {} })).isError, true);
+  assert.equal(thirdParty.called.length, 0);
 });

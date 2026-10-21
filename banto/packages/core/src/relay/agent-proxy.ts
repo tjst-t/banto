@@ -11,7 +11,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import { DEFAULT_REQUEST_TIMEOUT_MSEC, type RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   ErrorCode,
   McpError,
@@ -20,6 +20,9 @@ import {
   ListResourcesRequestSchema,
   ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
+  type CallToolRequest,
+  type ServerNotification,
+  type ServerRequest,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -80,6 +83,7 @@ import {
   mayCallInSupervisor,
   mayReadResourcesInReadOnly,
   mayReadResourcesInSupervisor,
+  supervisorToolRole,
   type RestrictionFor,
 } from "./read-only.js";
 import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
@@ -139,6 +143,12 @@ export interface AgentProxyOptions {
   /** **人が「見回りで使ってよい」と許したもの**（Project の `patrol.allowedTools`）。渡されなければ何も許していない */
   patrolAllowedTools?(projectId: string): string[];
   /**
+   * **番頭の回の Module の tool を、中継の手前で host が照らす**（追加・2026-10-21、アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。
+   * 番頭の回（`restriction: "supervisor"`）で、番頭に許した Module の tool を呼ぶたびに引く。`refuse` なら Module へ渡さずに断る
+   * （札も出さない）。通すなら、結果を `after` に渡し（記録を書く）、終わったら `release`（数えの仮押さえを外す）を呼ぶ
+   */
+  supervisorGate?(input: SupervisorGateInput): Promise<SupervisorGateDecision>;
+  /**
    * **AI のターンから Module の tool を呼ぶ直前**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「始まりの印を持ち越す」）。
    * 呼び出しの印（`dev.banto/callId`）と、どの Thread のターンかを渡す——host は出来事を名乗る Module への呼び出しだけを
    * 写しに残し、あとで出来事の `causedBy` から引く。投げたら呼び出しは失敗にする（写しを残せないまま輪の止め方を外さない）
@@ -150,6 +160,20 @@ export interface AgentProxyOptions {
     markAwaiting(replyTo: string, waitingOn?: WaitingOn, resultLocation?: string): Promise<void>;
   };
 }
+
+/** 番頭の回の Module の tool の呼び出し（`supervisorGate` に渡すもの） */
+export interface SupervisorGateInput {
+  threadId: string;
+  projectId: string;
+  /** その tool を許した役割（`SUPERVISOR_MODULE_TOOLS` の鍵） */
+  role: string;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export type SupervisorGateDecision =
+  | { refuse: string }
+  | { after?(result: { text: string; isError: boolean }): Promise<void>; release?(): void };
 
 export interface AgentProxy {
   server: Server;
@@ -238,10 +262,11 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   }
   const moduleName = conn.declaredName ?? conn.name;
   const bundled = conn.meta.origin === "bundled";
+  const roles = conn.meta.satisfies ?? [];
   const allowedForPatrol = (): string[] => (opts.projectId ? (opts.patrolAllowedTools?.(opts.projectId) ?? []) : []);
   // 制限のある回で使ってよいか（どちらの制限かは呼ぶたびに引く）。制限の無い回では呼ばない
   const mayCall = (tool: { name: string; _meta?: Record<string, unknown> }) =>
-    readOnly() ? mayCallInReadOnly({ moduleName, bundled, tool, allowed: allowedForPatrol() }) : mayCallInSupervisor({ moduleName, bundled, tool });
+    readOnly() ? mayCallInReadOnly({ moduleName, bundled, tool, allowed: allowedForPatrol() }) : mayCallInSupervisor({ bundled, roles, tool });
   const mayReadResources = () =>
     readOnly() ? mayReadResourcesInReadOnly({ moduleName, bundled, allowed: allowedForPatrol() }) : mayReadResourcesInSupervisor({ bundled });
   const refusal = () => (readOnly() ? READ_ONLY_REFUSAL : SUPERVISOR_REFUSAL);
@@ -290,7 +315,49 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
       return { isError: true, content: [{ type: "text" as const, text: refusal() }] };
     }
+    // **番頭の回の Factory・Backlog の tool は、host が中継の手前で照らす**（§4.5）——全体の上限・方針・番頭が流した件か。断ったら
+    // Module へ渡さない（札も出さない）
+    const gateRole = restricted() && !readOnly() && opts.supervisorGate ? supervisorToolRole(roles, request.params.name) : undefined;
+    let gate: Exclude<SupervisorGateDecision, { refuse: string }> | undefined;
+    if (gateRole !== undefined) {
+      if (!opts.threadId || !opts.projectId) {
+        opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
+        return { isError: true, content: [{ type: "text" as const, text: "どの会話の呼び出しか分からないので、番頭の tool を通せません" }] };
+      }
+      const decided = await opts.supervisorGate!({
+        threadId: opts.threadId,
+        projectId: opts.projectId,
+        role: gateRole,
+        tool: request.params.name,
+        args: (request.params.arguments ?? {}) as Record<string, unknown>,
+      });
+      if ("refuse" in decided) {
+        opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
+        return { isError: true, content: [{ type: "text" as const, text: decided.refuse }] };
+      }
+      gate = decided;
+    }
+    try {
+      const result = await callModule(request, extra, target as { name: string; _meta?: Record<string, unknown> });
+      if (gate?.after) {
+        const r = result as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+        await gate.after({
+          text: (r.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n"),
+          isError: r.isError === true,
+        });
+      }
+      return result;
+    } finally {
+      gate?.release?.();
+    }
+  });
 
+  /** Module へ1件の tool 呼び出しを中継する（制限・番頭の照らし合わせを通ったあと） */
+  async function callModule(
+    request: CallToolRequest,
+    extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+    target: { name: string; _meta?: Record<string, unknown> },
+  ) {
     const progressToken = extra._meta?.progressToken;
     const requestMeta = request.params._meta as Record<string, unknown> | undefined;
     const toolUseId = typeof requestMeta?.[RUNNER_TOOL_USE_ID_META_KEY] === "string" ? (requestMeta[RUNNER_TOOL_USE_ID_META_KEY] as string) : undefined;
@@ -429,7 +496,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       extra.signal.removeEventListener("abort", onOuterAbort);
       endCall?.end();
     }
-  });
+  }
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     // 読むだけの回で読めない Module の資源は、一覧にも出さない

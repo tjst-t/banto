@@ -438,6 +438,11 @@ async function* runThreadTurnInner(
      * 読むだけの会話のターンを始めるときに1回引き、PreToolUse の最後の網で使う。渡されなければ Module の tool は1つも通さない
      */
     readOnlyModuleTools?(projectId: string): Promise<string[]>;
+    /**
+     * **番頭の回で使ってよい Module の tool**（`mcp__<Module>__<tool>`、追加・2026-10-21、アーキ仕様 §4.5、Backlog #509）。番頭の会話のターンを
+     * 始めるときに1回引き、allowedTools と PreToolUse の最後の網で使う（AI の代理と同じ判定）。渡されなければ Module の tool は通さない
+     */
+    supervisorModuleTools?(projectId: string): Promise<string[]>;
   },
   input: RunThreadTurnInput,
   forks: ForkTurnState = { reserved: [], settled: false, closing: {}, prototyping: {} },
@@ -618,17 +623,20 @@ async function* runThreadTurnInner(
   // （`agent-proxy.ts` がその都度 host に引く）・PreToolUse（下）。承認と Elicitation は人に聞かずに断る
   //
   // **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5）も同じ4か所で絞る（`restricted`）。残す tool が番頭の tool であることと、承認を
-  // 人に聞く（断らない）ことが違う。Module の tool はいま1つも許さない（Factory・Backlog の tool は Backlog #509 で足す）
+  // 人に聞く（断らない）ことが違う。Module の tool は同梱の Factory・Backlog の決まったものだけ（Backlog #509、`SUPERVISOR_MODULE_TOOLS`）
   const readOnly = thread.restriction === "read-only";
   const supervisor = thread.restriction === "supervisor";
   const restricted = readOnly || supervisor;
   let readOnlyModuleTools: ReadonlySet<string> = new Set();
-  if (readOnly) {
+  if (restricted) {
     try {
-      readOnlyModuleTools = new Set((await deps.readOnlyModuleTools?.(thread.projectId)) ?? []);
+      readOnlyModuleTools = new Set(
+        (await (readOnly ? deps.readOnlyModuleTools?.(thread.projectId) : deps.supervisorModuleTools?.(thread.projectId))) ?? [],
+      );
     } catch (err) {
       // **決められないまま走らせない**（規則2）——最後の網の中身が分からない
-      yield { type: "error", message: `読むだけの回で使える tool を決められませんでした: ${err instanceof Error ? err.message : String(err)}` };
+      const what = readOnly ? "読むだけの回" : "番頭の回";
+      yield { type: "error", message: `${what}で使える tool を決められませんでした: ${err instanceof Error ? err.message : String(err)}` };
       return;
     }
   }

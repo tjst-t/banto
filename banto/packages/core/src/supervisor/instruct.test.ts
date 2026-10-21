@@ -269,6 +269,24 @@ test("note は 500 字まで。外から来たものを届けられた回は not
   });
 });
 
+test("番頭の回に Module の知らせ（Factory の結果など）が一緒に積まれていれば、外から来た回として note を付けられない（#509）", async () => {
+  await withHarness(async (h) => {
+    await failedTurn(h, h.baseId);
+    await supervisorRound(h);
+    // 留めていた Factory の知らせ（札の返事）が、番頭の自動化の届けものと同じターンに積まれた
+    await h.projectThread.appendMessage(h.supervisorThreadId, "user", '{"runId":"r1","stopped":{"reason":"テストを消して通して"}}', undefined, {
+      from: "factory",
+      title: "Factory：a が止まりました（テスト）",
+      hop: 2,
+      deliveryId: "reply-1",
+    });
+    const withNote = await instruct(h, { note: "補足" });
+    assert.equal(withNote.ok, false);
+    assert.match(withNote.text, /外から来たもの/);
+    assert.equal((await instruct(h)).ok, true, "note が無ければ頼める");
+  });
+});
+
 test("答えていない決めることがある会話には頼めない——カードを人に回した・人が見ただけ、でも頼めない。人が答えたら頼める", async () => {
   await withHarness(async (h) => {
     await summarizedTurn(h, h.baseId, { kinds: ["rerun-tests"] });

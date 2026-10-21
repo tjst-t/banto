@@ -137,14 +137,25 @@ export const SUPERVISOR_CORE_TOOLS: Readonly<Record<string, readonly string[]>> 
 };
 
 /**
- * **番頭の回で使ってよい Module の tool**（`<Module の識別子>/<tool 名>`）。同梱の Module のものだけが効く。いまは無い——Factory・
- * Backlog の tool は Backlog #509 で足す
+ * **番頭の回で使ってよい Module の tool**（アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。鍵は Module の**役割**（`satisfies`）
+ * ——Module の識別子は banto が採番するので（§5.2）、名前では決めない。同梱の Module（目録と同じコード）のものだけが効く。
+ * `cancelFactory` は渡さない——取りやめるのは人（§4.5「取り消し」）。4か所（AI の代理の `tools/list`・`tools/call`、allowedTools、
+ * PreToolUse）はどれもここを引く
  */
-export const SUPERVISOR_MODULE_TOOLS: readonly string[] = [];
+export const SUPERVISOR_MODULE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  factory: ["runFactory", "listFactoryRuns", "answerFactory"],
+  backlog: ["listItems", "getItem"],
+};
 
-/** **番頭の回でその Module の tool を使ってよいか**。同梱で、上の一覧に載っているものだけ（人が許す口は無い） */
-export function mayCallInSupervisor(input: { moduleName: string; bundled: boolean; tool: { name: string } }): boolean {
-  return input.bundled && SUPERVISOR_MODULE_TOOLS.includes(patrolAllowedEntry(input.moduleName, input.tool.name));
+/** **番頭の回でその Module の tool を使ってよいか**。同梱で、役割の一覧に載っているものだけ（人が許す口は無い） */
+export function mayCallInSupervisor(input: { bundled: boolean; roles: readonly string[]; tool: { name: string } }): boolean {
+  if (!input.bundled) return false;
+  return input.roles.some((role) => SUPERVISOR_MODULE_TOOLS[role]?.includes(input.tool.name) === true);
+}
+
+/** その tool がどの役割の番頭の tool か（番頭の tool でなければ undefined）。host が中継の手前で照らすのに使う */
+export function supervisorToolRole(roles: readonly string[], toolName: string): string | undefined {
+  return roles.find((role) => SUPERVISOR_MODULE_TOOLS[role]?.includes(toolName) === true);
 }
 
 /** **番頭の回でその Module の資源を読んでよいか**。同梱の Module だけ（資源の組み込みの3つは残す） */
