@@ -221,6 +221,11 @@ export const CHATS_DIR = join(E2E_TMP, "home", "banto", "chats");
  */
 export const CLAUDE_RELAY_CREDENTIALS = join(E2E_TMP, "claude-relay-credentials.json");
 export const SUBAGENT_IMPORT_FILE = join(E2E_TMP, "subagent-import-auth.json");
+/**
+ * **偽の小さいモデルが呼ばれた記録**（追加・2026-10-21、Backlog #490）。`fake-runner.ts` の `oneShot` が1回ごとに1行（指示の頭と
+ * 材料）を足す——spec が「押さなければ要約の口が呼ばれない」を数える
+ */
+export const FAKE_ONE_SHOT_LOG = join(E2E_TMP, "fake-one-shot.jsonl");
 /** 取り込み元に置いてある鍵（試験がその sha256 を突き合わせる） */
 export const SUBAGENT_IMPORTED_KEY = "e2e-imported-key-7Q2";
 export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");

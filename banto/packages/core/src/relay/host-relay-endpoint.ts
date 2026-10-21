@@ -1162,13 +1162,16 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
       return { content: [{ type: "text", text: JSON.stringify(placed) }] };
     }
 
-    // **宛先は host 自身**。要約は人に見せるもので AI には渡らず、値も通らないので承認は通さず、頼める相手を絞る
+    // **宛先は host 自身**。要約は人に見せるもので AI には渡らず、値も通らないので承認は通さず、頼める相手を絞る。
+    // **断り・失敗は tool のエラー（isError）の文で返す**（アーキ仕様 §4.2「2.」）——投げると Module には「MCP error -32603: …」と
+    // 頭の付いた文が届き、画面に理由をそのまま出せない（Backlog #490 の E2E で見つけた・2026-10-21）
     if (request.params.name === RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL) {
+      const refuse = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
       const why = maySummarizeBackgroundWork(identity);
-      if (why) throw new Error(`${identity.moduleName} は裏の仕事の要約を頼めません（${why}）`);
-      if (!opts.summarizeBackgroundWork) throw new Error("この banto は裏の仕事の要約を作る口を持っていません");
+      if (why) return refuse(`${identity.moduleName} は裏の仕事の要約を頼めません（${why}）`);
+      if (!opts.summarizeBackgroundWork) return refuse("この banto は裏の仕事の要約を作る口を持っていません");
       const r = await opts.summarizeBackgroundWork(identity, { replyTo: args.replyTo, material: args.material });
-      if ("error" in r) throw new Error(r.error);
+      if ("error" in r) return refuse(r.error);
       return { content: [{ type: "text", text: JSON.stringify({ summary: r.summary }) }] };
     }
 

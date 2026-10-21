@@ -132,6 +132,23 @@ body[data-mode="fullscreen"] #app { height: 100vh; }
 .plan-completed > span:last-child { text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .plan-in_progress { color: var(--ink); font-weight: 500; }
 .plan-pending > .icon { color: var(--ink-3); }
+/* 要約——いまやっていることの下（アーキ仕様 §4.1 の4） */
+.summary-box { display: flex; flex-direction: column; gap: 8px; }
+.summary-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.summary-hint { font-size: var(--t-xs); }
+.summary-working { display: flex; align-items: center; gap: 8px; font-size: var(--t-sm); color: var(--ink-2); }
+.summary-working .glyph { margin: 0; }
+.summary-failed { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-md); background: var(--warn-soft); font-size: var(--t-sm); color: var(--ink); }
+.summary-failed > .icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--warn); }
+.summary-failed > span { flex: 1 1 16em; min-width: 0; overflow-wrap: anywhere; }
+.summary { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-md); background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); }
+.summary-head { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--ink-3); }
+.summary-head > .icon { width: 12px; height: 12px; color: var(--accent); }
+.summary-redo { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.summary-redo .icon { width: 12px; height: 12px; }
+.summary-text { margin: 0; font-size: var(--t-md); line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; }
+.summary-note { font-size: var(--t-xs); }
+.summary-discarded { margin: 0; font-size: var(--t-xs); }
 .quote { margin: 0; padding-left: 10px; border-left: 2px solid var(--line); font-size: var(--t-sm); line-height: 1.7; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .clamp-2, .clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .clamp-2 { -webkit-line-clamp: 2; }

@@ -1250,10 +1250,12 @@ test("裏の仕事の要約を頼めるのは同梱の Module だけ（コンテ
     thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil"), projectId: "pA" }),
     tools: registry.issueToken({ moduleName: "documents", meta: bundledMeta(raw, "documents"), inContainer: true, toolsContainer: true }),
   };
+  // 断りは tool のエラー（isError）の文で返る——理由の文に「MCP error …」の頭が付かない（Module が画面にそのまま出す）
   const summarize = async (token: string, args: Record<string, unknown>) => {
     const c = await relayClient(url, token);
     try {
-      return JSON.parse(textOf(await c.callTool({ name: "relaySummarizeBackgroundWork", arguments: args }))) as unknown;
+      const r = (await c.callTool({ name: "relaySummarizeBackgroundWork", arguments: args })) as { isError?: boolean };
+      return r.isError ? { refused: textOf(r) } : (JSON.parse(textOf(r)) as unknown);
     } finally {
       await c.close();
     }
@@ -1262,9 +1264,9 @@ test("裏の仕事の要約を頼めるのは同梱の Module だけ（コンテ
   try {
     assert.deepEqual(await summarize(tokens.bundled, { replyTo: "reply_1", material }), { summary: "いま試験を直しています" });
     assert.deepEqual(asked, [{ module: "subagent", projectId: "pA", replyTo: "reply_1", material }]);
-    await assert.rejects(() => summarize(tokens.bundled, { replyTo: "reply_other", material }), /あなたに渡したものではありません/);
-    await assert.rejects(() => summarize(tokens.thirdParty, { material }), /banto 自身のコード/);
-    await assert.rejects(() => summarize(tokens.tools, { material }), /道具用のコンテナ/);
+    assert.deepEqual(await summarize(tokens.bundled, { replyTo: "reply_other", material }), { refused: "この返信用の札は、あなたに渡したものではありません" });
+    assert.match((await summarize(tokens.thirdParty, { material }) as { refused: string }).refused, /^evil は裏の仕事の要約を頼めません（.*banto 自身のコード/);
+    assert.match((await summarize(tokens.tools, { material }) as { refused: string }).refused, /道具用のコンテナ/);
     assert.equal(asked.length, 2, "頼めない相手の頼みを受け手に渡した");
   } finally {
     close();

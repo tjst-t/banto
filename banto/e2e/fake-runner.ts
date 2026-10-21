@@ -18,7 +18,7 @@
 //              → tool_result を流す → 終わる
 // ```
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -209,7 +209,13 @@ export const FAKE_ONE_SHOT_FAIL_MARKER = "[[fake-title-fail]]";
  * **小さいモデルの1回**（追加・2026-10-21、チャットの題、`runner/one-shot.ts`）。SDK の `query()` の代わり。決まった題を返す
  * ——本物の CLI を起こさない（E2E は実 LLM を使わない）。印で題を指定する・失敗させる
  */
-export async function* oneShot(params: { prompt: string }) {
+export async function* oneShot(params: { prompt: string; options?: { systemPrompt?: unknown } }) {
+  // 呼ばれた記録（spec が「押さなければ呼ばれない」を数える。置き場は `config.ts` の `FAKE_ONE_SHOT_LOG`）
+  const log = process.env.BANTO_FAKE_ONE_SHOT_LOG;
+  if (log) {
+    const system = typeof params.options?.systemPrompt === "string" ? params.options.systemPrompt : "";
+    appendFileSync(log, `${JSON.stringify({ at: Date.now(), system: system.slice(0, 200), prompt: params.prompt })}\n`);
+  }
   if (params.prompt.includes(FAKE_ONE_SHOT_FAIL_MARKER)) {
     yield { type: "result", subtype: "error_during_execution", is_error: true, errors: ["偽の小さいモデルが失敗しました（試験の指定）"] };
     return;
