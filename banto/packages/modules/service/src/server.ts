@@ -3,13 +3,27 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { EventOutbox, EventPublisher, MODULE_META_KEY, VISIBILITY_META_KEY, callIdOf } from "@banto/module-contract";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import {
+  CANVAS_META_KEY,
+  EventOutbox,
+  EventPublisher,
+  FILE_RANGE_MAX_BYTES,
+  MODULE_META_KEY,
+  VISIBILITY_META_KEY,
+  callIdOf,
+} from "@banto/module-contract";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ServiceManager, type ManagerDeps } from "./manager.js";
 import { ServiceError } from "./spec.js";
+import { SERVICES_APP_HTML, SERVICES_APP_URI } from "./services-app.js";
 import { ServiceStore } from "./store.js";
 import { RealSystemctl } from "./systemd.js";
 import { outboxDir } from "./unit.js";
@@ -21,6 +35,9 @@ export const INHERITED_ENV_NAMES = [
   "CLAUDE_CODE_SUBSCRIPTION_TYPE",
   "CLAUDE_CODE_RATE_LIMIT_TIER",
 ];
+
+/** MCP Apps の画面の資源の型 */
+const UI_APP_MIME = "text/html;profile=mcp-app";
 
 /** 出口の箱を見回る間隔。起動役が落ちた出来事を書いてから host に届くまでの遅れ */
 const OUTBOX_POLL_MS = 3000;
@@ -49,6 +66,15 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
       {
+        // **入口「サービス」**（launcher、決定・2026-10-20、v4-modules.md §4.2「人の画面——サービス」）——Command Palette の
+        // 「Module の入口」から、AI を介さずに開く。一覧・操作は AI と同じ tool を、ログは画面用の readServiceLog を呼ぶ
+        uri: SERVICES_APP_URI,
+        name: "サービス",
+        description: "この Project で動かしているサービスの状態・ポート・ログを見て、起動・停止する",
+        mimeType: UI_APP_MIME,
+        _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+      },
+      {
         uri: "service://module",
         name: "この Module の申告",
         mimeType: "application/json",
@@ -71,6 +97,11 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
       },
     ],
   }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== SERVICES_APP_URI) throw new Error(`unknown resource: ${request.params.uri}`);
+    return { contents: [{ uri: SERVICES_APP_URI, mimeType: UI_APP_MIME, text: SERVICES_APP_HTML }] };
+  });
 
   const agent = { [VISIBILITY_META_KEY]: "agent" };
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -143,6 +174,25 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
         _meta: agent,
       },
       {
+        // **人の画面がログを読む口**（AI には見せない——AI は readServiceLogs）。読むだけなので操作の列に並ばない
+        name: "readServiceLog",
+        description:
+          `サービスのログ（file: "log" か、回した前の "log.1"）の一部を読む。fromByte から maxBytes（1回 ${FILE_RANGE_MAX_BYTES} バイトまで）、` +
+          "fromByte を省けば末尾。UTF-8 の文字の切れ目で切る。返り値は text・fromByte・toByte・size（全体の大きさ）・generation" +
+          "（ファイルの世代——回すと変わる。変わったら頭から読み直す）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: NAME_DESC },
+            file: { type: "string", enum: ["log", "log.1"] },
+            fromByte: { type: "number" },
+            maxBytes: { type: "number" },
+          },
+          required: ["name"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "admin" },
+      },
+      {
         // **人の管理操作だけ**（AI には見せない）。host が Project を別の実行場所へ移す前に呼ぶ
         name: "disableAllServices",
         description:
@@ -176,6 +226,8 @@ export function createServiceServer(manager: ServiceManager, prepare: () => Prom
         : undefined;
     const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
     try {
+      // **ログを読むだけなら systemd の用意を待たない**（用意は操作の列に並ぶ——読むのを待たせない）
+      if (request.params.name === "readServiceLog") return text(await manager.readLog(args));
       try {
         await ensureReady();
       } catch (err) {

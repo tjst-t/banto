@@ -19,7 +19,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Hand, Hourglass, Sparkles, Target } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { serializeViewState, VIEW_STATE_PARAM } from "@/lib/backend/canvas-view-state";
+import { backgroundViewHref } from "@/lib/backend/background-view";
 import { MissionPanel } from "@/components/banto/thread/mission-panel";
 import { useThreadMission } from "@/lib/backend/missions";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -83,20 +83,16 @@ function minutesAgo(since: string, now: number): string {
 
 /**
  * 移り先：その Thread を開き、画面と呼び出しが分かれば Canvas にその画面を開く（会話のカードと同じ URL の形）。定義に画面を
- * 持たない tool が結果で画面を名乗っていれば、その Module の入口を `canvasView`＝`select` で開く（`dev.banto/open-surface` の
- * launcher と同じ形、§6.2）
+ * 持たない tool が結果で画面を名乗っていれば、その Module の入口を `canvasView`＝`select` で開く（`backgroundViewHref`——
+ * 会話のカードの「画面で見る」と同じ1つ）
  */
 function hrefOf(projectId: string, thread: ThreadRef, item: BackgroundItem): string {
+  if (!item.resourceUri && item.view) return backgroundViewHref(projectId, thread.fork ? thread.id : null, item.module, item.view);
   const params = new URLSearchParams();
   if (thread.fork) params.set("fork", thread.id);
   if (item.resourceUri) {
     params.set("canvas", `${item.module}:${item.resourceUri}`);
     if (item.toolCallId) params.set("canvasTool", item.toolCallId);
-  } else if (item.view) {
-    params.set("canvas", `${item.module}:${item.view.resourceUri}`);
-    // host が大きさを確かめて写している（上限は同じ）。それでも載らなければ入口の最初の画面を開く
-    const select = item.view.select === undefined ? undefined : serializeViewState(item.view.select);
-    if (select !== undefined) params.set(VIEW_STATE_PARAM, select);
   }
   const query = params.toString();
   return query ? `/p/${projectId}?${query}` : `/p/${projectId}`;

@@ -6,6 +6,7 @@
 
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { readUtf8Range, type FileRange } from "@banto/module-contract";
 import { CAUSE_FILE, type ExitRecord } from "./log-wrapper.js";
 import {
   assertName,
@@ -63,6 +64,9 @@ export interface ServiceStatus {
   logFile: string;
   note?: string;
 }
+
+/** 画面が読めるログのファイル（`log` が 10 MB を越えると `log.1` へ回る——log-wrapper.ts） */
+export type LogFile = "log" | "log.1";
 
 export class ServiceManager {
   private queue: Promise<unknown> = Promise.resolve();
@@ -457,6 +461,30 @@ export class ServiceManager {
       }
       return { name, logFile, lines: lines.slice(-tail) };
     });
+  }
+
+  /**
+   * **人の画面がログを読む口**（`readServiceLog`、決定・2026-10-20、v4-modules.md §4.2「人の画面——サービス」）。
+   * **`serialize` の列に並ばない**——読むだけなので、起動・停止の操作を待たせない・待たない。登録の読みも書き手の
+   * 列を通さない（`services.json` は置き換えで書くので、書きかけは読まない）。範囲・文字の切れ目・世代は `readUtf8Range`
+   */
+  async readLog(input: { name?: unknown; file?: unknown; fromByte?: unknown; maxBytes?: unknown }): Promise<FileRange & { name: string; file: LogFile }> {
+    const name = assertName(input.name);
+    const file = input.file === undefined ? "log" : input.file;
+    if (file !== "log" && file !== "log.1") throw new ServiceError(`file は "log" か "log.1" です（${JSON.stringify(file)}）`);
+    await this.mustGet(name);
+    const num = (v: unknown, what: string) => {
+      if (v === undefined) return undefined;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ServiceError(`${what} は 0 以上の数です（${JSON.stringify(v)}）`);
+      return v;
+    };
+    const fromByte = num(input.fromByte, "fromByte");
+    const maxBytes = num(input.maxBytes, "maxBytes");
+    const range = readUtf8Range(join(serviceDir(this.deps.paths, name), file), {
+      ...(fromByte !== undefined ? { fromByte } : {}),
+      ...(maxBytes !== undefined ? { maxBytes } : {}),
+    });
+    return { name, file, ...range };
   }
 
   private async cleanup(name: string): Promise<void> {

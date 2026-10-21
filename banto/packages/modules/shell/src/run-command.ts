@@ -416,6 +416,8 @@ export async function runCommandInBackground(
       env,
       ...(input.timeout !== undefined && input.timeout > 0 ? { timeoutSec: input.timeout } : {}),
       secretFiles: writtenSecretFiles,
+      // 人の画面に出す alias 名（値ではない）
+      ...(input.envSecrets && Object.keys(input.envSecrets).length > 0 ? { envSecrets: input.envSecrets } : {}),
       replyTo: deps.replyTo,
       ...(deps.requestedBy ? { requestedBy: deps.requestedBy } : {}),
       ...(deps.requestedByModule ? { requestedByModule: deps.requestedByModule } : {}),

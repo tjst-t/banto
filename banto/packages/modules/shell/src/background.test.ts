@@ -19,15 +19,18 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   CALLER_META_KEY,
   CALLER_MODULE_META_KEY,
+  CANVAS_META_KEY,
   CARD_META_KEY,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
+  BACKGROUND_VIEW_META_KEY,
   REPLY_TO_META_KEY,
   RESUME_AFTER_RESTART_TOOL,
   THREAD_META_KEY,
   fillCardText,
   replyToFingerprint,
+  visibilityOf,
 } from "@banto/module-contract";
 import { createShellServer } from "./server.js";
 import { BackgroundCommands, type DeliverInput } from "./background.js";
@@ -175,6 +178,8 @@ test("名乗り：runCommand は終わったら届ける・カードの題は呼
       const { tools } = await shell.client.listTools();
       const run = tools.find((t) => t.name === "runCommand")!;
       assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], true);
+      // 画面は結果で名乗る（定義に書くと待つ形のカードまで Module の画面になる——Backlog #492）
+      assert.equal((run._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri, undefined, "定義に ui.resourceUri がある");
       const card = run._meta?.[CARD_META_KEY] as { title: string; description: string };
       assert.equal(fillCardText(card.title, { command: "npm run e2e" }), "npm run e2e");
       assert.equal(fillCardText(card.title, { command: "npm run e2e", label: "E2E を 20 回" }), "E2E を 20 回");
@@ -205,6 +210,11 @@ test("待たずに流すとすぐ返り、終わったら札で終了コード�
       const { commandId, outputFile, result } = await runInBackground(shell, { command });
       assert.ok(Date.now() - started < 5_000, "待たない形なのに待った");
       assert.equal(result._meta?.[PENDING_REPLY_META_KEY], true, "あとで届けると約束していない");
+      assert.deepEqual(
+        result._meta?.[BACKGROUND_VIEW_META_KEY],
+        { resourceUri: "ui://banto-shell/commands", select: { commandId } },
+        "結果で入口の画面を名乗っていない",
+      );
       assert.equal(shell.delivered.length, 0, "返す前に届いた");
       assert.equal(outputFile, join(dirs.commands, commandId, "output.log"));
 
@@ -382,6 +392,7 @@ test("断る：札が無い（Thread の無い呼び出し）・待たない形�
       const waited = await without.call("runCommand", { command: "echo waited" }, stamp());
       assert.equal(JSON.parse(waited.content[0]!.text).stdout, "waited\n");
       assert.equal(waited._meta?.[PENDING_REPLY_META_KEY], undefined);
+      assert.equal(waited._meta?.[BACKGROUND_VIEW_META_KEY], undefined, "外の Shell が画面を名乗っている");
     } finally {
       await without.close();
     }
@@ -879,6 +890,9 @@ test("待たない形が使えない Shell は、一覧・止める口と runInB
       assert.equal(run._meta?.[CARD_META_KEY], undefined, "待たない形が無いのにカードを名乗っている");
       assert.equal(run._meta?.[DELIVERS_LATER_META_KEY], undefined, "終わったら届けると名乗っている");
       assert.doesNotMatch(run.description!, /runInBackground/);
+      // 人の画面の入口も出さない（開いても空の画面になる）
+      const { resources } = await shell.client.listResources();
+      assert.deepEqual(resources.map((r) => r.uri), ["shell://module"]);
     } finally {
       await shell.close();
     }
@@ -904,4 +918,123 @@ test("systemd の口：systemd-run が失敗したら、用意できたことを
   assert.equal(busChecks, 2, "失敗のあと確かめ直していない");
   await launcher.start({ unit: "u", dir: "/d", envFile: "/e" });
   assert.equal(busChecks, 2, "成功のあとも毎回確かめている");
+});
+
+// ---- 人の画面（入口「バックグラウンドのコマンド」、決定・2026-10-20、Backlog #491）------------------------------------
+
+test("人の画面：入口は launcher、画面の道具3本は admin（AI に見えない）。資源を読むと画面の HTML", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      const { tools } = await shell.client.listTools();
+      for (const name of ["listBackgroundCommands", "readCommandOutput", "stopBackgroundCommand"]) {
+        const tool = tools.find((t) => t.name === name);
+        assert.ok(tool, `${name} が無い`);
+        // host は agent 可視性の道具だけを AI に見せる（admin は人の画面だけ）
+        assert.equal(visibilityOf(tool), "admin", name);
+      }
+      const { resources } = await shell.client.listResources();
+      const app = resources.find((r) => r.uri === "ui://banto-shell/commands");
+      assert.ok(app, "入口の資源が無い");
+      assert.equal(app.name, "バックグラウンドのコマンド");
+      assert.equal(visibilityOf(app), "admin");
+      assert.equal(app._meta?.[CANVAS_META_KEY], "launcher");
+      const html = ((await shell.client.readResource({ uri: "ui://banto-shell/commands" })).contents[0] as { text: string }).text;
+      assert.match(html, /listBackgroundCommands/);
+      assert.match(html, /readCommandOutput/);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("人が止める：Thread の縛りなく止まり、job.json に止めた者、AI に「人が画面で止めました」、listCommands に cancelledBy。alias 名は記録に残り値は残らない", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      const human = await runInBackground(
+        shell,
+        { command: "echo human-started; sleep 60", label: "人が止めるもの", envSecrets: { TOKEN: "some-alias" } },
+        stamp(THREAD, "reply_H"),
+      );
+      const ai = await runInBackground(shell, { command: "echo ai-started; sleep 60" }, stamp(OTHER_THREAD, "reply_AI"));
+      // 人の画面の一覧は全 Thread 分、alias 名つき（値は無い）
+      const all = JSON.parse((await shell.call("listBackgroundCommands", {}, { [CALLER_META_KEY]: { admin: true } })).content[0]!.text) as {
+        commands: Array<{ commandId: string; status: string; envSecrets?: Record<string, string>; label?: string }>;
+      };
+      assert.deepEqual(new Set(all.commands.map((c) => c.commandId)), new Set([human.commandId, ai.commandId]));
+      assert.deepEqual(all.commands.find((c) => c.commandId === human.commandId)!.envSecrets, { TOKEN: "some-alias" });
+      assert.equal(all.commands.find((c) => c.commandId === ai.commandId)!.envSecrets, undefined);
+      assert.deepEqual(readJob(dirs, human.commandId).envSecrets, { TOKEN: "some-alias" });
+      assert.ok(!allFileText(dirs.commands).includes(SECRET), "秘密の値が置き場に書かれた");
+
+      // 人が止める（Thread の印の無い、人の画面からの呼び出し）
+      const stopped = await shell.call("stopBackgroundCommand", { commandId: human.commandId }, { [CALLER_META_KEY]: { admin: true } });
+      assert.equal(stopped.isError, undefined, stopped.content[0]?.text);
+      const body = JSON.parse(stopped.content[0]!.text) as { status: string; cancelledBy?: string; note: string };
+      assert.equal(body.status, "cancelled");
+      assert.equal(body.cancelledBy, "human");
+      assert.match(body.note, /人が画面で止めました/);
+      assert.equal(readJob(dirs, human.commandId).cancelRequestedBy, "human");
+      await shell.waitDelivered(1);
+      const d = shell.delivered[0]!;
+      assert.equal(d.replyTo, "reply_H");
+      assert.equal(d.title, "コマンドを人が画面で止めました：人が止めるもの");
+      const delivered = deliveredBody(d);
+      assert.equal(delivered.status, "cancelled");
+      assert.equal(delivered.cancelledBy, "human");
+      assert.match(String(delivered.note), /あなた（cancelCommand）が止めたのではありません/);
+      const listed = JSON.parse((await shell.call("listCommands", {}, { [THREAD_META_KEY]: THREAD })).content[0]!.text) as {
+        commands: Array<{ commandId: string; status: string; cancelledBy?: string }>;
+      };
+      assert.deepEqual(listed.commands.map((c) => [c.commandId, c.status, c.cancelledBy]), [[human.commandId, "cancelled", "human"]]);
+
+      // AI が止めたものには止めた者を付けない
+      await shell.call("cancelCommand", { commandId: ai.commandId }, { [THREAD_META_KEY]: OTHER_THREAD });
+      await shell.waitDelivered(2);
+      assert.match(shell.delivered[1]!.title, /^コマンドを止めました：/);
+      assert.equal(deliveredBody(shell.delivered[1]!).cancelledBy, undefined);
+      assert.equal(readJob(dirs, ai.commandId).cancelRequestedBy, undefined);
+
+      // もう動いていないものは止められない・無いものは無いと言う
+      const again = await shell.call("stopBackgroundCommand", { commandId: human.commandId }, { [CALLER_META_KEY]: { admin: true } });
+      assert.equal(again.isError, true);
+      assert.match(again.content[0]!.text, /もう動いていません/);
+      const missing = await shell.call("stopBackgroundCommand", { commandId: "nope" }, { [CALLER_META_KEY]: { admin: true } });
+      assert.equal(missing.isError, true);
+      assert.match(missing.content[0]!.text, /ありません/);
+    } finally {
+      await shell.close();
+    }
+  });
+});
+
+test("readCommandOutput：fromByte から maxBytes、省けば末尾。UTF-8 の文字の切れ目で切り、全体の大きさを返す", async () => {
+  await withDirs(async (dirs) => {
+    const shell = await startShell(dirs);
+    try {
+      // 「あ」「い」「う」は 3 バイトずつ
+      const { commandId } = await runInBackground(shell, { command: "printf 'aあいう'" });
+      await shell.waitDelivered(1);
+      const read = async (args: Record<string, unknown>) => {
+        const r = await shell.call("readCommandOutput", { commandId, ...args }, { [CALLER_META_KEY]: { admin: true } });
+        assert.equal(r.isError, undefined, r.content[0]?.text);
+        return JSON.parse(r.content[0]!.text) as { text: string; fromByte: number; toByte: number; size: number; capped: boolean };
+      };
+      const tail = await read({});
+      assert.deepEqual([tail.text, tail.fromByte, tail.toByte, tail.size, tail.capped], ["aあいう", 0, 10, 10, false]);
+      // 「あ」の途中（2 バイト目）から 5 バイト——「あ」の残りを飛ばし、欠けた「う」は入れない
+      const mid = await read({ fromByte: 2, maxBytes: 5 });
+      assert.deepEqual([mid.text, mid.fromByte, mid.toByte, mid.size], ["い", 4, 7, 10]);
+      const end = await read({ maxBytes: 4 });
+      assert.deepEqual([end.text, end.fromByte], ["う", 7]);
+      const bad = await shell.call("readCommandOutput", { commandId, fromByte: -1 }, { [CALLER_META_KEY]: { admin: true } });
+      assert.equal(bad.isError, true);
+      const missing = await shell.call("readCommandOutput", { commandId: "nope" }, { [CALLER_META_KEY]: { admin: true } });
+      assert.equal(missing.isError, true);
+      assert.match(missing.content[0]!.text, /ありません/);
+    } finally {
+      await shell.close();
+    }
+  });
 });

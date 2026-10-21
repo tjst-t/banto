@@ -8,11 +8,15 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
   ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
+  BACKGROUND_VIEW_META_KEY,
+  CANVAS_META_KEY,
   CARD_META_KEY,
+  FILE_RANGE_MAX_BYTES,
   DELIVERS_LATER_META_KEY,
   MODULE_META_KEY,
   PENDING_REPLY_META_KEY,
@@ -30,6 +34,10 @@ import { runCommand, runCommandInBackground } from "./run-command.js";
 import { HostRelayClient } from "./host-relay-client.js";
 import { BackgroundCommandError, BackgroundCommands, LABEL_MAX } from "./background.js";
 import { SystemdLauncher } from "./background-launcher.js";
+import { COMMANDS_APP_HTML, COMMANDS_APP_URI } from "./commands-app.js";
+
+/** MCP Apps の画面の資源の型 */
+const UI_APP_MIME = "text/html;profile=mcp-app";
 
 export interface ShellServerDeps {
   projectRoot: string;
@@ -58,7 +66,7 @@ const BACKGROUND_TOOLS = [
     description:
       "runCommand の runInBackground で待たずに流したコマンドの一覧（この会話（Thread）で流したものだけ。動いているものは全部、終わったものは新しい順に 20 件まで）。" +
       "commandId・label（付けた呼び名）・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
-      "cancelled：cancelCommand で止めた／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
+      "cancelled：止めた（cancelCommand。人が画面で止めたものは cancelledBy: \"human\"）／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
     inputSchema: { type: "object", properties: {} },
     // **読むだけ**（アーキ仕様 §4.4）——流したコマンドの記録を読むだけで、止めも流しもしない
     _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
@@ -79,6 +87,40 @@ const BACKGROUND_TOOLS = [
   },
 ];
 
+/**
+ * **人の画面（入口「バックグラウンドのコマンド」）から呼ぶ道具**（決定・2026-10-20、v4-modules.md §2.3「人の画面——バックグラウンドの
+ * コマンド」、Backlog #491）。`admin`——AI には見せない（host が人の管理操作と刻む）。待たない形が使える Shell だけが見せる
+ */
+const HUMAN_VIEW_TOOLS = [
+  {
+    name: "listBackgroundCommands",
+    description:
+      "待たずに流したコマンドの一覧（この Project の全会話の分。動いているもの→終わったもの、新しい順に、置き場に残っている全部）。" +
+      "listCommands の各件に、秘密の alias 名（envSecrets。値ではない）・時間の上限を足したもの",
+    inputSchema: { type: "object", properties: {} },
+    _meta: { [VISIBILITY_META_KEY]: "admin" },
+  },
+  {
+    name: "readCommandOutput",
+    description:
+      `待たずに流したコマンドの出力（output.log）の一部を読む。fromByte から maxBytes（1回 ${FILE_RANGE_MAX_BYTES} バイトまで）、` +
+      "fromByte を省けば末尾。UTF-8 の文字の切れ目で切る。返り値は text・fromByte・toByte・size（全体の大きさ）・capped（保存の上限を越えた）",
+    inputSchema: {
+      type: "object",
+      properties: { commandId: { type: "string" }, fromByte: { type: "number" }, maxBytes: { type: "number" } },
+      required: ["commandId"],
+    },
+    _meta: { [VISIBILITY_META_KEY]: "admin" },
+  },
+  {
+    // **人が止める**——Thread の縛りは無い（人は Project の全会話の持ち主）。止めた印を残し、AI には「人が画面で止めました」が届く
+    name: "stopBackgroundCommand",
+    description: "待たずに流したコマンドを人が止める（cancelCommand と同じ止め方）。頼んだ会話には「人が画面で止めました」が届く",
+    inputSchema: { type: "object", properties: { commandId: { type: "string" } }, required: ["commandId"] },
+    _meta: { [VISIBILITY_META_KEY]: "admin" },
+  },
+];
+
 /** 頼み方の誤りは AI に理由ごと返す（黙って空を返さない） */
 class ShellRefusal extends Error {}
 
@@ -92,6 +134,19 @@ export function createShellServer(deps: ShellServerDeps) {
   // 突き合わせ、より厳しい方向の申告だけを採る。AI には見せない（admin）。
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [
+      // **入口「バックグラウンドのコマンド」**（launcher、決定・2026-10-20、v4-modules.md §2.3「人の画面」）。**待たない形が使える
+      // Shell だけ**——コンテナの外の Shell は流せないので、開いても空の画面になる入口を出さない（規則13）
+      ...(deps.background
+        ? [
+            {
+              uri: COMMANDS_APP_URI,
+              name: "バックグラウンドのコマンド",
+              description: "AI が待たずに流したコマンドの一覧・出力を見て、止める",
+              mimeType: UI_APP_MIME,
+              _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
+            },
+          ]
+        : []),
       {
         uri: "shell://module",
         name: "この Module の申告",
@@ -118,6 +173,11 @@ export function createShellServer(deps: ShellServerDeps) {
       },
     ],
   }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (!deps.background || request.params.uri !== COMMANDS_APP_URI) throw new Error(`unknown resource: ${request.params.uri}`);
+    return { contents: [{ uri: COMMANDS_APP_URI, mimeType: UI_APP_MIME, text: COMMANDS_APP_HTML }] };
+  });
 
   // **待たない形が使えない Shell（コンテナの外）では、その口を見せない**（訂正・2026-10-07、Fable のレビュー、規則13）——
   // 見えるのに必ず断る口を AI に出さない。runCommand の runInBackground の引数・説明・「終わったら届ける」の名乗りも外す
@@ -207,6 +267,7 @@ export function createShellServer(deps: ShellServerDeps) {
         },
       },
       ...(background ? BACKGROUND_TOOLS : []),
+      ...(background ? HUMAN_VIEW_TOOLS : []),
       // ---- host が起き直したときに呼ぶ（admin——AI には見せない） ----------------------------
       {
         // **起こし直しても続けられる**（追加・2026-10-07、アーキ仕様 §2.5「2.」、`@banto/module-contract` の `resume.ts`）。
@@ -285,6 +346,44 @@ export function createShellServer(deps: ShellServerDeps) {
           note: willDeliver
             ? `${what}。終わり方と出力の末尾がこの会話に届きます`
             : `${what}。このコマンドの終わりを届ける約束はもう切れているので（Shell が起こし直された等）、何も届きません。出力は outputFile にあります`,
+        });
+      }
+      // ---- 人の画面（admin）——host が AI には見せない ----
+      if (request.params.name === "listBackgroundCommands") {
+        return text({ commands: requireBackground().listAll() });
+      }
+      if (request.params.name === "readCommandOutput") {
+        const args = request.params.arguments ?? {};
+        const num = (v: unknown, what: string) => {
+          if (v === undefined) return undefined;
+          if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ShellRefusal(`${what} は 0 以上の数です（${JSON.stringify(v)}）`);
+          return v;
+        };
+        const fromByte = num(args.fromByte, "fromByte");
+        const maxBytes = num(args.maxBytes, "maxBytes");
+        return text(
+          requireBackground().readOutput(String(args.commandId ?? ""), {
+            ...(fromByte !== undefined ? { fromByte } : {}),
+            ...(maxBytes !== undefined ? { maxBytes } : {}),
+          }),
+        );
+      }
+      if (request.params.name === "stopBackgroundCommand") {
+        const background = requireBackground();
+        const id = String((request.params.arguments ?? {}).commandId ?? "");
+        if (!background.get(id)) throw new ShellRefusal(`コマンド "${id}" はありません`);
+        const willDeliver = background.willDeliver(id);
+        const after = await background.cancel(id, "human");
+        const stopped = after.status === "cancelled";
+        return text({
+          ok: true,
+          ...after,
+          ...(stopped ? {} : { alreadyEnded: true }),
+          note: stopped
+            ? willDeliver
+              ? "止めました。頼んだ会話に「人が画面で止めました」が届きます"
+              : "止めました。このコマンドの終わりを届ける約束はもう切れているので、会話には何も届きません"
+            : `止める前にもう終わっていました（状態：${after.status}）`,
         });
       }
       if (request.params.name === RESUME_AFTER_RESTART_TOOL) {
@@ -372,7 +471,13 @@ export function createShellServer(deps: ShellServerDeps) {
           ...text(started),
           // **あとで届けると約束した**——host は札を返事待ちにし、この Module が止まったら代わりに知らせる
           // 結果の場所（Backlog #324）——起こし直しで Shell に繋がらないまま打ち切られても、人と AI が出力を読みに行ける
-          _meta: { [PENDING_REPLY_META_KEY]: true, [RESULT_LOCATION_META_KEY]: started.outputFile },
+          // 結果で名乗る画面（Backlog #492）——サイドバーの1件と会話のカードから、入口がこの1件を選んで開く。
+          // tool の定義には ui.resourceUri を書かない（待つ形のカードは専用のカードのまま。v4-modules.md §2.3「人の画面」）
+          _meta: {
+            [PENDING_REPLY_META_KEY]: true,
+            [RESULT_LOCATION_META_KEY]: started.outputFile,
+            [BACKGROUND_VIEW_META_KEY]: { resourceUri: COMMANDS_APP_URI, select: { commandId: started.commandId } },
+          },
         };
       }
 

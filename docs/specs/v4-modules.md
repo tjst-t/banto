@@ -1792,7 +1792,7 @@ PDF の画面が分かれている」（ユーザー）。次の形に改める�
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
 | `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒。待つ形は省略時 120、待たない形は省略時は上限なし）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`runInBackground`（真偽、既定 false。下の「待たない形」） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23）。**待たない形はすぐ** `commandId`／`status: "running"`／`outputFile` を返し、終わったら結果を届ける |
-| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07） |
+| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07）・人が画面で止めたものは `cancelledBy: "human"`（追加・2026-10-21） |
 | `cancelCommand` | `commandId` | 待たずに流したコマンドを止める。**流した Thread からだけ**。止めたら頼んだ Thread に「止めました」を届けて終わる（追加・2026-10-07） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
@@ -2004,7 +2004,7 @@ Shell には数えきれない資源が無いので Command Palette の `complet
 統合は無く、Palette に載るのは launcher への入口だけ（ターミナルを開く・バックグラウンドのコマンド——下の「人の画面」。
 後者は改訂・2026-10-21）。
 
-#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。未実装）
+#### 人の画面——バックグラウンドのコマンド（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。入口と画面の道具は実装・2026-10-21、Backlog #491。サイドバー・会話のカードから開く配線は実装・2026-10-21、Backlog #492）
 
 待たない形で流したコマンドは、サイドバーに呼び名と時刻が出るだけで、押しても Thread へ移るだけだった。経過時間・出力の
 末尾・止める操作は AI の tool（`listCommands`・`cancelCommand`）にしか無く、人は進み具合を見られなかった
@@ -2048,12 +2048,49 @@ Shell には数えきれない資源が無いので Command Palette の `complet
   画面」）。host はそれを札の手がかりに写すので、サイドバーの1件を押すとその Thread へ移り、この入口が `canvasView`＝`{ commandId }`
   で開いて、その1件を選ぶ（Subagent の入口が `{ runId }` で受けるのと同じ形）。この画面は `{ commandId }` を「見ている場所」として受け、
   人が一覧で選んだときも同じ形で預ける。**tool の定義には `ui.resourceUri` を書かない**——書くと待つ形の `runCommand` まで会話の
-  カードが Module の画面になり、いまの専用のカード（`shell-command-card.tsx`、承認の段から結果まで1枚）が使えなくなる
-- **会話のカードの「画面で見る」**：待たない形のときだけ足す。専用のカード（`shell-command-card.tsx`）が結果の本文から `commandId`
-  を読み、サイドバーと同じ形（入口を `canvasView`＝`{ commandId }`）で開く。**狭い画面で「その1件の中身から見せる」**
-  （`docs/specs/v4-frontend.md` §6.33）も、開くときに `commandId` が渡るので成り立つ
+  カードが Module の画面（埋め込みの画面）になる。待つ形のカードは、他の tool と同じ一般のカード（`ToolFallback`——引数と結果を
+  畳んで見せる）のまま
+- **会話のカードの「画面で見る」**：待たない形のときだけ、tool の折りたたみの**外**に開けるカードを1枚足す（題は呼び名、無ければ
+  コマンド・説明はコマンド・ボタン「画面で見る」。inline の画面と同じく、人が見に行く入口を畳める所に入れない——`v4-frontend.md` §6.2）。
+  tool のカード（一般のカード）は待つ形と同じまま。カードが結果の本文から `commandId` を読み
+  （結果の `_meta` は host が外したあと）、サイドバーと同じ形（入口を `canvasView`＝`{ commandId }`）で開く。**狭い画面で
+  「その1件の中身から見せる」**（`docs/specs/v4-frontend.md` §6.33）も、開くときに `commandId` が渡るので成り立つ（訂正・2026-10-21、Backlog #492——経緯は `docs/notes/2026-10-20-background-visibility.md`）
+- **置き場に無い `commandId`** で開かれたら（記録が掃除で消えた・古い URL）、一覧を出して「開こうとしたコマンドの記録は、もう
+  残っていません」の一言（黙って別の1件を開かない。一覧で選ぶと一言は消える）
 - **外の Shell（コンテナの外）**では待たない形を持たないので、**入口の資源を `ListResources` に出さない**（Palette にも出ない。規則13）。
   結果に `dev.banto/backgroundView` も名乗らない
+
+**実装で決めたこと**（2026-10-21、Backlog #491）：
+
+- 画面は `packages/modules/shell/src/commands-app.ts`（組み立て）と `src/ui/commands-view.ts`（ブラウザで動く JS）。見た目の土台
+  `src/ui/theme.ts` は Subagent の写し
+- **`listBackgroundCommands` の各件**は `listCommands` の各件（`cancelledBy` を含む）に、`envSecrets`（alias 名）と `timeoutSec` を
+  足したもの。置き場に残っている全部（動いているもの・終わったものの数で切らない——置き場の掃除が新しい 20 件に絞る）
+- **`readCommandOutput` の返り値**：`{ commandId, text, fromByte, toByte, size, capped }`。`fromByte` を書かなければ末尾。
+  `maxBytes` は 1 回 256 KiB まで（越えて頼まれたら上限で切る）。`capped` は保存の上限（64 MiB）を越えた印（終わったものは
+  `exit.json` の印、動いているものは大きさが上限に達したか）。切り方は `@banto/module-contract` の `readUtf8Range`（Service の
+  `readServiceLog` と同じ1つ）
+- **`stopBackgroundCommand`** は止め方・待ち方とも `cancelCommand` と同じ。返事の `note` は「頼んだ会話に『人が画面で止めました』が
+  届きます」（届ける約束が切れていればそう言う）。止める前に終わっていたら `alreadyEnded: true`
+- **AI に届く知らせ**：題は「コマンドを人が画面で止めました：<呼び名>」、本文に `cancelledBy: "human"` と、`note` に「人が画面で
+  止めました——あなた（cancelCommand）が止めたのではありません」
+- 一覧は動いているものがある間 2 秒ごと、無ければ 5 秒ごとに取り直す。出力は動いている間 2 秒ごと（終わったら最後にもう1回）。
+  経った時間は画面で1秒ごとに進める。止める確かめは文とボタンを1つの帯に（狭い画面では文の下の右にボタン）。
+  「パスをコピー」は、埋め込みの画面でクリップボードに書けなければパスを選んでおく
+- 1行が 256 KiB より長くて遡った分に改行が無いときは、捨てずに切れ端として出す（捨てると先へ遡れない）
+
+**実装で決めたこと**（2026-10-21、Backlog #492）：
+
+- 名乗りは `server.ts` の待たない形の返事（`[BACKGROUND_VIEW_META_KEY]: { resourceUri: COMMANDS_APP_URI, select: { commandId } }`）。
+  外の Shell は待たない形を断るので名乗らない
+- 会話のカード：`apps/frontend/components/banto/thread/shell-background-view-card.tsx`（`OpenableCard`、`human-tool-card.tsx` の
+  `InlineViewForPart` が折りたたみの外に描く）。どの呼び出しが
+  待たない形かは `lib/shell-background-command.ts` の `shellBackgroundCommandOf`——tool 名が `mcp__<Module名>__runCommand`、引数に
+  `runInBackground: true`、本文の JSON に `commandId`。入口の資源の URI（`ui://banto-shell/commands`）は画面の側も知っている
+  （Shell の画面を開くための、この1か所だけ）
+- 開き方はサイドバーの1件と同じ関数 `lib/backend/background-view.ts` の `backgroundViewHref`（その Thread が Fork ならその Fork のまま）
+- 回帰試験：`background.test.ts`（admin の名乗り・人が止めた印と知らせ・出力の範囲と文字の切れ目・外の Shell は入口を出さない）・
+  `e2e/specs/shell-commands-view.spec.ts`
 
 ### 2.4 Repositories——手元のリポジトリの台帳（決定・2026-09-29〜10-01、ユーザー）
 
@@ -3563,7 +3600,7 @@ Shell の `grep` で足りる）。
 - 資源の上限（§5 の残りと同じく Incus の `limits.*` が候補）
 - ~~人の画面（一覧・ログ・起動と停止）~~ **→ 決めた**（2026-10-20、下の「人の画面——サービス」）
 
-#### 人の画面——サービス（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。未実装）
+#### 人の画面——サービス（決定・2026-10-20、ユーザー、案A。レビューを反映・2026-10-21。実装・2026-10-21、Backlog #493）
 
 Service には人の画面が無く（上の「まだ決めていないこと」にあった）、状態・ログ・起動と停止は AI の tool でしか扱えなかった。
 Service は Thread に紐付かないので、サイドバーのバックグラウンドの印にも出ない（2026-10-20、ユーザー要望。案の比較は
@@ -3585,6 +3622,26 @@ Service は Thread に紐付かないので、サイドバーのバックグラ�
   起動・停止の操作を待たせない・待たない）。読み方の切れ目は Shell の `readCommandOutput` と同じ（文字の切れ目で切る・行の頭に揃えるのは
   画面）。**AI の口 `readServiceLogs` は変えない**（末尾を読むだけのまま。前の下書きの `beforeByte` の追加はやめた）
 - **公開の URL はこの画面に出さない**——公開は Publish の持ち物で、その画面（入口「公開」）にある
+
+**実装で決めたこと**（2026-10-21、Backlog #493）：
+
+- 画面は `packages/modules/service/src/services-app.ts`（組み立て）と `src/ui/services-view.ts`（ブラウザで動く JS）。見た目の土台
+  `src/ui/theme.ts` は Subagent の写し（Module は互いの中を import しない）
+- **`readServiceLog` の返り値**：`{ name, file, text, fromByte, toByte, size, generation }`。`fromByte` を書かなければ末尾。
+  `maxBytes` は 1 回 256 KiB まで（越えて頼まれたら上限で切る——返す `toByte` で分かる）。**世代は `<dev>:<ino>`**（開いたファイルの
+  `fstat` から——名前を見てから開く間に回されても、読んだものと食い違わない）。ファイルが無ければ空で `generation: null`。
+  切り方は `@banto/module-contract` の `readUtf8Range`（Shell の `readCommandOutput` と同じ1つ）
+- **`readServiceLog` は systemd の用意も待たない**（`serialize` の列に並ばないのと同じ理由——用意は列の中で走る）。登録の読みも列を
+  通さない（`services.json` は置き換えで書くので、書きかけを読まない）
+- 一覧（`listServices`）は 5 秒ごと（登録と systemd の写しを突き合わせるので細かくしない）、ログは 2 秒ごとに読み足す。読み足したとき
+  ファイルが縮んでいた・世代が違ったら、末尾から読み直す。遡るのは `log` の頭まで来たら `log.1` の末尾から。遡っている間に
+  もう一度回ったら（`log.1` の世代が変わったら）そこで止めて、そう書く
+- ログの行は起動役が付けた時刻（UTC の ISO 8601）を**手元の時刻（時:分:秒.ミリ秒）**にして頭に出す（元の時刻は行の title）。
+  標準エラーの行（`[stderr]`）は色で分ける
+- 作業場所が Project の根のときは `.`（登録は空の文字列で持つ）
+- 選んだサービスは「見ている場所」（`{ name }`）として預ける——開き直しても同じサービスに戻る
+- 回帰試験：`manager.test.ts`（範囲・世代・列に並ばない）・`server.test.ts`（入口の名乗り・`admin`・用意を待たない）・
+  `@banto/module-contract` の `file-range.test.ts`（文字の切れ目）・`e2e/specs/service-view.spec.ts`
 
 ### 4.3 Publish——動いているものに届く URL を生やす（決定・2026-09-27）
 
