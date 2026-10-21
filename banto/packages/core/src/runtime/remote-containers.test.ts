@@ -113,10 +113,26 @@ const FAKE_INCUS = String.raw`#!/usr/bin/env node
 const fs = require("fs");
 const { spawnSync } = require("child_process");
 const statePath = "__STATE__";
+// **読む→書き戻すは1本ずつ**（2026-10-21、GitHub の 2コアのランナーで間欠的に落ちた）。コードは裏でも incus を呼ぶ（鍵の窓口の
+// 見張りが装置を外す等）ので、偽物が2つ同時に走ると、片方が古い状態で書き戻して付け直しを消し、試験が書きかけの JSON を読む。
+// 本物の incus はサーバが順に処理する——偽物も鍵（mkdir）で1本ずつにし、書くときは名前を付け替えて途中を見せない
+const lockDir = statePath + ".lock";
+for (const until = Date.now() + 30000; ; ) {
+  try { fs.mkdirSync(lockDir); break; } catch (e) {
+    if (e.code !== "EEXIST" || Date.now() > until) throw e;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+}
+let locked = true;
+const unlock = () => { if (locked) { locked = false; fs.rmdirSync(lockDir); } };
+process.on("exit", unlock);
 const st = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : { instances: {} };
 const args = process.argv.slice(2);
 fs.appendFileSync("__ILOG__", JSON.stringify(args) + "\n");
-const save = () => fs.writeFileSync(statePath, JSON.stringify(st));
+const save = () => {
+  fs.writeFileSync(statePath + ".tmp-" + process.pid, JSON.stringify(st));
+  fs.renameSync(statePath + ".tmp-" + process.pid, statePath);
+};
 const out = (s) => { process.stdout.write(s); save(); process.exit(0); };
 const die = (s) => { process.stderr.write(s); save(); process.exit(1); };
 const profileNic = { eth0: { type: "nic", network: "incusbr-1001", name: "eth0" } };
@@ -177,6 +193,8 @@ if (cmd === "exec") {
   const env = { ...process.env };
   for (let i = 0; i < opts.length; i++) if (opts[i] === "--env") { const kv = opts[i + 1]; env[kv.slice(0, kv.indexOf("="))] = kv.slice(kv.indexOf("=") + 1); }
   save();
+  // 中のユーザーで流すものは長くかかりうる（中から incus は呼ばない）——状態はもう書いたので、鍵を放してから走らせる
+  unlock();
   const r = spawnSync(argv[0], argv.slice(1), { stdio: "inherit", env });
   process.exit(r.status ?? 1);
 }
