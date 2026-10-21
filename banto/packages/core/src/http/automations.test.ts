@@ -16,6 +16,8 @@ import { ThreadTurns } from "../delivery/thread-turns.js";
 import { AutomationStore } from "../automation/store.js";
 import { AutomationWebhooks } from "../automation/webhook.js";
 import { createApp } from "./app.js";
+import { Supervisors } from "../supervisor/supervisors.js";
+import { supervisorPolicy } from "../supervisor/policy.js";
 
 /** いま開いている試験の口（認証の要らない `/hooks/` を叩くのに使う） */
 let lastBase = "";
@@ -64,6 +66,7 @@ async function withApp(
       resolveModulesForThread: async () => [],
       threadTurns,
       automations,
+      supervisors: new Supervisors({ automations, policy: (id) => supervisorPolicy(undefined, id), defaultTimeZone: "Asia/Tokyo" }),
       ...(opts.withRunner
         ? {
             automationRunner: {
@@ -249,4 +252,52 @@ test("Webhook：作った応答でだけ受け口の URL を返し、印のハ�
     },
     { withRunner: true, withWebhooks: true },
   );
+});
+
+// **番頭**（アーキ仕様 §4.5「番頭の作り」）。作る・一時停止・再開・消すは番頭の単位。自動化の一覧と1件ずつの口には出さない
+test("番頭：作る・一覧・一時停止・再開・消すは番頭の単位。自動化の一覧と1件ずつの口には出ない。判断役がいれば 409、pauseJudges で置ける", async () => {
+  await withApp(async (call, { projectThread }) => {
+    const p = await projectThread.createProject("p", tmpdir());
+    await projectThread.createBaseThread(p.id);
+    const path = `/api/projects/${p.id}/supervisor`;
+    assert.equal((await call(path)).status, 404);
+    const judge = await call(`/api/projects/${p.id}/automations`, "POST", {
+      name: "判断役",
+      instruction: "決めて",
+      source: { kind: "event", event: "banto.turn-decisions", batchSeconds: 0 },
+    });
+    assert.equal(judge.status, 201);
+
+    const refused = await call(path, "POST", {});
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.error, /判断役（自動化「判断役」）が動いています/);
+    assert.equal((await call(path, "POST", { pauseJudges: "yes" })).status, 400);
+    const created = await call(path, "POST", { pauseJudges: true });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.automations.length, 4);
+    assert.equal((await call(path, "POST", {})).status, 409, "2つ目の番頭を置けた");
+
+    // 自動化の一覧には判断役だけ（止まっている）。番頭の自動化は1件ずつの口で触れない
+    const listed = (await call(`/api/projects/${p.id}/automations`)).body.automations as Array<{ name: string; paused: boolean }>;
+    assert.deepEqual(listed.map((a) => [a.name, a.paused]), [["判断役", true]]);
+    const one = `/api/projects/${p.id}/automations/${created.body.automations[0].id}`;
+    assert.equal((await call(one)).status, 404);
+    assert.equal((await call(one, "PATCH", { paused: true })).status, 404);
+    assert.equal((await call(one, "DELETE")).status, 404);
+    // 番頭のいる Project では判断役を作れず・再開できない
+    assert.equal((await call(`/api/projects/${p.id}/automations`, "POST", { name: "判断役2", instruction: "x", source: { kind: "event", event: "banto.turn-decisions" } })).status, 400);
+    assert.equal((await call(`/api/projects/${p.id}/automations/${judge.body.id}`, "PATCH", { paused: false })).status, 400);
+
+    const all = (await call("/api/supervisors")).body.supervisors as Array<{ id: string; projectId: string }>;
+    assert.deepEqual(all.map((x) => x.projectId), [p.id]);
+    const paused = await call(`${path}/pause`, "POST");
+    assert.equal(paused.status, 200);
+    assert.equal(paused.body.paused, true);
+    assert.ok((paused.body.automations as Array<{ paused: boolean }>).every((a) => a.paused));
+    const resumed = await call(`${path}/resume`, "POST");
+    assert.equal(resumed.body.paused, false);
+    assert.equal((await call(path, "DELETE")).status, 200);
+    assert.equal((await call(path)).status, 404);
+    assert.equal((await call(`${path}/pause`, "POST")).status, 404);
+  });
 });

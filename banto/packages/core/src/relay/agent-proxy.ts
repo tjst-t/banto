@@ -73,7 +73,15 @@ function backgroundWorkOf(
   };
 }
 import { makeResourceVisibilityResolver } from "./visibility.js";
-import { READ_ONLY_REFUSAL, mayCallInReadOnly, mayReadResourcesInReadOnly, type RestrictionFor } from "./read-only.js";
+import {
+  READ_ONLY_REFUSAL,
+  SUPERVISOR_REFUSAL,
+  mayCallInReadOnly,
+  mayCallInSupervisor,
+  mayReadResourcesInReadOnly,
+  mayReadResourcesInSupervisor,
+  type RestrictionFor,
+} from "./read-only.js";
 import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
 import { RESTARTING_REFUSAL, type ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
@@ -211,8 +219,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
    * （ここで組む `_meta` は host が作り直したもので、Runner が添えた `_meta` は Module に流さない）
    */
   function autoApproveStamp(): Record<string, unknown> {
-    // 読むだけの回では刻まない——人に聞かずに断る回で、Module に「聞かずに許可してよい」と伝えない（§4.4）
-    if (readOnly()) return {};
+    // 読むだけの回では刻まない——人に聞かずに断る回で、Module に「聞かずに許可してよい」と伝えない（§4.4）。番頭の回も
+    // 刻まない——番頭の会話の承認は「必ず聞く」（§4.5）
+    if (restricted()) return {};
     return opts.projectId && opts.autoApproveFor?.(opts.projectId, opts.threadId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
   }
 
@@ -223,12 +232,19 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   function readOnly(): boolean {
     return opts.restrictionFor?.(opts.projectId, opts.threadId) === "read-only";
   }
+  /** **この接続のターンに制限があるか**（読むだけの回か番頭の回、§4.4・§4.5）。番頭の回は番頭の tool だけを見せ・通す */
+  function restricted(): boolean {
+    return opts.restrictionFor?.(opts.projectId, opts.threadId) !== undefined;
+  }
   const moduleName = conn.declaredName ?? conn.name;
   const bundled = conn.meta.origin === "bundled";
   const allowedForPatrol = (): string[] => (opts.projectId ? (opts.patrolAllowedTools?.(opts.projectId) ?? []) : []);
+  // 制限のある回で使ってよいか（どちらの制限かは呼ぶたびに引く）。制限の無い回では呼ばない
   const mayCall = (tool: { name: string; _meta?: Record<string, unknown> }) =>
-    mayCallInReadOnly({ moduleName, bundled, tool, allowed: allowedForPatrol() });
-  const mayReadResources = () => mayReadResourcesInReadOnly({ moduleName, bundled, allowed: allowedForPatrol() });
+    readOnly() ? mayCallInReadOnly({ moduleName, bundled, tool, allowed: allowedForPatrol() }) : mayCallInSupervisor({ moduleName, bundled, tool });
+  const mayReadResources = () =>
+    readOnly() ? mayReadResourcesInReadOnly({ moduleName, bundled, allowed: allowedForPatrol() }) : mayReadResourcesInSupervisor({ bundled });
+  const refusal = () => (readOnly() ? READ_ONLY_REFUSAL : SUPERVISOR_REFUSAL);
 
   /** 読むだけの回からの呼び出しだと、宛先に刻む（Browser はブラウザを起こさない・FileSystem は変換役へ中継しない） */
   function restrictionStamp(): Record<string, unknown> {
@@ -244,7 +260,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     const real = await conn.client.listTools();
     const agentTools = real.tools.filter((t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent");
     // 読むだけの回は、使えるものだけを見せる（AI が無駄に試さないように。断るのは呼び出しのほう）
-    const visible = readOnly() ? agentTools.filter((t) => mayCall(t as { name: string; _meta?: Record<string, unknown> })) : agentTools;
+    const visible = restricted() ? agentTools.filter((t) => mayCall(t as { name: string; _meta?: Record<string, unknown> })) : agentTools;
     opts.onRelay?.({ direction: "list", name: "tools/list", allowed: true });
     return { tools: visible.map((t) => stripBantoMeta(t as Tool & { _meta?: Record<string, unknown> })) };
   });
@@ -270,9 +286,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     }
     // **読むだけの回は、読むだけの tool だけ**（追加・2026-10-20、アーキ仕様 §4.4 の守りの 3.）。人に聞かずに断る——判断待ちは出さない。
     // 投げずに結果で返すのは、AI が文を読めるように
-    if (readOnly() && !mayCall(target as { name: string; _meta?: Record<string, unknown> })) {
+    if (restricted() && !mayCall(target as { name: string; _meta?: Record<string, unknown> })) {
       opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
-      return { isError: true, content: [{ type: "text" as const, text: READ_ONLY_REFUSAL }] };
+      return { isError: true, content: [{ type: "text" as const, text: refusal() }] };
     }
 
     const progressToken = extra._meta?.progressToken;
@@ -417,7 +433,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     // 読むだけの回で読めない Module の資源は、一覧にも出さない
-    if (readOnly() && !mayReadResources()) return { resources: [] };
+    if (restricted() && !mayReadResources()) return { resources: [] };
     const real = await conn.client.listResources().catch(() => ({ resources: [] }));
     const visible = real.resources.filter(
       (r) => visibilityOf(r as { _meta?: Record<string, unknown> }) === "agent",
@@ -426,7 +442,7 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   });
 
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    if (readOnly() && !mayReadResources()) return { resourceTemplates: [] };
+    if (restricted() && !mayReadResources()) return { resourceTemplates: [] };
     const real = await conn.client.listResourceTemplates().catch(() => ({ resourceTemplates: [] }));
     const visible = real.resourceTemplates.filter(
       (t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent",
@@ -446,9 +462,9 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       throw new Error(`resource "${request.params.uri}" は読めません（visibility=${visibility}）`);
     }
     // **読むだけの回は、同梱の Module と人が「資源を読む」を許した Module の資源だけ**（§4.4）
-    if (readOnly() && !mayReadResources()) {
+    if (restricted() && !mayReadResources()) {
       opts.onRelay?.({ direction: "read", name: request.params.uri, allowed: false });
-      throw new Error(`resource "${request.params.uri}" は${READ_ONLY_REFUSAL}`);
+      throw new Error(`resource "${request.params.uri}" は${refusal()}`);
     }
     // **読み取りの最中も、この Module はこのターンの仕事をしている**
     // （追加・2026-09-12）。tool 呼び出しには前からこれが有ったが、resource の

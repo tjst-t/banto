@@ -27,6 +27,8 @@ import {
 import type { AutomationStore } from "./store.js";
 import { previousRunUnfinished } from "./busy.js";
 import { patrolDeliveryText } from "./patrol.js";
+import { supervisorPolicy, type SupervisorPolicy } from "../supervisor/policy.js";
+import { SUPERVISOR_FORK_TITLE, supervisorActsOf, supervisorDeliveryText } from "../supervisor/supervisors.js";
 
 export interface AutomationRunnerDeps {
   projectThread: ProjectThreadStore;
@@ -46,6 +48,10 @@ export interface AutomationRunnerDeps {
    * 無ければ越えていない扱い
    */
   allAccountsOver?(projectId: string): boolean;
+  /**
+   * **その Project の番頭の方針**（アーキ仕様 §4.5、番頭の回に届ける文に添える）。回のたびに引く。無ければ方針の既定
+   */
+  supervisorPolicy?(projectId: string): SupervisorPolicy;
   now?: () => Date;
 }
 
@@ -144,6 +150,7 @@ export class AutomationRunner {
   async prepare(automation: Automation): Promise<Automation> {
     const target = automation.target;
     if (target.kind !== "dedicated") return automation;
+    if (automation.mode === "supervisor") return this.prepareSupervisor(automation);
     const current = target.threadId ? this.deps.projectThread.getThread(target.threadId) : undefined;
     if (current && current.status !== "closed") return automation;
     const thread = await this.newFork(automation);
@@ -163,7 +170,9 @@ export class AutomationRunner {
     extras: AutomationRunExtras = {},
     received: readonly AutomationReceived[] = [],
   ): Promise<AutomationRunStarted> {
-    if (this.starting.has(automation.id)) {
+    // 番頭の4件は同じ Fork に届く——同じ番頭のもう1件が Clear と届けの間に割り込まないように、番頭の単位で数える
+    const startKey = automation.supervisorId ?? automation.id;
+    if (this.starting.has(startKey)) {
       const runId = randomUUID();
       const reason = "前の回を届けているところです";
       if (received.length > 0) return { runId, result: "skipped", reason, deferred: true };
@@ -171,11 +180,11 @@ export class AutomationRunner {
       await this.deps.automations.recordRun(automation.id, { runId, at, cause, result: "skipped", reason, ...extras });
       return { runId, result: "skipped", reason };
     }
-    this.starting.add(automation.id);
+    this.starting.add(startKey);
     try {
       return await this.start(automation, cause, extras, received);
     } finally {
-      this.starting.delete(automation.id);
+      this.starting.delete(startKey);
     }
   }
 
@@ -249,6 +258,8 @@ export class AutomationRunner {
       // まっさらなので Clear は要らない。前の回を引き継ぐなら、古い Fork の会話を引き継いで立てる
       const next = await this.newFork(current, current.target.mode === "continue" ? thread : undefined);
       await this.deps.automations.setDedicatedThread(current.id, next.id);
+      // 番頭は4件の届け先が同じ Fork——揃えて乗り換える（残すと、ほかの3件が閉じた Fork に届けて一時停止する）
+      for (const sibling of this.supervisorSiblings(current)) await this.deps.automations.setDedicatedThread(sibling.id, next.id);
       // 人・AI が閉じる口（`closeThreadAndTell`）は通らない——通ると「専用の Fork が閉じられた」で一時停止してしまう
       const reason = `自動化「${current.name}」が新しい Fork に乗り換えました`;
       await this.deps.projectThread.closeThread(thread.id, { by: "automation", reason });
@@ -278,12 +289,22 @@ export class AutomationRunner {
       receivedIds,
     );
     const external = externalOf(received);
-    const instruction = current.mode === "patrol" ? patrolDeliveryText(current) : current.instruction;
+    const instruction =
+      current.mode === "patrol"
+        ? patrolDeliveryText(current)
+        : current.mode === "supervisor" && current.supervisorId
+          ? supervisorDeliveryText(
+              current,
+              this.deps.supervisorPolicy?.(current.projectId) ?? supervisorPolicy(undefined, current.projectId),
+              supervisorActsOf(this.deps.automations, current.supervisorId),
+            )
+          : current.instruction;
     try {
       const delivered = await this.deps.deliveries.deliver({
         threadId,
         from: FROM,
-        title: current.mode === "patrol" ? `見回り「${current.name}」` : `自動化「${current.name}」`,
+        title:
+          current.mode === "patrol" ? `見回り「${current.name}」` : current.mode === "supervisor" ? current.name : `自動化「${current.name}」`,
         text: external.omitted > 0 ? `${instruction}\n\n（まとめた出来事が大きすぎるので、${external.omitted} 件の本文を省き、見出しだけを添えました）` : instruction,
         hop: hopOf(received),
         kind: "automation",
@@ -313,9 +334,25 @@ export class AutomationRunner {
     const thread = this.deps.projectThread.getThread(threadId);
     if (!thread) return;
     await this.settleHeldRuns(thread);
+    // 番頭は4件で1つ——知らせは番頭ごとに1件
+    const toldSupervisors = new Set<string>();
     for (const a of this.deps.automations.list(thread.projectId)) {
       if (a.target.kind !== "dedicated" || a.target.threadId !== threadId || a.paused) continue;
       await this.deps.automations.pause(a.id, "専用の Fork が閉じられました");
+      if (a.supervisorId) {
+        if (toldSupervisors.has(a.supervisorId)) continue;
+        toldSupervisors.add(a.supervisorId);
+        await this.deps
+          .notify({
+            projectId: a.projectId,
+            dedupeKey: `supervisor-fork-closed:${a.supervisorId}:${threadId}`,
+            title: "番頭を一時停止しました",
+            detail:
+              "番頭が使っていた専用の Fork が閉じられたので、番頭を一時停止しました。Fork を開き直しても自動では再開しません——動かし続けるなら、番頭の画面で再開してください（新しい Fork を立てます）",
+          })
+          .catch((err: unknown) => console.warn("[host] 番頭を一時停止したことを受信箱に出せませんでした:", err));
+        continue;
+      }
       await this.deps
         .notify({
           projectId: a.projectId,
@@ -412,10 +449,43 @@ export class AutomationRunner {
    * **見回りの Fork は読むだけの印を刻んで立てる**（立て直す・乗り換えるときも。アーキ仕様 §4.4「読むだけの回」）
    */
   private async newFork(automation: Automation, from?: ThreadState): Promise<ThreadState> {
-    const restriction = automation.mode === "patrol" ? { restriction: "read-only" as const } : {};
-    if (from) return this.deps.projectThread.forkThread(from.id, { title: automation.name, ...restriction });
+    // **番頭の Fork は番頭の印を刻んで立てる**（アーキ仕様 §4.5「番頭の会話の tool は host が強いる」）
+    const restriction =
+      automation.mode === "patrol"
+        ? { restriction: "read-only" as const }
+        : automation.mode === "supervisor"
+          ? { restriction: "supervisor" as const }
+          : {};
+    const title = automation.mode === "supervisor" ? SUPERVISOR_FORK_TITLE : automation.name;
+    if (from) return this.deps.projectThread.forkThread(from.id, { title, ...restriction });
     const base = this.deps.projectThread.listThreadsForProject(automation.projectId).find((t) => t.kind === "base");
     if (!base) throw new Error(`Project ${automation.projectId} に Base Thread が無いので、専用の Fork を立てられません`);
-    return this.deps.projectThread.forkThread(base.id, { title: automation.name, fresh: true, ...restriction });
+    return this.deps.projectThread.forkThread(base.id, { title, fresh: true, ...restriction });
+  }
+
+  /** 同じ番頭のほかの自動化（番頭でなければ空） */
+  private supervisorSiblings(automation: Automation): Automation[] {
+    if (automation.mode !== "supervisor" || !automation.supervisorId) return [];
+    return this.deps.automations
+      .list(automation.projectId)
+      .filter((a) => a.id !== automation.id && a.mode === "supervisor" && a.supervisorId === automation.supervisorId);
+  }
+
+  /**
+   * **番頭の専用の Fork を用意する**——4件の届け先を同じ Fork に揃える。どれかが開いている Fork を持っていればそれに、無ければ1本立てる
+   */
+  private async prepareSupervisor(automation: Automation): Promise<Automation> {
+    const group = [automation, ...this.supervisorSiblings(automation)];
+    const open = group
+      .map((a) => (a.target.kind === "dedicated" ? a.target.threadId : undefined))
+      .find((id) => {
+        const t = id ? this.deps.projectThread.getThread(id) : undefined;
+        return t !== undefined && t.status !== "closed";
+      });
+    const threadId = open ?? (await this.newFork(automation)).id;
+    for (const a of group) {
+      if (a.target.kind === "dedicated" && a.target.threadId !== threadId) await this.deps.automations.setDedicatedThread(a.id, threadId);
+    }
+    return this.deps.automations.get(automation.id) ?? automation;
   }
 }

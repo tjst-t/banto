@@ -11,7 +11,7 @@
 //
 // 選択肢の中身は出来事の `text` からではなく、元の会話の記録（まとめ）から引く——真実は1箇所（規則3）
 
-import { isDecisionKind, type DecisionKind } from "../supervisor/policy.js";
+import { isDecisionKind, supervisorMayAnswer, supervisorPolicy, type DecisionKind, type SupervisorPolicy } from "../supervisor/policy.js";
 import type { EventDeclaration } from "@banto/module-contract";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { MessageEntry, PendingDelivery, ThreadState } from "../project-thread/types.js";
@@ -21,7 +21,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { ReviewJudge } from "../inbox/types.js";
 import { reviewDueAfterTurn } from "../inbox/review-turn.js";
 import { automationRunOfLastTurn } from "../inbox/automation-review.js";
-import type { Automation } from "./fold.js";
+import type { Automation, SupervisorAct } from "./fold.js";
 import type { AutomationStore } from "./store.js";
 import type { AutomationEvents } from "./events.js";
 
@@ -80,6 +80,8 @@ export function autoApproveAllFor(deps: {
 }): (projectId: string, threadId?: string) => boolean {
   return (projectId, threadId) => {
     if (!deps.projectSwitch(projectId)) return false;
+    // 番頭の会話も（アーキ仕様 §4.5「番頭の会話の承認は判断役と同じく必ず聞く」）——番頭を消したあとの Fork も印で引く
+    if (threadId && deps.projectThread.getThread(threadId)?.restriction === "supervisor") return false;
     if (threadId && deps.automations && judgeAutomationOf(deps.automations, deps.projectThread, threadId)) return false;
     return true;
   };
@@ -217,6 +219,11 @@ export function movedOnReason(
   return undefined;
 }
 
+/** 記録に添える問いの種類（書かれていれば） */
+function kindOf(decision: TurnDecision | undefined): { decisionKind?: string } {
+  return decision?.kind ? { decisionKind: decision.kind } : {};
+}
+
 /** 判断役のターンが受けた出来事1件（答える先） */
 interface JudgeTarget {
   thread: string;
@@ -229,10 +236,14 @@ interface JudgeTarget {
   reasons: Map<number, string>;
   /** 片づいた（届けた・人に任せた・もう進んでいた）。理由の文 */
   settled?: string;
+  /** 元のターンが外から来たものを読んだ（出来事の属性）。番頭はその問いを選べない */
+  readExternal: boolean;
 }
 
 interface JudgeSession {
   automation: { id: string; name: string };
+  /** 番頭の回なら、その Project（種類による断りが効く——判断役には効かない、アーキ仕様 §4.5） */
+  supervisor?: { projectId: string };
   targets: Map<string, JudgeTarget>;
 }
 
@@ -253,6 +264,10 @@ export interface TurnDecisionsDeps {
   turns: Pick<ThreadTurns, "isRunning" | "queued">;
   inbox: Pick<InboxStore, "judgeReviews">;
   turnSummaryEnabled(projectId: string): boolean;
+  /** **番頭の方針**（アーキ仕様 §4.5「問いの種類」）。答えるたびに引く。無ければ方針の既定 */
+  supervisorPolicy?(projectId: string): Pick<SupervisorPolicy, "delegate">;
+  /** **番頭の記録に書く**（`automation.supervisor_acted`）。無ければ書き残すだけ */
+  recordSupervisorAct?(automationId: string, act: SupervisorAct): Promise<void>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -272,6 +287,8 @@ export class TurnDecisions {
   async emitIfDecided(threadId: string, hop: number): Promise<void> {
     const thread = this.deps.projectThread.getThread(threadId);
     if (!thread || !this.deps.turnSummaryEnabled(thread.projectId)) return;
+    // 番頭の会話は決めることを出さない（§4.5——まとめも出さないので、ここに来るのは念のため）
+    if (thread.restriction === "supervisor") return;
     const built = turnDecisionsEventOf(thread, hop);
     if (!built) return;
     const automation = automationRunOfLastTurn(thread);
@@ -291,6 +308,7 @@ export class TurnDecisions {
   beginTurn(threadId: string, delivered: readonly PendingDelivery[]): void {
     this.sessions.delete(threadId);
     let automation: JudgeSession["automation"] | undefined;
+    let supervisor: JudgeSession["supervisor"];
     const targets = new Map<string, JudgeTarget>();
     for (const d of delivered) {
       if (d.kind !== "automation" || !d.automation) continue;
@@ -301,6 +319,7 @@ export class TurnDecisions {
         const f = e.event.fields;
         if (typeof f.thread !== "string" || typeof f.turnId !== "string" || typeof f.count !== "number") continue;
         automation = { id: a.id, name: a.name };
+        if (a.mode === "supervisor") supervisor = { projectId: a.projectId };
         targets.set(targetKey(f.thread, f.turnId), {
           thread: f.thread,
           turnId: f.turnId,
@@ -308,10 +327,12 @@ export class TurnDecisions {
           hop: typeof f.hop === "number" ? f.hop : 0,
           answers: new Map(),
           reasons: new Map(),
+          // 読めない値は読んだ側に倒す（番頭に選ばせない）
+          readExternal: f.readExternal !== false,
         });
       }
     }
-    if (automation && targets.size > 0) this.sessions.set(threadId, { automation, targets });
+    if (automation && targets.size > 0) this.sessions.set(threadId, { automation, ...(supervisor ? { supervisor } : {}), targets });
   }
 
   /** 判断役が見ている会話なら、その判断役（受信箱の「判断役が見ています」） */
@@ -364,6 +385,7 @@ export class TurnDecisions {
     if (input.defer === true) {
       target.settled = "人に任せました";
       await this.judge(target.thread, { kind: "deferred", automation: session.automation, reason, at: this.now().toISOString() });
+      await this.recordAct(session, { kind: "deferred", threadId: target.thread, turnId: target.turnId, question: input.question, reason, ...kindOf(decision) });
       return {
         ok: true,
         text: "人に任せました。この会話の決めることは、答えた分も含めて全部人が答えます（何も届けていません）。ほかの問いに答える必要はありません。",
@@ -372,6 +394,24 @@ export class TurnDecisions {
     const choice = input.choice;
     if (choice === undefined || !Number.isInteger(choice) || choice < 1 || choice > decision.options.length) {
       return refuse(`choice は 1〜${decision.options.length} の選択肢の番号です（人に任せるなら defer: true）。自由な文は送れません。`);
+    }
+    // **番頭は種類で絞る**（アーキ仕様 §4.5「問いの種類」）。外から来たものを読んだターンの問い・任されていない種類は選べない
+    // ——defer はいつもできる。判断役（ふつうの自動化）には効かない
+    if (session.supervisor) {
+      const may = target.readExternal
+        ? { ok: false as const, reason: "外から来たもの（Webhook・出来事・別の会話のメッセージ）を読んだターンの問いは人が決めます" }
+        : supervisorMayAnswer(decision.kind, this.policyOf(session.supervisor.projectId));
+      if (!may.ok) {
+        await this.recordAct(session, {
+          kind: "refused",
+          threadId: target.thread,
+          turnId: target.turnId,
+          question: input.question,
+          reason: may.reason,
+          ...kindOf(decision),
+        });
+        return refuse(`番頭はこの問いを選べません：${may.reason}。defer: true で人に回してください（何も届けていません）。`);
+      }
     }
     target.answers.set(input.question, choice);
     target.reasons.set(input.question, reason);
@@ -387,15 +427,16 @@ export class TurnDecisions {
     target.settled = "答えを届けました";
     const answers = decisions.map((d, i) => {
       const n = target.answers.get(i + 1)!;
-      return { question: i + 1, choice: n, label: d.options[n - 1]!.label, reply: d.options[n - 1]!.reply, reason: target.reasons.get(i + 1)!, text: d.question };
+      return { question: i + 1, choice: n, label: d.options[n - 1]!.label, reply: d.options[n - 1]!.reply, reason: target.reasons.get(i + 1)!, text: d.question, kind: d.kind };
     });
+    const who = session.supervisor ? "番頭" : `判断役（自動化「${session.automation.name}」）`;
     try {
       await this.deps.deliveries.deliver({
         threadId: target.thread,
         from: "banto",
-        title: `判断役（自動化「${session.automation.name}」）が選んだ答え`,
+        title: `${who}が選んだ答え`,
         text: [
-          `前のターンのまとめで人に聞いた決めることに、判断役（自動化「${session.automation.name}」）が、あなたの出した選択肢から答えました。`,
+          `前のターンのまとめで人に聞いた決めることに、${who}が、あなたの出した選択肢から答えました。`,
           // 理由も届ける——元の会話の AI と、後から記録を読む人に、なぜそれを選んだかが見えるように
           ...answers.map((a) => `\n問い ${a.question}：${a.text}\n選んだもの：${a.label}\n理由：${a.reason}\n${a.reply}`),
         ].join("\n"),
@@ -406,6 +447,18 @@ export class TurnDecisions {
     } catch (err) {
       target.settled = "届けられませんでした";
       return refuse(`届けられませんでした：${err instanceof Error ? err.message : String(err)}`);
+    }
+    for (const a of answers) {
+      await this.recordAct(session, {
+        kind: "answered",
+        threadId: target.thread,
+        turnId: target.turnId,
+        question: a.question,
+        choice: a.choice,
+        label: a.label,
+        reason: a.reason,
+        ...(a.kind ? { decisionKind: a.kind } : {}),
+      });
     }
     await this.judge(target.thread, {
       kind: "decided-by-automation",
@@ -446,6 +499,20 @@ export class TurnDecisions {
       if (n === 0) this.log(`[host] ${threadId} に開いているレビュー待ちが無いので、判断役の答え（${judge.kind}）をカードに添えませんでした`);
     } catch (err) {
       this.log(`[host] 判断役の答えを ${threadId} のカードに添えられませんでした: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private policyOf(projectId: string): Pick<SupervisorPolicy, "delegate"> {
+    return this.deps.supervisorPolicy?.(projectId) ?? supervisorPolicy(undefined, projectId);
+  }
+
+  /** **番頭の記録に書く**（番頭の回だけ）。書けなくても答えは止めない——書き残す */
+  private async recordAct(session: JudgeSession, act: Omit<SupervisorAct, "at">): Promise<void> {
+    if (!session.supervisor) return;
+    try {
+      await this.deps.recordSupervisorAct?.(session.automation.id, { at: this.now().toISOString(), ...act });
+    } catch (err) {
+      this.log(`[host] 番頭の記録を書けませんでした（${act.kind}）: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

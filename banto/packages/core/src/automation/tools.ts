@@ -131,7 +131,11 @@ export class AutomationTools {
   list(threadId: string): AutomationToolResult {
     const projectId = this.projectOf(threadId);
     if (!projectId) return { ok: false, text: "この Thread が見つかりません。" };
-    const list = this.deps.automations.list(projectId).map((a) => automationForAi(a, this.now()));
+    // **番頭の自動化は出さない**（アーキ仕様 §4.5——番頭は番頭の画面で人が扱う。AI からは作る・直す・止める・消すができない）
+    const list = this.deps.automations
+      .list(projectId)
+      .filter((a) => a.mode !== "supervisor")
+      .map((a) => automationForAi(a, this.now()));
     return { ok: true, text: list.length === 0 ? "この Project に自動化はありません。" : JSON.stringify(list, null, 2) };
   }
 
@@ -277,7 +281,8 @@ export class AutomationTools {
   private mine(threadId: string, automationId: string): Automation {
     const projectId = this.projectOf(threadId);
     const a = this.deps.automations.get(automationId);
-    if (!projectId || !a || a.projectId !== projectId) {
+    // 番頭の自動化も「見つからない」（一覧に出さないものを id で触らせない）
+    if (!projectId || !a || a.projectId !== projectId || a.mode === "supervisor") {
       throw new AutomationNotFoundError(`この Project に自動化 ${automationId} はありません（list_automations で id が分かります）。`);
     }
     return a;

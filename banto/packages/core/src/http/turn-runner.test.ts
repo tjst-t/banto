@@ -989,6 +989,91 @@ test("読むだけの会話のターンは、組み込みを資源の3つにし�
   });
 });
 
+// **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5「番頭の会話の tool は host が強いる」）。読むだけの回と同じ4か所で絞る——残すのは番頭の
+// tool（answer_decision・list_threads・claude_usage）。まとめ（report_turn）は出さない。承認は断らずに必ず人に聞く（自動で許可を効かせない）
+test("番頭の会話のターンは、組み込みを資源の3つにし、core のサーバを番頭の tool で組み、PreToolUse で断り、承認は自動で許可せず人に聞く", async () => {
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { autoApproveAllFor } = await import("../automation/turn-decisions.js");
+  await withThread(async ({ deps, threadId, store }) => {
+    const fork = await store.forkThread(threadId, { fresh: true, restriction: "supervisor" });
+    assert.equal(fork.restriction, "supervisor");
+    let seen: Parameters<typeof runTurn>[0] | undefined;
+    const resolved: unknown[] = [];
+    const fake = (async function* (opts: Parameters<typeof runTurn>[0]) {
+      seen = opts;
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      const pending = { toolCallId: "call-1", toolName: "mcp__shell__runCommand", input: {}, resolve: (r: unknown) => resolved.push(r) };
+      yield { type: "approval_requested" as const, pending } as never;
+      return { sessionId: "session-1", compactionCount: 0 } as never;
+    }) as unknown as typeof runTurn;
+    let moduleToolsAsked = false;
+    const events = await collect(
+      runThreadTurn(
+        {
+          ...deps,
+          runTurn: fake,
+          // Project のスイッチはオン——番頭の会話には効かない（cli.ts と同じ組み方）
+          autoApproveAll: autoApproveAllFor({ projectSwitch: () => true, automations: undefined, projectThread: store }),
+          turnSummaryEnabled: () => true,
+          readOnlyModuleTools: async () => {
+            moduleToolsAsked = true;
+            return ["mcp__filesystem__readFile"];
+          },
+        },
+        { threadId: fork.id, prompt: "番頭の回", modules: [] },
+      ),
+    );
+    assert.ok(seen, "Runner が呼ばれていない");
+    assert.equal(moduleToolsAsked, false, "番頭の回に見回りで使ってよい Module の tool を引いた");
+    assert.deepEqual([...(seen.builtinTools ?? [])], ["ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]);
+    assert.equal(seen.declineElicitations, undefined, "番頭の回の Elicitation を断った（人に聞く）");
+    assert.deepEqual(
+      [...(seen.allowedTools ?? [])].sort(),
+      [
+        "ListMcpResourcesTool",
+        "ReadMcpResourceDirTool",
+        "ReadMcpResourceTool",
+        "mcp__banto-thread__answer_decision",
+        "mcp__banto-thread__claude_usage",
+        "mcp__banto-thread__list_threads",
+      ],
+    );
+    const hook = seen.onPreToolUse!;
+    for (const ok of ["mcp__banto-thread__answer_decision", "mcp__banto-thread__list_threads", "ReadMcpResourceTool"]) assert.equal(hook({ toolName: ok }), undefined, ok);
+    for (const ng of [
+      "Bash",
+      "Write",
+      "WebFetch",
+      "mcp__shell__runCommand",
+      "mcp__filesystem__readFile",
+      "mcp__banto-thread__list_automations",
+      "mcp__banto-thread__create_automation",
+      "mcp__banto-thread__report_turn",
+      "mcp__banto-thread__notify",
+      "mcp__banto-memory__remember_decision",
+    ]) {
+      assert.match(hook({ toolName: ng }) ?? "", /番頭の回では使えません/, ng);
+    }
+    const servers = seen.mcpServers as Record<string, { instance?: { connect(t: unknown): Promise<void> } }>;
+    assert.equal(servers["banto-memory"], undefined, "番頭の回に Memory の tool を渡している");
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await servers["banto-thread"]!.instance!.connect(b);
+    const client = new Client({ name: "t", version: "0" });
+    await client.connect(a);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name).sort(), ["answer_decision", "claude_usage", "list_threads"]);
+    await client.close();
+    // まとめの節を system prompt に入れない
+    assert.equal(seen.systemPrompt.some((b) => b.includes("report_turn")), false, "番頭の回にまとめの指示を入れた");
+    // 承認は自動で許可せず、断りもせず、人に聞く
+    assert.equal(resolved.length, 0, "番頭の回の承認を人に聞かずに片づけた");
+    assert.ok(events.some((e) => e.type === "judgment"), "番頭の回の承認を人に聞いていない");
+    assert.equal(events.some((e) => e.type === "answered"), false, "番頭の回の承認を自動で許可した");
+    // 番頭の会話から分けた Fork も番頭の回
+    assert.equal((await store.forkThread(fork.id)).restriction, "supervisor");
+  });
+});
+
 test("ふつうの会話のターンは今までどおり（組み込みも core の tool も置き換えない）。読むだけの会話から分けた Fork は読むだけ", async () => {
   await withThread(async ({ deps, threadId, store }) => {
     let seen: Parameters<typeof runTurn>[0] | undefined;

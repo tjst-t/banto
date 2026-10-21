@@ -18,6 +18,7 @@ import {
   type AutomationSource,
   type AutomationTarget,
   type PatrolNoteChange,
+  type SupervisorAct,
 } from "./fold.js";
 import { cronExpressionProblem } from "./schedule.js";
 import { BANTO_EVENTS, bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
@@ -102,6 +103,25 @@ export class AutomationStore {
   checkFields(projectId: string, fields: Pick<AutomationFields, "source" | "target" | "mode">, sourceChanged = true): void {
     if (sourceChanged && fields.source.kind === "event") this.checkEventSource(projectId, fields.source);
     checkJudgeTarget(fields);
+    if (sourceChanged) this.checkJudgeBesideSupervisor(projectId, fields);
+  }
+
+  /**
+   * **番頭のいる Project に判断役を置かない**（アーキ仕様 §4.5「番頭を置いた Project では判断役を作れない」）——同じ決めることに
+   * 二人で答えると、種類による断り（番頭だけに効く）をくぐれる
+   */
+  private checkJudgeBesideSupervisor(projectId: string, fields: Pick<AutomationFields, "source" | "mode">): void {
+    if (fields.mode === "supervisor" || !isJudgeAutomation(fields)) return;
+    if (this.supervisorAutomations(projectId).length > 0) {
+      throw new AutomationInputError(
+        `この Project には番頭がいるので、${TURN_DECISIONS_EVENT} を待つ自動化（判断役）は作れません（番頭が決めることに答えます）`,
+      );
+    }
+  }
+
+  /** その Project の番頭の自動化（番頭は Project に1つ） */
+  supervisorAutomations(projectId: string): Automation[] {
+    return this.list(projectId).filter((a) => a.mode === "supervisor");
   }
 
   /** その Project の自動化（作った順） */
@@ -162,6 +182,7 @@ export class AutomationStore {
   /** 渡した欄だけ直す。何も渡さなければ断る */
   async update(id: string, changes: unknown): Promise<Automation> {
     const current = this.mustGet(id);
+    if (current.mode === "supervisor") throw new AutomationInputError("番頭の自動化は直せません（番頭の画面で扱います）");
     const parsed = parseAutomationChanges(changes, current);
     this.checkFields(
       current.projectId,
@@ -182,6 +203,8 @@ export class AutomationStore {
   async resume(id: string): Promise<Automation> {
     const current = this.mustGet(id);
     if (!current.paused) return current;
+    // 番頭を置いたときに一時停止した判断役を、番頭がいるまま再開させない
+    this.checkJudgeBesideSupervisor(current.projectId, current);
     await this.append("automation.resumed", { id });
     return this.mustGet(id);
   }
@@ -216,6 +239,38 @@ export class AutomationStore {
     const current = this.mustGet(id);
     if (current.mode !== "patrol") throw new Error(`自動化 ${id} は見回りではありません`);
     await this.append("automation.patrol_noted", { id, key, change, ...(title ? { title } : {}) });
+  }
+
+  /**
+   * **番頭の自動化を作る**（アーキ仕様 §4.5「番頭の作り」）。人・AI の入力の口（`create`）を通らない——欄は `supervisor/supervisors.ts`
+   * が組んだもの。出来事の名乗りとは照らさない（Factory が入っていない Project では、その出来事が届かないだけ）
+   */
+  async createSupervisorAutomation(input: { projectId: string; supervisorId: string; fields: AutomationFields }): Promise<Automation> {
+    if (input.fields.mode !== "supervisor") throw new Error("番頭の自動化ではありません");
+    const id = newAutomationId();
+    await this.append("automation.created", {
+      id,
+      projectId: input.projectId,
+      createdBy: { kind: "human" },
+      ...input.fields,
+      supervisorId: input.supervisorId,
+    });
+    return this.mustGet(id);
+  }
+
+  /** **番頭の時刻のきっかけを直す**（再開したときに今の方針の間隔に揃える）。人・AI の入力（`update`）からは直せない */
+  async setSupervisorSource(id: string, source: AutomationSource): Promise<Automation> {
+    const current = this.mustGet(id);
+    if (current.mode !== "supervisor") throw new Error(`自動化 ${id} は番頭ではありません`);
+    await this.append("automation.updated", { id, changes: { source } });
+    return this.mustGet(id);
+  }
+
+  /** **番頭の記録に書く**（アーキ仕様 §4.5「記録」）。host が書く——人・AI の入力からは書けない */
+  async recordSupervisorAct(id: string, act: SupervisorAct): Promise<void> {
+    const current = this.mustGet(id);
+    if (current.mode !== "supervisor") throw new Error(`自動化 ${id} は番頭ではありません`);
+    await this.append("automation.supervisor_acted", { id, ...act });
   }
 
   /** Webhook で受けたものを残す（届けるまで溜める。届けた回の `automation.fired` の `receivedIds` で外れる） */
@@ -440,6 +495,8 @@ function parseReviewOnDone(v: unknown): boolean {
 function parseMode(v: unknown): "patrol" | undefined {
   if (v === undefined || v === "normal") return undefined;
   if (v === "patrol") return "patrol";
+  // **番頭は人が番頭の画面から作る**（アーキ仕様 §4.5「AI の create_automation では番頭を作れない」）
+  if (v === "supervisor") throw new AutomationInputError("番頭（mode: supervisor）は自動化としては作れません。人が番頭の画面から置きます");
   throw new AutomationInputError("mode は normal（ふつう）か patrol（見回り）です");
 }
 

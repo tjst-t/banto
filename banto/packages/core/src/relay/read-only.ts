@@ -3,6 +3,9 @@
 // どの回が読むだけかは host が決める——会話（Thread）に刻んだ `restriction: "read-only"` だけが根拠で、届けものの文や AI の
 // 引数では決めない。守りは4か所（SDK の組み込み・core の in-process のサーバ・AI の代理・PreToolUse）で、どれか1つに頼らない。
 // ここは「何を通すか」の判定を1か所に置く（規則3——4か所がそれぞれ写しを持たない）。
+//
+// **番頭の回**（`restriction: "supervisor"`、追加・2026-10-21、アーキ仕様 §4.5「番頭の会話の tool は host が強いる」）も同じ4か所で
+// 絞る。違うのは残す tool（番頭の tool）と、承認——番頭の回は人に聞かずに断るのではなく、判断役と同じく「必ず聞く」に固定する
 
 import {
   PATROL_ALLOWED_TOOLS_KEY,
@@ -122,24 +125,58 @@ export function mayReadResourcesInReadOnly(input: { moduleName: string; bundled:
   return input.bundled || input.allowed.includes(patrolAllowedEntry(input.moduleName, PATROL_RESOURCES_ENTRY));
 }
 
-/** 読むだけの回の形。`orphanedPatrol` は「見回りの自動化が消えたあとの見回りの Fork」（一時停止は含まない） */
+/** AI に返す断りの文（番頭の回で tool を断ったとき） */
+export const SUPERVISOR_REFUSAL = "番頭の回では使えません（番頭の tool だけ使えます）";
+
+/**
+ * **core の tool で番頭の回に残すもの**（アーキ仕様 §4.5「番頭の tool」）。`instruct_thread`・`list_stalled_threads` は Backlog #508 で
+ * 足す。`banto-memory` は渡さない
+ */
+export const SUPERVISOR_CORE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  "banto-thread": ["answer_decision", "list_threads", "claude_usage"],
+};
+
+/**
+ * **番頭の回で使ってよい Module の tool**（`<Module の識別子>/<tool 名>`）。同梱の Module のものだけが効く。いまは無い——Factory・
+ * Backlog の tool は Backlog #509 で足す
+ */
+export const SUPERVISOR_MODULE_TOOLS: readonly string[] = [];
+
+/** **番頭の回でその Module の tool を使ってよいか**。同梱で、上の一覧に載っているものだけ（人が許す口は無い） */
+export function mayCallInSupervisor(input: { moduleName: string; bundled: boolean; tool: { name: string } }): boolean {
+  return input.bundled && SUPERVISOR_MODULE_TOOLS.includes(patrolAllowedEntry(input.moduleName, input.tool.name));
+}
+
+/** **番頭の回でその Module の資源を読んでよいか**。同梱の Module だけ（資源の組み込みの3つは残す） */
+export function mayReadResourcesInSupervisor(input: { bundled: boolean }): boolean {
+  return input.bundled;
+}
+
+/**
+ * 制限のある回の形。`orphanedPatrol` は「見回りの自動化が消えたあとの見回りの Fork」（一時停止は含まない）。`supervisor` は番頭の回
+ * （残す core の tool が読むだけの回と違う）
+ */
 export interface ReadOnlyTurnShape {
   orphanedPatrol?: boolean;
+  supervisor?: boolean;
 }
 
 /** その回で core のサーバに残す tool の名前（サーバごと） */
 export function readOnlyCoreToolsOf(server: string, shape: ReadOnlyTurnShape = {}): string[] {
+  if (shape.supervisor) return [...(SUPERVISOR_CORE_TOOLS[server] ?? [])];
   return [...(READ_ONLY_CORE_TOOLS[server] ?? []), ...(shape.orphanedPatrol ? (ORPHANED_PATROL_CORE_TOOLS[server] ?? []) : [])];
 }
 
-/** core の tool（`mcp__<server>__<tool>` の形）のうち、読むだけの回に残すもの */
+/** core の tool（`mcp__<server>__<tool>` の形）のうち、読むだけの回（番頭の回）に残すもの */
 export function readOnlyCoreToolNames(shape: ReadOnlyTurnShape = {}): string[] {
-  const servers = new Set([...Object.keys(READ_ONLY_CORE_TOOLS), ...(shape.orphanedPatrol ? Object.keys(ORPHANED_PATROL_CORE_TOOLS) : [])]);
+  const servers = shape.supervisor
+    ? new Set(Object.keys(SUPERVISOR_CORE_TOOLS))
+    : new Set([...Object.keys(READ_ONLY_CORE_TOOLS), ...(shape.orphanedPatrol ? Object.keys(ORPHANED_PATROL_CORE_TOOLS) : [])]);
   return [...servers].flatMap((server) => readOnlyCoreToolsOf(server, shape).map((t) => `mcp__${server}__${t}`));
 }
 
 /**
- * **PreToolUse の最後の網**：その名前の tool を読むだけの回で通してよいか。`allowedModuleTools` は、ターンを始めるときに
+ * **PreToolUse の最後の網**：その名前の tool を読むだけの回（番頭の回）で通してよいか。`allowedModuleTools` は、ターンを始めるときに
  * Module の一覧から引いた「読むだけの回で使ってよい Module の tool」（`mcp__<Module>__<tool>`）。引けなかったものは通さない
  */
 export function readOnlyHookAllows(toolName: string, allowedModuleTools: ReadonlySet<string>, shape: ReadOnlyTurnShape = {}): boolean {

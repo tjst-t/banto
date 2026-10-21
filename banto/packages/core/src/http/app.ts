@@ -31,6 +31,7 @@ import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import { nextFireOf } from "../automation/schedule.js";
 import type { Automation } from "../automation/fold.js";
 import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
+import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } from "../supervisor/supervisors.js";
 import {
   MemoryLimitExceededError,
   InvalidProjectRootError,
@@ -248,6 +249,10 @@ export interface AppDeps {
    * 「判断役が見ています」。無ければ tool は断る
    */
   turnDecisions?: Pick<TurnDecisions, "beginTurn" | "answer" | "watching">;
+  /**
+   * **番頭**（追加・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。`/api/supervisors`・`/api/projects/:id/supervisor` の口。無ければ 404
+   */
+  supervisors?: Supervisors;
   /**
    * **任務**（追加・2026-10-20、アーキ仕様 §4.4）。会話の tool の中身と `/api/threads/:id/mission`。無ければ tool は断り、口は 501
    */
@@ -1878,9 +1883,10 @@ export function createApp(deps: AppDeps) {
       prompt,
       ...(images.length > 0 ? { images } : {}),
       ...(quotes.length > 0 ? { quotes } : {}),
-      // **判断役の会話は「必ず聞く」に固定**（アーキ仕様 §4.3「守り」）——その会話の設定・このターンの上書き・Project の既定に依らない
+      // **判断役の会話は「必ず聞く」に固定**（アーキ仕様 §4.3「守り」）——その会話の設定・このターンの上書き・Project の既定に依らない。
+      // 番頭の会話も（§4.5）——番頭を消したあとの Fork も印で引く
       permissionMode:
-        deps.automations && judgeAutomationOf(deps.automations, deps.projectThread, threadId)
+        thread?.restriction === "supervisor" || (deps.automations && judgeAutomationOf(deps.automations, deps.projectThread, threadId))
           ? "default"
           : resolvePermissionMode(
               permissionMode,
@@ -4402,7 +4408,8 @@ export function createApp(deps: AppDeps) {
         };
         try {
           if (!automationId) {
-            if (req.method === "GET") return json(res, 200, { automations: store.list(projectId).map(view) });
+            // **番頭の自動化は出さない**（アーキ仕様 §4.5「自動化の一覧の画面には出さず、番頭の画面で扱う」）——`/api/projects/:id/supervisor`
+            if (req.method === "GET") return json(res, 200, { automations: store.list(projectId).filter((a) => a.mode !== "supervisor").map(view) });
             if (req.method === "POST") {
               const body = (await readJsonBody(req)) as { target?: unknown };
               const problem = checkTarget(body.target);
@@ -4442,7 +4449,8 @@ export function createApp(deps: AppDeps) {
             return json(res, 405, { error: "method not allowed" });
           }
           const automation = store.get(automationId);
-          if (!automation || automation.projectId !== projectId) return json(res, 404, { error: "not found" });
+          // 番頭の自動化は1件ずつ扱わない（止める・消すは番頭の単位で4件一緒）——ここでは無いものとして扱う
+          if (!automation || automation.projectId !== projectId || automation.mode === "supervisor") return json(res, 404, { error: "not found" });
           // **見回りの手帳の「知らせない」を外す**（v4-frontend.md §6.47「自動化の画面」）
           if (isUnmute) {
             if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
@@ -4514,6 +4522,49 @@ export function createApp(deps: AppDeps) {
         } catch (err) {
           if (err instanceof AutomationInputError) return json(res, 400, { error: err.message });
           if (err instanceof AutomationNotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+      }
+
+      // **番頭**（決定・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。作る・消す・一時停止・再開は番頭の単位（自動化4件一緒）。
+      // **人の画面だけ**（AI の tool からは作れない——`create_automation` は mode: supervisor を断る）
+      if (url.pathname === "/api/supervisors" && req.method === "GET") {
+        if (!deps.supervisors) return json(res, 404, { error: "not found" });
+        return json(res, 200, { supervisors: deps.supervisors.list() });
+      }
+      const supervisorMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/supervisor(\/pause|\/resume)?$/);
+      if (supervisorMatch) {
+        const projectId = supervisorMatch[1]!;
+        const sub = supervisorMatch[2];
+        const supervisors = deps.supervisors;
+        if (!supervisors || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        try {
+          // ログインの仕組みが無い構成（Bearer だけの試験）は、人と機械を分けられない——そのまま通す
+          if (deps.auth && req.method !== "GET") deps.auth.requireHuman(principal, { stepUp: false });
+          const current = supervisors.ofProject(projectId);
+          if (!sub) {
+            if (req.method === "GET") return current ? json(res, 200, current) : json(res, 404, { error: "この Project に番頭はいません" });
+            if (req.method === "POST") {
+              const body = ((await readJsonBody(req)) ?? {}) as { pauseJudges?: unknown };
+              if (body.pauseJudges !== undefined && typeof body.pauseJudges !== "boolean") {
+                return json(res, 400, { error: "pauseJudges は true か false で渡してください" });
+              }
+              return json(res, 201, await supervisors.create(projectId, { pauseJudges: body.pauseJudges === true }));
+            }
+            if (req.method === "DELETE") {
+              if (!current) return json(res, 404, { error: "この Project に番頭はいません" });
+              await supervisors.remove(current.id);
+              return json(res, 200, { ok: true });
+            }
+            return json(res, 405, { error: "method not allowed" });
+          }
+          if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+          if (!current) return json(res, 404, { error: "この Project に番頭はいません" });
+          return json(res, 200, sub === "/pause" ? await supervisors.pause(current.id) : await supervisors.resume(current.id));
+        } catch (err) {
+          if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+          if (err instanceof SupervisorConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof SupervisorNotFoundError) return json(res, 404, { error: err.message });
           throw err;
         }
       }

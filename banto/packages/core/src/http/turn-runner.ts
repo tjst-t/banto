@@ -19,6 +19,7 @@ import {
   READ_ONLY_BUILTIN_TOOLS,
   READ_ONLY_NO_ASK_REFUSAL,
   READ_ONLY_REFUSAL,
+  SUPERVISOR_REFUSAL,
   readOnlyCoreToolNames,
   readOnlyHookAllows,
   type ReadOnlyTurnShape,
@@ -600,7 +601,12 @@ async function* runThreadTurnInner(
   // **読むだけの回**（追加・2026-10-20、アーキ仕様 §4.4）。印は会話に刻まれたもの（`thread.created`）だけを見る——届けものの文や
   // AI の引数では決めない。守りは4か所：SDK の組み込み（`builtinTools`）・core のサーバを読むだけの tool で組む・AI の代理
   // （`agent-proxy.ts` がその都度 host に引く）・PreToolUse（下）。承認と Elicitation は人に聞かずに断る
+  //
+  // **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5）も同じ4か所で絞る（`restricted`）。残す tool が番頭の tool であることと、承認を
+  // 人に聞く（断らない）ことが違う。Module の tool はいま1つも許さない（Factory・Backlog の tool は Backlog #509 で足す）
   const readOnly = thread.restriction === "read-only";
+  const supervisor = thread.restriction === "supervisor";
+  const restricted = readOnly || supervisor;
   let readOnlyModuleTools: ReadonlySet<string> = new Set();
   if (readOnly) {
     try {
@@ -614,8 +620,8 @@ async function* runThreadTurnInner(
 
   const mcpServers: Record<string, unknown> = {};
   for (const m of input.modules) mcpServers[m.name] = { type: "http", url: m.url, headers: m.headers };
-  // Memory の tool は書くだけなので、読むだけの回にはサーバごと渡さない（§4.4）
-  if (!readOnly) {
+  // Memory の tool は書くだけなので、読むだけの回にはサーバごと渡さない（§4.4）。番頭の回にも渡さない（§4.5）
+  if (!restricted) {
     mcpServers["banto-memory"] = createMemoryMcpServer(
       deps.projectThread,
       thread.projectId,
@@ -628,9 +634,9 @@ async function* runThreadTurnInner(
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
   const projectInstruction = deps.projectInstruction?.(thread.projectId);
-  // 読むだけの回では `report_turn` を出さない（core の tool は読むだけのものだけ、§4.4）
+  // 読むだけの回・番頭の回では `report_turn` を出さない（core の tool は読むだけのものだけ、§4.4。番頭はまとめを出さない、§4.5）
   const turnSummary: TurnSummaryState | undefined =
-    !readOnly && deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
+    !restricted && deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
   // **見回りの Fork なら `notify`**（§4.4「知らせる tool」）。見回りを消したあとの Fork（読むだけのまま）には出さない。
   // 見回りの印は読むだけの会話にしか付かないが、念のため両方を見る（読むだけでない会話に notify を出さない）
   const patrolTurn: PatrolTurnState = { notified: 0 };
@@ -643,6 +649,7 @@ async function* runThreadTurnInner(
   // 引く口が無い構成では足さない
   const readOnlyShape: ReadOnlyTurnShape = {
     orphanedPatrol: readOnly && deps.patrols !== undefined && !deps.patrols.patrolOf(input.threadId),
+    ...(supervisor ? { supervisor: true } : {}),
   };
   // **試作を始める**はチャットで、まだ始めていないときだけ（読むだけの回には出さない、§2.2「コンテナは試作を始めたときに作る」）
   const prototypingTool: PrototypingTool | undefined =
@@ -661,7 +668,7 @@ async function* runThreadTurnInner(
     deps.automationTools,
     deps.turnDecisions,
     deps.claudeUsage ? (threadId) => deps.claudeUsage!(thread.projectId, threadId) : undefined,
-    readOnly,
+    restricted,
     deps.missions,
     patrolNotify,
     readOnlyShape,
@@ -782,7 +789,8 @@ async function* runThreadTurnInner(
       // 自動化の tool も通す——作る・変える・再開するは tool の中で、承認モードに依らず必ず人に聞く（2回聞かない。§4.3）
       // **読むだけの回は、使える tool（読むだけのもの）を聞かずに通す**——人が見ていない回で判断待ちを積まない（§4.4）。ここに
       // 載らないものが承認に来たら、下で人に聞かずに断る
-      allowedTools: readOnly
+      // **番頭の回も、番頭の tool を聞かずに通す**（§4.5）——承認は「必ず聞く」だが、番頭の tool は番頭の仕事そのもの
+      allowedTools: restricted
         ? [
             ...READ_ONLY_BUILTIN_TOOLS,
             // `notify` は見回りの Fork のターンにだけ在る——無い回には載せない
@@ -806,12 +814,13 @@ async function* runThreadTurnInner(
           ],
       // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
       // Elicitation も聞かずに断る
-      ...(readOnly
+      // 番頭の回も組み込みと最後の網は同じ（残す tool は `readOnlyShape` で番頭のものに）。Elicitation は断らない（承認と同じく人に聞く）
+      ...(restricted
         ? {
             builtinTools: READ_ONLY_BUILTIN_TOOLS,
             onPreToolUse: ({ toolName }: { toolName: string }) =>
-              readOnlyHookAllows(toolName, readOnlyModuleTools, readOnlyShape) ? undefined : READ_ONLY_REFUSAL,
-            declineElicitations: true,
+              readOnlyHookAllows(toolName, readOnlyModuleTools, readOnlyShape) ? undefined : supervisor ? SUPERVISOR_REFUSAL : READ_ONLY_REFUSAL,
+            ...(readOnly || idle ? { declineElicitations: true } : {}),
           }
         : idle
           ? { declineElicitations: true }

@@ -22,6 +22,7 @@ import { markBundled, parseModuleMeta } from "@banto/module-contract";
 import { buildAgentProxy } from "./agent-proxy.js";
 import {
   READ_ONLY_REFUSAL,
+  SUPERVISOR_REFUSAL,
   mayCallInReadOnly,
   mayReadResourcesInReadOnly,
   mayRelayOwnCredentialInReadOnly,
@@ -98,7 +99,13 @@ interface Called {
   meta?: Record<string, unknown>;
 }
 
-async function setup(opts: { bundled: boolean; restricted: () => boolean; allowed?: string[]; autoApprove?: boolean }) {
+async function setup(opts: {
+  bundled: boolean;
+  restricted: () => boolean;
+  allowed?: string[];
+  autoApprove?: boolean;
+  restriction?: "read-only" | "supervisor";
+}) {
   const called: Called[] = [];
   const read_: Called[] = [];
   const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {}, resources: {} } });
@@ -129,7 +136,7 @@ async function setup(opts: { bundled: boolean; restricted: () => boolean; allowe
     {
       projectId: "p1",
       threadId: "t1",
-      restrictionFor: (projectId, threadId) => (projectId === "p1" && threadId === "t1" && opts.restricted() ? "read-only" : undefined),
+      restrictionFor: (projectId, threadId) => (projectId === "p1" && threadId === "t1" && opts.restricted() ? (opts.restriction ?? "read-only") : undefined),
       patrolAllowedTools: () => opts.allowed ?? [],
       autoApproveFor: () => opts.autoApprove === true,
     },
@@ -185,4 +192,37 @@ test("代理：制限の無い会話は今までどおり（全部見せ・通�
   restricted = true;
   assert.equal((await runner.callTool({ name: "write", arguments: {} })).isError, true);
   assert.equal(called.length, 1);
+});
+
+// **番頭の回**（追加・2026-10-21、アーキ仕様 §4.5）。Module の tool はいま1つも使えない（Factory・Backlog は Backlog #509 で足す）——
+// 同梱で読むだけと名乗った tool も、人が見回りで許した tool も通さない。資源は同梱の Module のものだけ。自動で許可は刻まない
+test("PreToolUse の最後の網（番頭の回）：組み込みは資源の3つ、core は answer_decision・list_threads・claude_usage だけ", () => {
+  const shape = { supervisor: true };
+  for (const ok of ["ReadMcpResourceTool", "mcp__banto-thread__answer_decision", "mcp__banto-thread__list_threads", "mcp__banto-thread__claude_usage"]) {
+    assert.equal(readOnlyHookAllows(ok, new Set(), shape), true, ok);
+  }
+  for (const ng of ["Bash", "WebFetch", "mcp__banto-thread__list_automations", "mcp__banto-thread__notify", "mcp__banto-thread__close_fork", "mcp__banto-thread__send_message", "mcp__banto-memory__remember_decision"]) {
+    assert.equal(readOnlyHookAllows(ng, new Set(), shape), false, ng);
+  }
+  // 見回りの回には answer_decision は無い
+  assert.equal(readOnlyHookAllows("mcp__banto-thread__answer_decision", new Set()), false);
+});
+
+test("代理：番頭の回は Module の tool を見せず・通さず（同梱の読むだけのもの・見回りで許したものも）、自動で許可は刻まない。資源は同梱だけ", async () => {
+  const bundled = await setup({ bundled: true, restricted: () => true, restriction: "supervisor", allowed: ["fake/write"], autoApprove: true });
+  assert.deepEqual((await bundled.runner.listTools()).tools.map((t) => t.name), []);
+  for (const name of ["look", "write"]) {
+    const refused = await bundled.runner.callTool({ name, arguments: {} });
+    assert.equal(refused.isError, true, name);
+    assert.equal(textOf(refused), SUPERVISOR_REFUSAL);
+  }
+  assert.equal(bundled.called.length, 0, "番頭の回の tool 呼び出しが Module に届いた");
+  const doc = await bundled.runner.readResource({ uri: "fake://doc" });
+  assert.equal((doc.contents[0] as { text: string }).text, "doc body");
+  assert.equal(bundled.read[0]?.meta?.["dev.banto/autoApprove"], undefined, "番頭の回に「自動で許可」が刻まれた");
+
+  const thirdParty = await setup({ bundled: false, restricted: () => true, restriction: "supervisor", allowed: ["fake/resources"] });
+  assert.deepEqual((await thirdParty.runner.listResources()).resources, []);
+  await assert.rejects(() => thirdParty.runner.readResource({ uri: "fake://doc" }), /番頭の回では使えません/);
+  assert.equal(thirdParty.read.length, 0);
 });
