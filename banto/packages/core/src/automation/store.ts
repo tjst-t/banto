@@ -72,8 +72,8 @@ export class AutomationStore {
   private eventCatalog: AutomationEventCatalog | undefined;
 
   constructor(dataDir: string, private readonly log: EventLog) {
-    // 版 2：`clockFrom`（時計の数え始め）を足した
-    this.projection = new SnapshotProjection(dataDir, "automations", log, automationFold, 2);
+    // 版 2：`clockFrom`（時計の数え始め）を足した。版 3：番頭の記録の `actId`・一時停止の `pausedScope`（Backlog #510）
+    this.projection = new SnapshotProjection(dataDir, "automations", log, automationFold, 3);
   }
 
   async load(): Promise<void> {
@@ -193,10 +193,14 @@ export class AutomationStore {
     return this.mustGet(id);
   }
 
-  async pause(id: string, reason?: string): Promise<Automation> {
+  /**
+   * `scope: "stop-all"`＝番頭を全部止めた（全部を再開する口が再開する）。全部止めて止まっているものを Project ごとに止め直すと、
+   * 印を外して書き直す（全部を再開しても残す）
+   */
+  async pause(id: string, reason?: string, opts: { scope?: "stop-all" } = {}): Promise<Automation> {
     const current = this.mustGet(id);
-    if (current.paused) return current;
-    await this.append("automation.paused", { id, ...(reason ? { reason } : {}) });
+    if (current.paused && (current.pausedScope !== "stop-all" || opts.scope === "stop-all")) return current;
+    await this.append("automation.paused", { id, ...(reason ? { reason } : {}), ...(opts.scope ? { scope: opts.scope } : {}) });
     return this.mustGet(id);
   }
 

@@ -6,7 +6,7 @@
 //   データとして別の囲みに入れる。外から来たものを届けられた回は `note` を付けられない
 // - 断る：任せていない行い・`minor-design`（選ぶための種類で、頼む行いではない）・人に回す種類・答えていない決めることがある会話
 //   （受信箱のカード）・Project の外・閉じた会話・番頭自身や自動化の専用の Fork・任務が止まった会話（枠を延ばすのは人）・連鎖の上限・
-//   回数（同じ会話の同じ止まった理由に 2 回、会話ごとに1日 5 回）
+//   回数（同じ会話の同じ止まった理由に 2 回、会話ごとに1日 5 回）・全体の上限（全部の番頭で1時間に `instructionsPerHour`、`guard.ts`）
 // - 回数は番頭の記録（`automation.supervisor_acted` の `instructed`）から数える——数えを別に持たない（規則3）
 // - 届けた指示が始まる前に人が発言した・宛先のターンが決めることを人に聞いて終わった、なら捨てて記録に残す（`screen`）
 
@@ -30,6 +30,7 @@ import {
   type SupervisorPolicy,
 } from "./policy.js";
 import { INSTRUCT_THREAD_TOOL_NAME, LIST_STALLED_THREADS_TOOL_NAME, supervisorActsOf } from "./supervisors.js";
+import { dayKey, instructionLimitReason } from "./guard.js";
 
 export { INSTRUCT_THREAD_TOOL_NAME, LIST_STALLED_THREADS_TOOL_NAME };
 
@@ -239,6 +240,9 @@ export class SupervisorInstructions {
     if (same >= INSTRUCT_LIMITS.sameReason) {
       return refuse(`この会話の同じ止まった理由（${key}）には、もう ${same} 回頼みました。動かないので人に回してください`, { stalledReason: key });
     }
+    // **全体の上限**（全部の番頭の合計、Backlog #510）。数えは番頭の記録の `instructed`
+    const overall = instructionLimitReason(this.deps.automations, policy, now);
+    if (overall) return refuse(overall, { stalledReason: key });
     const today = dayKey(now, this.timeZone(policy));
     const todays = instructed.filter((a) => dayKey(new Date(a.at), this.timeZone(policy)) === today).length;
     if (todays >= INSTRUCT_LIMITS.perThreadPerDay) {
@@ -480,6 +484,7 @@ function instructedJudge(
   return {
     kind: "instructed",
     automation: { id: automation.id, name: automation.name },
+    by: "supervisor",
     reason: input.reason,
     instruction: { action: input.action, title: ACTION_TITLES[input.action], hasNote: input.hasNote, actionId: input.actionId },
     at: input.at,
@@ -530,13 +535,4 @@ function latestSummarySeq(thread: Pick<ThreadState, "messages">): number {
 /** その位置より後に人が発言したか（機械から届いたものは数えない） */
 function humanSpokeAfter(thread: Pick<ThreadState, "messages">, seq: number): boolean {
   return thread.messages.some((m) => m.role === "user" && !m.origin && m.seq > seq);
-}
-
-/** そのタイムゾーンの日付（YYYY-MM-DD）。読めないタイムゾーンは UTC で数える（数えを止めない——任せすぎない側でもない） */
-function dayKey(date: Date, timeZone: string): string {
-  try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-  } catch {
-    return date.toISOString().slice(0, 10);
-  }
 }

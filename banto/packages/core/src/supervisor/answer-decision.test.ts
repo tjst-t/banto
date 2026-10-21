@@ -173,9 +173,10 @@ test("番頭は任されている種類（rerun-tests）の問いに答えられ
     assert.match(h.delivered[0]!.text, /流し直して/);
     const acts = supervisorActsOf(h.automations, h.supervisorId);
     assert.equal(acts.length, 1);
+    assert.match(acts[0]?.actId ?? "", /^act-\d+$/);
     assert.deepEqual(
-      { ...acts[0], at: undefined },
-      { at: undefined, kind: "answered", threadId: h.baseId, turnId, question: 1, choice: 1, label: "流し直す", reason: "手順なので", decisionKind: "rerun-tests" },
+      { ...acts[0], at: undefined, actId: undefined },
+      { at: undefined, actId: undefined, kind: "answered", threadId: h.baseId, turnId, question: 1, choice: 1, label: "流し直す", reason: "手順なので", decisionKind: "rerun-tests" },
     );
   });
 });

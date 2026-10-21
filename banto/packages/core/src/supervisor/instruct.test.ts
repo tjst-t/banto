@@ -203,10 +203,13 @@ test("失敗したターンで止まった会話に retry-turn を頼む——�
     assert.equal(evil.match(/<\/banto-supervisor-note>/g)?.length, 1, "note が囲みを閉じた");
 
     const [act] = acts(h);
+    // 記録の id は fold が出来事の seq から付ける（取り消しの口が指す、#510）
+    assert.match(act?.actId ?? "", /^act-\d+$/);
     assert.deepEqual(
-      { ...act, at: undefined },
+      { ...act, at: undefined, actId: undefined },
       {
         at: undefined,
+        actId: undefined,
         kind: "instructed",
         threadId: h.baseId,
         turnId,
@@ -393,6 +396,32 @@ test("回数：同じ会話・同じ止まった理由には 2 回まで（新�
     const fork = await h.projectThread.forkThread(h.baseId, { title: "別" });
     await failedTurn(h, fork.id);
     assert.equal((await instruct(h, { threadId: fork.id })).ok, true);
+  });
+});
+
+test("全体の上限（Backlog #510）：全部の番頭で1時間に instructionsPerHour 件まで——ちょうどなら断り、1時間たてば戻る。ほかの番頭の指示も数える", async () => {
+  await withHarness(async (h) => {
+    h.config.set(SUPERVISOR_KEYS.instructionsPerHour, 2);
+    // ほかの Project の番頭が 30 分前に頼んだ1件
+    const otherProject = h.projectThread.getThread(h.otherBaseId)!.projectId;
+    const otherSupervisor = await new Supervisors({ automations: h.automations, policy: (id) => supervisorPolicy(undefined, id) }).create(otherProject);
+    await h.automations.recordSupervisorAct(otherSupervisor.automations[0]!.id, {
+      at: new Date(h.now.value.getTime() - 30 * 60 * 1000).toISOString(),
+      kind: "instructed",
+      threadId: h.otherBaseId,
+      action: "continue",
+      reason: "続ける",
+    });
+    await failedTurn(h, h.baseId);
+    assert.equal((await instruct(h)).ok, true);
+    const over = await instruct(h, { action: "continue" });
+    assert.equal(over.ok, false);
+    assert.match(over.text, /全部の番頭で1時間に送れる指示は 2 件までです（いま 2 件）/);
+    assert.equal(h.delivered.length, 1, "上限を超えたのに届けた");
+    assert.equal(acts(h)[0]?.kind, "refused");
+    // ほかの番頭の1件が窓を出たら、また頼める
+    h.now.value = new Date(h.now.value.getTime() + 31 * 60 * 1000);
+    assert.equal((await instruct(h, { action: "continue" })).ok, true);
   });
 });
 

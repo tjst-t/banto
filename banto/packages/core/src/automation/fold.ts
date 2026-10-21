@@ -190,9 +190,16 @@ export interface SupervisorAct {
    * `answered`＝選んだ・`deferred`＝人に回した・`refused`＝host が断った（`answer_decision` も `instruct_thread` も）・
    * `instructed`＝止まった会話に手順を頼んだ・`dropped`＝頼んだ手順を、始まる前に捨てた（人が発言した等）・
    * `factory-started`＝Factory に流した（`runId`・`items`）・`factory-answered`＝番頭が流した件の止まったものに答えた
-   * （`runId`・`item`・`stage`・`action` は answerFactory の action）
+   * （`runId`・`item`・`stage`・`action` は answerFactory の action）・`skipped`＝番頭の回を飛ばした（量の閾値・全体の上限。
+   * 届いた決めることは人に残る）・`undone`＝人が取り消した（`undoes`。Backlog #510）
    */
-  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped" | "factory-started" | "factory-answered";
+  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped" | "factory-started" | "factory-answered" | "skipped" | "undone";
+  /**
+   * **記録の id**（Backlog #510——取り消しの口が指す）。書くときには持たず、fold が出来事の seq から付ける（導出できる値を保存しない）
+   */
+  actId?: string;
+  /** 取り消した記録の id（`undone`。選んだ答えは同じターンに届けた問いを全部一緒に） */
+  undoes?: string[];
   /** 相手の会話（Factory の記録は、呼んだ番頭の会話） */
   threadId: string;
   turnId?: string;
@@ -248,6 +255,11 @@ export interface Automation extends AutomationFields {
   paused: boolean;
   /** 一時停止した理由（人が押した・専用の Fork を閉じた等）。一時停止している間だけ持つ */
   pausedReason?: string;
+  /**
+   * **番頭を全部止めたことで一時停止した**（Backlog #510、アーキ仕様 §4.5「止める」）。全部を再開する口はこの印のものだけを再開する
+   * ——Project ごとに止めたもの・Fork を閉じて止まったものは残す。一時停止している間だけ持つ
+   */
+  pausedScope?: "stop-all";
   /** 新しい順、最大 `AUTOMATION_RUNS_KEPT` 件 */
   runs: AutomationRun[];
   /** 受けて、まだ届けていないもの（古い順） */
@@ -280,7 +292,7 @@ export type AutomationEvent =
       payload: AutomationFields & { id: string; projectId: string; createdBy: AutomationCreatedBy; webhookTokenHash?: string };
     }
   | { type: "automation.updated"; payload: { id: string; changes: Partial<AutomationFields> } }
-  | { type: "automation.paused"; payload: { id: string; reason?: string } }
+  | { type: "automation.paused"; payload: { id: string; reason?: string; scope?: "stop-all" } }
   | { type: "automation.resumed"; payload: { id: string } }
   | { type: "automation.removed"; payload: { id: string } }
   | { type: "automation.received"; payload: { id: string } & AutomationReceived }
@@ -330,17 +342,18 @@ export const automationFold: Fold<AutomationReadModel> = {
       }
       case "automation.paused": {
         if (!current) return state;
-        const { pausedReason: _drop, ...rest } = current;
+        const { pausedReason: _drop, pausedScope: _scope, ...rest } = current;
         automations.set(current.id, {
           ...rest,
           paused: true,
           ...(event.payload.reason ? { pausedReason: event.payload.reason } : {}),
+          ...(event.payload.scope ? { pausedScope: event.payload.scope } : {}),
         });
         break;
       }
       case "automation.resumed": {
         if (!current) return state;
-        const { pausedReason: _drop, ...rest } = current;
+        const { pausedReason: _drop, pausedScope: _scope, ...rest } = current;
         automations.set(current.id, { ...rest, paused: false, clockFrom: raw.ts });
         break;
       }
@@ -361,7 +374,8 @@ export const automationFold: Fold<AutomationReadModel> = {
       }
       case "automation.supervisor_acted": {
         if (!current) return state;
-        const { id: _id, ...act } = event.payload;
+        const { id: _id, ...written } = event.payload;
+        const act: SupervisorAct = { ...written, actId: written.actId ?? `act-${raw.seq}` };
         const acts = [act, ...(current.supervisorActs ?? [])];
         const kept = acts.slice(0, SUPERVISOR_ACTS_KEPT);
         const olderStarts = acts.slice(SUPERVISOR_ACTS_KEPT).filter((a) => a.kind === "factory-started");

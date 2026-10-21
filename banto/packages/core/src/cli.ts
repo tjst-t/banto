@@ -40,6 +40,7 @@ import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
 import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
+import { SupervisorControls, supervisorSkipReason } from "./supervisor/guard.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -768,6 +769,13 @@ async function main(): Promise<void> {
   });
   // 起こし直しで切れた要約の記録を締める（続けない）——何かを走らせる前に
   await idleCompactions.start();
+  // **番頭の回を飛ばす理由**（§4.5「量」）——届ける層と番頭の画面（「この時間は人に回しています」）が同じものを引く
+  const supervisorSkipReasonNow = (projectId: string) =>
+    supervisorSkipReason(projectId, {
+      automations,
+      policy: (p) => supervisorPolicy(runtimeConfig, p),
+      allAccountsOver: (p) => claudeLogin.allAccountsOver(p),
+    });
   // **自動化を届ける層**（アーキ仕様 §4.3「判断は届ける口の手前に置く」）。`deliver` の手前で飛ばす・Clear してから届ける
   const automationRunner = new AutomationRunner({
     projectThread,
@@ -785,6 +793,9 @@ async function main(): Promise<void> {
     allAccountsOver: (projectId) => claudeLogin.allAccountsOver(projectId),
     // 番頭の回に届ける文に、回のたびに方針を引いて添える（§4.5）
     supervisorPolicy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    // 番頭の量（§4.5「量」、Backlog #510）：閾値・全体の1時間の回の上限で飛ばし、届いていた決めることは人に残す
+    supervisorSkipReason: (projectId) => supervisorSkipReasonNow(projectId),
+    supervisorSkipped: (automation, received, reason): Promise<void> => supervisorControls.skipped(automation, received, reason),
   });
   // **見回り**（アーキ仕様 §4.4）。見回りの Fork の `notify` と手帳
   const patrols = new Patrols({ automations, inbox, projectThread });
@@ -793,6 +804,7 @@ async function main(): Promise<void> {
     automations,
     runner: automationRunner,
     policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    handedToHuman: (projectId) => supervisorSkipReasonNow(projectId),
   });
   // **自動化の画面**（v4-frontend.md §6.42）は台帳が変わったら取り直す——どの Project のものかだけ流す
   automations.onChange(({ projectId }) => appEvents.publish({ type: "automations.changed", projectId }));
@@ -920,6 +932,18 @@ async function main(): Promise<void> {
       if (r.isError) throw new Error(text.slice(0, 300));
       return parseFactoryRuns(text);
     },
+  });
+  // **番頭の守り**（アーキ仕様 §4.5「守り」、Backlog #510）：量で飛ばした回の記録・全部止める・記録・取り消し・1日のまとめ
+  const supervisorControls = new SupervisorControls({
+    automations,
+    projectThread,
+    turns: threadTurns,
+    inbox,
+    supervisors,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    allAccountsOver: (projectId) => claudeLogin.allAccountsOver(projectId),
+    // 全部止めるとき、番頭の途中の答えを「揃わないまま終わった」と同じく人に回す
+    handOverDecisions: (threadId) => turnDecisions.endTurn(threadId),
   });
   // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
   threadTurns.onChange((change) => {
@@ -3410,6 +3434,7 @@ async function main(): Promise<void> {
     automationRunner,
     turnDecisions,
     supervisors,
+    supervisorControls,
     supervisorInstructions,
     missions: missionsService,
     patrols,
