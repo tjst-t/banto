@@ -404,3 +404,102 @@ test("番頭の見回りは Backlog の ready を Factory に流し（全体の�
     expect((await human(`/api/projects/${project.id}/supervisor`, "DELETE")).status).toBe(200);
   }
 });
+
+test("番頭を全部止めると見回りが動かず、全部再開で戻る。番頭が選んだ答えを取り消すと、元の会話に人の発言が届く（Backlog #510）", async ({ page }) => {
+  const human = humanCall(page);
+  const project = (await call("/api/projects", { method: "POST", body: { name: `${PROJECT_NAME} 守り`, root: mkdtempSync(join(tmpdir(), "banto-e2e-supervisor-guard-")) } })).body as { id: string };
+  const base = (await call(`/api/projects/${project.id}/threads`, { method: "POST" })).body as { id: string };
+  expect(base.id, "Base Thread が立たない").toBeTruthy();
+  expect((await call(`/api/projects/${project.id}/turn-summary`, { method: "PUT", body: { enabled: true } })).status).toBe(200);
+  const plan = async (tools: Array<{ name: string; args: Record<string, unknown> }>) => {
+    const res = await human(`/api/projects/${project.id}/supervisor-policy`, "PUT", {
+      note: `番頭の手順。${fakeTurn({ tools: tools.map((t) => ({ server: "banto-thread", ...t })) })}`,
+    });
+    expect(res.status, res.text).toBe(200);
+  };
+  const thread = async (id: string) => (await call(`/api/threads/${id}`)).body as unknown as Thread;
+  const supervisor = async () => (await call(`/api/projects/${project.id}/supervisor`)).body as unknown as Supervisor & { stoppedAll: boolean; pausedReason?: string };
+  const runsOf = async (kind: string) => (await supervisor()).automations.find((a) => (a.source.event ?? a.source.kind) === kind)!.runs;
+  type LogEntry = Act & { actId: string; projectId: string; undoable: boolean; undoneBy?: string; undoes?: string[]; label?: string };
+  const log = async (query: string) => {
+    const res = await human(`/api/supervisors/log?project=${project.id}${query}`, "GET");
+    expect(res.status, res.text).toBe(200);
+    return res.body.acts as LogEntry[];
+  };
+
+  const created = await human(`/api/projects/${project.id}/supervisor`, "POST", {});
+  expect(created.status, created.text).toBe(201);
+  try {
+    // ---- 1. 番頭が手順の問いに答える ------------------------------------------------------------------------------
+    await plan([{ name: "answer_decision", args: { thread: "$eventField:thread", turnId: "$eventField:turnId", question: 1, choice: 1, reason: "手順なので流し直す" } }]);
+    const decided = await call(`/api/threads/${base.id}/messages`, {
+      method: "POST",
+      body: { prompt: `試験を通して（1）${fakeTurn({ say: "止まりました（1）", tools: [{ server: "banto-thread", name: "report_turn", args: summary(1, "rerun-tests") }] })}` },
+    });
+    expect(decided.status, decided.text).toBe(200);
+    const decidedTurn = (await thread(base.id)).lastTurn!.turnId;
+    await expect.poll(async () => (await runsOf("banto.turn-decisions")).map((r) => r.result), { timeout: 120_000, message: "番頭が動かない" }).toEqual(["done"]);
+    // 元の会話が番頭の答えで進み終わるまで待つ（取り消しの発言をその後に送る）
+    await expect
+      .poll(async () => {
+        const t = await thread(base.id);
+        return t.lastTurn?.turnId !== decidedTurn && t.lastTurn?.outcome === "completed" ? t.messages.at(-1)?.text : undefined;
+      }, { timeout: 60_000, message: "元の会話が番頭の答えで続かない" })
+      .toBe(CONTINUED);
+
+    // ---- 2. 記録の口：種類で絞る・機械の合言葉では読めない -----------------------------------------------------------
+    expect((await call(`/api/supervisors/log?project=${project.id}`)).status, "機械の合言葉で記録が読めた").toBe(403);
+    const answered = await log("&kind=answered");
+    expect(answered.map((a) => [a.kind, a.threadId, a.label, a.undoable])).toEqual([["answered", base.id, "流し直す", true]]);
+
+    // ---- 3. 取り消す→元の会話に人の発言が届き、そのターンが走る。2回目は断る ------------------------------------------------
+    expect((await call(`/api/supervisors/log/${answered[0]!.actId}/undo`, { method: "POST", body: {} })).status, "機械の合言葉で取り消せた").toBe(403);
+    const undo = await human(`/api/supervisors/log/${answered[0]!.actId}/undo`, "POST", {});
+    expect(undo.status, undo.text).toBe(202);
+    const undoText = "番頭の選んだ「流し直す」は取り消して。その前に戻して";
+    expect((undo.body as { sent?: { threadId: string; text: string } }).sent).toEqual({ threadId: base.id, text: undoText });
+    await expect
+      .poll(async () => {
+        const t = await thread(base.id);
+        const sent = t.messages.find((m) => m.role === "user" && m.text === undoText);
+        // 人の発言（届けものの印が無い）として記録され、そのターンが最後まで行く
+        return sent ? [sent.origin === undefined, t.lastTurn?.outcome, t.messages.some((m) => m.role === "assistant" && m.seq > sent.seq)] : undefined;
+      }, { timeout: 60_000, message: "取り消しの人の発言が元の会話に届かない" })
+      .toEqual([true, "completed", true]);
+    const again = await human(`/api/supervisors/log/${answered[0]!.actId}/undo`, "POST", {});
+    expect(again.status, again.text).toBe(409);
+    expect(again.text).toContain("もう取り消しました");
+    const undone = await log("&kind=undone");
+    expect(undone.map((a) => a.undoes)).toEqual([[answered[0]!.actId]]);
+    expect((await log("&kind=answered")).map((a) => [a.undoable, a.undoneBy])).toEqual([[false, undone[0]!.actId]]);
+    // 1日のまとめ（受信箱には出さない——番頭の画面のもの）
+    const daily = await human("/api/supervisors/daily", "GET");
+    expect(daily.status, daily.text).toBe(200);
+    const row = (daily.body.projects as Array<{ projectId: string; counts: Record<string, number> }>).find((r) => r.projectId === project.id)!;
+    expect([row.counts.answered, row.counts.undone, row.counts.instructed]).toEqual([1, 1, 0]);
+
+    // ---- 4. 全部止める→見回りは動かない。全部再開で戻る ------------------------------------------------------------------
+    await plan([{ name: "list_stalled_threads", args: {} }]);
+    expect((await call("/api/supervisors/stop-all", { method: "POST" })).status, "機械の合言葉で全部止められた").toBe(403);
+    const stopped = await human("/api/supervisors/stop-all", "POST");
+    expect(stopped.status, stopped.text).toBe(200);
+    const s = await supervisor();
+    expect([s.paused, s.stoppedAll, s.pausedReason]).toEqual([true, true, "番頭を全部止めました（人が再開するまで動きません）"]);
+    expect(((await call("/api/supervisors")).body as { guard: { stoppedAll: boolean } }).guard.stoppedAll).toBe(true);
+    const blocked = await human(`/api/projects/${project.id}/supervisor/patrol`, "POST");
+    expect(blocked.status, "止めたのに見回れた").toBe(409);
+    expect(await runsOf("time"), "止めたのに見回りの回が起きた").toEqual([]);
+
+    const resumed = await human("/api/supervisors/resume-all", "POST");
+    expect(resumed.status, resumed.text).toBe(200);
+    expect([(await supervisor()).paused, (await supervisor()).stoppedAll]).toEqual([false, false]);
+    expect(((await call("/api/supervisors")).body as { guard: { stoppedAll: boolean } }).guard.stoppedAll).toBe(false);
+    const patrol = await human(`/api/projects/${project.id}/supervisor/patrol`, "POST");
+    expect(patrol.status, patrol.text).toBe(202);
+    await expect.poll(async () => (await runsOf("time")).map((r) => r.result), { timeout: 60_000, message: "再開しても見回りが動かない" }).toEqual(["done"]);
+  } finally {
+    // 止めたまま落ちても、後の spec に全部止めた番頭を残さない
+    await human("/api/supervisors/resume-all", "POST");
+    expect((await human(`/api/projects/${project.id}/supervisor`, "DELETE")).status).toBe(200);
+  }
+});
