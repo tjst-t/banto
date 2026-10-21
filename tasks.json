@@ -11873,7 +11873,7 @@
       "number": 492,
       "kind": "task",
       "title": "Shell：待たない形の結果で画面を名乗り、サイドバーの1件・会話のカードの「画面で見る」から開く",
-      "status": "in-progress",
+      "status": "done",
       "parent": "shell-service",
       "dependsOn": [
         "background-work-summary-relay",
@@ -11884,7 +11884,7 @@
       "labels": [],
       "body": "仕様 v4-modules.md §2.3（「サイドバーの1件・会話のカードから開く」）、v4-architecture.md §4.2「結果で名乗る画面」（2026-10-21 改め）。待たない形の結果に _meta dev.banto/backgroundView { resourceUri: ui://banto-shell/commands, select: { commandId } }。画面は見ている場所の select で1件を選ぶ（狭い画面ではその中身から）。会話のカード（shell-command-card.tsx）は結果の本文の commandId で「画面で見る」。tool の定義には ui.resourceUri を書かない。",
       "doneWhen": "E2E（shell-background.spec）で、サイドバーの1件・カードの「画面で見る」から画面のその1件が開く。待つ形の会話のカードが今のまま",
-      "resolution": null,
+      "resolution": "fork/bgv-shell 0f986644。単体 shell 60・frontend 65、E2E shell-background-view と関係 spec・影響しうる spec が通過",
       "refs": [],
       "threads": [
         {
@@ -11893,8 +11893,8 @@
         }
       ],
       "createdAt": "2026-10-20T20:30:06.580Z",
-      "updatedAt": "2026-10-21T10:57:55.310Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T11:29:10.406Z",
+      "closedAt": "2026-10-21T11:29:10.406Z",
       "extra": {}
     },
     {
