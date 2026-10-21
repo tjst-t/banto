@@ -12501,7 +12501,7 @@
       "number": 518,
       "kind": "task",
       "title": "タグで配る版を組み立てて banto-releases に署名つきで出す（distribute.yml）",
-      "status": "ready",
+      "status": "backlog",
       "parent": "closed-distribution",
       "dependsOn": [
         "edition-build-split"
@@ -12515,7 +12515,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:38:34.293Z",
+      "updatedAt": "2026-10-21T23:39:14.429Z",
       "closedAt": null,
       "extra": {}
     },
