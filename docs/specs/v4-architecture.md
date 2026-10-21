@@ -4143,7 +4143,7 @@ GitHub の tool は #424。コードは `packages/core/src/automation/patrol.ts`
 - 変換役 documents の変換に読むだけの印を付けて、見回りで Office の文書と `asImage` を読めるようにするか（変換の置き場への書き込みを
   「Module が自分の置き場で持つ写し」と同じに扱えるか）
 
-### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。作る順の 1.〜3. を実装・2026-10-21、Backlog #506・#507・#508。Backlog のストーリー `banto-supervisor` #505）
+### 4.5 番頭——人の代わりに細かい判断をして、Project の仕事を進める（決定・2026-10-21、ユーザー。案C。下書き——サブエージェントのレビューを反映・2026-10-21。作る順の 1.〜4. を実装・2026-10-21、Backlog #506・#507・#508・#509。Backlog のストーリー `banto-supervisor` #505）
 
 ユーザーの要望：「全 Project の開発を監督して、人の代行として自動で進めてほしい。release に入れて push、のような細かい判断まで
 Thread ごとに人がやるのはつらい。勝手に進んでほしい。一方で仕様やアーキテクチャの判断は人に求めてほしい」。
@@ -4375,9 +4375,53 @@ Thread ごとに人がやるのはつらい。勝手に進んでほしい。一�
 - **今すぐ見回る**（画面 §6.54 と E2E のため）：`POST /api/projects/:id/supervisor/patrol`（人のセッションだけ、202）。時刻の見回りの自動化を
   1回動かす（`cause: "manual"`）。一時停止していれば 409
 
+#### 実装で決めたこと（実装・2026-10-21、Backlog #509）
+
+- **許す tool は役割で引く**：`relay/read-only.ts` の `SUPERVISOR_MODULE_TOOLS` は Module の**役割**（`satisfies`）を鍵に持つ——`factory`：
+  `runFactory`・`listFactoryRuns`・`answerFactory`、`backlog`：`listItems`・`getItem`。Module の識別子は banto が採番する（§5.2）ので名前では
+  決めない。同梱（目録と同じコード）だけ。4か所（AI の代理の `tools/list`・`tools/call`、allowedTools、PreToolUse）は同じ判定を引く——
+  allowedTools と PreToolUse の名前（`mcp__<識別子>__<tool>`）は、ターンを始めるときに Module の今の tool から `supervisorModuleToolNames` で
+  組む。`cancelFactory` は無い
+- **照らす場所**：AI の代理が Module へ渡す手前（`AgentProxyOptions.supervisorGate` → `supervisor/factory.ts` の `SupervisorFactory`）。
+  断ったら Module に渡さず、返信用の札も出さない。通したものは Module の返事を見てから記録を書く（Module が断ったものは記録しない）。
+  Backlog の読む tool と `listFactoryRuns` は照らさない。番頭の回（`instruct_thread` と同じ判定）でなければ `runFactory`・`answerFactory` は断る
+- **流すのは `merge` を任されているときだけ**：Factory は main へ取り込むまで運ぶので、取り込みを任されていない Project（本番インフラ等）で
+  番頭に流させない。ready で依存が全部 done でないもの・ストーリーは Factory 自身が断る
+- **全体の上限**：数えるのは**番頭が流した件だけ**（全部の番頭の合計。人や会話の AI が流した件は数えない——上限は番頭の自走が使用量を
+  食いつぶさないための歯止めで、人が流した分は人が決めたもの。Claude の使用量そのものは「量」の閾値で見る）。数えの置き場は番頭の記録
+  （`factory-started` の `runId`）で、その実行の件を Project の Factory の今の様子（`listFactoryRuns`）と照らし、止まった（`stopped`）・
+  取り込んだ（`done`）・やめた（`dropped`）件と、Factory が知らない実行は数えない。Factory に聞けない Project は記録の件を全部数える
+  （数え漏らして越えない側）。単位は件（項目）
+- **超えるなら全部断る**（流せる分だけに切らない）：「いま N 件。あと M 件なら流せます」を返す。切ると、Factory が中で断った項目の分だけ
+  枠が空いたまま、どれが流れなかったかが番頭に見えにくい。2つの番頭が同時に流しても越えないよう、数える〜Module へ渡している途中の件の
+  仮押さえは1本ずつ
+- **答える**：記録に `factory-started` のある実行だけ（流していない件の出来事の回では番頭は何もしない——断って記録に `refused`）。
+  `continue`・`retry` は `fix-tests`、`accept` は `minor-design` を任されているとき、`drop` はいつも断る。**`instruction` は付けられない**
+  ——止まった理由（テストの出力・レビューの文）は外の文で、それを実装役への指示に運ばせない（`instruct_thread` の `note` と同じ線。`note` は
+  外から来た回で断るが、Factory の止まった件の回は必ず外から来ているので、いつも断る）。`reason` は要る。**同じ件の同じ段には 2 回まで**
+  （止まっている段は Factory に聞く。動かなければ人に回す）
+- **記録**：`factory-started`（`runId`・`items`＝Factory が受けた項目・`reason`）・`factory-answered`（`runId`・`item`・`stage`・`action`・`reason`）・
+  断ったら `refused`（`runId`・`item`・`action`・`items`）。`threadId` は番頭の会話。記録は1件の自動化につき 100 件だが、`factory-started` は
+  それを越えても新しいものから 50 件まで残す（長く走る実行の記録が押し出されて数えから漏れないように）
+- **返信用の札の知らせ**（番頭の Fork に届く Module の返事）：**それだけでは番頭の会話を起こさない**（人の番ではないので受信箱にも出さない）。
+  起こすと、前の回の会話を続けたまま番頭の決まりも方針も届かない回になる。同じ出来事（`factory.item-stopped` 等）で番頭の自動化の回が
+  起きるので、留めた知らせはその回のターンに一緒に積む——起きた回に、出来事（属性 `runId`・`item`・`stage`、本文は止まった理由）と札の
+  知らせ（実行・件・段・理由）の両方が届く。起こし直しの続き（`continues`）は今どおり起こす
+- **前の回が終わっていない**の判定（番頭の Fork だけ）：Factory の返事待ち（札）と、留めた Module の知らせは数えない——数えると、Factory が
+  走っている間は番頭の回が1つも起きない。番頭の自動化の届けものがまだ積まれていない・ターンが走っている・人の判断待ちは今どおり
+- **外から来た回**：番頭の回のターンに、番頭の自動化の指示のほかに届いたもの（Module の知らせなど）が積まれていれば外から来た回
+  （`instruct_thread` の `note` を断る）
+- **届ける文**：番頭の決まりに Factory の段（見回りは ready を優先順に流す・止まった件の回は自分が流した件だけ答える・drop と取りやめは人）、
+  見回りのきっかけに「`listItems`（`actionable: true`）の並び順に、1回に1件ずつ `runFactory`、断られたらそれ以上流さない」、止まった件の
+  きっかけに答え方、終わった実行のきっかけは何もしない。**きっかけの文は台帳の `instruction`（作ったときの写し）ではなく今の決まった文を
+  きっかけ（`source`）から引く**——手順を足しても前に置いた番頭に古い文が届かない（規則3）
+- Factory の出来事の2件が `allowSelfTriggered: true` であることは #507 のまま（確かめた）
+
 #### まだ決めていないこと
 
 - 番頭に Backlog の項目を作らせる・並べ替えさせるか（今回は流すだけ）
+- 番頭を消したあとも走っている、その番頭が流した Factory の件を全体の上限に数えるか（今は記録ごと消えるので数えない）
+- 全体の `instructionsPerHour`・`runsPerHour` と「この時間は人に回しています」（作る順の 5.）
 - 止まった会話の判定に Backlog の in-progress を使う口（core から Backlog の Module を引く）
 - 画面の呼び名（「番頭」か一般的な語か）
 - 番頭が出来事を逃した決めること（`decision-missed`）に、出来事を出し直して答えさせる口（今は人が答えるか次の出来事を待つ）
