@@ -198,6 +198,28 @@ export async function listModels() {
   ];
 }
 
+/** `oneShot` が既定で返す題（spec が名前を確かめるときに使う） */
+export const FAKE_ONE_SHOT_TITLE = "試験の題";
+/** 書き込みに含めると、その題を返す：`[[fake-title:旅行の計画]]` */
+export const FAKE_ONE_SHOT_TITLE_MARKER = "[[fake-title:";
+/** 書き込みに含めると、小さいモデルが失敗した形（error の result）で終わる——最初の文の題になる経路を試す */
+export const FAKE_ONE_SHOT_FAIL_MARKER = "[[fake-title-fail]]";
+
+/**
+ * **小さいモデルの1回**（追加・2026-10-21、チャットの題、`runner/one-shot.ts`）。SDK の `query()` の代わり。決まった題を返す
+ * ——本物の CLI を起こさない（E2E は実 LLM を使わない）。印で題を指定する・失敗させる
+ */
+export async function* oneShot(params: { prompt: string }) {
+  if (params.prompt.includes(FAKE_ONE_SHOT_FAIL_MARKER)) {
+    yield { type: "result", subtype: "error_during_execution", is_error: true, errors: ["偽の小さいモデルが失敗しました（試験の指定）"] };
+    return;
+  }
+  const at = params.prompt.indexOf(FAKE_ONE_SHOT_TITLE_MARKER);
+  const end = at < 0 ? -1 : params.prompt.indexOf("]]", at);
+  const title = end < 0 ? FAKE_ONE_SHOT_TITLE : params.prompt.slice(at + FAKE_ONE_SHOT_TITLE_MARKER.length, end);
+  yield { type: "result", subtype: "success", is_error: false, result: title };
+}
+
 /**
  * プロンプトから指示を読む。
  *
