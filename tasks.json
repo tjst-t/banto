@@ -11698,7 +11698,7 @@
       "number": 486,
       "kind": "task",
       "title": "サブエージェント：ACP の取りこぼしを拾う（tool_call_update の題・説明・触ったファイル、途中の発言、やること一覧）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "item-3",
       "dependsOn": [],
       "milestone": null,
@@ -11708,9 +11708,14 @@
       "doneWhen": "単体で、仮の題「Terminal」のあとに届く tool_call_update で題・説明・locations が書き換わる。発言が tool の間に別の件として入る。plan が記録に残る。上限で切れる。sinceStep で差分だけ返る。check:agents（claude-code）で本物の1件の経過に Terminal だけの題が出ない",
       "resolution": null,
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "6be652d3-f1d5-47b1-b137-7e2d8bdec6ed"
+        }
+      ],
       "createdAt": "2026-10-20T20:29:58.745Z",
-      "updatedAt": "2026-10-21T10:33:28.871Z",
+      "updatedAt": "2026-10-21T10:35:31.927Z",
       "closedAt": null,
       "extra": {}
     },
