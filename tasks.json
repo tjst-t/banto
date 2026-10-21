@@ -12093,7 +12093,7 @@
       "number": 502,
       "kind": "task",
       "title": "Repositories：今あるフォルダをリポジトリにする画面（folder-adopter：git init・台帳に足す・GitHub に公開）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12105,7 +12105,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:08.269Z",
+      "updatedAt": "2026-10-21T06:17:40.688Z",
       "closedAt": null,
       "extra": {}
     },
