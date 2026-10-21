@@ -12047,7 +12047,7 @@
       "number": 500,
       "kind": "task",
       "title": "core：チャットを使わなくなったら眠らせる（既定15分）・触らなくなったら閉じてコンテナを消す（既定14日）",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-start-prototyping"
@@ -12061,7 +12061,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T05:47:08.269Z",
+      "updatedAt": "2026-10-21T07:13:08.661Z",
       "closedAt": null,
       "extra": {}
     },
