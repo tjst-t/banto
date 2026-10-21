@@ -12000,7 +12000,7 @@
       "number": 498,
       "kind": "task",
       "title": "core：チャットの最初のターンで題を付ける（小さいモデル→project.renamed、だめなら最初の文を縮める）",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-project-2",
       "dependsOn": [
         "chat-core-create",
@@ -12011,12 +12011,12 @@
       "labels": [],
       "body": "人が名前を変えていなければだけ。projects.changed を流す。",
       "doneWhen": "単体：最初のターンのあと project.renamed が1回積まれる・人が先に名前を変えていれば積まない・小さいモデルが失敗したら最初の文の題",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/chat-title）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T05:47:08.269Z",
-      "updatedAt": "2026-10-21T06:52:32.386Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-21T07:12:32.812Z",
+      "closedAt": "2026-10-21T07:12:32.812Z",
       "extra": {}
     },
     {
