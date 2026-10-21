@@ -12281,7 +12281,7 @@
       "number": 510,
       "kind": "task",
       "title": "番頭：守り（自動許可の絞り・全体の量・全部止める・記録とカード・取り消し）",
-      "status": "backlog",
+      "status": "in-progress",
       "parent": "banto-supervisor",
       "dependsOn": [
         "instruct-thread-supervisor-list-stalled",
@@ -12292,11 +12292,16 @@
       "labels": [],
       "body": "§4.5「守り」。番頭を置いた Project では自動許可から Publish・Project をまたぐ送信・秘密を返す中継・同梱の destructiveHint を外す。使用量の閾値で飛ばす・全体の上限（1時間の回数12・指示10）。全部止める（自動化の一時停止・走っているターンを止める・始まっていない指示を捨てる・途中の答えは人へ・Factory は止めない）と Project ごとの一時停止。automation.supervisor_acted の記録・judge instructed／carriedJudge・取り消し（人の発言で届く／cancelFactory）。受信箱には知らせを出さない。",
       "doneWhen": "単体と E2E：番頭のいる自動許可の Project で Publish が聞かれる・上限で止まる・全部止めるで止まり再開は人・取り消しが元の会話に人の発言で届く",
-      "resolution": null,
+      "resolution": "自動許可の絞り以外は main に入った（b39a8483 系、rebase 後 8d058908 まで）：量（閾値・全体の上限で飛ばし人に回す）・全部止める／全部再開（理由の区別）・記録の id と口・取り消し（人の発言で届く・cancelFactory）・1日のまとめ。残り：自動許可の絞り（人の決定待ち）。",
       "refs": [],
-      "threads": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "5d4b81df-c269-4617-a852-be9ae4d782fa"
+        }
+      ],
       "createdAt": "2026-10-21T07:35:40.881Z",
-      "updatedAt": "2026-10-21T08:03:16.586Z",
+      "updatedAt": "2026-10-21T09:58:37.186Z",
       "closedAt": null,
       "extra": {}
     },
