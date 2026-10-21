@@ -53,6 +53,7 @@ import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { ThemeToggle } from "./theme-toggle";
 import { ProjectList } from "./project-list";
+import { DraftList } from "./draft-list";
 import { isThreadRunning } from "@/lib/mock/background-work";
 import { BusyProjectMark, HostBusyBand } from "@/components/banto/settings/resources-panel";
 import { getResourcesSnapshot, parseResourcesDemo } from "@/lib/mock/resources";
@@ -362,6 +363,8 @@ export function NavPanel({
 
       <SidebarContent>
         {hostSnap.host.busy === "busy" ? <HostBusyBand reason={hostSnap.host.busyReason} /> : null}
+        {/* 相談（モック・2026-10-21）：Project の上に、押せばすぐ始まる会話の一覧 */}
+        <DraftList activeProjectId={activeProjectId} onNavigate={onNavigate} />
         {/* Project の整理（モック・2026-10-16）：グループ・スリープ・行の「…」・ドラッグ。旧い平らな一覧は ?org=off で見られる */}
         {navSearchParams.get("org") === "off" ? (
         <SidebarGroup>

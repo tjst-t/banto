@@ -540,6 +540,15 @@ export function createBaseThreadForProject(projectId: string, threadId: string, 
   mockThreads = [...mockThreads, thread];
 }
 
+/** 相談のモック（drafts.ts）専用：台本つきの Base Thread を足す・題を変える */
+export function addThreadRecord(thread: MockThread): void {
+  mockThreads = [...mockThreads, thread];
+}
+
+export function renameThreadRecord(id: string, title: string): void {
+  mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, title } : t));
+}
+
 /** Fork Thread を畳む（§2.2「会話を畳む」と同じ性質——削除ではない） */
 export function closeThread(id: string): void {
   mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "closed", closedAt: "たった今" } : t));

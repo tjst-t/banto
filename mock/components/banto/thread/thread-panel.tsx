@@ -77,7 +77,9 @@ export function ThreadPanel({
   const placeholder =
     thread.kind === "fork"
       ? "この Fork Thread に送る"
-      : `${getProject(thread.projectId).name} の Base Thread に送る`;
+      : getProject(thread.projectId).draft
+        ? "相談を書く"
+        : `${getProject(thread.projectId).name} の Base Thread に送る`;
 
   return (
     <ThreadRuntime
@@ -139,9 +141,25 @@ function ThreadRuntime({
             <ComposerPermissionModeMenu threadId={threadId} projectId={projectId} />
           </>
         }
-        components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
+        components={
+          getProject(projectId).draft
+            ? { ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup, Welcome: DraftWelcome }
+            : { ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }
+        }
         composerHint={showDemoHints || markers.length > 0 ? hint : undefined}
       />
     </AssistantRuntimeProvider>
+  );
+}
+
+/** 相談を始めたときの空の画面（モック・2026-10-21） */
+function DraftWelcome() {
+  return (
+    <div className="mb-6 flex flex-col items-center gap-2 px-4 text-center">
+      <h1 className="text-2xl font-medium tracking-tight">何を相談しますか？</h1>
+      <p className="max-w-md text-sm text-ink-3">
+        やりたいことを書いてください。話して調べるだけならコンテナは作りません。試作を始めたら作り、まとまったら「Project にする」でそのまま続けられます。
+      </p>
+    </div>
   );
 }
