@@ -83,10 +83,11 @@ export interface ReviewMission {
 
 /**
  * 判断役の答え。`decided-by-automation`＝全部の問いに選択肢で答え、元の会話に届けた。`deferred`＝人に任せた（何も届けて
- * いない）。`incomplete`＝揃わないまま判断役のターンが終わった（何も届けていない）
+ * いない）。`incomplete`＝揃わないまま判断役のターンが終わった（何も届けていない）。`instructed`＝番頭が止まった会話に決まった手順を
+ * 頼んだ（`instruct_thread`、追加・2026-10-21、アーキ仕様 §4.5「記録」）
  */
 export interface ReviewJudge {
-  kind: "decided-by-automation" | "deferred" | "incomplete";
+  kind: "decided-by-automation" | "deferred" | "incomplete" | "instructed";
   automation: { id: string; name: string };
   /** 決めたもの（`decided-by-automation`）。問い・選択肢の番号は 1 から */
   answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
@@ -101,6 +102,8 @@ export interface ReviewJudge {
    * 後ろ・`beforeSeq` より前の発言がそのターン
    */
   turn?: { startedSeq: number; beforeSeq: number; outcome?: "completed" | "stopped" | "failed" };
+  /** 番頭が頼んだ手順（`instructed`）。題は頼んだ時点のもの。`note` は添えたかだけ（中身は会話の届けものにある） */
+  instruction?: { action: string; title: string; hasNote: boolean; actionId: string };
   at: string;
 }
 

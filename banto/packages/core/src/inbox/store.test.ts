@@ -201,3 +201,34 @@ test("onJudgmentAnswered：答えが付いたら、その判断待ちと答え�
     assert.deepEqual(seen, [{ id: j.id, threadId: "t1", answer: { behavior: "deny", message: "畳みました" } }]);
   });
 });
+
+test("番頭の指示（judge instructed）はカードに添え、次のカードに引き継ぐ。開いているカードが無かったときは、指示で起きたターンのカードに出す", async () => {
+  await withStore(async (store) => {
+    const instructed = {
+      kind: "instructed" as const,
+      automation: { id: "auto-1", name: "番頭：見回り" },
+      reason: "失敗したのでやり直す",
+      instruction: { action: "retry-turn", title: "失敗した・途中で切れたターンをやり直す", hasNote: false, actionId: "act-1" },
+      at: "2026-10-21T00:00:00Z",
+    };
+    // 開いているカードに添えて、次のターンの終わりのカードに引き継ぐ
+    await store.raiseReview({ threadId: "t1", summary: "失敗しました" });
+    assert.equal(await store.judgeReviews("t1", instructed), 1);
+    const next = await store.raiseReview({ threadId: "t1", summary: "やり直しました" });
+    assert.deepEqual(next.carriedJudge, instructed);
+    // 開いているカードが無かった——呼ぶ側が渡した決めを出す。置き換えるカードの決めがあればそちらを先に
+    const fresh = await store.raiseReview({ threadId: "t2", summary: "やり直しました", carriedJudge: instructed });
+    assert.deepEqual(fresh.carriedJudge, instructed);
+    const auto = await store.raiseAutomationReview({
+      threadId: "t3",
+      summary: "やり直しました",
+      automation: { id: "a", runId: "r", startedSeq: 0, since: "2026-10-21T00:00:00Z" },
+      carriedJudge: instructed,
+    });
+    assert.deepEqual(auto?.carriedJudge, instructed);
+    // 人に回した・揃わなかったものは引き継がない
+    await store.raiseReview({ threadId: "t4", summary: "s" });
+    await store.judgeReviews("t4", { kind: "deferred", automation: { id: "a", name: "n" }, reason: "人", at: "t" });
+    assert.equal((await store.raiseReview({ threadId: "t4", summary: "s2" })).carriedJudge, undefined);
+  });
+});

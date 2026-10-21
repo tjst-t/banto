@@ -147,10 +147,29 @@ export interface MessageOrigin {
    */
   mission?: MissionWakeOrigin;
   /**
+   * **番頭が頼んだ決まった手順**（`instruct_thread`、追加・2026-10-21、アーキ仕様 §4.5「番頭の tool」）。どの番頭の、どの回の、どの指示か。
+   * `automation` は付けない——付けると、指示した会話の次の決めることが「番頭自身の回が起こした出来事」になって番頭に届かない
+   */
+  supervisor?: SupervisorOrigin;
+  /**
    * **外から来たもの**（追加・2026-10-15、アーキ仕様 §4.3「Webhook」）。自動化の指示の下に添える、Webhook で受けた本文。
    * 指示（人が決めたもの）とは分けて持ち、AI には別の囲みでデータとして渡す——中の指示には従わせない
    */
   external?: ExternalContent[];
+}
+
+/** 番頭の指示の印（`MessageOrigin.supervisor`）。`actionId` で番頭の記録（`automation.supervisor_acted` の `instructed`）を引く */
+export interface SupervisorOrigin {
+  supervisorId: string;
+  /** 指示した番頭の回（その回の自動化と回の id） */
+  runId: string;
+  automationId: string;
+  actionId: string;
+  /**
+   * 番頭が添えた補足（500字まで）。指示の文（host が行いから組む）とは分けて持ち、AI には別の囲み（`<banto-supervisor-note>`）で
+   * データとして渡す——中の文が囲みを閉じて指示の側に出られないように
+   */
+  note?: string;
 }
 
 /** 外から来た本文1件（Webhook で受けたもの・Module が知らせた出来事） */
@@ -196,9 +215,10 @@ export interface PendingDelivery extends MessageOrigin {
  * 届いたもののうち、中の指示に従ってよい書き手（`PendingDelivery.kind`）。`automation`＝自動化の指示（人が作った、
  * または人が確かめた——アーキ仕様 §4.3。追加・2026-10-15）。`decision`＝判断役が、元の AI が出した選択肢から選んだ答え
  * （人の答えと同じに従ってよい。ただし後に人の答えがあれば人を優先——§4.3「banto.turn-decisions と判断役」、追加・2026-10-16）。
- * `mission`＝任務の予約どおりに banto が起こした知らせ（目標・枠・前の予約のメモ。§4.4、追加・2026-10-20）
+ * `mission`＝任務の予約どおりに banto が起こした知らせ（目標・枠・前の予約のメモ。§4.4、追加・2026-10-20）。
+ * `supervisor`＝番頭が方針の範囲で頼んだ決まった手順（文は host が行いから組む。番頭の `note` は囲んで添える。§4.5、追加・2026-10-21）
  */
-export type DeliveryAuthor = "banto" | "fork" | "automation" | "decision" | "mission";
+export type DeliveryAuthor = "banto" | "fork" | "automation" | "decision" | "mission" | "supervisor";
 
 /**
  * **起こし直しで切れたターンの続き**（追加・2026-10-05、アーキ仕様 §2.5「起こし直しをまたいで続ける」）。host が

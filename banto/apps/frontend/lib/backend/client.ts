@@ -325,6 +325,11 @@ export interface RealMessageOrigin {
    * `maxWakes`・`note` は起こした時点の上限と前の予約のメモ（この仕組みより前の記録には無い）
    */
   mission?: { id: string; wake: number; maxWakes?: number; note?: string };
+  /**
+   * **番頭が頼んだ決まった手順**（追加・2026-10-21、アーキ仕様 §4.5）。`note` は番頭の補足（データとして出す）。画面に出すのは
+   * §6.54（Backlog #511）
+   */
+  supervisor?: { supervisorId: string; runId: string; automationId: string; actionId: string; note?: string };
 }
 
 /** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
@@ -586,16 +591,19 @@ export interface RealInboxReview {
 
 /**
  * 判断役の答え（host の `ReviewJudge` のまま）。`decided-by-automation`＝全部の問いに選択肢で答えて元の会話に届けた・
- * `deferred`＝人に任せた・`incomplete`＝揃わないまま判断役のターンが終わった（どちらも何も届けていない）
+ * `deferred`＝人に任せた・`incomplete`＝揃わないまま判断役のターンが終わった（どちらも何も届けていない）・
+ * `instructed`＝番頭が止まった会話に決まった手順を頼んだ（追加・2026-10-21、画面に出すのは Backlog #511）
  */
 export interface RealReviewJudge {
-  kind: "decided-by-automation" | "deferred" | "incomplete";
+  kind: "decided-by-automation" | "deferred" | "incomplete" | "instructed";
   automation: { id: string; name: string };
   /** 問い・選択肢の番号は 1 から */
   answers?: Array<{ question: number; choice: number; label: string; reason: string }>;
   reason?: string;
   answered?: number;
   total?: number;
+  /** 番頭が頼んだ手順（`instructed`）。`hasNote` は補足を添えたか */
+  instruction?: { action: string; title: string; hasNote: boolean; actionId: string };
   at: string;
 }
 

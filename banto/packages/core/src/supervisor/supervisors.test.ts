@@ -295,3 +295,20 @@ test("前の回が終わっていない番頭の Fork には、時刻の回は�
     assert.equal(ctx.delivered.length, 0);
   });
 });
+
+test("今すぐ見回る：時刻の見回りを1回届ける（止まった会話を探して頼む手順つき）。一時停止していれば断る", async () => {
+  await setup(async (ctx) => {
+    const s = await ctx.supervisors.create(ctx.projectId);
+    const clock = s.automations.find((a) => a.source.kind === "time")!;
+    const started = await ctx.supervisors.patrolNow(s.id);
+    assert.equal(started.result, "running", started.reason);
+    for (let i = 0; i < 400 && ctx.automations.get(clock.id)!.runs[0]?.result === "running"; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(ctx.automations.get(clock.id)!.runs[0]?.cause, "manual");
+    const d = ctx.delivered[0]!;
+    assert.equal(d.title, "番頭：見回り");
+    assert.match(d.text, /list_stalled_threads でこの Project の止まっている会話を探し/);
+    assert.match(d.text, /instruct_thread で決まった手順/);
+    await ctx.supervisors.pause(s.id);
+    await assert.rejects(() => ctx.supervisors.patrolNow(s.id), SupervisorConflictError);
+  });
+});

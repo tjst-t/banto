@@ -150,7 +150,7 @@ export function summaryMessageOfLastTurn(thread: Pick<ThreadState, "lastTurn" | 
  * **そのターンが外から来たものを読んだか**（最初は、そのターンに積んだ届けものに Webhook の本文・出来事・別の会話からの
  * メッセージがあったかだけ。外のページを読む Module の結果は今は区別できない）
  */
-function readExternalOf(thread: Pick<ThreadState, "lastTurn" | "messages">): boolean {
+export function readExternalOf(thread: Pick<ThreadState, "lastTurn" | "messages">): boolean {
   const startedSeq = thread.lastTurn?.startedSeq ?? Number.MAX_SAFE_INTEGER;
   return thread.messages.some((m) => m.seq > startedSeq && m.origin && (m.origin.sender || (m.origin.external?.length ?? 0) > 0));
 }

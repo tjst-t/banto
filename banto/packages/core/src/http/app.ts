@@ -32,6 +32,7 @@ import { nextFireOf } from "../automation/schedule.js";
 import type { Automation } from "../automation/fold.js";
 import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
 import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } from "../supervisor/supervisors.js";
+import type { SupervisorInstructions } from "../supervisor/instruct.js";
 import {
   HUMAN_ONLY_KINDS,
   SUPERVISOR_KEYS,
@@ -246,6 +247,8 @@ export interface AppDeps {
    * **番頭**（追加・2026-10-21、アーキ仕様 §4.5「番頭の作り」）。`/api/supervisors`・`/api/projects/:id/supervisor` の口。無ければ 404
    */
   supervisors?: Supervisors;
+  /** **番頭の instruct_thread・list_stalled_threads**（アーキ仕様 §4.5）。番頭の回のターンに渡す。無ければ tool は無い */
+  supervisorInstructions?: Pick<SupervisorInstructions, "instruct" | "listStalled" | "screen">;
   /**
    * **任務**（追加・2026-10-20、アーキ仕様 §4.4）。会話の tool の中身と `/api/threads/:id/mission`。無ければ tool は断り、口は 501
    */
@@ -1801,7 +1804,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -4448,7 +4451,7 @@ export function createApp(deps: AppDeps) {
         if (!deps.supervisors) return json(res, 404, { error: "not found" });
         return json(res, 200, { supervisors: deps.supervisors.list() });
       }
-      const supervisorMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/supervisor(\/pause|\/resume)?$/);
+      const supervisorMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/supervisor(\/pause|\/resume|\/patrol)?$/);
       if (supervisorMatch) {
         const projectId = supervisorMatch[1]!;
         const sub = supervisorMatch[2];
@@ -4476,6 +4479,8 @@ export function createApp(deps: AppDeps) {
           }
           if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
           if (!current) return json(res, 404, { error: "この Project に番頭はいません" });
+          // 今すぐ見回る（§6.54・E2E）。その回は届けて 202——飛ばした回も理由つきで記録に残る
+          if (sub === "/patrol") return json(res, 202, await supervisors.patrolNow(current.id));
           return json(res, 200, sub === "/pause" ? await supervisors.pause(current.id) : await supervisors.resume(current.id));
         } catch (err) {
           if (err instanceof AuthHttpError) return json(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });

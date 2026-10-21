@@ -46,6 +46,7 @@ import type {
   MissionWakeCause,
   MissionWakeResult,
   MissionWakeOrigin,
+  SupervisorOrigin,
 } from "./types.js";
 import { PROJECT_GROUP_COLORS } from "./types.js";
 import { findInterruptedTurns, type InterruptedTurn } from "./interrupted-turns.js";
@@ -928,11 +929,25 @@ export class ProjectThreadStore {
     automation?: { id: string; runId: string };
     /** 任務の予約で起こした回（追加・2026-10-20、アーキ仕様 §4.4） */
     mission?: MissionWakeOrigin;
+    /** 番頭が頼んだ決まった手順（追加・2026-10-21、アーキ仕様 §4.5） */
+    supervisor?: SupervisorOrigin;
     /** 外から来たもの（Webhook で受けた本文、アーキ仕様 §4.3） */
     external?: ExternalContent[];
   }): Promise<void> {
     if (!this.getThread(input.threadId)) throw new NotFoundError(`thread ${input.threadId} not found`);
     const event = await this.log.append("delivery.received", input);
+    this.projection.applyOne(event);
+  }
+
+  /**
+   * **届いたものを積まずに捨てる**（追加・2026-10-21、アーキ仕様 §4.5）。黙って捨てない——理由を記録に残す。待ち行列に無いものは
+   * 何もしない
+   */
+  async dropDeliveries(threadId: ThreadId, deliveryIds: readonly string[], reason: string): Promise<void> {
+    const queued = new Set((this.getThread(threadId)?.deliveries ?? []).map((d) => d.deliveryId));
+    const ids = deliveryIds.filter((id) => queued.has(id));
+    if (ids.length === 0) return;
+    const event = await this.log.append("delivery.dropped", { threadId, deliveryIds: ids, reason });
     this.projection.applyOne(event);
   }
 

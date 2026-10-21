@@ -129,11 +129,11 @@ export function mayReadResourcesInReadOnly(input: { moduleName: string; bundled:
 export const SUPERVISOR_REFUSAL = "番頭の回では使えません（番頭の tool だけ使えます）";
 
 /**
- * **core の tool で番頭の回に残すもの**（アーキ仕様 §4.5「番頭の tool」）。`instruct_thread`・`list_stalled_threads` は Backlog #508 で
- * 足す。`banto-memory` は渡さない
+ * **core の tool で番頭の回に残すもの**（アーキ仕様 §4.5「番頭の tool」）。`instruct_thread`・`list_stalled_threads` は番頭の回にだけ在る
+ * （ふつうの会話には出さない——`fork-tool.ts`）。`banto-memory` は渡さない
  */
 export const SUPERVISOR_CORE_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  "banto-thread": ["answer_decision", "list_threads", "claude_usage"],
+  "banto-thread": ["answer_decision", "instruct_thread", "list_stalled_threads", "list_threads", "claude_usage"],
 };
 
 /**

@@ -148,7 +148,8 @@ export function missionWakeOfLastTurn(thread: Pick<ThreadState, "messages">): { 
   for (let i = thread.messages.length - 1; i >= 0; i--) {
     const m = thread.messages[i]!;
     if (m.role !== "user") continue;
-    if (!m.origin) return undefined;
+    // 番頭の指示で起きたターンは任務の回に数えない（アーキ仕様 §4.5——人の発言と同じく区切る）
+    if (!m.origin || m.origin.supervisor) return undefined;
     if (m.origin.mission) return m.origin.mission;
   }
   return undefined;

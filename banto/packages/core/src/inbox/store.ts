@@ -151,10 +151,11 @@ export class InboxStore {
    * 「Base/Fork Thread 自身の完了」）。**1つの Thread に未確認は1件まで**：前のものは「見た」にして、新しいもの
    * だけを残す（同じ Thread の古い終わりを積み上げない）
    */
-  async raiseReview(input: { threadId: string; summary: string; mission?: ReviewMission }): Promise<ReviewItem> {
+  async raiseReview(input: { threadId: string; summary: string; mission?: ReviewMission; carriedJudge?: ReviewJudge }): Promise<ReviewItem> {
+    const { carriedJudge, ...rest } = input;
     const replaced = this.openReviewsFor(input.threadId);
     await this.acknowledgeReviewsFor(input.threadId);
-    return this.appendReview({ ...input, ...carryJudge(replaced) });
+    return this.appendReview({ ...rest, ...carryJudge(replaced, carriedJudge) });
   }
 
   /**
@@ -192,14 +193,17 @@ export class InboxStore {
     threadId: string;
     summary: string;
     automation: Omit<ReviewAutomation, "raisedSeq">;
+    /** 置き換えるカードに引き継ぐ決めが無いときに出す決め（番頭の指示で起きたターン——`raiseReview` と同じ） */
+    carriedJudge?: ReviewJudge;
   }): Promise<ReviewItem | undefined> {
+    const { carriedJudge, ...rest } = input;
     const open = this.listOpen().filter((i): i is ReviewItem => i.kind === "review" && i.threadId === input.threadId);
     if (!input.automation.attention && open.some((r) => r.automation?.attention)) return undefined;
     const replaced = open.filter((r) => !r.automation?.attention);
     // まだ見ていない回の数え始めは、置き換えるカードのうち一番古いものから引き継ぐ
     const since = [input.automation.since, ...replaced.flatMap((r) => (r.automation ? [r.automation.since] : []))].sort()[0]!;
     for (const r of replaced) await this.acknowledgeReview(r.id);
-    return this.appendReview({ ...input, automation: { ...input.automation, since }, ...carryJudge(replaced) });
+    return this.appendReview({ ...rest, automation: { ...input.automation, since }, ...carryJudge(replaced, carriedJudge) });
   }
 
   private async appendReview(input: {
@@ -317,11 +321,14 @@ export class InboxStore {
 
 /**
  * **置き換えるカードから、判断役が決めたものを引き継ぐ**（アーキ仕様 §4.3「受信箱」の「次のカードに『判断役が〈選択肢〉を
- * 選んで進めました』を引き継いで出す」）。人に任せた・揃わなかったものは引き継がない——次のターンは判断役の答えで進んでいない
+ * 選んで進めました』を引き継いで出す」）。人に任せた・揃わなかったものは引き継がない——次のターンは判断役の答えで進んでいない。
+ * 番頭が手順を頼んだもの（`instructed`、§4.5）も引き継ぐ。引き継ぐものが無ければ `fallback`（番頭の指示で起きたターンの決め——
+ * 頼んだときに開いているカードが無かった）
  */
-function carryJudge(replaced: readonly ReviewItem[]): { carriedJudge?: ReviewJudge } {
+function carryJudge(replaced: readonly ReviewItem[], fallback?: ReviewJudge): { carriedJudge?: ReviewJudge } {
   const decided = [...replaced]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .find((r) => r.judge?.kind === "decided-by-automation");
-  return decided?.judge ? { carriedJudge: decided.judge } : {};
+    .find((r) => r.judge?.kind === "decided-by-automation" || r.judge?.kind === "instructed");
+  const judge = decided?.judge ?? fallback;
+  return judge ? { carriedJudge: judge } : {};
 }

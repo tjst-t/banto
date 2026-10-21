@@ -37,6 +37,7 @@ import { awaitingAutomations, type AwaitedModule } from "./automation/keep-awake
 import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
 import { Patrols } from "./automation/patrol.js";
 import { supervisorPolicy } from "./supervisor/policy.js";
+import { SupervisorInstructions } from "./supervisor/instruct.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
@@ -889,6 +890,15 @@ async function main(): Promise<void> {
     supervisorPolicy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
     recordSupervisorAct: (automationId, act) => automations.recordSupervisorAct(automationId, act),
   });
+  // **番頭の instruct_thread・list_stalled_threads**（アーキ仕様 §4.5「番頭の tool」）。回数は番頭の記録から数える
+  const supervisorInstructions = new SupervisorInstructions({
+    projectThread,
+    automations,
+    deliveries,
+    turns: threadTurns,
+    inbox,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+  });
   // 判断役のターンが終わったら、揃わなかったものを人に回す（出来事を出すのは、下でレビュー待ちを出したあと）
   threadTurns.onChange((change) => {
     if (change.type !== "ended" || change.idleCompaction) return;
@@ -944,11 +954,14 @@ async function main(): Promise<void> {
           : ({ kind: "plain" } as const);
         if (plan.kind === "skip") return;
         const summary = turnEndSummary(thread);
+        // 番頭の指示で起きたターンなら「番頭が〈手順〉を頼みました」を添える（頼んだときに開いているカードが無かったとき、§4.5「記録」）
+        const instructed = supervisorInstructions.judgeOfLastTurn(change.threadId);
+        const carried = instructed ? { carriedJudge: instructed } : {};
         await (missionPlan.kind === "mission"
-          ? inbox.raiseReview({ threadId: change.threadId, summary, mission: missionPlan.mission })
+          ? inbox.raiseReview({ threadId: change.threadId, summary, mission: missionPlan.mission, ...carried })
           : plan.kind === "automation"
-            ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation })
-            : inbox.raiseReview({ threadId: change.threadId, summary })
+            ? inbox.raiseAutomationReview({ threadId: change.threadId, summary, automation: plan.automation, ...carried })
+            : inbox.raiseReview({ threadId: change.threadId, summary, ...carried })
         ).catch((err: unknown) => console.warn("[host] ターンの終わりを受信箱に出せませんでした:", err));
         // **決めることがあれば banto.turn-decisions**（アーキ仕様 §4.3）——レビュー待ちと同じ条件で、カードを出したあと
         // （判断役の答えはそのカードに添える）。決めることのある回は「出さない」でも出るので、上の skip には当たらない
@@ -3324,6 +3337,7 @@ async function main(): Promise<void> {
     automationRunner,
     turnDecisions,
     supervisors,
+    supervisorInstructions,
     missions: missionsService,
     patrols,
     automationWebhooks,

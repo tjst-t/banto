@@ -186,7 +186,11 @@ export type PatrolNoteChange = "notified" | "seen" | "muted" | "dismissed" | "un
  */
 export interface SupervisorAct {
   at: string;
-  kind: "answered" | "deferred" | "refused";
+  /**
+   * `answered`＝選んだ・`deferred`＝人に回した・`refused`＝host が断った（`answer_decision` も `instruct_thread` も）・
+   * `instructed`＝止まった会話に手順を頼んだ・`dropped`＝頼んだ手順を、始まる前に捨てた（人が発言した等）
+   */
+  kind: "answered" | "deferred" | "refused" | "instructed" | "dropped";
   /** 相手の会話 */
   threadId: string;
   turnId?: string;
@@ -197,8 +201,22 @@ export interface SupervisorAct {
   label?: string;
   /** 問いの種類（まとめに書かれていれば） */
   decisionKind?: string;
-  /** 番頭の理由（断ったときは host の理由） */
+  /** 番頭の理由（断ったときは host の理由。捨てたときは捨てた理由） */
   reason: string;
+  /** 頼んだ行い（`instruct_thread` の `action`） */
+  action?: string;
+  /** 番頭が `note` を添えたか（中身は記録に残さない——宛先の会話の届けものにある） */
+  hasNote?: boolean;
+  /** 指示の id（`instructed`・`dropped`。届けものの `origin.supervisor.actionId`） */
+  actionId?: string;
+  /**
+   * 頼んだときの宛先の止まった理由（`list_stalled_threads` の理由。無ければ action）。同じ理由への指示の回数を数える鍵
+   */
+  stalledReason?: string;
+  /**
+   * 頼んだときの宛先の最後のまとめの位置（まとめの発言の seq。無ければ 0）。新しいまとめが出たら同じ理由の回数を数え直す
+   */
+  summarySeq?: number;
 }
 
 /** 番頭の記録は1件の自動化につき、これだけ fold に持つ（届ける文に添えるのは番頭の全部の自動化を合わせた直近 30 件） */
