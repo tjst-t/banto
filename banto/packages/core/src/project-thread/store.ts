@@ -65,6 +65,8 @@ export class RemoteProjectError extends Error {}
 export class RuntimeMoveConflictError extends Error {}
 /** 眠らせられない（閉じた・もう眠っている）（409） */
 export class ProjectSleepConflictError extends Error {}
+/** チャットにしかできないこと（Project にする）を、普通の Project に頼んだ（409） */
+export class NotChatProjectError extends Error {}
 
 export class NotFoundError extends Error {}
 export class InvalidProjectRootError extends Error {}
@@ -247,6 +249,20 @@ export class ProjectThreadStore {
   async renameProject(id: ProjectId, name: string): Promise<ProjectState> {
     if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
     const event = await this.log.append("project.renamed", { id, name });
+    this.projection.applyOne(event);
+    this.notifyProjectsChanged();
+    return this.getProject(id)!;
+  }
+
+  /**
+   * **チャットを Project にする**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。`kind` を外し、名前を替える。会話・Memory・
+   * Fork はそのまま。フォルダを移す・グループに入れるのは呼び手（`setProjectRoot`・`assignProjectGroup`）
+   */
+  async promoteProject(id: ProjectId, name: string): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.kind !== "chat") throw new NotChatProjectError("この Project はチャットではありません");
+    const event = await this.log.append("project.promoted", { id, name });
     this.projection.applyOne(event);
     this.notifyProjectsChanged();
     return this.getProject(id)!;

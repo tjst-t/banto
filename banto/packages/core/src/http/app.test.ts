@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -21,6 +22,7 @@ import { ModuleCallTracker, RESTARTING_REFUSAL } from "../relay/module-calls.js"
 import type { ActivityReport } from "./activity.js";
 import { createApp, rateLimitStopOf, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 import { ProjectSleep } from "../runtime/project-sleep.js";
+import { ProjectMover, claudeProjectDirName, type RunningItem } from "../runtime/project-move.js";
 import type { ProjectWokeCause } from "../project-thread/types.js";
 import { Missions } from "../mission/missions.js";
 import { ThreadDeliveries } from "../delivery/thread-deliveries.js";
@@ -2508,6 +2510,212 @@ test("チャットの最初のターンは、Claude の WebSearch と banto 全�
 });
 
 // **Project ごとの「AI への指示」**（決定・2026-10-09、ユーザー。アーキ仕様 §2.3）——Project の層の文字列、空なら無し
+// **チャットを Project にする**（決定・2026-10-21、アーキ仕様 §2.2「チャット」の「Project にする」）
+/** 試験の ProjectMover（この機械のコンテナだけ。別のサーバ・Service は使わない） */
+function chatMover(store: () => ProjectThreadStore, opts: { claudeConfigDir: string; dataDir: string; busy?: () => RunningItem[]; released?: string[] }) {
+  let mover: ProjectMover | undefined;
+  const get = () =>
+    (mover ??= new ProjectMover({
+      dataDir: opts.dataDir,
+      monorepoRoot: "/nonexistent-banto-monorepo",
+      claudeConfigDir: opts.claudeConfigDir,
+      projectThread: store(),
+      remoteRuntimes: {} as never,
+      hostContainers: { runInside: async () => undefined, stopProjectContainer: async () => undefined },
+      hostActivity: () => opts.busy?.() ?? [],
+      disableServices: async () => [],
+      releaseModules: async (projectId) => {
+        opts.released?.push(projectId);
+      },
+      revokeClaudeLogin: () => undefined,
+      deliver: async () => undefined,
+      kick: () => undefined,
+      notify: async () => undefined,
+      log: () => undefined,
+    }));
+  return { moveRootOnThisMachine: (id: string, root: string) => get().moveRootOnThisMachine(id, root) } as unknown as NonNullable<Parameters<typeof createApp>[0]["runtimeMove"]>;
+}
+
+test("Project にする：kind が消えて名前が替わり、グループに入る。フォルダを渡さなければ根はそのまま", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        const group = await projectThread.createProjectGroup({ name: "仕事" });
+        const res = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: " 電力の見える化 ", groupId: group.id }) });
+        assert.equal(res.status, 200, await res.clone().text());
+        const p = (await res.json()) as { name: string; kind?: string; root: string; groupId?: string };
+        assert.equal(p.name, "電力の見える化");
+        assert.equal(p.kind, undefined);
+        assert.equal(p.root, chat.root);
+        assert.equal(projectThread.getProject(chat.id)?.groupId, group.id);
+        const list = (await (await fetch(`${base}/api/projects`, { headers })).json()) as Array<{ id: string; kind?: string }>;
+        assert.equal(list.find((x) => x.id === chat.id)?.kind, undefined);
+
+        // もう普通の Project——2度目は断る
+        const again = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "x" }) });
+        assert.equal(again.status, 409);
+      },
+      { chatsDir: join(scratch, "chats") },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Project にする：名前・グループ・フォルダの名前がおかしければ断り、何も変えない", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  try {
+    await withApp(
+      async (base, token, dir, { projectThread }) => {
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        for (const body of [
+          {},
+          { name: "  " },
+          { name: "a", groupId: 3 },
+          { name: "a", groupId: "no-such-group" },
+          { name: "a", folder: "Upper" },
+          { name: "a", folder: "../x" },
+          { name: "a", folder: "chats" },
+          { name: "a", folder: "" },
+        ]) {
+          const res = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify(body) });
+          assert.equal(res.status, 400, JSON.stringify(body));
+        }
+        assert.equal(projectThread.getProject(chat.id)?.kind, "chat");
+        assert.equal(projectThread.getProject(chat.id)?.root, chat.root);
+        assert.deepEqual(await readdir(scratch), ["chats"]);
+        // 普通の Project はチャットではない
+        const plain = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir }) })).json()) as { id: string };
+        assert.equal((await fetch(`${base}/api/projects/${plain.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "x" }) })).status, 409);
+        assert.equal((await fetch(`${base}/api/projects/nope/promote`, { method: "POST", headers, body: JSON.stringify({ name: "x" }) })).status, 404);
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: chatMover(() => {
+          throw new Error("確かめる前に移そうとした");
+        }, { claudeConfigDir: join(scratch, "claude"), dataDir: scratch }),
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Project にする：folder を渡すと根が置き場の下へ移り、移したあとの最初のターンが前の会話を resume で続ける", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  const claudeConfigDir = join(scratch, "claude");
+  await mkdir(claudeConfigDir);
+  let store: ProjectThreadStore | undefined;
+  const released: string[] = [];
+  // 本物の CLI と同じく、会話の記録は `<CLAUDE_CONFIG_DIR>/projects/<作業ディレクトリの名前>/<id>.jsonl`。resume は今の作業
+  // ディレクトリの名前の下に記録が無ければ通らない
+  const turns: Array<{ cwd?: string; resume?: string }> = [];
+  const recordOf = (cwd: string, id: string) => join(claudeConfigDir, "projects", claudeProjectDirName(cwd)!, `${id}.jsonl`);
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        store = projectThread;
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        await writeFile(join(chat.root, "plan.md"), "# 試作\n");
+        const thread = await projectThread.createBaseThread(chat.id);
+        await (await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "電力を見たい" }) })).text();
+        assert.equal(turns.length, 1);
+        assert.equal(turns[0]!.cwd, chat.root);
+
+        const res = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "電力の見える化", folder: "power-monitor" }) });
+        assert.equal(res.status, 200, await res.clone().text());
+        const p = (await res.json()) as { root: string; kind?: string; name: string };
+        const moved = join(await realpath(scratch), "power-monitor");
+        assert.equal(p.root, moved);
+        assert.equal(p.kind, undefined);
+        assert.equal(p.name, "電力の見える化");
+        // 中身ごと移り、元は無い。コンテナは畳んだ（次に Module を繋ぐとき新しい根で作る）
+        assert.equal(await readFile(join(moved, "plan.md"), "utf8"), "# 試作\n");
+        await assert.rejects(stat(chat.root));
+        assert.deepEqual(released, [chat.id]);
+        // 会話の記録は写した（元は残す）
+        assert.ok((await stat(recordOf(moved, "sess-1"))).isFile());
+        assert.ok((await stat(recordOf(chat.root, "sess-1"))).isFile());
+
+        // 移したあとの最初のターン：新しい根で、前の会話を resume で続ける
+        await (await fetch(`${base}/api/threads/${thread.id}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "続けて" }) })).text();
+        assert.equal(turns.length, 2);
+        assert.deepEqual(turns[1], { cwd: moved, resume: "sess-1" });
+        assert.equal(store.getThread(thread.id)?.lastTurn?.outcome, "completed", JSON.stringify(store.getThread(thread.id)?.lastTurn));
+
+        // 同じフォルダの名前へはもう移せない
+        const other = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        const taken = await fetch(`${base}/api/projects/${other.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "y", folder: "power-monitor" }) });
+        assert.equal(taken.status, 409);
+        assert.equal(projectThread.getProject(other.id)?.kind, "chat");
+        assert.ok((await stat(other.root)).isDirectory());
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: chatMover(() => store!, { claudeConfigDir, dataDir: scratch, released }),
+        runTurn: (async function* (opts: { cwd?: string; resumeSessionId?: string }) {
+          turns.push({ ...(opts.cwd ? { cwd: opts.cwd } : {}), ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}) });
+          if (opts.resumeSessionId) {
+            if (!existsSync(recordOf(opts.cwd!, opts.resumeSessionId))) throw new Error(`No conversation found with session ID: ${opts.resumeSessionId}`);
+          } else {
+            await mkdir(dirname(recordOf(opts.cwd!, "sess-1")), { recursive: true });
+            await writeFile(recordOf(opts.cwd!, "sess-1"), "{}\n");
+          }
+          yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "sess-1", mcp_servers: [] } } as never;
+          return { sessionId: "sess-1", compactionCount: 0 } as never;
+        }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Project にする：ターン・裏の仕事が動いていればフォルダを移さず断り、名前も変えない", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  let store: ProjectThreadStore | undefined;
+  const released: string[] = [];
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        store = projectThread;
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        const res = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "x", folder: "x" }) });
+        assert.equal(res.status, 409);
+        const body = (await res.json()) as { error: string; running?: unknown[] };
+        assert.match(body.error, /ターンが走っています/);
+        assert.equal(body.running?.length, 2);
+        assert.equal(projectThread.getProject(chat.id)?.kind, "chat");
+        assert.equal(projectThread.getProject(chat.id)?.name, "新しいチャット");
+        assert.equal(projectThread.getProject(chat.id)?.root, chat.root);
+        assert.ok((await stat(chat.root)).isDirectory());
+        assert.deepEqual(released, [], "断るのに Module を畳んだ");
+        await assert.rejects(stat(join(scratch, "x")));
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: chatMover(() => store!, {
+          claudeConfigDir: join(scratch, "claude"),
+          dataDir: scratch,
+          released,
+          busy: () => [
+            { kind: "turn", label: "ターンが走っています（会話）" },
+            { kind: "reply", label: "裏の仕事の返事を待っています（subagent・会話）" },
+          ],
+        }),
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("AI への指示は Project ごとに読み書きでき、空で保存すると消え、上限を超えたら断る", async () => {
   await withApp(async (base, token, dir) => {
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };

@@ -8,7 +8,7 @@
 // （渡る道具は banto 全体の Module と、Claude 自身の WebSearch・WebFetch だけ）
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import { loadModuleDeclarations, modulePlacement, setProjectModuleSelection } from "../modules/declaration.js";
@@ -17,6 +17,19 @@ import type { ProjectState } from "../project-thread/types.js";
 
 /** チャットの置き場（固定。設定で変えない——ユーザー・2026-10-21） */
 export const CHATS_DIR = join(homedir(), "banto", "chats");
+
+/**
+ * **Project にするときにフォルダを移す先**：置き場（チャットの置き場の親、`~/banto`）の下の `<フォルダの名前>`
+ * （アーキ仕様 §2.2「フォルダを置き場へ移す」）。名前は英小文字・数字・`.`・`_`・`-`（リポジトリの名前にもなる）。
+ * チャットの置き場そのもの（`chats`）は断る。合わなければ理由を返す
+ */
+export function promotedRootOf(chatsDir: string, folder: unknown): { root: string } | { error: string } {
+  if (typeof folder !== "string" || !/^[a-z0-9][a-z0-9._-]{0,99}$/.test(folder)) {
+    return { error: "folder は英小文字・数字・. _ - の 100 字までで、英小文字か数字で始めてください" };
+  }
+  if (folder === basename(chatsDir)) return { error: `folder に ${folder}（チャットの置き場）は使えません` };
+  return { root: join(dirname(chatsDir), folder) };
+}
 
 /** 題を付けるまでの仮の名前 */
 export const NEW_CHAT_NAME = "新しいチャット";
