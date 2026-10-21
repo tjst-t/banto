@@ -43,6 +43,8 @@ import {
   visibilityOf,
   waitingOnOf,
   resultLocationOf,
+  backgroundViewOf,
+  type BackgroundView,
   type BantoModuleMeta,
   type WaitingOn,
 } from "@banto/module-contract";
@@ -157,7 +159,8 @@ export interface AgentProxyOptions {
   replies?: {
     issue(input: { threadId: string; projectId?: string; connName: string; moduleName: string; work?: BackgroundWork }): string;
     /** `waitingOn`：Module が「人の答えを待っている」と名乗ったら（`dev.banto/waitingOn`） */
-    markAwaiting(replyTo: string, waitingOn?: WaitingOn, resultLocation?: string): Promise<void>;
+    /** `view`：定義に画面を持たない tool が、結果でその仕事を見る画面を名乗ったら（`dev.banto/backgroundView`、Backlog #489） */
+    markAwaiting(replyTo: string, waitingOn?: WaitingOn, resultLocation?: string, view?: BackgroundView): Promise<void>;
   };
 }
 
@@ -486,6 +489,8 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
           waitingOnOf((result as { _meta?: Record<string, unknown> })._meta),
           // 結果の場所（Backlog #324）——起こし直しで Module に繋がらないまま打ち切ったとき、「途中で終わりました」に添える
           resultLocationOf((result as { _meta?: Record<string, unknown> })._meta),
+          // その仕事を見る画面（Backlog #489）——サイドバーの1件から、その Module の入口を `select` で開く
+          backgroundViewOf((result as { _meta?: Record<string, unknown> })._meta),
         );
       }
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
