@@ -80,3 +80,24 @@ Shell と Service：
 - AI に見せる文（`describeBackgroundItems`・`closeForkDroppedNote`）に要約は入れない
 - 古くなる文を直した：`v4-modules.md` §2.3 の Palette の入口、`v4-frontend.md` §6.33 の「画面を持たない tool なら Thread へ移るだけ」。
   コンテナの外の Shell は入口の資源を `ListResources` に出さない
+
+## core と画面の実装で決めたこと（2026-10-21、Backlog #489）
+
+- **手がかりは `resourceUri`・`select` ではなく別の `view: { resourceUri, select? }` に写した**。定義の画面（`resourceUri`＋toolCallId で
+  会話のカードと同じ画面）と、結果で名乗った入口（`canvasView`＝`select`）を画面が見分けられないため。toolCallId は起こし直しの問い
+  （`restart-recovery.ts`）にも使うので、名乗ったときに消す案は採らなかった。定義に画面がある tool では `view` を写さない（定義が先を
+  core の1か所で決める）
+- **中継（`host-relay-endpoint.ts`）の `markAwaiting` には写さない**。そこで返事待ちになる札は宛先が Module で、サイドバーに出ない
+- **要約の口は同梱の Module だけ**（`maySummarizeBackgroundWork`）。前例（受信箱・出来事・本体を取ってくる口）に合わせた。人の本体の
+  ログインで作り使用量もそこに数えるので、第三者のコードに開かない。コンテナの中のサブエージェントは頼める。道具用のコンテナは不可
+- **Project の決まらない頼みは断る**。本体のログインの中継（`runnerEnvFor`）は Project で鍵を分けるので、札の Project か呼んだ Module の
+  Project を使う。どちらも無いときに process.env のまま呼ぶ（別の経路へ落ちる）のはやめた
+- **10 秒は失敗した回からも数える**。ログイン切れのまま押し続けても小さいモデルを叩き続けない
+- **`backgroundItemsOf` は表を引く関数を必ず受ける**（省略できない引数）。AI に見せる文を作る呼び元（`validateCloseFork`・
+  `dropCloseIfDue`・`settleClose`）は `WITHOUT_SUMMARIES` を明示して渡す——表を渡して「文の側で使わない」にすると、文の作り方を
+  変えたときに要約が AI に漏れうる。仕様の「全部に効かせる」は「全部が選んで渡す」と読んだ
+- **試験用の Module は目録の隠れた1本**（`e2e-bgv`、`e2e/fixtures/background-view-module`）。要約の口が同梱だけなので、
+  出来事の試験（`e2e-events`）と同じく同梱の扱いで入れる。最初は `e2e-background-view` にしたが、Incus がコンテナに繋ぐ置き場の
+  パスを1つのファイル名に写すので、HOME の深い機械では 255 字を越えて「file name too long」で起きなかった（`subagent` で 253 字）
+  ——名前を短くした
+- **狭い画面の境目は携帯の Drawer と同じ**（`useIsMobile`、768px 未満）。一覧の1件を押したら Drawer も閉じる（`onNavigate`）

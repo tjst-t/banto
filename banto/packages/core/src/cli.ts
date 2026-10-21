@@ -58,6 +58,7 @@ import { ContainersVirtualization, readProjectVirtualization, writeProjectVirtua
 import { createApp, CONTAINER_NESTING_KEY, claudeLoginEnabled, readJsonBody, type ToolsInstallView } from "./http/app.js";
 import { askSmallModel, type OneShotQuery } from "./runner/one-shot.js";
 import { ChatTitler } from "./http/chat-title.js";
+import { BackgroundSummaries } from "./delivery/background-summaries.js";
 import { ClaudeLoginRelay, hostClaudeCredentialsPath, NONESSENTIAL_TRAFFIC_ENV } from "./claude-login/relay.js";
 import type { WarmTicket } from "./claude-login/keep-alive.js";
 import { IdleCompactions } from "./delivery/idle-compaction.js";
@@ -692,6 +693,21 @@ async function main(): Promise<void> {
   const threadTurns = new ThreadTurns();
   const replyHandles = new ReplyHandles();
   const appEvents = new AppEventBus();
+  /**
+   * **裏の仕事の要約**（追加・2026-10-21、アーキ仕様 §4.2「札の手がかりを Module があとから足す」、Backlog #489）。Module が
+   * `relaySummarizeBackgroundWork` で頼み、core が小さいモデルで作る（会話の題と同じ組み方——本体の Claude のログイン）。
+   * 札の1件に重ねた要約は host のメモリだけで、札が済んだら消す
+   */
+  const backgroundSummaries = new BackgroundSummaries({
+    handles: replyHandles,
+    ask: async ({ systemPrompt, prompt, projectId }) => {
+      const sessionId = randomUUID();
+      const env = await claudeLogin.runnerEnvFor(projectId, undefined, { sessionId }, `http://127.0.0.1:${bootstrap.port}`);
+      return askSmallModel({ systemPrompt, prompt, env, sessionId }, oneShotOverride);
+    },
+    onPlaced: (threadId) => publishBackground(threadId),
+  });
+  replyHandles.onSettled((replyTo) => backgroundSummaries.forget(replyTo));
   /** 起き直したときの札の判定と切れたターン（下で作る。判定の終わっていない Thread は留める） */
   let recovery: RestartRecovery | undefined;
   /** 別の実行場所へ移す（下で作る。移している途中の Project の Module は、Service を止めておく間だけ起こす） */
@@ -1037,7 +1053,7 @@ async function main(): Promise<void> {
       type: "background.changed",
       threadId,
       ...(thread?.projectId ? { projectId: thread.projectId } : {}),
-      items: backgroundItemsOf(thread?.awaitingReplies),
+      items: backgroundItemsOf(thread?.awaitingReplies, backgroundSummaries.of),
     });
     // 札が閉じたら、用事で起きた Project が眠りに戻れるかを見る
     returnToSleepIfDone(threadId);
@@ -1224,8 +1240,8 @@ async function main(): Promise<void> {
     // **返信用の札**（決定・2026-09-25）。ホップ数は、札を出したターンのもの（人が送ったターン＝0）
     replies: {
       issue: (input) => replyHandles.issue({ ...input, hop: threadTurns.hopOf(input.threadId) ?? 0 }),
-      markAwaiting: async (replyTo, waitingOn, resultLocation) => {
-        const h = replyHandles.markAwaiting(replyTo, waitingOn, resultLocation);
+      markAwaiting: async (replyTo, waitingOn, resultLocation, view) => {
+        const h = replyHandles.markAwaiting(replyTo, waitingOn, resultLocation, view);
         if (!h) return;
         await projectThread.recordAwaitingReply({
           threadId: h.threadId,
@@ -2982,6 +2998,12 @@ async function main(): Promise<void> {
       }
       return { ok: true, deliveryId: r.deliveryId, wake: r.wake };
     },
+    // **裏の仕事の要約**（追加・2026-10-21、アーキ仕様 §4.2、Backlog #489）。札の照らし方・回数・置き場は `BackgroundSummaries`
+    summarizeBackgroundWork: (caller, input) =>
+      backgroundSummaries.summarize(
+        { moduleName: caller.moduleName, ...(caller.connName ? { connName: caller.connName } : {}), ...(caller.projectId ? { projectId: caller.projectId } : {}) },
+        input,
+      ),
     // **Module 宛ての札**（追加・2026-10-05、アーキ仕様 §4.2）
     replies: {
       issueToModule: (input) => replyHandles.issueToModule(input),
@@ -3445,6 +3467,7 @@ async function main(): Promise<void> {
     threadTurns,
     deliveries,
     appEvents,
+    backgroundSummaries: backgroundSummaries.of,
     moduleCalls,
     // 起こし直しで待つものと待たないもの（GET /api/admin/activity）
     restartActivity: { moduleReplies, resumesAfterRestart },

@@ -6,8 +6,10 @@
 //
 // 失敗は投げる。代わりの値（題なら書き込みの最初の文を縮めたもの）にするのは呼び元。
 //
-// サブエージェントの「いまの様子を要約」（#490）とは、host の側では中継（`claude-login/relay.ts`）を共用する。この関数そのものは
-// 共用しない——あちらは Project のコンテナで動く Module から中継へ `/v1/messages` を直に送るので、core の関数を呼べない。
+// 呼び元は2つ：会話の題（`http/chat-title.ts`）と、裏の仕事の要約（`delivery/background-summaries.ts`——Module が host の口
+// `relaySummarizeBackgroundWork` で頼む、アーキ仕様 §4.2、Backlog #489）。どちらも指示（system prompt）は呼び元の core が持ち、
+// モデルはここの `SMALL_MODEL`。Module から中継へ `/v1/messages` を直に送らせる形は採らない（指示とモデルの版の写しが Module に
+// 増える。`docs/notes/2026-10-20-background-visibility.md`「レビューで直したこと」）。
 
 import { randomUUID } from "node:crypto";
 import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";

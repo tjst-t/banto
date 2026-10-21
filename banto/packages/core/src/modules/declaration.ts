@@ -782,6 +782,31 @@ export const BUNDLED_CATALOG: BundledCatalogEntry[] = [
       ],
     },
   },
+  {
+    // **結果で画面を名乗り、要約を頼む試験用の Module**（追加・2026-10-21、アーキ仕様 §4.2「札の手がかりを Module があとから足す」、
+    // Backlog #489）。要約の口（`relaySummarizeBackgroundWork`）は同梱だけが頼めるので、同梱の扱いで試す。人には役に立たないので
+    // 画面の目録には出さない（`hidden`）。名前を短くしているのは、Incus がコンテナに繋ぐ置き場のパスを1つのファイル名に
+    // 写すため（HOME の深い機械では 255 字を越えて「file name too long」で起きなかった）
+    id: "e2e-bgv",
+    name: "裏の仕事の見え方の試験",
+    description: "結果で画面を名乗り、host に要約を頼む（試験用）",
+    suggestedName: "e2e-bgv",
+    hidden: true,
+    launch: {
+      command: "${nodeExec}",
+      args: ["${monorepoRoot}/e2e/fixtures/background-view-module/server.js"],
+      env: {
+        BANTO_HOST_MCP_URL: "${hostRelayUrl}",
+        BANTO_HOST_MCP_TOKEN: "${hostRelayToken}",
+      },
+    },
+    meta: {
+      satisfies: ["e2e-bgv"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+    },
+  },
 ];
 
 /**

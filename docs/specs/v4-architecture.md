@@ -3922,7 +3922,7 @@ canceled）、認証を持つ。
   `ThreadState.receivedFrom`（送り元の Thread → 最後に届いた時刻）で見る。会話を引き継がない Fork は `thread.created` の
   `fresh`。届いたものの送り元は `MessageOrigin.sender`、AI には `<banto-delivery>` の属性と返し方の一文で渡す
 
-#### 札の手がかりを Module があとから足す・結果で画面を名乗る（決定・2026-10-20、ユーザー。レビューを反映・2026-10-21。未実装）
+#### 札の手がかりを Module があとから足す・結果で画面を名乗る（決定・2026-10-20、ユーザー。レビューを反映・2026-10-21。core と画面を実装・2026-10-21、Backlog #489。Module の側（Subagent の要約ボタン #490・Shell の名乗り #492）は未実装）
 
 サイドバーのバックグラウンドの1件（札の手がかり `BackgroundWork`）は、host が呼び出しの引数とカードの名乗りから作り、あとから
 変わらなかった。サブエージェントの要約（§4.1「仕事の画面で、いま何をしているかを分かるようにする」）と、Shell の待たないコマンドの
@@ -3934,10 +3934,14 @@ canceled）、認証を持つ。
   （launcher）の資源、`select` はその画面に「見ている場所」として渡すもの（中身は画面の Module が決める。Shell なら `{ commandId }`）。
   `waitingOn`・`resultLocation` と同じく、その呼び出しの結果が一番正しいので結果に載せる。名前を `dev.banto/view` にしないのは、
   既存の `dev.banto/view-state`（見ている場所）と紛らわしいため
-- **host は `markAwaiting` のときにこれを札の手がかりの `resourceUri`・`select` に写す**（`relay/agent-proxy.ts`・
-  `relay/host-relay-endpoint.ts` の `markAwaiting` の呼び出し、`delivery/reply-handles.ts`）。手がかりは `reply.awaiting` として
+- **host は `markAwaiting` のときにこれを札の手がかりの `view`（`{ resourceUri, select? }`）に写す**（`relay/agent-proxy.ts` の
+  `markAwaiting` の呼び出し、`delivery/reply-handles.ts`。読むのは `@banto/module-contract` の `backgroundViewOf`——`ui://` の資源
+  500 字まで、`select` は JSON にして 2,000 字まで。外れたら名乗っていないことにする）。手がかりは `reply.awaiting` として
   記録に残るので、起こし直しても同じ1件が開く。結果は AI に渡す前に `dev.banto/*` を外す（`stripBantoMeta`）ので、AI には見えない
-- tool の定義に `ui.resourceUri` があれば、今までどおりそちらが先（サイドバーの1件は会話のカードと同じ画面を toolCallId で開く）
+- tool の定義に `ui.resourceUri` があれば、今までどおりそちらが先（サイドバーの1件は会話のカードと同じ画面を toolCallId で開く）。
+  **そのときは `view` を写さない**。手がかりの `resourceUri` に重ねず別の `view` に置くのは、画面が「定義の画面を toolCallId で開く」と
+  「入口を `select` で開く」を見分けるため（toolCallId は起こし直しの問いにも使うので消せない）
+- 中継（`relay/host-relay-endpoint.ts`）で Module が頼んだ仕事は札の宛先が Module で、サイドバーに出ないので写さない
 - **サイドバーの1件から開く**：その Thread へ移り、その Module の入口を `canvasView`＝`select` で開く——`dev.banto/open-surface` の
   `{ surface: "launcher", server, resourceUri, select }` と同じ開き方（`docs/specs/v4-frontend.md` §6.2「画面から『同じ Project の
   別の面を開いて』」。Subagent の入口が `{ runId }` で受けているのと同じ形）
@@ -3954,27 +3958,39 @@ canceled）、認証を持つ。
 - **core が作って返す**：`runner/one-shot.ts` の `askSmallModel`（`SMALL_MODEL`・本体の Claude のログイン。会話の題
   `http/chat-title.ts` と同じ組み方）で1回だけ作り、`{ summary }` を返す。**指示（system prompt）とモデルは core が持つ**
   （1か所）。`material.text` の上限（24,000 字）は core が切る。指示は §4.1「4.」
+- **頼める相手**：**同梱の Module だけ**（`maySummarizeBackgroundWork`）——人の本体のログインで作り、使用量もそこに数えるので、
+  第三者のコードに好きな文を小さいモデルへ送らせない。コンテナの中の Module（サブエージェント）は頼める。道具用のコンテナは不可。
+  どの Project の仕事か（札の Project、無ければ呼んだ Module の Project——ログインの中継の鍵）が決まらなければ断る
 - **札の照らし方**：`replyTo` があれば `ReplyHandles.get()` で引き、渡してきた Module（`moduleName` と接続名）の札かだけを照らす。
   `use()` と違って**回数を数えない**（届けではない）。`finalOnly` の札（起こし直しで覚え直した札）でも受ける。違う Module の札は
   理由つきで断る
 - **サイドバーに置く**：まだ返事待ちで、宛先が Thread の札なら、要約を下の表に置いて `background.changed` を流す
 - **置かないが、断らない**：宛先が Module の札（`toModule`——Factory などが中継で頼んだ仕事）・届け済み（もう無い）の札・`replyTo`
   無し。要約は作って返す（Module の画面には出る）
-- **回数**：同じ札（`replyTo` が無ければ Module＋`workId`）で同時に1つ、前の要約から 10 秒あける。超えたら理由つきで断る
+- **回数**：同じ札（`replyTo` が無ければ Module の接続＋`workId`）で同時に1つ、前の要約から 10 秒あける。超えたら理由つきで断る。
+  「前の要約」は失敗した回も数える（ログイン切れのまま押し続けても 10 秒に1回）
 - **失敗**（ログイン切れ・中継が無いなど）は理由を Module に返す。Module はそれを画面にそのまま出す（§4.1「4.」）
-- 数字（24,000 字・10 秒）は最初の値で、実装で直してよい。決まりは上の形のほう
+- 数字（24,000 字・10 秒）は最初の値で、実装で直してよい。決まりは上の形のほう（数字は `@banto/module-contract` の
+  `BACKGROUND_SUMMARY_*`）
 - 今は Subagent だけが呼ぶが、Module の名前で分けない
+- **実装**（2026-10-21、Backlog #489）：受け手は `delivery/background-summaries.ts` の `BackgroundSummaries`（指示
+  `BACKGROUND_SUMMARY_SYSTEM_PROMPT`・照らし方・回数・表）。口の名前・引数と答えの型は `@banto/module-contract` の
+  `RELAY_SUMMARIZE_BACKGROUND_WORK_TOOL`・`SummarizeBackgroundWorkInput`・`SummarizeBackgroundWorkReply`。断りと失敗は tool の
+  エラー（`isError`）の文で返す。Module の側は Subagent の `HostRelayClient.summarizeBackgroundWork(input)`（断りは理由の文で投げる）
 
 **3. 要約の置き場——host のメモリの表**
 
-- 表は `replyTo` → `{ summary, summaryAt }`（`summaryAt` は host が刻む）。札が済んだら（`settle`）消す。**起こし直しで消えてよい**
+- 表は `replyTo` → `{ summary, summaryAt }`（`summaryAt` は host が刻む）。札が済んだら（`settle`——`ReplyHandles.onSettled` で
+  知らせを受ける。札を済ませる道はここ1つ）消す。作っている間に札が済んだら置かない。**起こし直しで消えてよい**
   ——人が見る画面の写しは Module の仕事の記録（Subagent の `summaries`）に残る
 - **記録に残るのは `resourceUri`・`select` だけ**（`reply.awaiting` の手がかり）。**要約はメモリだけ**で、Event Store には書かない
 - サイドバーの1件は、Event Store を畳んだ `ThreadState.awaitingReplies[].work` から `backgroundItemsOf`（`http/app-events.ts`）が
-  作る。**表を重ねるのはこの1か所**——`backgroundItemsOf` を表も受ける形に変え、呼び元（`cli.ts`・`http/app.ts`・`http/fork-tool.ts`・
-  `http/turn-runner.ts`）の全部に効かせる（呼び元ごとに重ねると、どこかが要約の無い1件を流す）
-- AI に見せる文（`describeBackgroundItems`・`closeForkDroppedNote` など）は要約を使わない（§4.1「4.」）
-- Event Store の出来事・read model の形は変えない（手がかりに任意の `select` が増えるだけで、前の記録は畳み直しても同じになる）ので、
+  作る。**表を重ねるのはこの1か所**——`backgroundItemsOf(awaiting, summaries)` は表を引く関数を**必ず**受け、呼び元（`cli.ts`・
+  `http/app.ts`・`http/fork-tool.ts`・`http/turn-runner.ts`）の全部が渡す（呼び元ごとに重ねると、どこかが要約の無い1件を流す）。
+  画面に流す呼び元（`cli.ts` の `background.changed`・`http/app.ts` の hello）は表を、AI に見せる文を作る呼び元（`http/fork-tool.ts` の
+  `validateCloseFork`・`http/turn-runner.ts` の `dropCloseIfDue`・`http/app.ts` の `settleClose`）は `WITHOUT_SUMMARIES` を渡す
+- AI に見せる文（`describeBackgroundItems`・`closeForkDroppedNote` など）は要約を使わない（§4.1「4.」）——上のとおり、そもそも渡さない
+- Event Store の出来事・read model の形は変えない（手がかりに任意の `view` が増えるだけで、前の記録は畳み直しても同じになる）ので、
   `SnapshotProjection` の版は上げない
 
 ### 4.3 自動化——決まった時刻・出来事で AI を動かす（決定・2026-10-13〜15、ユーザー。段1を実装・2026-10-15、Backlog のストーリー `automation` #313。段2の器を実装・2026-10-16、Backlog #345。判断役を実装・2026-10-16、Backlog #348。段2の画面を実装・2026-10-16、Backlog #349）

@@ -1235,6 +1235,42 @@ test("受信箱に知らせを出せるのは、banto 本体で動く同梱の b
   }
 });
 
+test("裏の仕事の要約を頼めるのは同梱の Module だけ（コンテナの中も可・道具用のコンテナは不可）。受け手の断りは理由のまま返す", async () => {
+  const registry = new RelayRegistry();
+  const asked: Array<{ module: string; projectId?: string; replyTo?: unknown; material?: unknown }> = [];
+  const { url, close } = await startTestServer(registry, {
+    summarizeBackgroundWork: async (caller, input) => {
+      asked.push({ module: caller.moduleName, ...(caller.projectId ? { projectId: caller.projectId } : {}), ...input });
+      return input.replyTo === "reply_other" ? { error: "この返信用の札は、あなたに渡したものではありません" } : { summary: "いま試験を直しています" };
+    },
+  });
+  const raw = { satisfies: ["subagent"], dependsOn: [], isolation: "subprocess", scope: "project" };
+  const tokens = {
+    bundled: registry.issueToken({ moduleName: "subagent", connName: "subagent-pA", meta: bundledMeta(raw, "subagent"), inContainer: true, projectId: "pA" }),
+    thirdParty: registry.issueToken({ moduleName: "evil", meta: parseModuleMeta(raw, "evil"), projectId: "pA" }),
+    tools: registry.issueToken({ moduleName: "documents", meta: bundledMeta(raw, "documents"), inContainer: true, toolsContainer: true }),
+  };
+  const summarize = async (token: string, args: Record<string, unknown>) => {
+    const c = await relayClient(url, token);
+    try {
+      return JSON.parse(textOf(await c.callTool({ name: "relaySummarizeBackgroundWork", arguments: args }))) as unknown;
+    } finally {
+      await c.close();
+    }
+  };
+  const material = { workId: "run_1", text: "頼んだ文" };
+  try {
+    assert.deepEqual(await summarize(tokens.bundled, { replyTo: "reply_1", material }), { summary: "いま試験を直しています" });
+    assert.deepEqual(asked, [{ module: "subagent", projectId: "pA", replyTo: "reply_1", material }]);
+    await assert.rejects(() => summarize(tokens.bundled, { replyTo: "reply_other", material }), /あなたに渡したものではありません/);
+    await assert.rejects(() => summarize(tokens.thirdParty, { material }), /banto 自身のコード/);
+    await assert.rejects(() => summarize(tokens.tools, { material }), /道具用のコンテナ/);
+    assert.equal(asked.length, 2, "頼めない相手の頼みを受け手に渡した");
+  } finally {
+    close();
+  }
+});
+
 test("受信箱の知らせには、呼び出しの印が指す会話を添える——印が無ければ、走っている別の呼び出しの会話を拾わない", async () => {
   const registry = new RelayRegistry();
   const moduleCalls = new ModuleCallTracker();
