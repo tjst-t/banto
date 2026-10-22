@@ -12623,7 +12623,7 @@
       "number": 523,
       "kind": "task",
       "title": "Vault の秘密を暗号化したファイルに書き出す・取り込む（管理画面）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -12633,7 +12633,7 @@
       ],
       "body": "人の依頼（2026-10-22）：Local Vault にインポート・エクスポート。人の介入なしで release まで。\n\n仕様：v4-modules.md §2.1「書き出しと取り込み」。kit の admin の口 exportBundle・importBundle（assertHuman）、窓口の同名の口、管理画面のボタンとダイアログ。合言葉から scrypt で鍵を導き AES-256-GCM。参照・oauth-token・空の値は入れない。同じ置き場は飛ばす（既定）か上書き。ブランチ fork/vault-export。",
       "doneWhen": "単体：暗号の往復・合言葉違い・改ざん・版違い・同じ置き場の飛ばす/上書き・値が応答と監査に出ない。E2E：管理画面で書き出し→別の Vault に取り込み→値が使える。main と release に入る。",
-      "resolution": null,
+      "resolution": "main e43c7fd26・release 609793965 に入った。単体（kit 66・窓口 69・vault-local 55）と E2E（vault-bundle と Vault の既存 spec）が両方の版で通った。host での反映は人。",
       "refs": [],
       "threads": [
         {
@@ -12642,8 +12642,8 @@
         }
       ],
       "createdAt": "2026-10-22T15:34:37.142Z",
-      "updatedAt": "2026-10-22T15:34:37.142Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-22T15:50:56.925Z",
+      "closedAt": "2026-10-22T15:50:56.925Z",
       "extra": {}
     }
   ],
