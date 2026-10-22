@@ -12617,6 +12617,34 @@
       "updatedAt": "2026-10-22T11:36:49.564Z",
       "closedAt": "2026-10-22T11:36:49.564Z",
       "extra": {}
+    },
+    {
+      "id": "vault",
+      "number": 523,
+      "kind": "task",
+      "title": "Vault の秘密を暗号化したファイルに書き出す・取り込む（管理画面）",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "vault"
+      ],
+      "body": "人の依頼（2026-10-22）：Local Vault にインポート・エクスポート。人の介入なしで release まで。\n\n仕様：v4-modules.md §2.1「書き出しと取り込み」。kit の admin の口 exportBundle・importBundle（assertHuman）、窓口の同名の口、管理画面のボタンとダイアログ。合言葉から scrypt で鍵を導き AES-256-GCM。参照・oauth-token・空の値は入れない。同じ置き場は飛ばす（既定）か上書き。ブランチ fork/vault-export。",
+      "doneWhen": "単体：暗号の往復・合言葉違い・改ざん・版違い・同じ置き場の飛ばす/上書き・値が応答と監査に出ない。E2E：管理画面で書き出し→別の Vault に取り込み→値が使える。main と release に入る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "bbba3660-ee77-4a9f-8afa-1c42c95a0567"
+        }
+      ],
+      "createdAt": "2026-10-22T15:34:37.142Z",
+      "updatedAt": "2026-10-22T15:34:37.142Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
