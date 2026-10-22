@@ -12,6 +12,7 @@
 // ページが `?bantoHost=<自分>` へ飛ばして画面の接続先をすり替えられる（Fable のレビュー高2）。
 
 const STORAGE_KEY = "banto.backend";
+import { mergeThreadDelta, threadDeltaQuery, type MessagesCursor, type ThreadDeltaFields } from "./thread-delta";
 import type { RealTurnSummary } from "@/lib/turn-summary";
 import type { UiByExtension } from "@/lib/ui-by-extension";
 
@@ -390,6 +391,8 @@ export interface RealThreadUsage {
 }
 
 export interface RealThread {
+  /** 次の取り直しで渡す指紋（§6.8「取り直しは差分で」）。古い host・発言が2件未満なら無い */
+  messagesCursor?: MessagesCursor;
   id: string;
   projectId: string;
   kind: "base" | "fork";
@@ -848,8 +851,22 @@ export async function createRealBaseThread(projectId: string): Promise<RealThrea
   return request<RealThread>(`/api/projects/${projectId}/threads`, { method: "POST" });
 }
 
+/**
+ * **会話ごとに最後に受け取った全部**（追加・2026-10-22、v4-frontend.md §6.8「取り直しは差分で」）。次の取り直しで指紋を渡し、
+ * 差分が来たらこれに重ねる。メモリだけ——リロードしたら最初は全部を取る
+ */
+const knownThreads = new Map<string, RealThread>();
+
+/**
+ * 会話の記録を取り直す。**返すのはいつも全部の形**——host が差分（足された分だけ）を返しても、ここで手元の全部に重ねて
+ * から返すので、使う側は差分を知らない
+ */
 export async function getRealThread(threadId: string): Promise<RealThread> {
-  return request<RealThread>(`/api/threads/${threadId}`);
+  const known = knownThreads.get(threadId);
+  const received = await request<RealThread & ThreadDeltaFields>(`/api/threads/${threadId}${threadDeltaQuery(known)}`);
+  const merged = mergeThreadDelta(known, received);
+  knownThreads.set(threadId, merged);
+  return merged;
 }
 
 /** Fork Threadを立てる——新しい枝として親の現在のresume-pointを引き継ぐ
