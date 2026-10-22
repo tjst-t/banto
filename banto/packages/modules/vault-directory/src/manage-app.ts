@@ -239,7 +239,13 @@ export const MANAGE_APP_HTML = `<!doctype html>
 <div class="section">
   <div class="spread" style="margin-bottom:8px">
     <p class="label" style="margin:0" id="count">預けている秘密</p>
-    <button id="new-alias">＋ 秘密を登録</button>
+    <div class="row">
+      <!-- **書き出しと取り込み**（決定・2026-10-22、仕様 v4-modules.md §2.1「書き出しと取り込み」）。引っ越しとバックアップ。
+           ファイルは合言葉で暗号化する——平文では出さない -->
+      <button id="open-export" class="quiet">書き出す…</button>
+      <button id="open-import" class="quiet">取り込む…</button>
+      <button id="new-alias">＋ 秘密を登録</button>
+    </div>
   </div>
 
   <div class="row" style="margin-bottom:8px">
@@ -514,6 +520,56 @@ export const MANAGE_APP_HTML = `<!doctype html>
            ——入力をやめたい人ほど、やめられなかった -->
       <button value="cancel" formnovalidate>やめる</button>
       <button id="note-submit" value="ok">保存する</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-export">
+  <form method="dialog" class="dialog-body">
+    <p class="dialog-title">秘密を書き出す</p>
+    <p class="dialog-desc">
+      この Vault に預けた秘密を、合言葉で暗号化した1つのファイルに保存します。別の banto に取り込むときに、同じ合言葉が要ります。
+      <strong>合言葉を忘れるとファイルは開けません。</strong>ファイルには値がすべて入っているので、大切に保管してください
+    </p>
+    <label class="field" id="export-vault-field"><span>Vault</span><select id="export-vault"></select></label>
+    <label class="field"><span>合言葉（12 文字以上）</span><input id="export-pass" type="password" autocomplete="new-password" /></label>
+    <label class="field"><span>合言葉（確認）</span><input id="export-pass2" type="password" autocomplete="new-password" /></label>
+    <p class="dialog-desc">参照と、banto が置くログイン（OAuth）は書き出しません。取り込んだ先で作り直す・ログインし直してください</p>
+    <div class="problem" id="export-error" hidden></div>
+    <div class="dialog-footer">
+      <button value="cancel" formnovalidate>やめる</button>
+      <button id="export-submit" value="ok">書き出す</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-import">
+  <form method="dialog" class="dialog-body">
+    <p class="dialog-title">秘密を取り込む</p>
+    <p class="dialog-desc">別の banto の Vault から書き出したファイル（.banto-vault.json）を、書き出したときの合言葉で開いて取り込みます</p>
+    <label class="field" id="import-vault-field"><span>取り込む先の Vault</span><select id="import-vault"></select></label>
+    <label class="field"><span>ファイル</span><input id="import-file" type="file" accept=".json,application/json" /></label>
+    <label class="field"><span>合言葉</span><input id="import-pass" type="password" autocomplete="off" /></label>
+    <label class="field"><span>同じ名前が同じ置き場に既にあるとき</span><select id="import-conflict">
+      <option value="skip">飛ばす（いまの値のまま）</option>
+      <option value="overwrite">上書きする</option>
+    </select></label>
+    <div class="problem" id="import-error" hidden></div>
+    <div class="dialog-footer">
+      <button value="cancel" formnovalidate>やめる</button>
+      <button id="import-submit" value="ok">取り込む</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-bundle-result">
+  <form method="dialog" class="dialog-body">
+    <p class="dialog-title" id="bundle-result-title"></p>
+    <p class="dialog-desc" id="bundle-result-summary"></p>
+    <ul class="dialog-desc" id="bundle-result-list" style="margin:0; padding-left:1.2em; max-height:14em; overflow:auto"></ul>
+    <p class="dialog-desc" id="bundle-result-hint" hidden></p>
+    <div class="dialog-footer">
+      <button value="ok">閉じる</button>
     </div>
   </form>
 </dialog>
@@ -1697,6 +1753,118 @@ ${ALIAS_KIND_RULES_JS}
       if (!result || !result.publicKey) throw new Error("鍵は置き換えましたが、新しい公開鍵が返ってきませんでした");
       showPublicKey(result.publicKey, "新しい公開鍵：" + a.name);
     }
+  });
+
+  // ---- 書き出しと取り込み（決定・2026-10-22、仕様 v4-modules.md §2.1「書き出しと取り込み」）----------------------------
+  // **合言葉は画面に残さない**——閉じたら（やめても、終えても）欄を消す
+  function fillVaultChoice(sel, field) {
+    setOptions(sel, ...implementations.map((name) => option(name, name)));
+    field.hidden = implementations.length <= 1;
+  }
+  function clearBundleInputs() {
+    $("export-pass").value = "";
+    $("export-pass2").value = "";
+    $("import-pass").value = "";
+    $("import-file").value = "";
+  }
+  $("dlg-export").addEventListener("close", clearBundleInputs);
+  $("dlg-import").addEventListener("close", clearBundleInputs);
+  $("open-export").addEventListener("click", () => {
+    $("export-error").hidden = true;
+    clearBundleInputs();
+    fillVaultChoice($("export-vault"), $("export-vault-field"));
+    $("dlg-export").showModal();
+  });
+  $("open-import").addEventListener("click", () => {
+    $("import-error").hidden = true;
+    clearBundleInputs();
+    $("import-conflict").value = "skip";
+    fillVaultChoice($("import-vault"), $("import-vault-field"));
+    $("dlg-import").showModal();
+  });
+
+  function showBundleResult(title, summary, lines, hint) {
+    $("bundle-result-title").textContent = title;
+    $("bundle-result-summary").textContent = summary;
+    $("bundle-result-list").replaceChildren(...lines.map((t) => Object.assign(document.createElement("li"), { textContent: t })));
+    $("bundle-result-list").hidden = lines.length === 0;
+    $("bundle-result-hint").hidden = !hint;
+    $("bundle-result-hint").textContent = hint || "";
+    $("dlg-bundle-result").showModal();
+  }
+
+  let exportResult = null;
+  onSubmit($("dlg-export"), $("export-submit"), $("export-error"), async () => {
+    const pass = $("export-pass").value;
+    if ([...pass].length < 12) throw new Error("合言葉は 12 文字以上にしてください");
+    if (pass !== $("export-pass2").value) throw new Error("確認の合言葉が一致しません");
+    const implementation = $("export-vault").value || implementations[0];
+    const result = await callTool("exportBundle", { implementation, passphrase: pass });
+    clearBundleInputs();
+    if (!result || typeof result.bundle !== "string") throw new Error("書き出したファイルの中身が返ってきませんでした");
+    const day = new Date().toISOString().slice(0, 10);
+    const saved = await request("ui/download-file", {
+      contents: [{ type: "resource", resource: {
+        uri: "banto-vault://export/banto-vault-" + implementation + "-" + day + ".banto-vault.json",
+        mimeType: "application/json",
+        text: result.bundle,
+      } }],
+    });
+    if (saved && saved.isError) throw new Error("ファイルを保存できませんでした（保存をやめたか、この画面からは保存できません）");
+    exportResult = result;
+  });
+  // 書き出しのダイアログが閉じたあとに結果を出す（onSubmit が閉じて一覧を読み直したあと）
+  $("dlg-export").addEventListener("close", () => {
+    const r = exportResult;
+    exportResult = null;
+    if (!r) return;
+    const left = Array.isArray(r.left) ? r.left : [];
+    showBundleResult(
+      "書き出しました",
+      r.count + " 件の秘密を書き出しました" + (left.length ? "。次の " + left.length + " 件は入れていません" : ""),
+      left.map((x) => x.group + " / " + x.name + "：" + x.reason),
+      "",
+    );
+  });
+
+  let importResult = null;
+  onSubmit($("dlg-import"), $("import-submit"), $("import-error"), async () => {
+    const file = $("import-file").files && $("import-file").files[0];
+    if (!file) throw new Error("取り込むファイルを選んでください");
+    if (file.size > 20 * 1024 * 1024) throw new Error("ファイルが大きすぎます（20MB まで）");
+    const pass = $("import-pass").value;
+    if (!pass) throw new Error("合言葉を入れてください");
+    const bundle = await file.text();
+    const implementation = $("import-vault").value || implementations[0];
+    const result = await callTool("importBundle", {
+      implementation,
+      bundle,
+      passphrase: pass,
+      onConflict: $("import-conflict").value,
+    });
+    clearBundleInputs();
+    importResult = result;
+  });
+  $("dlg-import").addEventListener("close", () => {
+    const r = importResult;
+    importResult = null;
+    if (!r) return;
+    const created = r.created || [];
+    const overwritten = r.overwritten || [];
+    const skipped = r.skipped || [];
+    const lines = [
+      ...created.map((x) => "作った：" + x.group + " / " + x.name),
+      ...overwritten.map((x) => "上書きした：" + x.group + " / " + x.name),
+      ...skipped.map((x) => "飛ばした：" + x.group + " / " + x.name + "（" + x.reason + "）"),
+    ];
+    showBundleResult(
+      "取り込みました",
+      "作った " + created.length + " 件・上書きした " + overwritten.length + " 件・飛ばした " + skipped.length + " 件",
+      lines,
+      created.length > 0
+        ? "共通の置き場以外のグループは、まだどの Project にも紐付いていません。使う Project で「置き場」から紐付けるか、「移す」で移してください"
+        : "",
+    );
   });
 
   // 用途を書き直す

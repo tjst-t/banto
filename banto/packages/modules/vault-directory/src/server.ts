@@ -565,6 +565,24 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         },
         ["implementation", "name"],
       ),
+      // **書き出しと取り込み**（決定・2026-10-22、仕様 §2.1「書き出しと取り込み」）——実装へ中継するだけ。束は合言葉で包んだもの
+      tool(
+        "exportBundle",
+        "その Vault の人が預けた秘密を、合言葉で暗号化した1つのファイルの中身にする（値は束の中にだけ）",
+        { ...IMPL, passphrase: { type: "string" } },
+        ["implementation", "passphrase"],
+      ),
+      tool(
+        "importBundle",
+        "書き出したファイルの中身を、合言葉で開いてその Vault に取り込む（値は返らない）",
+        {
+          ...IMPL,
+          bundle: { type: "string" },
+          passphrase: { type: "string" },
+          onConflict: { type: "string", enum: ["skip", "overwrite"] },
+        },
+        ["implementation", "bundle", "passphrase"],
+      ),
       tool(
         "replaceSecretValue",
         // **既にある秘密の値を置き換える**（決定・2026-10-07、ユーザー）——実装へ中継するだけ。値は返らない（SSH なら公開鍵だけ）
@@ -1022,6 +1040,23 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           ...(args.regenerate === undefined ? {} : { regenerate: args.regenerate }),
         });
         // backend の返事をそのまま返す（公開鍵を沈めない——generateSecret と同じ）
+        return { content: [{ type: "text", text: body }] };
+      }
+
+      case "exportBundle": {
+        const implementation = await target();
+        // **合言葉はここを通過するだけ**。ログにもエラー文にも載せない
+        const body = await deps.relay.callTool(implementation, "exportBundle", { passphrase: requiredString(args.passphrase, "passphrase") });
+        return { content: [{ type: "text", text: body }] };
+      }
+
+      case "importBundle": {
+        const implementation = await target();
+        const body = await deps.relay.callTool(implementation, "importBundle", {
+          bundle: requiredString(args.bundle, "bundle"),
+          passphrase: requiredString(args.passphrase, "passphrase"),
+          ...(args.onConflict === undefined ? {} : { onConflict: args.onConflict }),
+        });
         return { content: [{ type: "text", text: body }] };
       }
 
