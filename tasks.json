@@ -12594,7 +12594,7 @@
       "number": 522,
       "kind": "task",
       "title": "会話の取り直しを差分にする（GET /api/threads/:id の after・hash）",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -12605,7 +12605,7 @@
       ],
       "body": "決定・2026-10-22、ユーザー。画面は会話を開く・ターンの始まりと終わり・つなぎ直し・戻ってきたときに、記録を全部取り直している。長い会話ほど重いので、足された分だけを取る。裏の会話を追うのは、差分で速さに不満が残ったら改めて決める。\n\n仕様：v4-frontend.md §6.8「取り直しは差分で」。ブランチ fork/thread-delta。\n\n作り：host は応答に最後から2つ目までの発言の指紋（messagesCursor）を付け、`?after&hash` が一致すれば後ろだけを返す（ずれていれば全部）。usage は `usageSeq` が同じなら送らない。画面は client.ts の getRealThread で手元の全部に重ねて、今までと同じ形で返す。\n\n測った大きさ（2026-10-22、合成した会話——人 200 字・AI 2500 字の発言、1ターン足したあとの取り直し1回）：発言 100 件で全部 293KB（gzip 94KB）→ 差分 15KB（gzip 5KB）。発言 400 件で全部 1141KB（gzip 366KB）→ 差分 24KB（gzip 6KB）。差分に残る大きさは主に usage（番号が変わると全部送る）。\n\n試験：core 単体 1385 通過・画面の単体 70 通過・関係する E2E 10 通過。",
       "doneWhen": "単体試験：一致すれば後ろだけ、前の発言が変わった（取り下げ・表示の印・判断待ちの答え）ときは全部、usage は同じ番号なら空。画面の重ね合わせは全部を取ったときと同じ記録になる。関係する E2E とフル E2E が通る。長い会話で取り直し1回の大きさを前と後で測って報告に添える。",
-      "resolution": null,
+      "resolution": "main b52fa1893・release a3471e577 に入った。フル E2E は 361 通過・5 失敗、失敗した5件（automation-canvas・tools-container・supervisor-ui・filesystem-office-pdf・browser-tabs）は単独で流し直して全部通った。release の版で単体と関係する E2E 10 件も通過。",
       "refs": [],
       "threads": [
         {
@@ -12614,8 +12614,8 @@
         }
       ],
       "createdAt": "2026-10-22T10:23:59.580Z",
-      "updatedAt": "2026-10-22T10:35:39.356Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-22T11:36:49.564Z",
+      "closedAt": "2026-10-22T11:36:49.564Z",
       "extra": {}
     }
   ],
