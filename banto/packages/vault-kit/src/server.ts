@@ -38,6 +38,7 @@ import {
 } from "@banto/module-contract";
 import { REQUEST_APP_HTML, requestAppUri } from "./request-app.js";
 import { ALIAS_KIND_RULES } from "./kind-rules.js";
+import { BUNDLE_FORMAT, assertPassphrase, openBundle, sealBundle } from "./bundle-crypto.js";
 import {
   isLink,
   toPublic,
@@ -142,6 +143,38 @@ function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new Error(`${label} は文字列です`);
   return value;
+}
+
+/** 束の1件（復号した中身。値は base64） */
+interface BundleEntry {
+  group: string;
+  name: string;
+  kind: "secret" | "ssh-identity" | "file";
+  note?: string;
+  /** 書き出し元で共通の置き場にあった——取り込む先の共通の置き場に置く */
+  shared?: boolean;
+  /** 値が文字列だった（取り込むとき文字列に戻す） */
+  text?: boolean;
+  value: string;
+}
+
+/** 束の1件を確かめる。読めなければ理由の文を返す（値は文言に出さない） */
+function parseBundleEntry(raw: unknown): BundleEntry | string {
+  if (!raw || typeof raw !== "object") return "読めない行がありました";
+  const e = raw as Record<string, unknown>;
+  if (typeof e.name !== "string" || e.name === "" || e.name.includes("/")) return "名前の読めない行がありました";
+  if (typeof e.group !== "string" || e.group === "" || e.group.includes("/")) return `「${e.name}」の置き場が読めません`;
+  if (e.kind !== "secret" && e.kind !== "ssh-identity" && e.kind !== "file") return `「${e.name}」は取り込めない種別です`;
+  if (typeof e.value !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(e.value) || e.value === "") return `「${e.name}」の値が読めません`;
+  return {
+    group: e.group,
+    name: e.name,
+    kind: e.kind,
+    ...(typeof e.note === "string" && e.note !== "" ? { note: e.note } : {}),
+    ...(e.shared === true ? { shared: true } : {}),
+    ...(e.text === true ? { text: true } : {}),
+    value: e.value,
+  };
 }
 
 export interface VaultModuleOptions {
@@ -661,6 +694,31 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
               regenerate: { type: "boolean", description: "ssh-identity だけ。Vault の中で鍵ペアを作り直す" },
             },
             required: ["name"],
+          },
+          "admin",
+        ),
+        // **書き出しと取り込み**（決定・2026-10-22、仕様 §2.1「書き出しと取り込み」）。人専用（assertHuman）。束は合言葉で包んだもの
+        tool(
+          "exportBundle",
+          "この Vault の人が預けた秘密を、合言葉で暗号化した1つのファイルの中身にして返す（人専用）",
+          {
+            type: "object",
+            properties: { passphrase: { type: "string", description: "暗号化の合言葉（12 文字以上）" } },
+            required: ["passphrase"],
+          },
+          "admin",
+        ),
+        tool(
+          "importBundle",
+          "exportBundle で書き出したファイルの中身を、合言葉で開いてこの Vault に取り込む（人専用）。値は返さない",
+          {
+            type: "object",
+            properties: {
+              bundle: { type: "string", description: "書き出したファイルの中身" },
+              passphrase: { type: "string" },
+              onConflict: { type: "string", enum: ["skip", "overwrite"], description: "同じ置き場に既にあるとき。既定は skip" },
+            },
+            required: ["bundle", "passphrase"],
           },
           "admin",
         ),
@@ -1577,6 +1635,118 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             {
               type: "text",
               text: JSON.stringify({ ok: true, name, group: groupOf(meta), kind: meta.kind, ...(publicKey ? { publicKey } : {}) }),
+            },
+          ],
+        };
+      }
+      case "exportBundle": {
+        assertHuman("秘密の書き出し", callMeta);
+        const passphrase = assertPassphrase(args.passphrase);
+        const all = await listAll([]);
+        const entries: BundleEntry[] = [];
+        const left: Array<{ group: string; name: string; reason: string }> = [];
+        for (const meta of all) {
+          const group = canon(groupOf(meta));
+          if (isLink(meta)) {
+            left.push({ group, name: meta.name, reason: "参照（値を持たないので入れません）" });
+            continue;
+          }
+          if (meta.kind === BANTO_OWNED_KIND) {
+            left.push({ group, name: meta.name, reason: "banto が置くログイン（取り込んだ先でログインし直してください）" });
+            continue;
+          }
+          const value = await backend.getSecret(meta.backendPath);
+          if (value.length === 0) {
+            left.push({ group, name: meta.name, reason: "値が空" });
+            continue;
+          }
+          entries.push({
+            group,
+            name: meta.name,
+            kind: meta.kind as BundleEntry["kind"],
+            ...(meta.note ? { note: meta.note } : {}),
+            ...(scopeOf(meta).scope === "shared" ? { shared: true } : {}),
+            ...(typeof value === "string" ? { text: true } : {}),
+            value: Buffer.from(value).toString("base64"),
+          });
+        }
+        const exportedAt = new Date().toISOString();
+        const bundle = await sealBundle({ format: BUNDLE_FORMAT, from: moduleName, exportedAt, entries }, passphrase);
+        return {
+          content: [
+            {
+              type: "text",
+              // **値は束の中（暗号文）にだけ**。外に出すのは件数と、入れなかったものの名前と理由
+              text: JSON.stringify({ bundle, count: entries.length, left, exportedAt, from: moduleName }),
+            },
+          ],
+        };
+      }
+      case "importBundle": {
+        assertHuman("秘密の取り込み", callMeta);
+        const onConflict = args.onConflict === undefined ? "skip" : oneOf(args.onConflict, ["skip", "overwrite"] as const, "onConflict");
+        if (typeof args.passphrase !== "string" || args.passphrase === "") throw new Error("合言葉を入れてください");
+        const opened = (await openBundle(args.bundle, args.passphrase)) as { format?: unknown; entries?: unknown; from?: unknown; exportedAt?: unknown };
+        if (!opened || opened.format !== BUNDLE_FORMAT || !Array.isArray(opened.entries)) {
+          throw new Error("ファイルの中身が読めません（banto の Vault の書き出しではありません）");
+        }
+        const created: Array<{ group: string; name: string }> = [];
+        const overwritten: Array<{ group: string; name: string }> = [];
+        const skipped: Array<{ group: string; name: string; reason: string }> = [];
+        for (const raw of opened.entries as unknown[]) {
+          const e = parseBundleEntry(raw);
+          if (typeof e === "string") {
+            skipped.push({ group: "?", name: "?", reason: e });
+            continue;
+          }
+          let group: string;
+          try {
+            group = e.shared ? await groupForNewAlias({}) : await groupForNewAlias({ explicitGroup: e.group });
+          } catch (err) {
+            skipped.push({ group: e.group, name: e.name, reason: `置き場を作れません：${(err as Error).message}` });
+            continue;
+          }
+          const backendPath = `${group}/${e.name}`;
+          const bytes = Buffer.from(e.value, "base64");
+          const typed = e.text ? bytes.toString("utf8") : bytes;
+          const value = e.kind === "ssh-identity" ? normalizePrivateKey(String(typed)) : typed;
+          const existing = (await listAll([group])).find((m) => canonPath(m.backendPath) === canonPath(backendPath));
+          if (existing) {
+            if (onConflict === "skip") {
+              skipped.push({ group, name: e.name, reason: "既にある（飛ばしました）" });
+              continue;
+            }
+            if (isLink(existing)) {
+              skipped.push({ group, name: e.name, reason: "既にあるのは参照です（上書きしません）" });
+              continue;
+            }
+            if (existing.kind !== e.kind) {
+              skipped.push({ group, name: e.name, reason: `既にあるのは種別の違う秘密です（${existing.kind}。上書きしません）` });
+              continue;
+            }
+            await backend.putSecret(existing.backendPath, value);
+            await registry.update(existing.backendPath, {
+              valueUpdatedAt: new Date().toISOString(),
+              ...(e.note !== undefined ? { note: e.note } : {}),
+            });
+            overwritten.push({ group, name: e.name });
+            continue;
+          }
+          await backend.putSecret(backendPath, value);
+          await registry.create({ name: e.name, kind: e.kind, note: e.note, backendPath });
+          created.push({ group, name: e.name });
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                created,
+                overwritten,
+                skipped,
+                from: typeof opened.from === "string" ? opened.from : undefined,
+                exportedAt: typeof opened.exportedAt === "string" ? opened.exportedAt : undefined,
+              }),
             },
           ],
         };
