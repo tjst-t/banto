@@ -12588,6 +12588,35 @@
       "updatedAt": "2026-10-21T23:39:41.724Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "get-api-threads-id-after-hash",
+      "number": 522,
+      "kind": "task",
+      "title": "会話の取り直しを差分にする（GET /api/threads/:id の after・hash）",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "frontend",
+        "perf"
+      ],
+      "body": "決定・2026-10-22、ユーザー。画面は会話を開く・ターンの始まりと終わり・つなぎ直し・戻ってきたときに、記録を全部取り直している。長い会話ほど重いので、足された分だけを取る。裏の会話を追うのは、差分で速さに不満が残ったら改めて決める。\n\n仕様：v4-frontend.md §6.8「取り直しは差分で」。ブランチ fork/thread-delta。\n\n作り：host は応答に最後から2つ目までの発言の指紋（messagesCursor）を付け、`?after&hash` が一致すれば後ろだけを返す（ずれていれば全部）。usage は `usageSeq` が同じなら送らない。画面は client.ts の getRealThread で手元の全部に重ねて、今までと同じ形で返す。",
+      "doneWhen": "単体試験：一致すれば後ろだけ、前の発言が変わった（取り下げ・表示の印・判断待ちの答え）ときは全部、usage は同じ番号なら空。画面の重ね合わせは全部を取ったときと同じ記録になる。関係する E2E とフル E2E が通る。長い会話で取り直し1回の大きさを前と後で測って報告に添える。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "c43ab8cc-0e67-4253-b071-c221d2807411"
+        }
+      ],
+      "createdAt": "2026-10-22T10:23:59.580Z",
+      "updatedAt": "2026-10-22T10:23:59.580Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
