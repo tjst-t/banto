@@ -3404,3 +3404,32 @@ test("任務の口：人が始める（聞かない）・見る・枠を延ば�
     { missions: lazy, threadTurns: turns },
   );
 });
+
+test("GET /api/threads/:id は指紋を付け、渡されたら後ろの発言だけを返す。前の発言が取り下げられたら全部（§6.8「取り直しは差分で」）", async () => {
+  await withApp(async (base, token, dir, { projectThread }) => {
+    const headers = { authorization: `Bearer ${token}` };
+    const project = await projectThread.createProject("demo", dir);
+    const thread = await projectThread.createBaseThread(project.id);
+    await projectThread.appendMessage(thread.id, "user", "一つ目");
+    await projectThread.appendMessage(thread.id, "assistant", "返事");
+    await projectThread.appendMessage(thread.id, "user", "二つ目");
+    type Detail = { messages: Array<{ seq: number; text: string }>; messagesCursor?: { seq: number; hash: string }; messagesAfter?: number };
+    const get = async (query = "") => (await (await fetch(`${base}/api/threads/${thread.id}${query}`, { headers })).json()) as Detail;
+    const first = await get();
+    assert.equal(first.messages.length, 3);
+    assert.equal(first.messagesAfter, undefined);
+    const cursor = first.messagesCursor!;
+    assert.equal(cursor.seq, first.messages[1]!.seq);
+
+    await projectThread.appendMessage(thread.id, "assistant", "二つ目の返事");
+    const delta = await get(`?after=${cursor.seq}&hash=${encodeURIComponent(cursor.hash)}`);
+    assert.equal(delta.messagesAfter, cursor.seq);
+    assert.deepEqual(delta.messages.map((m) => m.text), ["二つ目", "二つ目の返事"]);
+
+    // 前の発言（指紋に入っている「返事」）を取り下げたら全部
+    await projectThread.withdrawMessage(thread.id, first.messages[1]!.seq);
+    const full = await get(`?after=${cursor.seq}&hash=${encodeURIComponent(cursor.hash)}`);
+    assert.equal(full.messagesAfter, undefined);
+    assert.deepEqual(full.messages.map((m) => m.text), ["一つ目", "二つ目", "二つ目の返事"]);
+  });
+});

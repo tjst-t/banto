@@ -11,6 +11,7 @@
 // hostが/apps/frontendのHTML/JSを配信していたが、Next.jsは自分のサーバを
 // 要るためこの形は成立しない）。別オリジンからのfetch()を通すためCORSを返す。
 
+import { parseThreadDeltaRequest, withThreadDelta } from "./thread-delta.js";
 import { OVERRIDE_KEYS, POLICY_KEYS, parseOverrideBody, parsePolicyBody, type ContainerLimitsView } from "../container-limits.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -3288,7 +3289,9 @@ export function createApp(deps: AppDeps) {
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });
-        json(res, 200, toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store, deps.idleCompactions?.view(thread.id)));
+        // **差分で返す**（v4-frontend.md §6.8「取り直しは差分で」）。画面が前の指紋を渡し、前の発言が変わっていなければ後ろだけ
+        const detail = toThreadDetail(thread, deps.inbox, deps.claudeAccounts?.store, deps.idleCompactions?.view(thread.id));
+        json(res, 200, withThreadDelta(detail, parseThreadDeltaRequest(url.searchParams)));
         return;
       }
 
