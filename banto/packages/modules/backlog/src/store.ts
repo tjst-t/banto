@@ -71,10 +71,27 @@ export interface Leftover {
   command: string;
 }
 
-export type Snapshot =
-  | { state: "missing"; branch: string; version: string; sync: SyncState; leftover?: Leftover; notRepository?: string }
-  | { state: "refused"; branch: string; version: string; sync: SyncState; head: string; legacy: boolean; reason: string }
-  | { state: "ok"; branch: string; version: string; sync: SyncState; head: string; doc: BacklogDocument; problems: string[] };
+/** Gist に置いているときの場所（`gist.ts`）。ブランチの店では無い */
+export interface GistPlace {
+  id: string;
+  url: string;
+}
+
+/**
+ * 置き場ごとに違うところ。`gist` があれば置き場は Gist（`branch` はその Gist の git のブランチ）。`unavailable` は置き場を
+ * まったく読めない理由（Gist から一度も取ってこれていない等）——「足す」を出さない
+ */
+interface SnapshotPlace {
+  gist?: GistPlace;
+  unavailable?: string;
+}
+
+export type Snapshot = SnapshotPlace &
+  (
+    | { state: "missing"; branch: string; version: string; sync: SyncState; leftover?: Leftover; notRepository?: string }
+    | { state: "refused"; branch: string; version: string; sync: SyncState; head: string; legacy: boolean; reason: string }
+    | { state: "ok"; branch: string; version: string; sync: SyncState; head: string; doc: BacklogDocument; problems: string[] }
+  );
 
 export interface StoreDeps {
   /** Project の根（絶対パス）。git のリポジトリ（の中） */
@@ -116,9 +133,22 @@ export interface MutateResult<T> {
   commit: string;
   /** 送った結果（origin が無ければ undefined） */
   push?: SyncOutcome;
+  /** 置き場が Gist なら、その場所（`branch` はその Gist の git のブランチ。`created` は tasks.json をこの書き込みで作った） */
+  gist?: GistPlace;
 }
 
-export class BacklogStore {
+/**
+ * 一覧の置き場（§4.4「窓口とバックエンド」）。tool と画面はこの口だけを使い、置き場（一覧のブランチ・Gist）を知らない。
+ * どれも**書く操作を1本の列に並べ、毎回読み直してから変え、compare-and-swap で書く**
+ */
+export interface BacklogBackend {
+  read(): Promise<Snapshot>;
+  /** 取ってくる（画面を開いたとき）。失敗は覚えて、次に読むときに知らせる */
+  refresh(callId?: string): Promise<void>;
+  mutate<T>(change: (doc: BacklogDocument) => Change<T>, message: (result: T) => string, callId?: string): Promise<MutateResult<T>>;
+}
+
+export class BacklogStore implements BacklogBackend {
   private queue: Promise<unknown> = Promise.resolve();
   private pushQueue: Promise<unknown> = Promise.resolve();
   private lastPushError?: string;

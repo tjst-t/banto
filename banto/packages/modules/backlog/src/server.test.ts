@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CALL_ID_META_KEY, MODULE_META_KEY, THREAD_META_KEY, VISIBILITY_META_KEY, type EmittedEvent } from "@banto/module-contract";
-import { createBacklogServer } from "./server.js";
+import { createBacklogServer, type GistDeps } from "./server.js";
 import { RelayingRemote } from "./remote.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -24,7 +24,9 @@ function onBranch(root: string, branch = "backlog"): { items: Array<{ id: string
   return JSON.parse(git(root, "show", `${branch}:tasks.json`)) as { items: Array<{ id: string }> };
 }
 
-async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ names: string[]; warning?: string }>; emitted?: EmittedEvent[] } = {}) {
+async function connect(
+  opts: { origin?: string; sshIdentities?: () => Promise<{ names: string[]; warning?: string }>; emitted?: EmittedEvent[]; gist?: GistDeps } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "backlog-server-"));
   git(root, "init", "-q");
   git(root, "commit", "-q", "--allow-empty", "-m", "code");
@@ -36,6 +38,7 @@ async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ 
     remote: new RelayingRemote(root, undefined),
     ...(opts.sshIdentities ? { sshIdentities: opts.sshIdentities } : {}),
     ...(opts.emitted ? { emitEvent: (e: EmittedEvent) => opts.emitted!.push(e) } : {}),
+    ...(opts.gist ? { gist: opts.gist } : {}),
   });
   const [s, c] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -49,6 +52,16 @@ async function connect(opts: { origin?: string; sshIdentities?: () => Promise<{ 
   return { root, client, call };
 }
 
+/** ブランチに置いているときの設定の返り値 */
+const branchSettings = (branch: string, sshIdentity: string | null) => ({
+  backend: "tasks-json",
+  branch,
+  sshIdentity,
+  gistId: null,
+  gistUrl: null,
+  gistToken: null,
+});
+
 test("AI に見せるのは6本だけ。消す tool は無い。人の画面の口は admin", async () => {
   const { client } = await connect();
   const { tools } = await client.listTools();
@@ -56,7 +69,7 @@ test("AI に見せるのは6本だけ。消す tool は無い。人の画面の�
   const agent = tools.filter((t) => (t._meta as Record<string, unknown>)[VISIBILITY_META_KEY] === "agent").map((t) => t.name);
   assert.deepEqual(agent, ["listItems", "getItem", "createItem", "updateItem", "splitStory", "moveItem"]);
   assert.ok(!tools.some((t) => /delete|remove/i.test(t.name)));
-  for (const n of ["getBoard", "boardCreateItem", "boardUpdateItem", "boardSplitStory", "boardMoveItem", "getSettings", "setSettings", "listSshIdentities"]) {
+  for (const n of ["getBoard", "boardCreateItem", "boardUpdateItem", "boardSplitStory", "boardMoveItem", "getSettings", "setSettings", "listSshIdentities", "listGistTokens", "createGist"]) {
     assert.equal(vis(n), "admin", n);
   }
 });
@@ -198,9 +211,9 @@ test("getBoard：版が同じなら unchanged だけ。設定でブランチを�
   for (const bad of ["-f", "a:b", "+main", "a..b", "x.lock", "a b", ""]) {
     assert.equal((await call("setSettings", { branch: bad })).isError, true, bad);
   }
-  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog", sshIdentity: null });
+  assert.deepEqual((await call("getSettings")).structuredContent, branchSettings("backlog", null));
   const saved = await call("setSettings", { branch: "refs/heads/planning" });
-  assert.deepEqual(saved.structuredContent, { branch: "planning", sshIdentity: null });
+  assert.deepEqual(saved.structuredContent, branchSettings("planning", null));
   assert.equal((await call("getBoard")).structuredContent!.state, "missing");
   await call("createItem", { kind: "task", title: "There" });
   assert.equal(onBranch(root, "planning").items[0]!.id, "there");
@@ -255,15 +268,15 @@ test("設定の SSH 鍵：既定は使わない。Vault の目録の ssh-identit
   const unknown = await call("setSettings", { branch: "backlog", sshIdentity: "nope" });
   assert.equal(unknown.isError, true);
   assert.match(unknown.content[0]!.text, /nope は、この Project から使える Vault の SSH 鍵（ssh-identity）にありません/);
-  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "deploy-key" })).structuredContent, { branch: "backlog", sshIdentity: "deploy-key" });
-  assert.deepEqual((await call("getSettings")).structuredContent, { branch: "backlog", sshIdentity: "deploy-key" });
+  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "deploy-key" })).structuredContent, branchSettings("backlog", "deploy-key"));
+  assert.deepEqual((await call("getSettings")).structuredContent, branchSettings("backlog", "deploy-key"));
   // 省けばそのまま。Vault が読めなくても、選び直していないものは確かめ直さない（ブランチだけ変えられる）
   vaultReadable = false;
-  assert.deepEqual((await call("setSettings", { branch: "planning" })).structuredContent, { branch: "planning", sshIdentity: "deploy-key" });
+  assert.deepEqual((await call("setSettings", { branch: "planning" })).structuredContent, branchSettings("planning", "deploy-key"));
   assert.match((await call("listSshIdentities")).content[0]!.text, /Vault の SSH 鍵の一覧を読めません：Vault の窓口が答えません/);
   assert.equal((await call("setSettings", { branch: "planning", sshIdentity: "other" })).isError, true);
   // 空で外す
-  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "" })).structuredContent, { branch: "backlog", sshIdentity: null });
+  assert.deepEqual((await call("setSettings", { branch: "backlog", sshIdentity: "" })).structuredContent, branchSettings("backlog", null));
   // Vault を呼べない Backlog では選べない
   const plain = await connect();
   assert.match((await plain.call("setSettings", { branch: "backlog", sshIdentity: "deploy-key" })).content[0]!.text, /Vault を呼べないので/);
@@ -319,4 +332,118 @@ test("できた・状態が変わった項目ごとに backlog.item-changed を�
   await call("splitStory", { storyId: id, tasks: [{ title: "一" }, { title: "二" }] });
   assert.deepEqual(emitted.slice(3).map((e) => [e.fields.kind, e.fields.to, "from" in e.fields]), [["task", "ready", false], ["task", "ready", false]]);
   assert.equal(new Set(emitted.map((e) => e.eventId)).size, emitted.length, "印が重なった");
+});
+
+const GIST_ID = "fedcba9876543210fedcba9876543210";
+
+/** Gist の真似（bare のリポジトリ、README.md だけのコミット）と、それを指す Gist の口。トークンは Vault の目録の真似から */
+function fakeGistDeps(created: string[] = []): { bare: string; deps: GistDeps; resolved: string[] } {
+  const bare = mkdtempSync(join(tmpdir(), "backlog-server-gist-"));
+  git(bare, "init", "-q", "--bare");
+  const blob = execFileSync("git", ["-C", bare, "hash-object", "-w", "--stdin"], { input: "# notes\n", encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["-C", bare, "mktree"], { input: `100644 blob ${blob}\tREADME.md\n`, encoding: "utf8" }).trim();
+  git(bare, "update-ref", "refs/heads/main", git(bare, "commit-tree", tree, "-m", "gist"));
+  const resolved: string[] = [];
+  const deps: GistDeps = {
+    tokens: async () => ({ names: ["github-pat"] }),
+    resolveToken: async (alias) => {
+      resolved.push(alias);
+      return "ghp_test";
+    },
+    remoteUrl: () => bare,
+    api: {
+      base: "https://api.example",
+      fetch: (async (_url: string, init: RequestInit) => {
+        created.push(String(init.body));
+        return new Response(JSON.stringify({ id: GIST_ID, public: false }), { status: 201 });
+      }) as unknown as typeof fetch,
+    },
+  };
+  return { bare, deps, resolved };
+}
+
+const onGist = (bare: string) => JSON.parse(git(bare, "show", "main:tasks.json")) as { items: Array<{ id: string; status: string }> };
+
+test("置き場を Gist に選ぶと、作成・更新・一覧が Gist で動く。ブランチには書かない。tasks.json に戻すとブランチの一覧に戻る", async () => {
+  const { bare, deps, resolved } = fakeGistDeps();
+  const { root, call } = await connect({ gist: deps });
+  // 既定は tasks.json（ブランチ）
+  assert.equal((await call("getSettings")).structuredContent?.backend, "tasks-json");
+  await call("createItem", { kind: "task", title: "On branch" });
+
+  const saved = await call("setSettings", { backend: "gist", branch: "backlog", gistId: `https://gist.github.com/someone/${GIST_ID}`, gistToken: "github-pat" });
+  assert.deepEqual(saved.structuredContent, {
+    backend: "gist",
+    branch: "backlog",
+    sshIdentity: null,
+    gistId: GIST_ID,
+    gistUrl: `https://gist.github.com/${GIST_ID}`,
+    gistToken: "github-pat",
+  });
+  const empty = await call("listItems");
+  assert.match(empty.content[0]!.text, new RegExp(`まだ Gist ${GIST_ID} に tasks.json がありません。createItem で最初の項目を足すと作ります`));
+  const created = await call("createItem", { kind: "story", title: "Meta plan" });
+  assert.match(created.content[0]!.text, new RegExp(`Gist ${GIST_ID} の tasks.json を作り、足しました：#1 meta-plan`));
+  await call("splitStory", { storyId: "meta-plan", tasks: [{ title: "One" }, { title: "Two", waitsFor: [0] }] });
+  await call("updateItem", { id: "#2", status: "in-progress" }, { [THREAD_META_KEY]: { projectId: "p", threadId: "t" } });
+  const listed = await call("listItems");
+  assert.match(listed.content[0]!.text, /3 件/);
+  assert.match(listed.content[0]!.text, /#2 one \[in-progress\]/);
+  assert.deepEqual((listed.structuredContent?.gist as { id: string }).id, GIST_ID);
+  assert.deepEqual(onGist(bare).items.map((i) => [i.id, i.status]), [["meta-plan", "backlog"], ["one", "in-progress"], ["two", "ready"]]);
+  assert.deepEqual(git(bare, "log", "--format=%s", "main").split("\n"), [
+    "backlog: updateItem #2 one（status → in-progress）",
+    "backlog: splitStory #1 meta-plan（2 件）",
+    "backlog: createItem #1 meta-plan",
+    "gist",
+  ]);
+  // トークンは選んだ Vault の名前で引く
+  assert.ok(resolved.length > 0 && resolved.every((a) => a === "github-pat"));
+  // ブランチは触らない
+  assert.deepEqual(onBranch(root).items.map((i) => i.id), ["on-branch"]);
+  // 画面にも Gist の場所が出る
+  const board = await call("getBoard", { fetch: true });
+  assert.equal((board.structuredContent?.gist as { id: string }).id, GIST_ID);
+  assert.equal((board.structuredContent?.doc as { items: unknown[] }).items.length, 3);
+
+  // 戻す——Gist の id とトークンは覚えたまま
+  const back = await call("setSettings", { backend: "tasks-json", branch: "backlog" });
+  assert.equal(back.structuredContent?.gistId, GIST_ID);
+  const branchList = await call("listItems");
+  assert.match(branchList.content[0]!.text, /#1 on-branch/);
+  assert.equal(branchList.structuredContent?.gist, undefined);
+});
+
+test("Gist を選ぶには id とトークンが要り、トークンは Vault の目録に在るものだけ。Vault を呼べない Backlog では選べない", async () => {
+  const { deps } = fakeGistDeps();
+  const { call } = await connect({ gist: deps });
+  assert.match((await call("setSettings", { backend: "gist", branch: "backlog", gistToken: "github-pat" })).content[0]!.text, /Gist の id が要ります/);
+  assert.match((await call("setSettings", { backend: "gist", branch: "backlog", gistId: GIST_ID })).content[0]!.text, /トークン（Vault の名前）が要ります/);
+  assert.match(
+    (await call("setSettings", { backend: "gist", branch: "backlog", gistId: GIST_ID, gistToken: "nope" })).content[0]!.text,
+    /nope は、この Project から使える Vault のトークン（secret・oauth-token）にありません/,
+  );
+  assert.match((await call("setSettings", { backend: "gist", branch: "backlog", gistId: "not-hex", gistToken: "github-pat" })).content[0]!.text, /16進数/);
+  assert.match((await call("setSettings", { backend: "svn", branch: "backlog" })).content[0]!.text, /backend/);
+  assert.deepEqual((await call("listGistTokens")).structuredContent, { names: ["github-pat"] });
+  // 断ったものは保存していない
+  assert.equal((await call("getSettings")).structuredContent?.backend, "tasks-json");
+
+  const plain = await connect();
+  assert.match((await plain.call("listGistTokens")).content[0]!.text, /Vault を呼べないので/);
+  assert.match((await plain.call("createGist", { gistToken: "github-pat" })).content[0]!.text, /Vault を呼べないので/);
+});
+
+test("createGist：非公開の Gist を作って置き場にする。そのまま足せる", async () => {
+  const sent: string[] = [];
+  const { bare, deps } = fakeGistDeps(sent);
+  const { call } = await connect({ gist: deps });
+  const made = await call("createGist", { gistToken: "github-pat" });
+  assert.equal(made.isError, undefined);
+  assert.match(made.content[0]!.text, new RegExp(`非公開の Gist を作り、一覧の置き場にしました（https://gist.github.com/${GIST_ID}）`));
+  assert.equal(made.structuredContent?.backend, "gist");
+  assert.equal(made.structuredContent?.gistId, GIST_ID);
+  assert.equal((JSON.parse(sent[0]!) as { public: boolean }).public, false);
+  await call("createItem", { kind: "bug", title: "Broken" });
+  assert.deepEqual(onGist(bare).items.map((i) => i.id), ["broken"]);
 });

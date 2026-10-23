@@ -143,10 +143,10 @@ export async function borrowSshAgent(relay: RelayCall, identity: string, callId?
 }
 
 /**
- * 設定で選べる SSH 鍵——Vault の目録（`vault://aliases`、この Project から引けるものだけ。名前はそのまま引ける名前）の
- * うち kind が ssh-identity のもの。読めていない金庫があれば `warning`（一覧が全部ではない）
+ * Vault の目録（`vault://aliases`、この Project から引けるものだけ。名前はそのまま引ける名前）のうち、kind がそのどれかの
+ * もの。読めていない金庫があれば `warning`（一覧が全部ではない）
  */
-export async function listSshIdentities(relay: RelayCall | undefined, callId?: string): Promise<{ names: string[]; warning?: string }> {
+async function listAliasesOfKinds(relay: RelayCall | undefined, kinds: readonly string[], callId?: string): Promise<{ names: string[]; warning?: string }> {
   if (!relay) throw new Error("Vault への中継が渡されていません");
   const directory = await moduleWithRole(relay, VAULT_DIRECTORY_ROLE, callId);
   if (!directory) throw new Error("Vault の窓口を呼べません（繋がっていません）");
@@ -158,8 +158,51 @@ export async function listSshIdentities(relay: RelayCall | undefined, callId?: s
     "Vault の目録",
   );
   const body = JSON.parse(read.contents?.[0]?.text ?? "{}") as { aliases?: Array<{ name?: unknown; kind?: unknown }>; warning?: unknown };
-  const names = (body.aliases ?? []).filter((a) => a.kind === "ssh-identity" && typeof a.name === "string").map((a) => a.name as string);
+  const names = (body.aliases ?? [])
+    .filter((a) => typeof a.kind === "string" && kinds.includes(a.kind) && typeof a.name === "string")
+    .map((a) => a.name as string);
   return { names, ...(typeof body.warning === "string" ? { warning: body.warning } : {}) };
+}
+
+/** 設定で選べる SSH 鍵——Vault の目録のうち kind が ssh-identity のもの */
+export function listSshIdentities(relay: RelayCall | undefined, callId?: string): Promise<{ names: string[]; warning?: string }> {
+  return listAliasesOfKinds(relay, ["ssh-identity"], callId);
+}
+
+/**
+ * 設定で選べる Gist のトークン——Vault の目録のうち、文字列を1つ返すもの（`secret`——人が貼った PAT 等・`oauth-token`
+ * ——Repositories のブラウザログイン。持ち主でない呼び元には access token の文字列が渡る）
+ */
+export function listTokenAliases(relay: RelayCall | undefined, callId?: string): Promise<{ names: string[]; warning?: string }> {
+  return listAliasesOfKinds(relay, ["secret", "oauth-token"], callId);
+}
+
+/**
+ * その alias の値（文字列）を引く——窓口（vault-directory）に在りかを引き、その金庫の `resolveAlias` を直接呼ぶ（Shell の
+ * envSecrets と同じ口）。コンテナの中からは、alias ごとに初回だけ人に聞かれる（v4-security.md「コンテナの中から値を返す口を呼ぶ」）
+ */
+export async function resolveSecret(relay: RelayCall | undefined, alias: string, callId?: string): Promise<string> {
+  if (!relay) throw new Error("Vault への中継が渡されていません");
+  const directory = await moduleWithRole(relay, VAULT_DIRECTORY_ROLE, callId);
+  if (!directory) throw new Error("Vault の窓口を呼べません（繋がっていません）");
+  const place = await relayJson<{ implementation?: unknown; name?: unknown; group?: unknown }>(
+    relay,
+    "relayCallTool",
+    { targetModule: directory, name: "lookupAlias", arguments: { name: alias } },
+    callId,
+    `${alias} の在りか引き`,
+  );
+  // 在りかが分からないまま既定の金庫へ落とすと、別の金庫の同名を開けてしまう（規則2）
+  if (typeof place.implementation !== "string" || typeof place.name !== "string") throw new Error(`${alias} の在りかが分かりません`);
+  const r = await relay(
+    "relayCallTool",
+    { targetModule: place.implementation, name: "resolveAlias", arguments: { name: place.name, ...(typeof place.group === "string" ? { group: place.group } : {}) } },
+    callId,
+  );
+  if (r.isError) throw new Error(r.text || `${alias} を引けませんでした`);
+  const value = r.text.trim();
+  if (value === "") throw new Error(`${alias} の値が空です`);
+  return value;
 }
 
 /**

@@ -2373,7 +2373,7 @@ Module の一覧には**2種類が混ざる**：
 | **Service** | 動き続けるものを起こしておく | **Shell とは別実装**（§2.1）。§4.2 |
 | **Publish** | 動いているものに届く URL を生やす | **窓口1本＋実装が複数**。§4.3 |
 | ~~**Repo（git）**~~ | ~~複数リポジトリの一覧・worktree・clone/branch/log~~ | **§2.4 Repositories に移した**（2026-10-01）。git の操作（branch/log 等）は持たない |
-| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json——リポジトリの `backlog` ブランチ、2026-10-04）。**実装・2026-10-03**（目録から入れる）。§4.4 |
+| **Backlog** | 仕事の一覧（ストーリー・タスク・バグと依存）を管理する | **窓口1本＋バックエンドが複数**（最初は tasks.json——リポジトリの `backlog` ブランチ、2026-10-04。2本目は GitHub Gist（非公開）、2026-10-23）。**実装・2026-10-03**（目録から入れる）。§4.4 |
 | **Factory** | 依頼を耐久ワークフローとして進める（要件 B） | **core ではなく Module として作る**（決定・2026-09-11、ユーザー）——「依頼を進める」は Module の形で書けるものであり、core に持たせると core が2つになる（要件 C8）。**Dynamic Workflows の形を借りて自前で作る**（決定・2026-10-04）。§4.5 |
 | **Browser** | 人と AI が**同じブラウザ**を触る。通信も見る | **自作の Module 1本**（改訂・2026-10-08、ユーザー——以前は「外部をマウントする」）。画面との流れは core の共通の口（アーキ仕様 §5.8）。§4.1 |
 | **Terminal** | 人が画面から Project のコンテナでシェルを打つ | **Shell とは別の Module**（契約が違う）。画面との流れは core の共通の口（アーキ仕様 §5.8）。**実装・2026-10-08**（目録から入れる、`packages/modules/terminal`）。§4.6 |
@@ -3539,6 +3539,9 @@ Vault・Publish と同じ**窓口1本＋バックエンドの実装が複数**�
 
 - **最初のバックエンドは tasks.json**——リポジトリに1つ。**置き場はコードとつながらない専用のブランチ**（既定 `backlog`、
   Backlog の設定でブランチ名を変えられる。中のファイルは `tasks.json` 固定。下の「置き場」）
+- **2本目は GitHub Gist（非公開）**（決定・2026-10-23、ユーザー。実装・2026-10-23、Backlog #535。アーキ仕様 §4.6「計画と
+  Backlog」）——置き場だけが違い、形・検証・tool は同じ。**使うことは強制しない——Project ごとに Backlog の設定で選ぶ**
+  （メタ Project に限らない。既定は tasks.json）。下の「Gist の置き場」
 - 将来は **GitHub Issues** など。対応：種類 → Issue の種類（Feature・Task・Bug）、親子 → sub-issue、依存 → blocked by、
   マイルストーン → Milestone、ラベル → Label。どれも GitHub の正式な機能（2025 年に GA、`gh` でも扱える）
 - 実装が扱えない欄（GitHub の `doneWhen` 等）は実装が逃がし方（本文に書く等）を持つ。窓口の形は変えない
@@ -3599,6 +3602,32 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
   変えずに** orphan のコミットを1つ作り、ブランチが**まだ無いときだけ**作る（あれば断る）。作業ツリーと index には触らず、
   元のファイルは消さない（消すのは人が普通のコミットで）。`--push` でそのブランチだけを origin へ（リポジトリの git の設定で）
 - **Project の根が git のリポジトリでない**：読む tool は理由を言い、書かない。画面は理由だけを出す（「足す」を出さない）
+
+#### Gist の置き場（決定・2026-10-23、Backlog #535）
+
+一覧（`banto-backlog/1`、ファイル名 `tasks.json`）を GitHub Gist（非公開）の1ファイルとして置く。モデル（種類・状態・
+`dependsOn`・`parent`・番号・並び順）はそのまま。経緯と却下した案は `docs/notes/2026-10-23-backlog-gist-backend.md`。
+
+- **楽観ロックは Gist の git への push**——Gist はそれ自体が git のリポジトリ（`https://gist.github.com/<id>.git`）。Module の
+  置き場（`BANTO_MODULE_DATA_DIR/gists/<id>.git`、bare）に取ってきた写しを持ち、**読んだときの Gist のコミットを親にした
+  コミットを force せずに送る**。先を越されていれば git が fast-forward でないと断る（＝compare-and-swap）ので、取ってきて
+  読み直して操作をやり直す（5回まで）。**REST の PATCH は使わない**——「この版のままなら」という条件つきの書き方が無く、
+  読んでから書くまでの間に入った書き込みを黙って消すため。版（sha）は Gist のコミットの sha
+- **書けたら終わり**——送るのが書き込みそのもの。「まだ送っていない」「食い違い」は起きない。**書く前に必ず取ってくる**
+  （取ってこれなければ書かない）。ほかに取ってくるのは**画面を開いたとき**（`getBoard` の `fetch: true`）と**この Module が
+  起きて最初に読むとき**だけ——画面の3秒ごとの読み直し・AI の `listItems` では取ってこない（ブランチの店と同じ）
+- 取ってこれなくなっても写しがあれば写しを出し、取ってこれなかった理由を添える（`listItems` の文の末尾・画面の上）。
+  一度も取ってこれていなければ「Gist を読めません：理由」とだけ言い、足す・見方を出さない
+- **コミット**：メッセージ・作者（`banto <banto@localhost>`）はブランチの店と同じ。Gist にほかのファイル（README 等）が
+  あれば残す。tasks.json が無ければ一覧は空として読み、最初の書き込みで作る
+- **資格情報**：設定で選んだ Vault の alias（kind が `secret`——人が置いた PAT 等——か `oauth-token`）の値を、**使うたびに**
+  中継で引く（窓口の `lookupAlias` → 金庫の `resolveAlias`。覚えない）。コンテナの中から引くので、alias ごとに初回だけ
+  人に聞かれる（v4-security.md「コンテナの中から値を返す口を呼ぶ」）。git には credential helper で環境変数から渡す
+  （コマンドの引数・URL に入れない。このマシンの credential helper は使わない）。要る権限は classic の PAT なら `gist`、
+  fine-grained なら Gists の Read and write
+- **Gist を新しく作る**のは REST（`POST /gists`、`public: false`、中は空の一覧の tasks.json）——git では作れないため。
+  公開で作られたら使わない（理由を言う）。作れたら置き場をそこに変える
+- Gist の id は16進数だけ受ける（`https://gist.github.com/<owner>/<id>`・`….git` の URL からも取る）
 
 #### tasks.json の形（`banto-backlog/1`）
 
@@ -3703,8 +3732,9 @@ orphan のブランチで、中は tasks.json 1つ）に置く。経緯と却下
 ——人が「Module を追加」から入れる）。`scope: project`・`isolation: subprocess`（Project のコンテナの中）・閉じ込めの profile は
 `exec`（git を走らせる。改訂・2026-10-04——以前は FileSystem と同じくコマンドを走らせなかった）。依存は `repositories`
 （`required: false`——送る・取ってくるを頼む。無くても動く）。中継の口（`BANTO_HOST_MCP_URL`・`BANTO_HOST_MCP_TOKEN`）を渡す。
-いまは窓口とバックエンド（tasks.json のブランチ）が1本の Module の中にある——実装の口を分けるのは2本目のバックエンドが
-来たとき（下の「まだ決めていない」）。
+いまは窓口とバックエンド（tasks.json のブランチ・Gist）が1本の Module の中にある——Module の中の口（`BacklogBackend`：
+読む・取ってくる・1件書く）で分け、設定の置き場で**呼ぶたびに**選ぶ。別の Module に分けるか（下の「まだ決めていない」）は
+決めていない。Gist のトークンを引くため、依存の `vault-directory`・`vault`（任意）を Gist にも使う。
 
 **店（一覧のブランチの読み書き——上の「置き場」）**
 
@@ -3749,7 +3779,9 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 |---|---|
 | `getBoard` | 画面が描く全部（ブランチの様子・文書・問題・根・origin との様子）。`since` が今の版（ブランチの先頭と origin との様子のハッシュ）と同じなら `unchanged` だけ。`fetch: true` で先に origin から取ってくる（画面を開いたとき） |
 | `boardCreateItem`・`boardUpdateItem`・`boardSplitStory`・`boardMoveItem` | AI の4本と同じ操作を、書いた後の一覧ごと返す |
-| `getSettings`・`setSettings` | 一覧を置くブランチの名前 |
+| `getSettings`・`setSettings` | 一覧の置き場（`tasks-json`・`gist`）・一覧を置くブランチの名前・送るときに使う SSH 鍵・Gist の id とトークンの alias 名 |
+| `listSshIdentities`・`listGistTokens` | 選べる SSH 鍵・Gist のトークン（Vault の目録の、その Project から引けるもの） |
+| `createGist` | 非公開の Gist を作り、置き場をそこに変える |
 
 **人の画面**（launcher `ui://banto-backlog/items`）：モック（`mock/components/banto/canvas/backlog-*.tsx`、経緯は
 `docs/notes/2026-10-02-backlog-ui-survey.md`）の形をそのまま素の HTML に移した——見方の切り替え（次にやる／すべて／
@@ -3770,6 +3802,11 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 （Project ごとの Module は接続が Project ごとなので、**設定も Project ごと**）。ブランチ名は1つの ref として読める字だけ
 （英数字で始め、英数字と `. _ / -`。`..`・`//`・`/.`・`@{`・`/` `.` `.lock` で終わるものは断る。`refs/heads/` は外して受ける）。
 保存したら、そのブランチの様子（無い・読めない・n 件）を言う。
+**一覧の置き場**（追加・2026-10-23、Backlog #535。見た目の正はモックの `backlog-config-section.tsx`）：いちばん上で
+「tasks.json（リポジトリの専用ブランチ）」と「GitHub Gist（非公開）」から選ぶ（既定は tasks.json）。Gist なら、ブランチ名・
+SSH 鍵の欄の代わりに「Gist に書くトークン」（Vault の目録の `secret`・`oauth-token`）・「Gist」（URL か id）・「新しい Gist を
+作る」を出す。Gist を選んだら id とトークンが要る（片方だけなら保存しない）。選び直したトークンは目録に在ることを確かめる。
+置き場を替えても、もう一方の設定（ブランチ名・SSH 鍵／Gist の id とトークン）は残す。見出しの横は Gist の id の頭8字。
 
 **変換スクリプト**（`packages/modules/backlog/scripts/convert-tasks-json.mjs`）：古い形を**機械的に**読み替えて
 別の場所に書き出す（入力と同じ場所には書かない）。上の「移し方」に加えて：`in_progress` → `in-progress`、
@@ -3786,7 +3823,10 @@ host が刻んだ呼び出し元の Thread（`_meta["dev.banto/thread"]`、ア�
 
 #### まだ決めていない
 
-- 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）——2本目のバックエンドが来たときに分ける
+- 実装の口（`backlog` 役割。Vault の D節・Publish の実装の口に当たるもの）——2本目（Gist、2026-10-23）は**同じ Module の中**の
+  口で分けた（上の「実装」）。Vault・Publish のように別の Module に分けるかは未決（Backlog #535 の実装で人に上げた）
+- **Gist の置き場で、取ってくる口を Repositories に頼むか**——いまは Module が Vault のトークンを引いて自分の git で話す
+  （Repositories の GitHub のアカウントは GitHub App のトークンで、Gist の権限を持つかを確かめていない）
 - ~~人の一覧画面の形（モックで決める）~~ **→ モックで決めて実装した（2026-10-03、上の「人の画面」）**
 - ~~Factory との繋ぎ方（§5 の 6）~~ **→ §4.5**（Factory が Backlog の tool を中継で呼ぶ。流すのは `ready` で依存が全部 `done` のもの）
 - **「取り組んだ Thread」から、その Thread を開くボタン**——口は 2026-10-07 にできた（`dev.banto/open-surface` の

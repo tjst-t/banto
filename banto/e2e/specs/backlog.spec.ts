@@ -664,5 +664,37 @@ test("送れないときは「送っていない」と理由を出し、戻れ�
 
   // 元に戻す（この spec の後に Project を開いても、見本が出るように）
   await setBranch("backlog", /^backlog ブランチに \d+ 件あります。$/);
+
+  // ---- 置き場の選択（§4.4「Gist の置き場」）：Gist を選ぶと Gist の欄に替わり、id とトークンが無ければ保存しない ----
+  // （Gist への読み書きそのものは GitHub が要るので単体試験で見る——gist.test.ts・server.test.ts）
+  {
+    const config = await openConfig();
+    const backend = config.getByTestId("backlog-config-backend");
+    await expect(backend).toHaveValue("tasks-json", { timeout: 30_000 });
+    await expect(backend.locator("option")).toHaveText(["tasks.json（リポジトリの専用ブランチ）", "GitHub Gist（非公開）"]);
+    await expect(config.getByTestId("backlog-config-branch-section")).toBeVisible();
+    await expect(config.getByTestId("backlog-config-gist-section")).toBeHidden();
+    await backend.selectOption("gist");
+    await expect(config.getByTestId("backlog-config-gist-section")).toBeVisible();
+    await expect(config.getByTestId("backlog-config-branch-section")).toBeHidden();
+    await expect(config.getByTestId("backlog-config-gist-id")).toHaveValue("");
+    await expect(config.getByTestId("backlog-config-gist-token")).toHaveValue("");
+    await expect(config.getByTestId("backlog-config-gist-create")).toHaveText("新しい Gist を作る");
+    // トークンを選ばずに作ろうとしたら、そう言う（GitHub に行かない）
+    await config.getByTestId("backlog-config-gist-create").click();
+    await expect(config.getByTestId("backlog-config-note")).toHaveText("Gist を作るトークンを選んでください");
+    // id もトークンも無いまま保存しても、保存しない
+    await config.getByTestId("backlog-config-save").click();
+    await expect(config.getByTestId("backlog-config-note")).toHaveText("保存できませんでした：Gist に置くなら、Gist の id が要ります", { timeout: 30_000 });
+    await backend.selectOption("tasks-json");
+    await expect(config.getByTestId("backlog-config-branch-section")).toBeVisible();
+    await expect(config.getByTestId("backlog-config-branch")).toHaveValue("backlog");
+  }
+  // 開き直しても置き場は tasks.json のまま（断ったものは書いていない）
+  {
+    const config = await openConfig();
+    await expect(config.getByTestId("backlog-config-backend")).toHaveValue("tasks-json", { timeout: 30_000 });
+    await expect(config.getByTestId("backlog-config-branch-state")).toHaveText(/^backlog ブランチに \d+ 件あります。$/, { timeout: 30_000 });
+  }
   expect(workingTreeBefore()).toEqual(WORKING_TREE);
 });

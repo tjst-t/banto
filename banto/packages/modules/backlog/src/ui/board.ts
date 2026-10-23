@@ -58,6 +58,10 @@ export interface BoardData {
   leftover?: { path: string; command: string };
   /** Project の根が git のリポジトリでない（書けない） */
   notRepository?: string;
+  /** 置き場が Gist のとき、その場所（`branch` はその Gist の git のブランチ） */
+  gist?: { id: string; url: string };
+  /** 置き場をまったく読めない（Gist から一度も取ってこれていない等）——書けない */
+  unavailable?: string;
   doc?: BacklogDocument;
   problems?: string[];
   reason?: string;
@@ -525,8 +529,8 @@ export class BacklogBoard {
           data
             ? h("span", {
                 class: "source truncate",
-                text: data.branch,
-                title: `${data.root.path} の ${data.branch} ブランチ（中は tasks.json）`,
+                text: data.gist ? `Gist ${data.gist.id.slice(0, 8)}` : data.branch,
+                title: data.gist ? `GitHub Gist（非公開）${data.gist.url} の tasks.json` : `${data.root.path} の ${data.branch} ブランチ（中は tasks.json）`,
                 data: { testid: "backlog-source" },
               })
             : null,
@@ -623,6 +627,17 @@ export class BacklogBoard {
     if (data.notRepository) {
       return [h("div", { class: "notice warn", attrs: { role: "status" }, data: { testid: "backlog-not-repository" } }, icon("TriangleAlert"), h("p", { text: data.notRepository }))];
     }
+    // 置き場を読めない（Gist から一度も取ってこれていない）——同じく足す誘いは出さない
+    if (data.unavailable) {
+      return [
+        h(
+          "div",
+          { class: "notice warn", attrs: { role: "status" }, data: { testid: "backlog-unavailable" } },
+          icon("TriangleAlert"),
+          h("div", {}, h("p", { text: data.unavailable }), h("p", { class: "quiet-text", text: "設定の Backlog で、Gist の id とトークンを確かめてください。" })),
+        ),
+      ];
+    }
     const sync = this.renderSync(data);
     if (data.state === "refused") return [...(sync ? [sync] : []), this.renderRefused(data)];
     const doc = data.doc ?? { format: "banto-backlog/1" as const, milestones: [], items: [] };
@@ -636,7 +651,9 @@ export class BacklogBoard {
           h(
             "div",
             {},
-            h("p", {}, "まだ一覧のブランチ ", h("code", { text: data.branch }), " がありません。最初の項目を足すと、コードの履歴とつながらないブランチとして作ります。"),
+            data.gist
+              ? h("p", {}, "まだ Gist ", h("code", { text: data.gist.id }), " に tasks.json がありません。最初の項目を足すと作ります。")
+              : h("p", {}, "まだ一覧のブランチ ", h("code", { text: data.branch }), " がありません。最初の項目を足すと、コードの履歴とつながらないブランチとして作ります。"),
             data.leftover
               ? h(
                   "p",
@@ -692,6 +709,15 @@ export class BacklogBoard {
   /** origin との様子で、知らせることがあれば（食い違い・送っていない・取ってこれなかった）。無ければ null */
   private renderSync(data: BoardData): HTMLElement | null {
     const sync = data.sync;
+    // Gist には送り残しが無い——取ってこれなかったときだけ（出しているのは最後に取ってきた中身）
+    if (data.gist && sync?.fetchError) {
+      return h(
+        "div",
+        { class: "notice warn", attrs: { role: "status" }, data: { testid: "backlog-sync" } },
+        icon("TriangleAlert"),
+        h("p", { text: `Gist から取ってこれませんでした（最後に取ってきた中身です）：${sync.fetchError}`, data: { testid: "backlog-sync-fetch-error" } }),
+      );
+    }
     if (!sync?.origin) return null;
     const lines: Child[] = [];
     if (sync.diverged) {
@@ -711,6 +737,15 @@ export class BacklogBoard {
   }
 
   private renderRefused(data: BoardData): HTMLElement {
+    if (data.gist) {
+      return h(
+        "div",
+        { class: "refused", data: { testid: "backlog-refused" } },
+        h("h3", {}, "Gist ", h("code", { text: data.gist.id }), " の tasks.json を読めません"),
+        h("p", { text: data.reason ?? "" }),
+        h("p", { text: "Backlog はこの中身を読まず、書き込みもしません（壊さないため）。Gist の中身を直すと、ここに一覧が出ます。" }),
+      );
+    }
     return h(
       "div",
       { class: "refused", data: { testid: "backlog-refused" } },

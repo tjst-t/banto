@@ -13,11 +13,73 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { CANVAS_META_KEY, EventOutbox, EventPublisher, MODULE_META_KEY, VISIBILITY_META_KEY, type EmittedEvent } from "@banto/module-contract";
 import { join } from "node:path";
-import { BacklogStore } from "./store.js";
+import { BacklogStore, type BacklogBackend, type MutateResult, type Snapshot } from "./store.js";
 import type { BranchRemote } from "./remote.js";
 import { readSettings } from "./settings.js";
+import { BacklogError, type BacklogDocument, type Change } from "./model.js";
+import { GITHUB_API, GistStore, createGist, type GistApi } from "./gist.js";
 import { TOOLS, callTool } from "./tools.js";
 import { BOARD_APP_URI, CONFIG_APP_URI, UI_APP_MIME, appHtml } from "./ui-app.js";
+
+/** Gist の置き場に要るもの（§4.4「Gist の置き場」）。無ければ Gist を選べない */
+export interface GistDeps {
+  /** 選べるトークン（Vault の目録） */
+  tokens: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+  /** トークンの値（Vault から、使うたびに） */
+  resolveToken: (alias: string, callId?: string) => Promise<string>;
+  /** GitHub の REST API（Gist を作る）。**試験で差し替える穴** */
+  api?: GistApi;
+  /** Gist の git の URL。**試験で差し替える穴** */
+  remoteUrl?: (gistId: string) => string;
+}
+
+/**
+ * 設定が選んだ置き場（一覧のブランチ・Gist）へ渡す。**呼ぶたびに設定を読む**——画面で置き場を変えたら、次の読み書きから
+ * そちらになる。Gist の店は Gist（と使うトークン）ごとに1つ持ち続ける——書く操作の列を、呼び出しをまたいで1本にするため
+ */
+class SelectedBackend implements BacklogBackend {
+  private readonly gists = new Map<string, GistStore>();
+
+  constructor(
+    private readonly branchStore: BacklogStore,
+    private readonly gist: GistDeps | undefined,
+  ) {}
+
+  private current(): BacklogBackend {
+    const s = readSettings();
+    if (s.backend !== "gist") return this.branchStore;
+    if (!this.gist) throw new BacklogError("この Backlog は Vault を呼べないので、Gist に置いた一覧を読み書きできません");
+    const dataDir = process.env.BANTO_MODULE_DATA_DIR;
+    if (!dataDir) throw new BacklogError("Gist の写しの置き場が渡されていません（BANTO_MODULE_DATA_DIR）");
+    const gistId = s.gistId!;
+    const alias = s.gistToken!;
+    const key = `${gistId}\0${alias}`;
+    let store = this.gists.get(key);
+    if (!store) {
+      const gist = this.gist;
+      store = new GistStore({
+        dataDir,
+        gistId,
+        token: (callId) => gist.resolveToken(alias, callId),
+        ...(gist.remoteUrl ? { remoteUrl: gist.remoteUrl(gistId) } : {}),
+      });
+      this.gists.set(key, store);
+    }
+    return store;
+  }
+
+  async read(): Promise<Snapshot> {
+    return this.current().read();
+  }
+
+  async refresh(callId?: string): Promise<void> {
+    return this.current().refresh(callId);
+  }
+
+  async mutate<T>(change: (doc: BacklogDocument) => Change<T>, message: (result: T) => string, callId?: string): Promise<MutateResult<T>> {
+    return this.current().mutate(change, message, callId);
+  }
+}
 
 export function createBacklogServer(deps: {
   projectRoot: string;
@@ -26,18 +88,30 @@ export function createBacklogServer(deps: {
   sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
   /** 出来事を出す口（出口の箱に書いてから host へ）。無ければ出さない */
   emitEvent?: (event: EmittedEvent) => void;
+  /** Gist の置き場（Vault のトークン）。無ければ Gist を選べない */
+  gist?: GistDeps;
 }) {
   const server = new Server(
     { name: "banto-module-backlog", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
   );
-  const store = new BacklogStore({
+  const branchStore = new BacklogStore({
     root: deps.projectRoot,
     branch: () => readSettings().branch,
     ...(deps.remote ? { remote: deps.remote } : {}),
   });
+  const gist = deps.gist;
   const ctx = {
-    store,
+    store: new SelectedBackend(branchStore, gist),
+    ...(gist
+      ? {
+          gist: {
+            tokens: gist.tokens,
+            create: async (alias: string, description: string, callId?: string) =>
+              createGist(await gist.resolveToken(alias, callId), description, gist.api ?? GITHUB_API),
+          },
+        }
+      : {}),
     root: deps.projectRoot,
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.sshIdentities ? { sshIdentities: deps.sshIdentities } : {}),
@@ -61,7 +135,7 @@ export function createBacklogServer(deps: {
         _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "launcher", ui: { prefersBorder: false } },
       },
       {
-        // 設定 Canvas——一覧を置くブランチ・送るときに使う SSH 鍵
+        // 設定 Canvas——一覧の置き場（ブランチ・Gist）・一覧を置くブランチ・送るときに使う SSH 鍵・Gist
         uri: CONFIG_APP_URI,
         name: "Backlog",
         mimeType: UI_APP_MIME,
@@ -111,7 +185,7 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   }
   const hostUrl = process.env.BANTO_HOST_MCP_URL;
   const hostToken = process.env.BANTO_HOST_MCP_TOKEN;
-  const { RelayingRemote, hostRelayCall, listSshIdentities } = await import("./remote.js");
+  const { RelayingRemote, hostRelayCall, listSshIdentities, listTokenAliases, resolveSecret } = await import("./remote.js");
   // 中継が渡されていなければ Repositories にも Vault にも頼まない（リポジトリの git の設定だけで送る）
   const relay = hostUrl && hostToken ? hostRelayCall(hostUrl, hostToken) : undefined;
   // **出来事**（できた・状態が変わった）は出口の箱に書いてから host へ出す（アーキ仕様 §4.3、Backlog #347）。箱は Module の
@@ -131,6 +205,15 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
     projectRoot,
     remote: new RelayingRemote(projectRoot, relay, () => readSettings().sshIdentity),
     ...(relay ? { sshIdentities: (callId?: string) => listSshIdentities(relay, callId) } : {}),
+    // Gist のトークンは Vault から（中継が無ければ Gist を選べない）
+    ...(relay
+      ? {
+          gist: {
+            tokens: (callId?: string) => listTokenAliases(relay, callId),
+            resolveToken: (alias: string, callId?: string) => resolveSecret(relay, alias, callId),
+          },
+        }
+      : {}),
   });
   await server.connect(new StdioServerTransport());
 }
