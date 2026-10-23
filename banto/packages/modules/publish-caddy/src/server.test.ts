@@ -166,6 +166,27 @@ test("自動で許可の印（dev.banto/autoApprove）が Project の刻印と�
   });
 });
 
+// **LAN までの公開**（追加・2026-10-23、アーキ仕様 §4.6「権限」——メタ Project）。host が Project の刻印と一緒に刻んだ LAN までの印は、
+// **この実装がいま名乗る届く範囲**が LAN までのときだけ通す。インターネットに届く設定なら断る
+test("LAN までの印（dev.banto/autoApproveReach）は、この出し方の届く範囲が LAN までのときだけ、その Project の公開を通す", async () => {
+  await withCaddy(async ({ call, caddy, dir }) => {
+    const lan = (project: string) => ({ ...forProject(project), "dev.banto/autoApproveReach": "lan" });
+    const args = { service: "web", port: 3000, config: {} };
+    assert.ok((await call("publishRoute", args, lan(P1))).isError, "インターネットに届く設定なのに通した");
+    assert.deepEqual(caddy.writes(), []);
+
+    const store = new PublishStore(dir);
+    await store.setSettings({ ...(await store.settings()), reach: "lan" });
+    assert.ok((await call("publishRoute", args, { "dev.banto/autoApproveReach": "lan" })).isError, "印だけでは通さない");
+    assert.ok((await call("publishRoute", publishArgs({ projectId: P2 }), lan(P1))).isError, "別の Project は触れない");
+    assert.ok((await call("publishRoute", args, { ...forProject(P1), "dev.banto/autoApproveReach": "internet" })).isError, "形が違えば立っていない");
+    assert.deepEqual(caddy.writes(), []);
+    const r = await call("publishRoute", args, lan(P1));
+    assert.equal(r.isError, false, r.text);
+    assert.equal(JSON.parse(r.text).reach, "lan");
+  });
+});
+
 test("公開すると、まとめたルートより前に差し込み、Project のコンテナのアドレスへ中継する。Basic 認証はハッシュだけを渡す", async () => {
   await withCaddy(async ({ call, caddy, dir }) => {
     const r = await call("publishRoute", publishArgs());

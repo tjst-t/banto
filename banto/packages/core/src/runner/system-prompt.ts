@@ -102,6 +102,11 @@ export interface SystemPromptInput {
    * 足す。動的な後半に置く——オンオフは Project ごとなので、全 Project で前方一致する前半は変えない
    */
   turnSummary?: boolean;
+  /**
+   * 層3：**メタ Project の権限**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。メタ Project のときだけ渡す——何を人に聞かずに
+   * 決めてよく、何を人に残すか。動的な後半に置く（release の扱いは人が切り替えられる）。渡されなければ節を足さない
+   */
+  metaPermissions?: string;
 }
 
 /**
@@ -140,6 +145,8 @@ export function buildSystemPrompt(input: SystemPromptInput): string[] {
   }
 
   if (input.turnSummary) blocks.push(TURN_SUMMARY_PROMPT_SECTION);
+
+  if (input.metaPermissions) blocks.push(input.metaPermissions);
 
   const instruction = input.projectInstruction?.trim();
   if (instruction) {

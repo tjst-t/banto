@@ -2318,6 +2318,64 @@ test("自動化を作るのを聞かずに許可するスイッチは Project �
   });
 });
 
+// **メタ Project の release の扱い**（追加・2026-10-23、アーキ仕様 §4.6「権限」、Backlog #537）——メタ Project にだけ置け、既定は「任せる」。
+// 人に残すときだけ値を持つ。普通の Project には置けない（既存の Project の挙動を変えない）
+test("メタ Project の release の扱いは既定で任せる・人に残すに切り替えられる。メタ Project でなければ置けない", async () => {
+  await withApp(async (base, token, dir, { runtimeConfig }) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const create = async (body: unknown) => (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify(body) })).json();
+    const meta = await create({ kind: "meta", name: "orchestrator", root: dir });
+    const plain = await create({ name: "p", root: dir });
+    const url = `${base}/api/projects/${meta.id}/meta-release`;
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { release: "delegate" });
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ release: "human" }) })).json(), { release: "human" });
+    assert.equal(runtimeConfig.layerValue("metaProject.release", meta.id), "human");
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { release: "human" });
+    assert.equal((await fetch(url, { method: "PUT", headers, body: JSON.stringify({ release: "yes" }) })).status, 400);
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ release: "delegate" }) })).json(), { release: "delegate" });
+    assert.equal(runtimeConfig.layerValue("metaProject.release", meta.id), undefined, "既定に戻したのに値が残った");
+    const plainUrl = `${base}/api/projects/${plain.id}/meta-release`;
+    assert.equal((await fetch(plainUrl, { headers })).status, 409);
+    assert.equal((await fetch(plainUrl, { method: "PUT", headers, body: JSON.stringify({ release: "human" }) })).status, 409);
+    assert.equal(runtimeConfig.layerValue("metaProject.release", plain.id), undefined);
+    assert.equal((await fetch(`${base}/api/projects/nope/meta-release`, { headers })).status, 404);
+  });
+});
+
+test("メタ Project のターンの system prompt にだけ権限の節が入り、release の扱いを変えたら次のターンから変わる", async () => {
+  const prompts: string[][] = [];
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const send = async (threadId: string) =>
+        (await fetch(`${base}/api/threads/${threadId}/messages`, { method: "POST", headers, body: JSON.stringify({ prompt: "進めて" }) })).text();
+      const plain = await deps.projectThread.createProject("plain", "/tmp");
+      const meta = await deps.projectThread.createProject("orchestrator", "/tmp", { kind: "meta" });
+      const plainThread = await deps.projectThread.createBaseThread(plain.id);
+      const metaThread = await deps.projectThread.createBaseThread(meta.id);
+      const section = (prompt: string[]) => prompt.find((b) => b.startsWith("# メタ Project の権限"));
+
+      await send(plainThread.id);
+      assert.equal(section(prompts[0]!), undefined, "普通の Project にメタ Project の権限の節が入った");
+      await send(metaThread.id);
+      assert.match(section(prompts[1]!) ?? "", /release.*：任されている/, "既定で release を任せていない");
+      await fetch(`${base}/api/projects/${meta.id}/meta-release`, { method: "PUT", headers, body: JSON.stringify({ release: "human" }) });
+      await send(metaThread.id);
+      assert.match(section(prompts[2]!) ?? "", /release.*：\*\*人に残す\*\*/, "人に残すに変えたのに次のターンに効いていない");
+      // メタ Project の設定を変えても、普通の Project は変わらない
+      await send(plainThread.id);
+      assert.equal(section(prompts[3]!), undefined);
+    },
+    {
+      runTurn: (async function* (opts: { systemPrompt: string[] }) {
+        prompts.push(opts.systemPrompt);
+        yield { type: "message" as const, message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] } } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
+});
+
 // **新しい Project の画面の3つのスイッチ**（決定・2026-10-20、ユーザー。v4-frontend.md §6.51）——作るのと同じ処理の中で書く
 test("POST /api/projects の settings は作るときに Configuration へ書き、渡されなかった鍵は書かない", async () => {
   await withApp(async (base, token, dir, { runtimeConfig }) => {

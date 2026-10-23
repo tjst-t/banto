@@ -1333,7 +1333,7 @@ async function recordingClient(
 }
 
 /** 窓口（banto 全体）・その Project の Service・別の Project の Service・公開の実装（banto 全体）を繋いだ中継 */
-async function publishWorld(opts: { autoApprove?: Set<string> } = {}) {
+async function publishWorld(opts: { autoApprove?: Set<string>; metaProjects?: Set<string> } = {}) {
   const registry = new RelayRegistry();
   const moduleCalls = new ModuleCallTracker();
   const seen: Array<{ tool: string; meta: Record<string, unknown>; origin?: string }> = [];
@@ -1369,6 +1369,7 @@ async function publishWorld(opts: { autoApprove?: Set<string> } = {}) {
     moduleCalls,
     gate,
     ...(opts.autoApprove ? { autoApproveFor: (projectId: string) => opts.autoApprove!.has(projectId) } : {}),
+    ...(opts.metaProjects ? { autoApproveReachFor: (projectId: string) => (opts.metaProjects!.has(projectId) ? ("lan" as const) : undefined) } : {}),
   });
   const bundled = await relayClient(server.url, registry.issueToken({ moduleName: "publish-directory", meta: bundledMeta(windowRaw, "publish-directory") }));
   const thirdParty = await relayClient(server.url, registry.issueToken({ moduleName: "evil-window", meta: parseModuleMeta(windowRaw, "evil-window") }));
@@ -2491,5 +2492,31 @@ test("宛先が外から入れた Module・Project ごとの Module なら、持
     } finally {
       await w.close();
     }
+  }
+});
+
+// **メタ Project の LAN までの公開**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。AI のターンから始まった、メタ Project のための中継にだけ
+// `dev.banto/autoApproveReach` を刻む——publish-caddy は自分の届く範囲が LAN までなら、人の刻印の代わりにこれを見る。
+// 人の画面からの呼び出し・メタ Project でない Project には刻まない
+test("AI のターンから始まった、メタ Project のための中継にだけ、LAN までの印を刻む", async () => {
+  const w = await publishWorld({ metaProjects: new Set(["pA"]) });
+  try {
+    const turn = w.moduleCalls.beginCall("publish-directory", "t1", "turn", "pA");
+    await w.window.call("service-pA", "listServices", turn.id);
+    assert.equal(w.last().meta["dev.banto/autoApproveReach"], "lan", "メタ Project のターンなのに刻んでいない");
+    assert.equal(w.last().meta["dev.banto/autoApprove"], undefined, "自動で許可の印まで刻んだ");
+    turn.end();
+
+    const canvas = w.moduleCalls.beginCall("publish-directory", "t1", "canvas", "pA");
+    await w.window.call("service-pA", "listServices", canvas.id);
+    assert.equal(w.last().meta["dev.banto/autoApproveReach"], undefined, "人の画面からの呼び出しに刻んだ");
+    canvas.end();
+
+    const other = w.moduleCalls.beginCall("publish-directory", "t2", "turn", "pB");
+    await w.window.call("service-pB", "listServices", other.id);
+    assert.equal(w.last().meta["dev.banto/autoApproveReach"], undefined, "メタ Project でない Project に刻んだ");
+    other.end();
+  } finally {
+    await w.close();
   }
 });

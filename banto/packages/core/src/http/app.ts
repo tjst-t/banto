@@ -133,6 +133,7 @@ import { AUTO_APPROVE_ALL_KEY, AUTO_APPROVE_CREATE_AUTOMATION_KEY, isAutoApprove
 import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-only.js";
 import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
+import { META_RELEASE_KEY, metaPermissionsPromptSection, metaProjectPermissions, metaReleasePolicy } from "./meta-permissions.js";
 import { applyNewProjectSettings, hasSettingsToWrite, isIdleCompactionEnabled, parseNewProjectSettings, setIdleCompaction } from "./project-settings.js";
 import {
   CHAT_NO_FORK_CODE,
@@ -1625,6 +1626,8 @@ export function createApp(deps: AppDeps) {
   // **ターンの終わりのまとめ**（決定・2026-10-06、ユーザー。アーキ仕様 §2.2）。ターンを始めるときに引く
   const turnSummaryEnabled = (projectId: string) => isTurnSummaryEnabled(deps.runtimeConfig, projectId);
   const projectInstruction = (projectId: string) => projectInstructionOf(deps.runtimeConfig, projectId);
+  // **メタ Project の権限**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。メタ Project のときだけ system prompt に節を足す
+  const metaPermissions = (projectId: string) => metaProjectPermissions(deps.runtimeConfig, deps.projectThread.getProject(projectId));
   // **Thread 間・Project 間のメッセージ**（決定・2026-10-01、アーキ仕様 §4.2）。AI の `send_message` から呼ばれる
   const messaging = new ThreadMessaging({
     projectThread: deps.projectThread,
@@ -2014,7 +2017,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(threadReading ? { threadReading } : {}), ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(threadReading ? { threadReading } : {}), ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, metaPermissions, readOnlyModuleTools, supervisorModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
@@ -4502,6 +4505,26 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_CREATE_AUTOMATION_KEY);
         }
         json(res, 200, { enabled: isAutoApproveCreateAutomation(deps.runtimeConfig, projectId) });
+        return;
+      }
+
+      // **メタ Project の release の扱い**（追加・2026-10-23、アーキ仕様 §4.6「権限」、Backlog #537）。メタ Project にだけ置ける。
+      // 既定は「任せる」——人に残すときだけ値を持つ（「任せる」に戻したら上書きを外す。真実を1つにする）
+      const metaReleaseMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/meta-release$/);
+      if (metaReleaseMatch && (req.method === "GET" || req.method === "PUT")) {
+        const project = deps.projectThread.getProject(metaReleaseMatch[1]!);
+        if (!project) return json(res, 404, { error: "not found" });
+        if (project.kind !== "meta") return json(res, 409, { error: "この Project はメタ Project ではありません" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { release?: unknown };
+          if (body.release !== "delegate" && body.release !== "human") {
+            return json(res, 400, { error: "release は delegate（任せる）か human（人に残す）で渡してください" });
+          }
+          if (body.release === "human") await deps.runtimeConfig.setProjectOverride(project.id, META_RELEASE_KEY, "human");
+          else await deps.runtimeConfig.unsetProjectOverride(project.id, META_RELEASE_KEY);
+        }
+        json(res, 200, { release: metaReleasePolicy(deps.runtimeConfig, project.id) });
         return;
       }
 

@@ -294,6 +294,53 @@ test("スイッチがオンの Project のターンからの呼び出しにだ�
   await moduleClient.close();
 });
 
+// **メタ Project の LAN までの公開**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。host の口が "lan" を返す Project のターンからの呼び出しに
+// `dev.banto/autoApproveReach` を刻む。「承認をすべて自動で許可する」の印とは別に刻み、Runner が添えたものは流さない。読むだけの回には刻まない
+test("メタ Project のターンからの呼び出しにだけ LAN までの印が付き、自動で許可の印とは混ざらない", async () => {
+  const seen: Array<Record<string, unknown> | undefined> = [];
+  const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{ name: "publishService", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent", "dev.banto/effect": "read" } }],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    seen.push(req.params._meta as Record<string, unknown> | undefined);
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(s), moduleClient.connect(c)]);
+  const meta = parseModuleMeta({ satisfies: ["publish-directory"], dependsOn: [], isolation: "subprocess" }, "fake");
+  const metaProjects = new Set(["meta"]);
+
+  async function callWith(opts: { projectId?: string; threadId?: string; readOnly?: boolean }, runnerMeta?: Record<string, unknown>) {
+    const proxy = buildAgentProxy(
+      { name: "publish-directory", client: moduleClient, meta },
+      {
+        ...(opts.projectId ? { projectId: opts.projectId } : {}),
+        ...(opts.threadId ? { threadId: opts.threadId } : {}),
+        autoApproveFor: () => false,
+        autoApproveReachFor: (projectId) => (metaProjects.has(projectId) ? "lan" : undefined),
+        ...(opts.readOnly ? { restrictionFor: () => "read-only" as const } : {}),
+      },
+    );
+    const [ps, pc] = InMemoryTransport.createLinkedPair();
+    const runner = new Client({ name: "runner", version: "0.0.0" });
+    await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+    await runner.callTool({ name: "publishService", arguments: {}, ...(runnerMeta ? { _meta: runnerMeta } : {}) });
+    await runner.close();
+  }
+
+  await callWith({ projectId: "meta", threadId: "t1" });
+  await callWith({ projectId: "plain", threadId: "t1" }, { "dev.banto/autoApproveReach": "lan" });
+  await callWith({ projectId: "meta", threadId: "t1", readOnly: true });
+
+  assert.equal(seen[0]?.["dev.banto/autoApproveReach"], "lan");
+  assert.equal(seen[0]?.["dev.banto/autoApprove"], undefined, "LAN までの印と一緒に、自動で許可の印まで刻んだ");
+  assert.equal(seen[1]?.["dev.banto/autoApproveReach"], undefined, "Runner が添えた印が Module に流れた（メタ Project でない）");
+  assert.equal(seen[2]?.["dev.banto/autoApproveReach"], undefined, "読むだけの回に刻んだ");
+  await moduleClient.close();
+});
+
 // **バックグラウンドの仕事の手がかり**（追加・2026-10-03、v4-frontend.md §6.33）。「終わったら届ける」tool の札を出すとき、
 // Runner の tool_use の id・カードの題と説明（引数で埋めたもの）・画面を一緒に覚える
 test("終わったら届ける tool の札に、tool_use の id・埋めたカードの文・画面が付く（Runner が id を渡さなければ id は無い）", async () => {

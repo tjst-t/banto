@@ -28,6 +28,7 @@ import {
   type WaitingOn,
   CALL_ID_META_KEY,
   AUTO_APPROVE_META_KEY,
+  AUTO_APPROVE_REACH_META_KEY,
   CALLER_META_KEY,
   CALLER_MODULE_META_KEY,
   ON_BEHALF_OF_META_KEY,
@@ -381,6 +382,11 @@ export interface HostRelayServerOptions {
    * その Project のための中継の呼び出しに `dev.banto/autoApprove` を刻む。渡されなければ刻まない
    */
   autoApproveFor?(projectId: string, threadId?: string): boolean;
+  /**
+   * その Project のための中継の呼び出しに `dev.banto/autoApproveReach` を刻む（追加・2026-10-23、アーキ仕様 §4.6「権限」——メタ Project の
+   * LAN までの公開）。刻む条件は `autoApproveFor` と同じ。渡されなければ刻まない
+   */
+  autoApproveReachFor?(projectId: string, threadId?: string): "lan" | undefined;
   /**
    * **その会話の制限**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回の中継」）。呼び元の呼び出しが読むだけの回のターンから
    * 始まったなら、宛先の tool の印を host が見て、読むだけのものでなければ断る（境界を Module 任せにしない）。承認が要るものは
@@ -1600,8 +1606,10 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     const callerThreadId = callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined;
     // 読むだけの回では刻まない（人に聞かずに断る回で「聞かずに許可してよい」と伝えない）。代わりに読むだけの回だと刻む
     if (readOnlyRun) callerMeta[RESTRICTION_META_KEY] = "read-only";
-    else if (!humanCanvas && origin === "turn" && callerProject && opts.autoApproveFor?.(callerProject, callerThreadId) === true) {
-      callerMeta[AUTO_APPROVE_META_KEY] = true;
+    else if (!humanCanvas && origin === "turn" && callerProject) {
+      if (opts.autoApproveFor?.(callerProject, callerThreadId) === true) callerMeta[AUTO_APPROVE_META_KEY] = true;
+      // LAN までの公開は聞かずに許可してよい（メタ Project、§4.6「権限」）——窓口が中で実装の `publishRoute` を呼ぶとき、実装が見る
+      if (opts.autoApproveReachFor?.(callerProject, callerThreadId) === "lan") callerMeta[AUTO_APPROVE_REACH_META_KEY] = "lan";
     }
 
     // コンテナの中の呼び出し元には、窓口を立てる場所も刻む（呼び出し元の申告は使わない）

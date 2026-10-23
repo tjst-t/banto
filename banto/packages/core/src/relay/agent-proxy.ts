@@ -32,6 +32,7 @@ import {
   REPLY_TO_META_KEY,
   THREAD_META_KEY,
   AUTO_APPROVE_META_KEY,
+  AUTO_APPROVE_REACH_META_KEY,
   RESTRICTION_META_KEY,
   deliversLater,
   fillCardText,
@@ -137,6 +138,11 @@ export interface AgentProxyOptions {
    * 呼び出しに `dev.banto/autoApprove` を刻む（呼び出しのたびに引く）。渡されなければ刻まない
    */
   autoApproveFor?(projectId: string, threadId?: string): boolean;
+  /**
+   * **届く範囲がここまでの公開を、人に聞かずに許可してよいか**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。`"lan"` なら Module への
+   * 呼び出しに `dev.banto/autoApproveReach` を刻む（呼び出しのたびに引く）。メタ Project だけ。渡されなければ刻まない
+   */
+  autoApproveReachFor?(projectId: string, threadId?: string): "lan" | undefined;
   /**
    * **その会話の制限**（追加・2026-10-20、アーキ仕様 §4.4「読むだけの回」の守りの 3.）。呼び出しのたびに引く。`"read-only"` なら、
    * 読むだけでない tool の `tools/call` と、許していない Module の `resources/read` を人に聞かずに断り、`tools/list`・資源の一覧も
@@ -250,7 +256,11 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // 読むだけの回では刻まない——人に聞かずに断る回で、Module に「聞かずに許可してよい」と伝えない（§4.4）。番頭の回も
     // 刻まない——番頭の会話の承認は「必ず聞く」（§4.5）
     if (restricted()) return {};
-    return opts.projectId && opts.autoApproveFor?.(opts.projectId, opts.threadId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
+    const stamp: Record<string, unknown> =
+      opts.projectId && opts.autoApproveFor?.(opts.projectId, opts.threadId) === true ? { [AUTO_APPROVE_META_KEY]: true } : {};
+    // LAN までの公開（メタ Project、§4.6「権限」）。読むだけの回・番頭の回では上と同じく刻まない
+    if (opts.projectId && opts.autoApproveReachFor?.(opts.projectId, opts.threadId) === "lan") stamp[AUTO_APPROVE_REACH_META_KEY] = "lan";
+    return stamp;
   }
 
   /**

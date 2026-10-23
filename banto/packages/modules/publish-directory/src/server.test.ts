@@ -66,6 +66,8 @@ interface Entry {
   project?: string;
   /** host が「承認をすべて自動で許可する」の印を刻んだ呼び出し（中継の先にも刻む、追加・2026-10-05） */
   autoApprove?: boolean;
+  /** host が「LAN までの公開は聞かずに許可してよい」の印を刻んだ呼び出し（メタ Project、追加・2026-10-23） */
+  autoApproveReach?: "lan";
 }
 
 interface Ctx {
@@ -92,6 +94,8 @@ interface Ctx {
   dirs: { directory: string; caddy: string };
   /** Project が別のサーバで動いている（host がアドレスに「LAN に直に出ている」を付ける） */
   remote: { on: boolean };
+  /** 実装（publish-caddy）の設定。届く範囲を変えるのに使う */
+  caddyStore: PublishStore;
 }
 
 async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
@@ -151,7 +155,11 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
       const client = target === "service-p1" ? serviceClient : target === "publish-caddy" ? implClient : undefined;
       if (!client) throw new Error(`unknown target ${target}`);
       // host は、AI のターンから始まった Project のための呼び出しに、スイッチがオンなら印を刻む（1件を名指せたときだけ真似る）
-      const auto = callId && ctx?.autoApprove && ctx.origin === "turn" && ctx.project ? { "dev.banto/autoApprove": true } : {};
+      const fromTurn = callId && ctx?.origin === "turn" && ctx.project;
+      const auto = {
+        ...(fromTurn && ctx?.autoApprove ? { "dev.banto/autoApprove": true } : {}),
+        ...(fromTurn && ctx?.autoApproveReach ? { "dev.banto/autoApproveReach": ctx.autoApproveReach } : {}),
+      };
       const r = await client.callTool({ name, arguments: args, _meta: { "dev.banto/caller": stamp, ...auto } });
       if (drop.delete(name)) throw new Error("中継の返事が途中で切れました");
       return { text: (r.content as { text: string }[])[0]!.text, isError: r.isError === true };
@@ -177,6 +185,7 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
         origin: caller.admin === true ? "canvas" : "turn",
         ...(project ? { project } : {}),
         ...(meta["dev.banto/autoApprove"] === true ? { autoApprove: true } : {}),
+        ...(meta["dev.banto/autoApproveReach"] === "lan" ? { autoApproveReach: "lan" as const } : {}),
       });
     }
     try {
@@ -207,6 +216,7 @@ async function withDirectory(fn: (ctx: Ctx) => Promise<void>) {
       },
       dirs: { directory: directoryDir, caddy: caddyDir },
       remote,
+      caddyStore: store,
     });
   } finally {
     await client.close();
@@ -359,6 +369,31 @@ test("host が自動で許可の印を刻んだら、既定の設定で人を待
     assert.equal(view.request.state, "published");
     assert.equal(view.request.autoApproved, true, "承認画面が「自動で許可した」と言えない");
     assert.equal(view.request.url, `https://${HOST}`);
+  });
+});
+
+// **LAN までの公開は人に聞かない**（追加・2026-10-23、アーキ仕様 §4.6「権限」——メタ Project）。窓口は host の印と実装が名乗った
+// 届く範囲だけを見る。インターネットに届く出し方なら、印があっても今までどおり人を待つ（実装も印だけでは道を張らない）
+test("LAN までの印があっても、届く範囲がインターネットなら人を待ち、LAN なら人を待たずに公開する", async () => {
+  await withDirectory(async ({ call, asHuman, caddy, relayed, caddyStore }) => {
+    const lanMeta = { "dev.banto/caller": { project: P1 }, "dev.banto/replyTo": REPLY, "dev.banto/autoApproveReach": "lan" };
+    const wide = await call("publishService", { service: "web" }, lanMeta);
+    assert.equal(wide.isError, false, wide.text);
+    assert.match(wide.text, /公開するかは人が決めます/, "インターネットに届く公開を、人に聞かずに進めた");
+    assert.equal(relayed.some((c) => c.name === "publishRoute"), false);
+    assert.equal(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), false);
+
+    await caddyStore.setSettings({ ...(await caddyStore.settings()), reach: "lan" });
+    const r = await call("publishService", { service: "web" }, lanMeta);
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /公開しました：web:3000/);
+    assert.match(r.text, /メタ Project で、LAN の中までに届く公開は任されている/);
+    assert.match(r.text, /届く範囲：LAN/);
+    assert.equal(r.meta?.["dev.banto/pendingReply"], undefined, "後から届けるものは無い（人を待っていない）");
+    assert.ok(caddy.routes().some((x) => JSON.stringify(x).includes(HOST)), "LAN までの公開なのに道を張っていない");
+    const view = JSON.parse((await asHuman("get_publish_request", { requestId: requestIdOf(r.text) })).text);
+    assert.equal(view.request.state, "published");
+    assert.equal(view.request.autoApproved, true);
   });
 });
 
