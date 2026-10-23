@@ -12876,7 +12876,7 @@
       "number": 539,
       "kind": "task",
       "title": "メタ Project:結合試験・E2E を通し、release に反映",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [
         "project-3"
@@ -12890,7 +12890,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T16:05:14.708Z",
       "closedAt": null,
       "extra": {}
     },
