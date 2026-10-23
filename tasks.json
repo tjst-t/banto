@@ -12759,7 +12759,7 @@
       "number": 534,
       "kind": "task",
       "title": "host: 管理対象 Project のターン終了をメタ Project の専用 Fork に届ける(通知)",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f",
@@ -12774,7 +12774,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:30:53.006Z",
       "closedAt": null,
       "extra": {}
     },
