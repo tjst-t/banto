@@ -54,10 +54,41 @@ function Badge0() {
 
 // 1: 二重リング
 function Badge1() {
+  return <RingBadge ringClass="ring-border" />;
+}
+
+function RingBadge({ ringClass }: { ringClass: string }) {
   return (
-    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs font-semibold text-ink-2 ring-2 ring-border ring-offset-2 ring-offset-background">
+    <span
+      className={cn(
+        "flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-3 text-xs font-semibold text-ink-2 ring-2 ring-offset-2 ring-offset-background",
+        ringClass,
+      )}
+    >
       {INITIAL}
     </span>
+  );
+}
+
+// 案1の色違い(現状の border はやや薄いので、濃さ違いを明暗両テーマで見比べる)
+const RING_VARIANTS = [
+  { id: "border", label: "現状(border)", ringClass: "ring-border" },
+  { id: "ink-3", label: "少し濃く(ink-3)", ringClass: "ring-ink-3" },
+  { id: "ink-2", label: "もっと濃く(ink-2)", ringClass: "ring-ink-2" },
+];
+
+function ThemeSwatch({ dark }: { dark?: boolean }) {
+  return (
+    <div className={cn(dark && "dark", "rounded-lg border border-border bg-background p-3")}>
+      <div className="flex flex-col gap-2">
+        {RING_VARIANTS.map((v) => (
+          <div key={v.id} className="flex items-center justify-between gap-3">
+            <Row badge={<RingBadge ringClass={v.ringClass} />} />
+            <span className="shrink-0 text-xs text-ink-3">{v.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -258,6 +289,23 @@ export default function MetaBadgeDemoPage() {
           色の塗りは使わず(塗ってよいのは turn だけ)、形・アイコン・線で見分ける案を並べている。
           それぞれ、サイドバーの Project 行の文脈(頭文字バッジ + Project 名)で見せている。
         </p>
+
+        <section className="mt-6 rounded-lg border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold text-foreground">案１(二重リング)の色違い — 明暗両テーマ</h2>
+          <p className="mt-1 text-xs text-ink-3">
+            現状の border は薄くて目立ちづらいので、濃さ違いを 3 段階(border / ink-3 / ink-2)で比べている。
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <p className="mb-2 text-xs font-medium text-ink-3">ライト</p>
+              <ThemeSwatch />
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-medium text-ink-3">ダーク</p>
+              <ThemeSwatch dark />
+            </div>
+          </div>
+        </section>
 
         <div className="mt-8 flex flex-col gap-3">
           {CASES.map((c) => (
