@@ -12825,7 +12825,7 @@
       "number": 537,
       "kind": "task",
       "title": "host: メタ Project の権限(spec・LAN内 publish まで既定で任せる、release は既定「任せる」)を実装",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f"
@@ -12835,12 +12835,12 @@
       "labels": [],
       "body": "v4-architecture.md §4.6「権限——人に残すのは publish・money・destructive」。番頭の方針表(§4.5)を土台に、メタ Project では spec も既定で任せ、publish は既定どおり人に残すが LAN 内 publish は任せる既定にする。money・destructive は変えず人に残す。release を人に残すか任せるかは Project ごとに選べる設定にし、メタ Project の既定は「任せる」(番頭の既定「人」と異なる)。この既定が既存 Project(番頭含む)に影響しないことを確認する。",
       "doneWhen": "メタ Project で spec・LAN内publish が既定で人に聞かれず、release の扱いが設定で切り替えられ既定が「任せる」になっている。既存 Project の挙動が変わらないことを確認できる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/host-project-spec-lan-publish-release）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:30:56.554Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T15:49:59.301Z",
+      "closedAt": "2026-10-23T15:49:59.301Z",
       "extra": {}
     },
     {
