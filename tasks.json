@@ -12766,6 +12766,35 @@
       "updatedAt": "2026-10-23T11:45:16.786Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "caddy-api-json-html-encode-zstd-gzip",
+      "number": 529,
+      "kind": "task",
+      "title": "入口の Caddy で /api/* の JSON と HTML を圧縮する（encode zstd gzip）",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "perf",
+        "install"
+      ],
+      "body": "決定・2026-10-23、ユーザー。core の API の応答は圧縮されずに届いている（会話の記録 92KB・ui-resource 316KB。画面の JS は Next が gzip 済み）。install.sh が作る banto.caddy の `handle /api/*` に、Content-Type が application/json と text/html のときだけ `encode zstd gzip` を足す。text/event-stream（ターンの流れ等）は圧縮しない——溜まって画面が止まらないように。\n\n仕様：v4-security.md §1「入口は Caddy」。ブランチ fork/api-encode。\n\nあわせて、更新（update.mjs、root なし）でこれを既存のサーバに効かせる方法を検討する。",
+      "doneWhen": "本物の Caddy で：JSON と HTML は zstd/gzip で返り、event-stream は圧縮されず1件ずつ遅れなく届く（溜まらない）。install.sh の生成物が caddy validate を通る。更新での当て方の案を人に出す。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "c43ab8cc-0e67-4253-b071-c221d2807411"
+        }
+      ],
+      "createdAt": "2026-10-23T11:46:13.201Z",
+      "updatedAt": "2026-10-23T11:46:13.201Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
