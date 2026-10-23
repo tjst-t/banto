@@ -12,6 +12,8 @@ import {
   NotFoundError,
   ProjectGroupConflictError,
   ProjectSleepConflictError,
+  NotMetaProjectError,
+  InvalidManagedProjectError,
 } from "./store.js";
 import { projectThreadFold } from "./fold.js";
 
@@ -1329,5 +1331,89 @@ test("読むだけの印は thread.created に刻まれ、読み直しても残�
     await reloaded.load();
     assert.equal(reloaded.getThread(fork.id)?.restriction, "read-only");
     assert.equal(reloaded.getThread(base.id)?.restriction, undefined);
+  });
+});
+
+test("メタ Project で管理対象を選ぶと、Project ごとの専用の Fork が Base Thread の下に1本ずつ立ち、一覧に出る", async () => {
+  await withStore(async (store, dir, log) => {
+    const a = await store.createProject("banto", dir);
+    const b = await store.createProject("home", dir);
+    const c = await store.createProject("hermes", dir);
+    const meta = await store.createProject("orchestrator", dir, { kind: "meta" });
+    assert.equal(meta.kind, "meta");
+    const base = await store.createBaseThread(meta.id);
+
+    const set = await store.setManagedProjects(meta.id, [a.id, b.id, a.id]);
+    assert.deepEqual(set.managedProjectIds, [a.id, b.id], "重なりは落とす");
+    const forks = () => store.listThreadsForProject(meta.id).filter((t) => t.kind === "fork");
+    assert.deepEqual(
+      forks().map((t) => [t.managedProjectId, t.title, t.parentThreadId, t.status]),
+      [
+        [a.id, "banto", base.id, "active"],
+        [b.id, "home", base.id, "active"],
+      ],
+    );
+    assert.equal(store.listThreadsForProject(meta.id).filter((t) => t.kind === "base").length, 1, "Base を増やさない");
+
+    // 選び直す：外した Project の Fork は閉じ、残したものは2本目を立てない、足したものに立てる
+    await store.setManagedProjects(meta.id, [b.id, c.id]);
+    assert.deepEqual(
+      forks().map((t) => [t.managedProjectId, t.status, t.closedReason ?? null]),
+      [
+        [a.id, "closed", "管理対象から外しました"],
+        [b.id, "active", null],
+        [c.id, "active", null],
+      ],
+    );
+
+    // 選び直したら、閉じていたものを開き直す（新しく立てない）
+    await store.setManagedProjects(meta.id, [a.id, b.id, c.id]);
+    assert.equal(forks().length, 3);
+    assert.ok(forks().every((t) => t.status === "active"));
+
+    // 記録から畳み直しても同じ（Fork と Project の対応は Thread の印から引ける）
+    const reloaded = new ProjectThreadStore(dir, log);
+    await reloaded.load();
+    assert.deepEqual(reloaded.getProject(meta.id)?.managedProjectIds, [a.id, b.id, c.id]);
+    assert.deepEqual(
+      reloaded
+        .listThreadsForProject(meta.id)
+        .filter((t) => t.kind === "fork")
+        .map((t) => t.managedProjectId),
+      [a.id, b.id, c.id],
+    );
+  });
+});
+
+test("メタ Project に Base Thread が無ければ、管理対象を選んだときに1本立てる", async () => {
+  await withStore(async (store, dir) => {
+    const a = await store.createProject("banto", dir);
+    const meta = await store.createProject("orchestrator", dir, { kind: "meta" });
+    await store.setManagedProjects(meta.id, [a.id]);
+    const threads = store.listThreadsForProject(meta.id);
+    assert.deepEqual(
+      threads.map((t) => t.kind),
+      ["base", "fork"],
+    );
+    assert.equal(threads[1]!.parentThreadId, threads[0]!.id);
+    assert.equal(threads[1]!.managedProjectId, a.id);
+  });
+});
+
+test("管理対象はメタ Project にしか選べず、自分自身・メタ Project・閉じた Project・知らない id は断って何も積まない", async () => {
+  await withStore(async (store, dir) => {
+    const normal = await store.createProject("banto", dir);
+    const closed = await store.createProject("old", dir);
+    await store.closeProject(closed.id);
+    const meta = await store.createProject("orchestrator", dir, { kind: "meta" });
+    const other = await store.createProject("other-meta", dir, { kind: "meta" });
+
+    await assert.rejects(store.setManagedProjects(normal.id, [closed.id]), NotMetaProjectError);
+    await assert.rejects(store.setManagedProjects("nope", []), NotFoundError);
+    for (const bad of [[meta.id], [other.id], [closed.id], ["nope"]]) {
+      await assert.rejects(store.setManagedProjects(meta.id, bad), InvalidManagedProjectError, JSON.stringify(bad));
+    }
+    assert.equal(store.getProject(meta.id)?.managedProjectIds, undefined);
+    assert.deepEqual(store.listThreadsForProject(meta.id), []);
   });
 });

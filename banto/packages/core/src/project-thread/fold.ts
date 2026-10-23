@@ -107,8 +107,12 @@ export type ProjectThreadEvent =
          * 無ければふつうの会話
          */
         restriction?: ThreadRestriction;
+        /** **管理対象の Project 専用の Fork**（追加・2026-10-23、アーキ仕様 §4.6）。メタ Project が立てる。刻んだら変えない */
+        managedProjectId?: string;
       };
     }
+  // **メタ Project の管理対象の Project**（追加・2026-10-23、アーキ仕様 §4.6）。一覧そのものを置き換える
+  | { type: "project.managed_projects_set"; payload: { id: string; projectIds: string[] } }
   // **承認なしでメッセージを受け取ってよい Project の一覧**（追加・2026-10-01、アーキ仕様 §4.2）。一覧そのものを置き換える
   | { type: "project.message_senders_set"; payload: { id: string; senders: string[] } }
   // by・reason（追加・2026-10-08、アーキ仕様 §2.2「AI が自分の Fork を閉じる」）。それより前の記録は持たない
@@ -455,6 +459,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         if (p) next.projects.set(p.id, { ...p, name: event.payload.name });
         return next;
       }
+      case "project.managed_projects_set": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, managedProjectIds: [...event.payload.projectIds] });
+        return next;
+      }
       case "project.promoted": {
         const p = next.projects.get(event.payload.id);
         if (p) {
@@ -597,6 +606,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           ...(event.payload.restriction === "read-only" || event.payload.restriction === "supervisor"
             ? { restriction: event.payload.restriction }
             : {}),
+          ...(event.payload.managedProjectId ? { managedProjectId: event.payload.managedProjectId } : {}),
           createdSeq: raw.seq,
           resumePoint: event.payload.resumePoint,
           resumePoints: [],

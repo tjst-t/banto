@@ -373,6 +373,12 @@ export interface ProjectState {
    */
   prototyping?: true;
   /**
+   * **管理対象の Project**（メタ Project だけ。追加・2026-10-23、アーキ仕様 §4.6「メタ Project の構成」）。人が設定で選ぶ。
+   * `project.managed_projects_set` で一覧そのものを置き換える。無ければ空。どの Fork がどの Project 用かは Thread の
+   * `managedProjectId` から引く（ここに写しを持たない、規則3）
+   */
+  managedProjectIds?: ProjectId[];
+  /**
    * **いま別の実行場所へ移している**（追加・2026-10-11、v4-security.md §1「Project を別の実行場所へ移す」）。
    * `project.runtime_move_started` で立ち、`runtime_moved`・`runtime_move_failed` で消える。立っている間はターンを断り、
    * 届いたものは留める
@@ -438,8 +444,8 @@ export interface ClaudeAccountSwitchReasonRecord {
   claim?: string;
 }
 
-/** Project の印。いまはチャットだけ（アーキ仕様 §2.2「チャット」） */
-export type ProjectKind = "chat";
+/** Project の印。チャット（アーキ仕様 §2.2「チャット」）・メタ Project（アーキ仕様 §4.6） */
+export type ProjectKind = "chat" | "meta";
 
 /** 誰が眠らせたか（人・しばらく開いていないので自動で） */
 export type ProjectSleptBy = "human" | "auto";
@@ -605,6 +611,11 @@ export interface ThreadState {
   closedBy?: ThreadClosedBy;
   /** AI が閉じたときの理由（`close_fork` の `reason`）・自動化が乗り換えたこと */
   closedReason?: string;
+  /**
+   * **管理対象の Project 専用の Fork**（メタ Project だけ。追加・2026-10-23、アーキ仕様 §4.6「メタ Project の構成」）。
+   * 立てたとき（`thread.created`）に刻み、変えない。その Project との読み書きはこの Fork を経由する
+   */
+  managedProjectId?: ProjectId;
   /** system promptに入れるMemoryの上限seq（決定・2026-09-05）。Thread作成時と
    *  「畳んだ」時点で確定し、走行中は動かない——§3「走行中の枝の先頭は変えない」。
    *  これより後に増えた分は、ターンに添えて届ける（§2.3）。
