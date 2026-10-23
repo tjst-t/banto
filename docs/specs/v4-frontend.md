@@ -3240,3 +3240,17 @@ Repositories が名乗る画面（folder-provider、v4-modules.md の「core と
   作ると、Project を作ったあとに番頭を置く。置けなくても Project は開き、置けなかったことを知らせる
 - **携帯の幅**：見出しは名前・件数・「番頭を全部止める」・閉じるの1段、方針のチェックは1列、Project の行のボタンは折り返す（E2E で横に
   はみ出さないことを見る）
+
+### 6.55 メタ Project の設定——管理対象の Project と release の扱い（実装・2026-10-23、Backlog #538。モック fork/meta-project の `meta-project-panel.tsx` → 本実装。仕組みはアーキ仕様 §4.6）
+
+メタ Project（`kind: "meta"`）の Project の設定にだけ、「一般」のすぐ下に節「メタ Project」が出る（普通の Project・チャットには出ない）。
+実装は `components/banto/settings/meta-project-panel.tsx`。**押したらすぐ保存する**——表示するのは host が返した値で、断られたら
+理由を出して表示は host の値のまま（規則2・3）。眠っている間も出す（Module を通らない）。
+
+- **管理対象の Project**：候補はサイドバーと同じ並び（グループなし → グループの見出しの下 → スリープ中）。自分自身とメタ Project は
+  出さない。スイッチは一覧そのものを `PUT /api/projects/:id/managed-projects` に渡し、host が立てた・閉じた・開き直した専用の Fork を
+  サイドバーへ写す。行の下の文は「専用 Fork を1本持つ」／「管理していない」
+- **release（main → release の取り込み）**：スイッチがオンで「任せる」（既定）、オフで「人に残す」。`GET/PUT /api/projects/:id/meta-release`
+- **Backlog の置き場（tasks.json・GitHub Gist）はここに置かない**——Backlog Module 自身の設定面で選ぶ、普通の Module 設定の範囲
+  （v4-modules.md §4.4「Gist の置き場」）
+- サイドバーのメタ Project の目印（モックの丸形の頭文字）はまだ入れていない

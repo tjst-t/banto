@@ -266,6 +266,15 @@ export function markThreadClosed(id: string, by: { by: NonNullable<MockThread["c
   notifyMockStoreChange();
 }
 
+/** **開き直したことを手元へ写す**（追加・2026-10-23）。host が開き直した Fork（メタ Project の管理対象を選び直した）を一覧に戻す */
+export function markThreadReopened(id: string): void {
+  if (getThread(id)?.status !== "closed") return;
+  mockThreads = mockThreads.map((t) =>
+    t.id === id ? { ...t, status: "open", closedAt: undefined, closedBy: undefined, closedReason: undefined } : t,
+  );
+  notifyMockStoreChange();
+}
+
 /**
  * Fork Thread を畳む（ヘッダの GitMerge と、サイドバーの目次の両方から呼ぶ）。
  * **閉じる前に host が持っている最新の中身を手元へ写す**——閉じた Fork は

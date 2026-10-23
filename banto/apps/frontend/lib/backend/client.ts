@@ -145,8 +145,10 @@ export interface RealProject {
   /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化（KVM）」の 4.。サイドバーの行に印）。そうでなければ無い */
   privileged?: true;
   /** **チャット**（追加・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project。「Project にする」で外れる。
-   *  `meta`：メタ Project（追加・2026-10-23、アーキ仕様 §4.6）——画面はまだ普通の Project として扱う */
+   *  `meta`：メタ Project（追加・2026-10-23、アーキ仕様 §4.6）——設定画面に「メタ Project」の節が出る */
   kind?: "chat" | "meta";
+  /** メタ Project の管理対象（追加・2026-10-23、アーキ仕様 §4.6）。メタ Project だけ・選んだことがあるときだけ */
+  managedProjectIds?: string[];
   /** 試作を始めたか（チャットだけが立てる。一覧の口は全部に真偽で添える） */
   prototyping?: boolean;
   createdAt: string;
@@ -1762,6 +1764,33 @@ export async function setRealProjectInstruction(projectId: string, text: string)
       body: JSON.stringify({ text }),
     })
   ).text;
+}
+
+/**
+ * **メタ Project の管理対象**（追加・2026-10-23、アーキ仕様 §4.6「メタ Project の構成」）。一覧そのものを置き換え、host が
+ * 選んだ Project ごとに専用の Fork を立てる（外したものは閉じる）。返るのは書いたあとの Project
+ */
+export async function setRealManagedProjects(projectId: string, projectIds: readonly string[]): Promise<RealProject> {
+  return request<RealProject>(`/api/projects/${projectId}/managed-projects`, {
+    method: "PUT",
+    body: JSON.stringify({ projectIds }),
+  });
+}
+
+/** メタ Project の release の扱い（アーキ仕様 §4.6「権限」）。`delegate`＝任せる（既定）・`human`＝人に残す */
+export type RealMetaRelease = "delegate" | "human";
+
+export async function fetchRealMetaRelease(projectId: string): Promise<RealMetaRelease> {
+  return (await request<{ release: RealMetaRelease }>(`/api/projects/${projectId}/meta-release`)).release;
+}
+
+export async function setRealMetaRelease(projectId: string, release: RealMetaRelease): Promise<RealMetaRelease> {
+  return (
+    await request<{ release: RealMetaRelease }>(`/api/projects/${projectId}/meta-release`, {
+      method: "PUT",
+      body: JSON.stringify({ release }),
+    })
+  ).release;
 }
 
 /**

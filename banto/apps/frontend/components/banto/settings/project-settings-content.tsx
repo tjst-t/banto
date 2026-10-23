@@ -12,6 +12,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   BookMarked,
+  Network,
   Plus,
   Puzzle,
   ScrollText,
@@ -46,6 +47,7 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import { ProjectGeneralPanel } from "@/components/banto/settings/project-general-panel";
 import { ProjectMemoryPanel } from "@/components/banto/settings/project-memory-panel";
+import { MetaProjectPanel } from "@/components/banto/settings/meta-project-panel";
 import { ProjectClaudeAccountsPanel } from "@/components/banto/settings/project-claude-accounts-panel";
 import { SkillsPanel } from "@/components/banto/settings/skills-panel";
 import {
@@ -100,6 +102,8 @@ const GENERAL_CATEGORY: SettingsNavItem = { section: "project-general", label: "
 /** この Project で使う Claude のアカウントの並び（2026-10-18、v4-frontend.md §6.46）。「一般」の Claude のログインの下 */
 const CLAUDE_ACCOUNTS_CATEGORY: SettingsNavItem = { section: "project-claude-accounts", label: "Claude のアカウント", icon: UsersRound };
 const MEMORY_CATEGORY: SettingsNavItem = { section: "project-memory", label: "Memory", icon: BookMarked };
+/** **メタ Project だけの設定**（管理対象・release の扱い、2026-10-23、アーキ仕様 §4.6）。メタ Project でなければ出さない */
+const META_CATEGORY: SettingsNavItem = { section: "project-meta", label: "メタ Project", icon: Network };
 /** この Project で効かせる Skill（全体の既定の上書き、2026-09-23） */
 const SKILLS_CATEGORY: SettingsNavItem = { section: "project-skills", label: "この Project の Skill", icon: ScrollText };
 
@@ -178,6 +182,9 @@ export function ProjectSettingsContent({
     if (section === "project-general") {
       // 名前・根・危険な操作（Close）は1つの面に——移したのは配置だけ（2026-09-11）
       return <ProjectGeneralPanel projectId={projectId} />;
+    }
+    if (section === "project-meta" && project?.real && project.kind === "meta") {
+      return <MetaProjectPanel projectId={projectId} />;
     }
     if (section === "project-claude-accounts") {
       return <ProjectClaudeAccountsPanel key={projectId} projectId={projectId} />;
@@ -358,8 +365,9 @@ export function ProjectSettingsContent({
   }
 
   // **眠っている Project**（§6.43）——Module の設定・Skills などは起こさずに「眠っています」。起きたら読み直す
-  // （起こしたのがここでも、サイドバーでも）。名前・根・閉じる（一般）と Memory・Claude のアカウントは Module を通らないので出さない
-  const showAsleep = asleep && section !== "project-general" && section !== "project-memory" && section !== "project-claude-accounts";
+  // （起こしたのがここでも、サイドバーでも）。名前・根・閉じる（一般）と Memory・Claude のアカウント・メタ Project は Module を通らないので出さない
+  const showAsleep =
+    asleep && section !== "project-general" && section !== "project-memory" && section !== "project-claude-accounts" && section !== "project-meta";
   return (
     <>
       {showAsleep ? <AsleepNotice projectId={projectId} className="mb-4" /> : null}
@@ -379,6 +387,8 @@ export function useProjectCategories(projectId: string): readonly SettingsNavIte
   return [
     // **いちばん上は「一般」**（名前・根・Close）——この Project が何者か、が先
     ...(project?.real ? [GENERAL_CATEGORY] : []),
+    // メタ Project の設定は「一般」のすぐ下——この Project が何を束ねるか
+    ...(project?.real && project.kind === "meta" ? [META_CATEGORY] : []),
     ...(CONNECTED_FEATURES.claudeAccounts && project?.real ? [CLAUDE_ACCOUNTS_CATEGORY] : []),
     // 実 Project だけ——mock Project には対応する Project が host に無い（規則13）
     ...(CONNECTED_FEATURES.projectModules && project?.real ? [MODULES_CATEGORY] : []),

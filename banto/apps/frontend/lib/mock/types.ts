@@ -41,9 +41,10 @@ export interface MockProject {
   privileged?: true;
   /**
    * **チャット**（追加・2026-10-21、v4-frontend.md §6.53）。中身は普通の Project で、サイドバーの「チャット」に並ぶ
-   * （Project の一覧・履歴には出さない）。「Project にする」で外れる。写しの元は host
+   * （Project の一覧・履歴には出さない）。「Project にする」で外れる。写しの元は host。
+   * `meta`：メタ Project（追加・2026-10-23、アーキ仕様 §4.6）——並びは普通の Project と同じで、設定に「メタ Project」の節が出る
    */
-  kind?: "chat";
+  kind?: "chat" | "meta";
   /** 試作を始めた（チャットだけ）。行の印（コンテナの様子）に使う。写しの元は host */
   prototyping?: true;
   /** 作った時刻（host の記録）。チャットの一覧を新しい順に並べる */
