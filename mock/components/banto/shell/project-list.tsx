@@ -468,7 +468,7 @@ function SleepingRow({
           className={cn(
             "flex size-6 shrink-0 items-center justify-center border border-border text-xs font-semibold",
             project.kind === "meta" ? "rounded-full" : "rounded-md",
-            project.kind === "meta" && "ring-1 ring-ink-3 ring-offset-1 ring-offset-background",
+            project.kind === "meta" && "ring-2 ring-ink-3 ring-offset-1 ring-offset-background",
           )}
           aria-label={project.kind === "meta" ? "メタ Project" : undefined}
         >

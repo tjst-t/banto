@@ -95,7 +95,7 @@ export function ProjectInitial({ project, active }: { project: MockProject; acti
         "flex size-6 shrink-0 items-center justify-center text-xs font-semibold",
         isMeta ? "rounded-full" : "rounded-md",
         active ? "bg-accent-soft text-accent-ink" : "bg-surface-3 text-ink-2",
-        isMeta && "ring-1 ring-ink-3 ring-offset-1 ring-offset-background",
+        isMeta && "ring-2 ring-ink-3 ring-offset-1 ring-offset-background",
       )}
       aria-label={isMeta ? "メタ Project" : undefined}
     >
