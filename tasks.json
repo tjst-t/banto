@@ -12738,7 +12738,7 @@
       "number": 533,
       "kind": "task",
       "title": "host: 管理対象 Project の Thread 全体を読む口(read_thread 相当)を新設",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12750,7 +12750,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:06:38.738Z",
       "closedAt": null,
       "extra": {}
     },
