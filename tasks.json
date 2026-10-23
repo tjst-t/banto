@@ -12737,6 +12737,35 @@
       "updatedAt": "2026-10-23T09:55:39.801Z",
       "closedAt": "2026-10-23T09:55:39.801Z",
       "extra": {}
+    },
+    {
+      "id": "install-sh-banto-caddy-api-json-html",
+      "number": 528,
+      "kind": "task",
+      "title": "install.sh の banto.caddy で /api/* の JSON と HTML を圧縮する",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "perf",
+        "install"
+      ],
+      "body": "決定・2026-10-23、ユーザー。画面（Next）は自分で gzip しているが、/api/*（core）は圧縮していない（ndev2 で確かめた：会話の記録 92KB・ui-resource 316KB が素のまま）。install.sh が作る banto.caddy の handle /api/* に `encode zstd gzip`（Content-Type が application/json・text/html のときだけ）を足す。text/event-stream（ターンの流れ）は圧縮しない——溜まると画面がすぐ動かなくなる。\n\n仕様：v4-security.md の Caddy の節。反映は人が install.sh を打ち直す。",
+      "doneWhen": "生成した banto.caddy を caddy validate が通す。実際の Caddy で core の前に置き、JSON・HTML は gzip/zstd で返り、event-stream は圧縮されず、1件ずつ間を空けて出した出来事がその都度届く（溜まらない）ことを確かめる。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "c43ab8cc-0e67-4253-b071-c221d2807411"
+        }
+      ],
+      "createdAt": "2026-10-23T11:45:16.786Z",
+      "updatedAt": "2026-10-23T11:45:16.786Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
