@@ -12759,7 +12759,7 @@
       "number": 534,
       "kind": "task",
       "title": "host: 管理対象 Project のターン終了をメタ Project の専用 Fork に届ける(通知)",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f",
@@ -12770,12 +12770,12 @@
       "labels": [],
       "body": "v4-architecture.md §4.6「通知——ターンが終わるたびに届いてよい」。管理対象 Project 側の Thread でターンが終わったら、対応する専用 Fork に知らせが届き、AI が起きて様子を確かめる。「本当に人の返事を待っているターンか」は判定しない——毎回起きてよい(通知ストームは許容する)。配線は既存の Thread 間メッセージの「届いたら起こす」に乗せるか、§4.3 の仕組みと同じ「出来事で起きる自動化」として host に新しい出来事(例:project.turn-ended)を新設するか、どちらでもよい(実装時に決める)。",
       "doneWhen": "管理対象 Project でターンが終わると、メタ Project の対応する専用 Fork が自動で起きる。単体・結合試験で確認できる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/host-project-project-fork）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:30:53.006Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T15:41:52.928Z",
+      "closedAt": "2026-10-23T15:41:52.928Z",
       "extra": {}
     },
     {
