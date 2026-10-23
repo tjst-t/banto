@@ -1246,3 +1246,63 @@ test("均す：ログインしていないアカウントに固定されてい�
     await f.close();
   }
 });
+
+// **実測の障害**（2026-10-23、`~/banto-host.log`）——クライアントが上流からの応答を流し込んでいる最中に接続を切ると、
+// `res` の `close` → `abort.abort()` で、上流の応答を流す Readable が AbortError で 'error' を emit。リスナーが
+// 1つも無いと Node はプロセス全体（banto-host）を落とす。本物の HTTP 接続で再現する
+// （テストドリブレナーはプロセス単位で動く——未処理の例外が本当に出れば、このテスト自体が終えず、
+// ファイル全体が異常終了する）。
+test("クライアントが応答の途中で接続を切っても、未処理の AbortError で落ちない（本物の HTTP 接続で再現）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-login-relay-abort-"));
+  writeFileSync(
+    join(dir, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "REAL-ACCESS", refreshToken: "never-leaves", subscriptionType: "max", rateLimitTier: "tier-x" } }),
+  );
+  // 上流はストリービングで返す—— 1つ書いたあと少し待って 2つ目を書こうとする。その「少し待つ」間に
+  // クライアントが切断し、中継の `abort.abort()` が、まだ流している最中の Readable を落とす
+  const upstream = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: first\n\n");
+    setTimeout(() => {
+      try {
+        res.write("data: second\n\n");
+        res.end();
+      } catch {
+        // クライアントが切れていれば書けない——それでいい
+      }
+    }, 200);
+  });
+  const upstreamUrl = await listen(upstream);
+  const accounts = accountsAt(dir, join(dir, ".credentials.json"), () => new Date("2026-10-08T00:00:00Z"));
+  accounts.setMode("ordered");
+  const relay = new ClaudeLoginRelay({
+    accounts,
+    secretsPath: join(dir, "secrets.json"),
+    upstream: upstreamUrl,
+    enabled: () => true,
+    sourceMatches: async () => true,
+    onUpstreamUnauthorized: () => {},
+    onUpstreamAuthorized: () => {},
+    now: () => new Date("2026-10-08T00:00:00Z"),
+  });
+  const secret = (await relay.envFor("p1", "http://x"))!.CLAUDE_CODE_OAUTH_TOKEN!;
+  const front = createServer((req, res) => void relay.handle(req, res, CORE));
+  const url = await listen(front);
+
+  await new Promise<void>((resolve) => {
+    const req = request(`${url}${CLAUDE_LOGIN_PATH}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${secret}` } }, (res) => {
+      res.once("data", () => {
+        req.destroy(); // 最初のチャンクを受け取ったところで、クライアント側から切る
+      });
+    });
+    req.on("error", () => {}); // destroy による ECONNRESET 等は無視（クライアント側の後始末）
+    req.end("{}");
+    setTimeout(resolve, 500); // 中継側が abort を処理し終える十分な時間を待つ
+  });
+
+  // ここまでテストが到達していれば、未処理の例外でプロセスが落ちていない
+  front.closeAllConnections();
+  upstream.closeAllConnections();
+  await Promise.all([new Promise((r) => front.close(r)), new Promise((r) => upstream.close(r))]);
+  rmSync(dir, { recursive: true, force: true });
+});
