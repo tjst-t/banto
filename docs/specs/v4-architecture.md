@@ -3907,6 +3907,19 @@ canceled）、認証を持つ。
   - `list_threads`——宛先の一覧。**id・題・Project 名・Base か Fork か・状態（空き／走っている／人の返事待ち）だけ。
     中身は読まない**。既定は同じ Project、指定で他の Project も
   - `send_message`——宛先・題・本文を送る。届いたら宛先の AI が起きる。自分自身には送れない
+  - `read_thread`——**メタ Project の専用 Fork だけ**に見せる、管理対象 Project の Thread の中身を読む口（追加・2026-10-23、
+    Backlog #533。§4.6「読む」——この節の「中身は読まない」を、メタ Project に限って外す）。実装は `delivery/thread-reading.ts`：
+    - **読める Project は host が決める**（`readableProjectOf`——その Thread が受け持つ管理対象 Project。決まらない Thread には
+      tool を見せない）。範囲の外の Thread は「無い」と同じ答えで断る（ほかの Project の Thread の有無を探らせない）。
+      読むだけなので承認を通さない（`allowedTools`）。読むだけの回には出さない
+    - **返すのは人が画面で見る範囲**（`GET /api/threads/:id` に近い）：発言（人・AI・届いたものとその送り元・外から来た本文）・
+      画面つき tool の呼び出しと結果・会話のカード（判断待ち：中身・状態・答え）・ターンのまとめ・Clear と要約の区切り・
+      いま人を待っているカード（`waitingJudgments`）・走っているターンの途中の tool 呼び出しと結果（`runningTurn`）。
+      走行の内部事情（resume-point・札・セッション・使用量）は返さない。カードに答える口・Vault の値は含まない
+    - **範囲の指定**：既定は新しいほうから `limit` 件（既定 30・上限 100、発言と区切りを合わせた数）。`afterSeq` に前回の
+      `lastSeq` を渡すと差分、`beforeSeq` で遡る。長い値（tool の引数・結果・届いた本文、4000 文字）と発言（20000 文字）は切る
+    - **記録に残らないもの**：終わったターンの、画面を持たない tool の呼び出しは記録に無い（人の画面でもリロード後は見えない）
+      ので、読めるのは走っている間だけ
 - **宛先は Project と Thread で指す**。**Thread を指さず Project だけ指したら、その Project に新しい Fork を立てて届ける**
   （**会話は引き継がず、まっさらな会話で始める**——Base の会話を Clear した状態。Memory は Project のものなので
   そのまま効く。決定・2026-10-01、ユーザー。Fork の名前はメッセージの題）。既にある Thread（Base を含む）に届けたいときは Thread まで指す

@@ -14,6 +14,7 @@ import { readOnlyCoreToolsOf, type ReadOnlyTurnShape } from "../relay/read-only.
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import type { ThreadReading } from "../delivery/thread-reading.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import {
@@ -76,6 +77,11 @@ export const FORK_TOOL_NAME = "start_forks";
 export const LIST_THREADS_TOOL_NAME = "list_threads";
 export const CLAUDE_USAGE_TOOL_NAME = "claude_usage";
 export const SEND_MESSAGE_TOOL_NAME = "send_message";
+/**
+ * **管理対象 Project の Thread を読む**（追加・2026-10-23、アーキ仕様 §4.6「読む」）。読める範囲を host が決めた Thread
+ * （メタ Project の専用 Fork）にだけ見せる。読むだけなので承認を通さない
+ */
+export const READ_THREAD_TOOL_NAME = "read_thread";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
 export const START_PROTOTYPING_TOOL_NAME = "start_prototyping";
 /** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く */
@@ -306,6 +312,11 @@ export function createForkMcpServer(
   supervisorTools?: Pick<SupervisorInstructions, "instruct" | "listStalled">,
   /** **試作を始める**（チャットだけ）。渡されなければ tool を見せない */
   prototyping?: PrototypingTool,
+  /**
+   * **管理対象 Project の Thread を読む**（§4.6）。渡されたときだけ `read_thread` を見せる——渡すのは、この Thread に読める
+   * Project があるとき（メタ Project の専用 Fork）だけ。turn-runner が決める。ほかの会話の一覧には出さない
+   */
+  reading?: Pick<ThreadReading, "read">,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -440,6 +451,35 @@ export function createForkMcpServer(
           return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
         },
       ),
+      ...(reading
+        ? [
+            tool(
+              READ_THREAD_TOOL_NAME,
+              [
+                "受け持つ管理対象 Project の Thread の中身を、人が画面で見るのと同じ範囲で読む：発言・届いたもの・画面つき tool の呼び出しと結果・",
+                "会話のカード（承認待ち・判断待ち。答えはここではできない）・ターンのまとめ・Clear と要約の区切り、走っているターンなら途中の tool 呼び出しと結果。",
+                "既定は新しいほうから limit 件。afterSeq に前回の lastSeq を渡すと、その続き（差分）だけ読める。beforeSeq で遡る。",
+                "読むだけ——相手に何か頼むときは send_message で新しいメッセージを送る。",
+              ].join(""),
+              {
+                threadId: z.string().describe("読む Thread の id（list_threads で分かる）"),
+                afterSeq: z.number().int().optional().describe("この seq より後ろだけ読む（前回の lastSeq を渡すと差分）"),
+                beforeSeq: z.number().int().optional().describe("この seq より前を読む（遡る）"),
+                limit: z.number().int().optional().describe("返す件数（1〜100、既定 30）"),
+              },
+              async ({ threadId: target, afterSeq, beforeSeq, limit }) => {
+                const result = reading.read(threadId, {
+                  threadId: target,
+                  ...(afterSeq !== undefined ? { afterSeq } : {}),
+                  ...(beforeSeq !== undefined ? { beforeSeq } : {}),
+                  ...(limit !== undefined ? { limit } : {}),
+                });
+                if (!result.ok) return { content: [{ type: "text" as const, text: result.text }], isError: true };
+                return { content: [{ type: "text" as const, text: JSON.stringify(result.view, null, 2) }] };
+              },
+            ),
+          ]
+        : []),
       tool(
         SEND_MESSAGE_TOOL_NAME,
         [

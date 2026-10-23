@@ -29,6 +29,7 @@ import type { AskInThreadDeps } from "../inbox/ask-in-thread.js";
 import {
   AUTOMATION_TOOL_NAMES,
   CLOSE_FORK_TOOL_NAME, CLAUDE_USAGE_TOOL_NAME,
+  READ_THREAD_TOOL_NAME,
   START_PROTOTYPING_TOOL_NAME,
   closeForkDroppedNote,
   createForkMcpServer,
@@ -46,6 +47,7 @@ import {
   type TurnSummaryState,
 } from "./turn-summary.js";
 import type { ThreadMessaging } from "../delivery/thread-messages.js";
+import type { ThreadReading } from "../delivery/thread-reading.js";
 import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
@@ -382,6 +384,8 @@ async function* runThreadTurnInner(
     continueAfterPrototyping?(threadId: string): Promise<void>;
     /** **Thread 間・Project 間のメッセージ**（決定・2026-10-01、§4.2）。渡されなければ tool は断る */
     messaging?: ThreadMessaging;
+    /** **管理対象 Project の Thread を読む**（追加・2026-10-23、§4.6「読む」）。渡されなければ `read_thread` を見せない */
+    threadReading?: Pick<ThreadReading, "scopeOf" | "read">;
     /** **AI が自動化を作る・直す口**（決定・2026-10-15、§4.3「人と AI の作り方」）。渡されなければ tool は断る */
     automationTools?: AutomationTools;
     /** **Claude の使用量**（v4-security.md §2「AI が使用量を見る」）。core の tool `claude_usage` が返す文を作る */
@@ -680,6 +684,8 @@ async function* runThreadTurnInner(
     !restricted && project.kind === "chat" && !project.prototyping && deps.startPrototyping
       ? Object.assign(forks.prototyping, { start: () => deps.startPrototyping!(thread.projectId) })
       : undefined;
+  // **管理対象 Project の Thread を読む**（§4.6）。読める Project が決まっている Thread だけ（読むだけの回・番頭の回には出さない）
+  const readThreadShown = !restricted && deps.threadReading?.scopeOf(input.threadId) !== undefined;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -699,6 +705,7 @@ async function* runThreadTurnInner(
     // 番頭の tool は番頭の回にだけ（ふつうの会話には出さない、§4.5）
     supervisor ? deps.supervisorInstructions : undefined,
     prototypingTool,
+    readThreadShown ? deps.threadReading : undefined,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -843,6 +850,9 @@ async function* runThreadTurnInner(
             ...(turnSummary ? [`mcp__banto-thread__${REPORT_TURN_TOOL_NAME}`] : []),
             // 試作を始めるのは人の承認の対象にしない（ユーザー・2026-10-21——書く・走らせるのはそのあとの Shell 等がそれぞれの承認を通る）
             ...(prototypingTool ? [`mcp__banto-thread__${START_PROTOTYPING_TOOL_NAME}`] : []),
+            // 管理対象 Project の Thread を読むのは聞かずに通す——読めるかは host が決めて tool を見せたかどうかで済んでいる。
+            // 読むだけで、承認にも Vault にも触れない（§4.6「読む」）
+            ...(readThreadShown ? [`mcp__banto-thread__${READ_THREAD_TOOL_NAME}`] : []),
           ],
       // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
       // Elicitation も聞かずに断る

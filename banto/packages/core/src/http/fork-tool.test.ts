@@ -26,6 +26,7 @@ import { createApp } from "./app.js";
 import { AppEventBus, type AppEvent } from "./app-events.js";
 import {
   CLOSE_FORK_TOOL_NAME,
+  READ_THREAD_TOOL_NAME,
   composeForkInstruction,
   createForkMcpServer,
   FORK_SERVER_NAME,
@@ -85,6 +86,8 @@ interface Harness {
 async function withForkApp(
   runner: (opts: RunnerOpts) => AsyncGenerator<unknown, unknown>,
   fn: (h: Harness) => Promise<void>,
+  /** 試験ごとに足す配線（`readableProjectOf` 等） */
+  extraDeps: Partial<Parameters<typeof createApp>[0]> = {},
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-fork-tool-"));
   try {
@@ -133,6 +136,7 @@ async function withForkApp(
       threadTurns: turns,
       deliveries,
       runTurn: runner as unknown as Parameters<typeof createApp>[0]["runTurn"],
+      ...extraDeps,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -618,5 +622,60 @@ test("人が POST /close で閉じても、画面に thread.closed（by: human�
         [{ type: "thread.closed", threadId: fork.id, projectId: project.id, by: "human" }],
       );
     },
+  );
+});
+
+test("read_thread（§4.6）は読める Project が決まった Thread のターンにだけ渡り、聞かずに通す——その Project の Thread が読める", async () => {
+  // 試験の中で決まる id（専用 Fork と、読める Project）
+  const scope = { fork: "", project: "" };
+  const seen: Array<{ prompt: string; shown: boolean; allowed: boolean; read?: string }> = [];
+  await withForkApp(
+    async function* (opts) {
+      yield init("s");
+      const tools = (opts.mcpServers[FORK_SERVER_NAME] as {
+        instance: { _registeredTools: Record<string, { handler: (args: unknown, extra: unknown) => Promise<unknown> }> };
+      }).instance._registeredTools;
+      const allowedTools = (opts as RunnerOpts & { allowedTools?: string[] }).allowedTools ?? [];
+      const entry: (typeof seen)[number] = {
+        prompt: opts.prompt,
+        shown: tools[READ_THREAD_TOOL_NAME] !== undefined,
+        allowed: allowedTools.includes(`mcp__${FORK_SERVER_NAME}__${READ_THREAD_TOOL_NAME}`),
+      };
+      if (entry.shown) {
+        const target = /target=(\S+)/.exec(opts.prompt)?.[1];
+        const r = (await tools[READ_THREAD_TOOL_NAME]!.handler({ threadId: target }, {})) as { content: Array<{ text: string }> };
+        entry.read = r.content[0]!.text;
+      }
+      seen.push(entry);
+      yield say("見ました");
+      return { sessionId: "s", compactionCount: 0 };
+    },
+    async (h) => {
+      const managed = await h.projectThread.createProject("app", "/tmp");
+      const managedBase = await h.projectThread.createBaseThread(managed.id);
+      await h.projectThread.appendMessage(managedBase.id, "user", "ログインを直して");
+      const meta = await h.projectThread.createProject("meta", "/tmp");
+      const metaBase = await h.projectThread.createBaseThread(meta.id);
+      const metaFork = await h.projectThread.forkThread(metaBase.id, { title: "app 担当" });
+      scope.fork = metaFork.id;
+      scope.project = managed.id;
+      for (const threadId of [metaBase.id, metaFork.id]) {
+        const res = await fetch(`${h.base}/api/threads/${threadId}/messages`, {
+          method: "POST",
+          headers: h.headers,
+          body: JSON.stringify({ prompt: `target=${managedBase.id}` }),
+        });
+        assert.match(await res.text(), /"type":"done"/);
+      }
+      assert.equal(seen.length, 2);
+      assert.equal(seen[0]!.shown, false, "読める Project の無い Base には見せない");
+      assert.equal(seen[0]!.allowed, false);
+      assert.equal(seen[1]!.shown, true, "専用 Fork には見せる");
+      assert.equal(seen[1]!.allowed, true, "読むだけなので聞かずに通す");
+      const view = JSON.parse(seen[1]!.read!) as { threadId: string; entries: Array<{ text?: string }> };
+      assert.equal(view.threadId, managedBase.id);
+      assert.ok(view.entries.some((e) => e.text === "ログインを直して"));
+    },
+    { readableProjectOf: (threadId) => (threadId === scope.fork ? scope.project : undefined) },
   );
 });
