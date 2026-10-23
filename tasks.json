@@ -12687,6 +12687,30 @@
       "updatedAt": "2026-10-23T06:13:06.741Z",
       "closedAt": "2026-10-23T06:13:06.741Z",
       "extra": {}
+    },
+    {
+      "id": "project-2",
+      "number": 526,
+      "kind": "story",
+      "title": "メタ Project(下書き)",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "spec",
+        "meta-project"
+      ],
+      "body": "複数の管理対象 Project を横断してオーケストレーションする特別な Project「メタ Project」の仕様下書き。\n\n仕様は docs/specs/v4-architecture.md §4.6(fork/meta-project)に書いた。番頭(#505)の仕様・実装を土台に、以下を決めた:\n- 番頭はいったん消さない。見回りは対象外、判断役・番頭は将来メタ Project に統合される可能性(今は決めない)\n- 管理対象 Project ごとに専用 Fork、書くのは新規メッセージ送信のみ(承認待ちへの直接回答は不可)\n- 読みは Thread 全体(人が画面で見る範囲、承認カード・tool呼び出し含む)——host 側に新しい読み取り口が必要\n- 報告のしかたは AI が協調して判断(固定手順なし)\n- Backlog は新バックエンド(GitHub Gist、非公開)、既存モデル(dependsOn・parent)をそのまま持ち込む\n- 権限は spec・LAN内publishまで任せる、money・destructive・LAN外publishは人に残す\n\nまだ実装前。レビューしてから実装に進む。",
+      "doneWhen": "docs/specs/v4-architecture.md §4.6 がレビューされ、実装に進むか・方向を変えるかが決まる",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T07:46:47.812Z",
+      "updatedAt": "2026-10-23T07:46:47.812Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
