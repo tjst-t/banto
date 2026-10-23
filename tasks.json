@@ -12717,7 +12717,7 @@
       "number": 527,
       "kind": "bug",
       "title": "runCommand（待つ形）で & / setsid を使って背景化したプロセスが、記録にも出ず止める口も無い",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -12734,7 +12734,7 @@
       ],
       "threads": [],
       "createdAt": "2026-10-23T08:15:32.283Z",
-      "updatedAt": "2026-10-23T09:40:22.291Z",
+      "updatedAt": "2026-10-23T09:40:33.170Z",
       "closedAt": null,
       "extra": {}
     }
