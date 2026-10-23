@@ -1,6 +1,6 @@
-import type { MockMetaProjectSettings, ProjectId } from "./types";
+import type { MockMetaProjectSettings, MockProject, ProjectId } from "./types";
 import { notifyMockStoreChange } from "./store-events";
-import { getAllProjects } from "./projects";
+import { getSidebarSections } from "./project-org";
 
 // メタ Project（v4-architecture.md §4.6）の設定のモックデータ。UI を固める
 // ことが目的——バックエンドとは繋がっていない（`mock/README.md`）。
@@ -36,9 +36,18 @@ export function setMetaProjectSettings(settings: MockMetaProjectSettings): void 
 }
 
 /**
- * このメタ Project が管理対象として選べる Project——自分自身と、他のメタ
- * Project は候補に出さない（メタ Project を入れ子にする話はまだ無い）
+ * 管理対象の候補を、**サイドバーと同じ順序・グループ構造**で返す（決定・2026-10-23、
+ * レビュー指摘）——「どこにあるか」を探す手間を減らすため、一覧の真実は project-org.ts
+ * の1か所にする（規則３）。スリープ中も含む——管理対象にするかは起きているかで増らすべきではない
  */
-export function getManageableProjects(metaProjectId: ProjectId) {
-  return getAllProjects().filter((p) => p.id !== metaProjectId && p.kind !== "meta");
+export function getManageableProjectSections(metaProjectId: ProjectId) {
+  const isCandidate = (p: MockProject) => p.id !== metaProjectId && p.kind !== "meta";
+  const sections = getSidebarSections();
+  return {
+    ungrouped: sections.ungrouped.filter(isCandidate),
+    groups: sections.groups
+      .map((g) => ({ group: g.group, projects: g.projects.filter(isCandidate) }))
+      .filter((g) => g.projects.length > 0),
+    sleeping: sections.sleeping.filter(isCandidate),
+  };
 }

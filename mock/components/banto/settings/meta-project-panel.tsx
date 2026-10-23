@@ -9,23 +9,32 @@
 // （レビュー指摘・2026-10-23）。ここに残るのは、このメタ Project だけが
 // 持つ設定——管理対象 Project の一覧と、release の扱い。
 //
+// 管理対象の候補は、サイドバーと同じ順序・グループ構造で出す（決定・2026-10-23、
+// レビュー指摘）——「どこにあるか」をもう一度探さなくて済むように。
+//
 // 専用 Fork を実際に作る操作はまだ無い（「作る前にモックで考える」段階、
 // v4-architecture.md §4.6「まだ決めていないこと」）。
-import { Network, Rocket } from "lucide-react";
+import { Moon, Network, Rocket } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
-  getManageableProjects,
+  getManageableProjectSections,
   getMetaProjectSettings,
   setMetaProjectSettings,
 } from "@/lib/mock/meta-project";
+import { GROUP_DOT_CLASS } from "@/lib/mock/project-org";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import type { MockReleasePolicy } from "@/lib/mock/types";
+import type { MockProject, MockReleasePolicy } from "@/lib/mock/types";
+import { cn } from "@/lib/utils";
 
 export function MetaProjectPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
   const settings = getMetaProjectSettings(projectId);
-  const candidates = getManageableProjects(projectId);
+  const sections = getManageableProjectSections(projectId);
+  const candidateCount =
+    sections.ungrouped.length +
+    sections.groups.reduce((n, g) => n + g.projects.length, 0) +
+    sections.sleeping.length;
 
   function patch(next: Partial<typeof settings>) {
     setMetaProjectSettings({ ...settings, ...next });
@@ -36,6 +45,31 @@ export function MetaProjectPanel({ projectId }: { projectId: string }) {
       ? [...settings.managedProjectIds, targetId]
       : settings.managedProjectIds.filter((id) => id !== targetId);
     patch({ managedProjectIds: next });
+  }
+
+  function ProjectRow({ project }: { project: MockProject }) {
+    const on = settings.managedProjectIds.includes(project.id);
+    return (
+      <div className="flex items-center justify-between gap-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-medium text-ink-2">
+            {project.initial}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm text-foreground">{project.name}</p>
+            <p className="truncate text-xs text-ink-3">
+              {on ? "専用 Fork を1本持つ" : "管理していない"}
+            </p>
+          </div>
+        </div>
+        <Switch
+          id={`meta-managed-${project.id}`}
+          checked={on}
+          onCheckedChange={(v) => toggleManaged(project.id, v)}
+          aria-label={`${project.name} を管理対象にする`}
+        />
+      </div>
+    );
   }
 
   return (
@@ -49,7 +83,8 @@ export function MetaProjectPanel({ projectId }: { projectId: string }) {
         （v4-architecture.md §4.6、下書き段階）。
       </p>
 
-      {/* 管理対象 Project——それぞれに専用 Fork が1本対応する */}
+      {/* 管理対象 Project——それぞれに専用 Fork が1本対応する。並びはサイドバーと同じ
+          （グループなし → グループ → スリープ中）——探す手間を増やさない */}
       <section className="mb-5 rounded-md border border-border px-3">
         <h2 className="flex items-center gap-1.5 py-2.5 text-sm font-semibold text-foreground">
           <Network className="size-3.5 text-ink-3" />
@@ -57,34 +92,42 @@ export function MetaProjectPanel({ projectId }: { projectId: string }) {
         </h2>
         <p className="mb-2 text-xs text-ink-3">
           選んだ Project ごとに専用 Fork を1本持ち、やり取りはその Fork 経由で行う
-          （書くのは新規メッセージ送信のみ・読みは Thread 全体）。
+          （書くのは新規メッセージ送信のみ・読みは Thread 全体）。並びはサイドバーと同じ。
         </p>
         <div className="flex flex-col divide-y divide-border">
-          {candidates.map((p) => {
-            const on = settings.managedProjectIds.includes(p.id);
-            return (
-              <div key={p.id} className="flex items-center justify-between gap-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-2 text-xs font-medium text-ink-2">
-                    {p.initial}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm text-foreground">{p.name}</p>
-                    <p className="truncate text-xs text-ink-3">
-                      {on ? "専用 Fork を1本持つ" : "管理していない"}
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  id={`meta-managed-${p.id}`}
-                  checked={on}
-                  onCheckedChange={(v) => toggleManaged(p.id, v)}
-                  aria-label={`${p.name} を管理対象にする`}
-                />
+          {sections.ungrouped.map((p) => (
+            <ProjectRow key={p.id} project={p} />
+          ))}
+
+          {sections.groups.map(({ group, projects }) => (
+            <div key={group.id}>
+              <div className="flex items-center gap-1.5 pt-2.5 pb-1 text-xs font-medium text-ink-3">
+                <span className={cn("size-2 shrink-0 rounded-full", GROUP_DOT_CLASS[group.color])} />
+                {group.name}
               </div>
-            );
-          })}
-          {candidates.length === 0 ? (
+              <div className="flex flex-col divide-y divide-border pl-3">
+                {projects.map((p) => (
+                  <ProjectRow key={p.id} project={p} />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {sections.sleeping.length > 0 ? (
+            <div>
+              <div className="flex items-center gap-1.5 pt-2.5 pb-1 text-xs font-medium text-ink-3">
+                <Moon className="size-3 shrink-0" />
+                スリープ中
+              </div>
+              <div className="flex flex-col divide-y divide-border pl-3">
+                {sections.sleeping.map((p) => (
+                  <ProjectRow key={p.id} project={p} />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {candidateCount === 0 ? (
             <p className="py-3 text-xs text-ink-3">他に選べる Project が無い。</p>
           ) : null}
         </div>
