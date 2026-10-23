@@ -464,7 +464,14 @@ function SleepingRow({
         title={`押すと起こして開きます（${sleptAt(project.id)}からスリープ）`}
         className="flex h-8 w-full items-center gap-2 rounded-md pr-14 pl-2 text-left text-sm text-ink-3 hover:bg-accent hover:text-foreground"
       >
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border text-xs font-semibold">
+        <span
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center border border-border text-xs font-semibold",
+            project.kind === "meta" ? "rounded-full" : "rounded-md",
+            project.kind === "meta" && "ring-2 ring-ink-3 ring-offset-1 ring-offset-background",
+          )}
+          aria-label={project.kind === "meta" ? "メタ Project" : undefined}
+        >
           {project.initial}
         </span>
         <span className="min-w-0 flex-1 truncate">{project.name}</span>

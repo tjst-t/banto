@@ -8,7 +8,7 @@
 // 関数もその5本に合わせる。消す操作は無い（§4.4「消す tool は作らない」）。
 // projects.ts／settings.ts と同じく mutable な配列に持ち、変えたら `notifyMockStoreChange`。
 import { notifyMockStoreChange } from "./store-events";
-import type { ProjectId } from "./types";
+import type { MockBacklogBackendKind, ProjectId } from "./types";
 
 export type BacklogKind = "story" | "task" | "bug";
 export type BacklogStatus = "backlog" | "ready" | "in-progress" | "done" | "dropped";
@@ -757,6 +757,24 @@ export function splitStory(projectId: ProjectId, storyId: string, tasks: readonl
     );
   }
   return created;
+}
+
+// Backlog の「窓口1本・バックエンドは複数」（v4-modules.md §4.4）の、どちらを
+// 使うかの Project 単位の設定。Backlog Module 自身の設定面（project-modules）
+// から選ぶ——メタ Project 専用の設定ではない（決定・2026-10-23、レビュー指摘）。
+// 省略時は既存の "tasks-json"。メタ Project のサンプル「全体統括」だけ、複数
+// Project をまたぐ計画を持つ場所として Gist を既定にしている
+let backlogBackends: Record<ProjectId, MockBacklogBackendKind> = {
+  orchestrator: "gist",
+};
+
+export function getBacklogBackend(projectId: ProjectId): MockBacklogBackendKind {
+  return backlogBackends[projectId] ?? "tasks-json";
+}
+
+export function setBacklogBackend(projectId: ProjectId, kind: MockBacklogBackendKind): void {
+  backlogBackends = { ...backlogBackends, [projectId]: kind };
+  notifyMockStoreChange();
 }
 
 /** 並び順（＝優先順）を、指定した項目の前か後ろへ動かす（moveItem） */

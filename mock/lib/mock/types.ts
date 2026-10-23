@@ -19,6 +19,14 @@ export interface MockProject {
   status: "active" | "closed";
   /** status が "closed" のときだけ意味を持つ */
   closedAt?: string;
+  /**
+   * 省略時は普通の Project。"meta" は複数の管理対象 Project を横断して
+   * オーケストレーションする特別な Project（v4-architecture.md §4.6、
+   * 決定・2026-10-22〜23）——書くのは管理対象への新規メッセージ送信のみ、
+   * 読みは管理対象の Thread 全体（人と同じ範囲）。仕様はまだ下書き段階
+   * （`kind: "meta"` という持たせ方自体も「まだ決めていないこと」の1つ）
+   */
+  kind?: "meta";
 }
 
 export interface MockThread {
@@ -420,4 +428,40 @@ export interface MockProjectOverrides {
 export interface MockProjectModuleLink {
   projectId: ProjectId;
   implementationId: string;
+}
+
+// メタ Project（v4-architecture.md §4.6）の設定。レビュー指摘（決定・2026-10-23）で
+// 「Backlog のバックエンド」と「release を人に残すか任せるか」の両方を
+// 「使うことを強制しない、メタ Project ごとに選べる」形にした。
+
+/**
+ * Backlog Module の「窓口1本・バックエンドは複数」（v4-modules.md §4.4）の
+ * どちらを使うか。`tasks-json` は既存（リポジトリの専用ブランチ）、`gist` は
+ * 複数 Project をまたぐ計画を持つ場所として新しく作る GitHub Gist（非公開）。
+ * **Project 単位の設定**（`lib/mock/backlog.ts` の getBacklogBackend/
+ * setBacklogBackend）——Backlog Module 自身の設定面（project-modules）から
+ * 選ぶ、通常の Module 設定の範囲。メタ Project 専用の設定ではない
+ * （決定・2026-10-23、レビュー指摘）。どちらも「今の Backlog のモデル
+ * （dependsOn・parent 含む）をそのまま持ち込む」という前提は共通
+ */
+export type MockBacklogBackendKind = "tasks-json" | "gist";
+
+/**
+ * release（main → release の取り込み）の扱いを、メタ Project 自体に任せるか
+ * 人に残すか。既定は `"delegate"`（任せる）——番頭の既定（人に残す）と違い、
+ * メタ Project では release も既定で任せる側に寄せる（決定・2026-10-23）
+ */
+export type MockReleasePolicy = "delegate" | "human";
+
+/**
+ * メタ Project（`kind: "meta"`）自身の設定。instance 既定からの上書きではなく、
+ * そのメタ Project だけが持つ正式な設定（v4-architecture.md §4.6、決定・2026-10-23）。
+ * Backlog のバックエンドはここに持たない——通常の Module 設定の範囲
+ * （`getBacklogBackend`/`setBacklogBackend`、レビュー指摘・2026-10-23）
+ */
+export interface MockMetaProjectSettings {
+  projectId: ProjectId;
+  /** このメタ Project が扱う管理対象 Project。それぞれに専用 Fork が1本対応する */
+  managedProjectIds: readonly ProjectId[];
+  releasePolicy: MockReleasePolicy;
 }
