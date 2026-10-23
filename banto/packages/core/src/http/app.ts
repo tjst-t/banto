@@ -125,6 +125,7 @@ import { MissionConflictError, MissionInputError, type MissionStartInput, type M
 import { findingQuoteText, type Patrols } from "../automation/patrol.js";
 import { reopenProject, reopenThread } from "../delivery/reopen.js";
 import { ThreadMessaging } from "../delivery/thread-messages.js";
+import { ThreadReading } from "../delivery/thread-reading.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { reviewTurnOf } from "../inbox/review-turn.js";
 import { unseenRunsOf } from "../inbox/automation-review.js";
@@ -290,6 +291,11 @@ export interface AppDeps {
    * 手帳に残す口。無ければ `notify` は出さず、気づきの「今後知らせない」は手帳に残らない
    */
   patrols?: Patrols;
+  /**
+   * **その Thread が中身を読んでよい Project**（追加・2026-10-23、アーキ仕様 §4.6「読む」——メタ Project の専用 Fork なら、
+   * 対応する管理対象 Project）。決まった Thread にだけ `read_thread` を見せる。無ければどの Thread にも見せない
+   */
+  readableProjectOf?(threadId: string): string | undefined;
   /**
    * **自動化の Webhook の受け口**（アーキ仕様 §4.3「Webhook」）。`/hooks/<印>` を認証の前で受け、作る・直すときに署名の鍵を
    * Vault から引いて置く。無ければ `/hooks/` は 404、Webhook の自動化は作れない（501）
@@ -1641,6 +1647,18 @@ export function createApp(deps: AppDeps) {
     autoApproveAll,
   });
 
+  // **管理対象 Project の Thread を読む**（追加・2026-10-23、アーキ仕様 §4.6「読む」）。AI の `read_thread` から呼ばれる
+  const readableProjectOf = deps.readableProjectOf;
+  const threadReading = readableProjectOf
+    ? new ThreadReading({
+        projectThread: deps.projectThread,
+        inbox: deps.inbox,
+        readableProjectOf,
+        ...(deps.turnEvents ? { liveTurn: (threadId: string) => deps.turnEvents!.snapshot(threadId) } : {}),
+        ...(deps.threadTurns ? { isRunning: (threadId: string) => deps.threadTurns!.isRunning(threadId) } : {}),
+      })
+    : undefined;
+
   // **AI が自動化を作る・直す口**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは
   // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない
   // core 自身の tool が会話のカードで聞くときの口（自動化 §4.3・Memory の取り消し §2.2）。走っているターンの画面へカードを流す。
@@ -1987,7 +2005,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(threadReading ? { threadReading } : {}), ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, readOnlyModuleTools, supervisorModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,
