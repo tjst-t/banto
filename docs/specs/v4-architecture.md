@@ -3920,6 +3920,18 @@ canceled）、認証を持つ。
       `lastSeq` を渡すと差分、`beforeSeq` で遡る。長い値（tool の引数・結果・届いた本文、4000 文字）と発言（20000 文字）は切る
     - **記録に残らないもの**：終わったターンの、画面を持たない tool の呼び出しは記録に無い（人の画面でもリロード後は見えない）
       ので、読めるのは走っている間だけ
+    - **読める Project の決め方**：開いたメタ Project の開いた専用 Fork（`managedProjectId`）で、その Project がいまも管理対象に
+      選ばれているときだけ（`delivery/managed-turn-notices.ts` の `managedProjectOf`。下の「ターンの終わりの知らせ」と同じ条件）
+  - **ターンの終わりの知らせ**（追加・2026-10-23、Backlog #534。§4.6「通知」）：管理対象 Project のどの Thread でもターンが
+    終わったら（冷める前の要約のターンを除く）、対応する専用 Fork へ host 自身の知らせ（`kind: "banto"`、送り手
+    `banto.managed-turn`）を「Thread に届ける」口で届け、AI を起こす。出来事（§4.3 段2）にはしない——届け先は Thread の
+    `managedProjectId` から一意に決まる。実装は `delivery/managed-turn-notices.ts`：
+    - **人の返事を待つターンかは判定しない**——毎回届ける。中身は Project・Thread の id と名前・終わり方と「`read_thread` で
+      確かめ、何もしなくてよければ何もせずに終える」の一文
+    - **同じ Thread の知らせがまだ渡っていなければ積み増さない**（AI は読む口で最新を見るので1件で足りる）
+    - ホップは終わったターンの＋1——専用 Fork と管理対象の往復は連鎖の上限で止まる。速度の上限もそのまま効く
+    - 送り元（`sender`）は付けない——「返事は承認なし」の対象にしない。書くのは `send_message` の承認どおり
+    - 閉じた専用 Fork・閉じたメタ Project・管理対象から外した Project には届けない
 - **宛先は Project と Thread で指す**。**Thread を指さず Project だけ指したら、その Project に新しい Fork を立てて届ける**
   （**会話は引き継がず、まっさらな会話で始める**——Base の会話を Clear した状態。Memory は Project のものなので
   そのまま効く。決定・2026-10-01、ユーザー。Fork の名前はメッセージの題）。既にある Thread（Base を含む）に届けたいときは Thread まで指す
