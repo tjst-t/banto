@@ -27,12 +27,34 @@ export function isAutoApproveAll(config: Pick<RuntimeConfigStore, "layerValue"> 
   return config?.layerValue(AUTO_APPROVE_ALL_KEY, projectId) === true;
 }
 
+/**
+ * **自動化を作るのを聞かずに許可する**（追加・2026-10-23、Backlog #536。アーキ仕様 §4.3「人と AI の作り方」）。AI の
+ * `create_automation` は承認モードにも上の「承認をすべて自動で許可する」にも依らず必ず人に聞くが、**このスイッチがオンの Project
+ * だけ**は聞かずに作る（管理する側の Project が、管理される Project の見回りを自分で立てるため。メタ Project の下書き、Backlog project-2）。上のスイッチには
+ * 混ぜない——片方をオンにしてももう片方は効かない。変える・再開するは今までどおり聞く。**Project にだけ置ける**、値が無ければオフ
+ */
+export const AUTO_APPROVE_CREATE_AUTOMATION_KEY = "approvals.autoApproveCreateAutomation";
+
+/** host が「自動化を作るのを聞かずに許可する」で答えた印。どちらのスイッチで通したかをカードで読み分ける */
+export const AUTO_APPROVED_CREATE_AUTOMATION_ANSWER = { behavior: "allow", autoApproved: true, by: "createAutomation" } as const;
+/** そのときにカードの「回答：…」に出る言葉 */
+export const AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT = "自動で許可しました（自動化を作るのを聞かずに許可する がオン）";
+
+/** その Project で「自動化を作るのを聞かずに許可する」がオンか。**Project の層だけ**を読む */
+export function isAutoApproveCreateAutomation(
+  config: Pick<RuntimeConfigStore, "layerValue"> | undefined,
+  projectId: string,
+): boolean {
+  return config?.layerValue(AUTO_APPROVE_CREATE_AUTOMATION_KEY, projectId) === true;
+}
+
 /** 判断待ちを出し、そのまま自動で許可して決着させる。出した判断待ち（もう答え済み）を返す */
 export async function raiseAutoApprovedJudgment(
   inbox: InboxStore,
   input: Parameters<InboxStore["raiseJudgment"]>[0],
+  answer: typeof AUTO_APPROVED_ANSWER | typeof AUTO_APPROVED_CREATE_AUTOMATION_ANSWER = AUTO_APPROVED_ANSWER,
 ): Promise<JudgmentItem> {
   const judgment = await inbox.raiseJudgment(input);
-  await inbox.answerJudgment(judgment.id, AUTO_APPROVED_ANSWER);
+  await inbox.answerJudgment(judgment.id, answer);
   return judgment;
 }

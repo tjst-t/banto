@@ -129,7 +129,7 @@ import { ThreadReading } from "../delivery/thread-reading.js";
 import { judgmentAnswerText } from "../inbox/answer-text.js";
 import { reviewTurnOf } from "../inbox/review-turn.js";
 import { unseenRunsOf } from "../inbox/automation-review.js";
-import { AUTO_APPROVE_ALL_KEY, isAutoApproveAll } from "../inbox/auto-approve.js";
+import { AUTO_APPROVE_ALL_KEY, AUTO_APPROVE_CREATE_AUTOMATION_KEY, isAutoApproveAll, isAutoApproveCreateAutomation } from "../inbox/auto-approve.js";
 import { patrolAllowedTools, serializePatrolAllowedTools } from "../relay/read-only.js";
 import { listPatrolTools, readOnlyModuleToolNames, supervisorModuleToolNames, validatePatrolAllowed } from "./patrol-tools.js";
 import { TURN_SUMMARY_KEY, isTurnSummaryEnabled } from "./turn-summary.js";
@@ -1661,8 +1661,16 @@ export function createApp(deps: AppDeps) {
       })
     : undefined;
 
+  // **自動化を作るのを聞かずに許可する**（追加・2026-10-23、Backlog #536）。「承認をすべて自動で許可する」とは別のスイッチ。
+  // 判断役の会話には効かせない（上と同じ守り）
+  const autoApproveCreateAutomation = autoApproveAllFor({
+    projectSwitch: (projectId) => isAutoApproveCreateAutomation(deps.runtimeConfig, projectId),
+    automations: deps.automations,
+    projectThread: deps.projectThread,
+  });
   // **AI が自動化を作る・直す口**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開するは
-  // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない
+  // 承認モードにも「承認をすべて自動で許可する」にも依らず会話のカードで聞く——`autoApproveAll` を渡さない。
+  // 例外は「自動化を作るのを聞かずに許可する」がオンの Project で作るときだけ
   // core 自身の tool が会話のカードで聞くときの口（自動化 §4.3・Memory の取り消し §2.2）。走っているターンの画面へカードを流す。
   // Memory の取り消しは「承認をすべて自動で許可する」がオンなら聞かずに通す（改訂・2026-10-18、turn-runner が memory-tool に渡す）
   const askInThreadDeps: AskInThreadDeps = {
@@ -1699,6 +1707,7 @@ export function createApp(deps: AppDeps) {
         ...askInThreadDeps,
         judgeNotices: (projectId) =>
           judgeNotices(projectId, { turnSummaryEnabled, autoApproveAll: (id) => isAutoApproveAll(deps.runtimeConfig, id) }),
+        autoApproveCreate: autoApproveCreateAutomation,
       })
     : undefined;
 
@@ -4506,6 +4515,23 @@ export function createApp(deps: AppDeps) {
           else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_ALL_KEY);
         }
         json(res, 200, { enabled: autoApproveAll(projectId) });
+        return;
+      }
+
+      // **自動化を作るのを聞かずに許可する**（追加・2026-10-23、Backlog #536。アーキ仕様 §4.3）。Project にだけ置ける。
+      // オフは上書きを外す（値を持たない＝オフ。真実を1つにする）
+      const autoApproveCreateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-approve-create-automation$/);
+      if (autoApproveCreateMatch && (req.method === "GET" || req.method === "PUT")) {
+        const projectId = autoApproveCreateMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (req.method === "PUT") {
+          if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+          const body = (await readJsonBody(req)) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled は true か false で渡してください" });
+          if (body.enabled) await deps.runtimeConfig.setProjectOverride(projectId, AUTO_APPROVE_CREATE_AUTOMATION_KEY, true);
+          else await deps.runtimeConfig.unsetProjectOverride(projectId, AUTO_APPROVE_CREATE_AUTOMATION_KEY);
+        }
+        json(res, 200, { enabled: isAutoApproveCreateAutomation(deps.runtimeConfig, projectId) });
         return;
       }
 

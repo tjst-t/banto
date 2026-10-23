@@ -2,7 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { judgmentAnswerText } from "./answer-text.js";
 import { MESSAGE_ALLOW_REMEMBER } from "../delivery/thread-messages.js";
-import { AUTO_APPROVED_ANSWER, AUTO_APPROVED_ANSWER_TEXT } from "./auto-approve.js";
+import {
+  AUTO_APPROVED_ANSWER,
+  AUTO_APPROVED_ANSWER_TEXT,
+  AUTO_APPROVED_CREATE_AUTOMATION_ANSWER,
+  AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT,
+} from "./auto-approve.js";
 
 test("judgmentAnswerText：許可・覚える許可・理由つきの拒否・理由なしの拒否", () => {
   assert.equal(judgmentAnswerText({ behavior: "allow" }), "許可する");
@@ -14,6 +19,11 @@ test("judgmentAnswerText：許可・覚える許可・理由つきの拒否・�
 test("judgmentAnswerText：host が自動で許可したものは、そうと分かる言葉にする（追加・2026-10-05）", () => {
   assert.equal(judgmentAnswerText(AUTO_APPROVED_ANSWER), AUTO_APPROVED_ANSWER_TEXT);
   assert.match(judgmentAnswerText(AUTO_APPROVED_ANSWER), /自動で許可/);
+});
+
+test("judgmentAnswerText：「自動化を作るのを聞かずに許可する」で通したものは、そのスイッチの名前で言う（追加・2026-10-23）", () => {
+  assert.equal(judgmentAnswerText(AUTO_APPROVED_CREATE_AUTOMATION_ANSWER, ["作る", "作らない"]), AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT);
+  assert.notEqual(AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT, AUTO_APPROVED_ANSWER_TEXT);
 });
 
 test("judgmentAnswerText：選択肢があれば、許したときは先頭の言葉（自動化の確認の「作る」等、追加・2026-10-15）", () => {
