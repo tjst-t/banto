@@ -12804,7 +12804,7 @@
       "number": 536,
       "kind": "task",
       "title": "host: 自動化作成(create_automation)の確認を緩める専用トグルを追加(案B)",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12816,7 +12816,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:06:45.051Z",
       "closedAt": null,
       "extra": {}
     },
