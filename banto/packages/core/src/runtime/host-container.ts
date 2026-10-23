@@ -277,9 +277,13 @@ export class HostContainerRuntime implements Runtime {
     const ready = this.ready.get(placeId);
     this.ready.delete(placeId);
     if (placeId === this.toolsPlaceId) this.toolsInstalled.clear();
-    if (!opts.stop || !ready) return;
-    await this.containers.stop(ready.name).catch((err: unknown) => {
-      throw new RuntimeStopError(ready.name, err instanceof Error ? err.message : String(err));
+    if (!opts.stop) return;
+    // **用意したことを覚えていなくても止める**（訂正・2026-10-23、Backlog #527）。覚えているのはこの host の走行の間だけ
+    // ——host を起こし直すとコンテナは動いたまま記録だけ消え、以前はここで黙って返っていた（眠らせた・畳んだのに、中の
+    // プロセスが動き続けた）。名前は Project から決まる。無い・止まっているなら `stop` が何もしない
+    const name = ready?.name ?? containerNameFor(placeId);
+    await this.containers.stop(name).catch((err: unknown) => {
+      throw new RuntimeStopError(name, err instanceof Error ? err.message : String(err));
     });
   }
 

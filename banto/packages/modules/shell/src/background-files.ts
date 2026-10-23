@@ -29,8 +29,13 @@ export interface JobRecord {
   requestedBy?: { projectId: string; threadId: string };
   /** 中継で流した Module（host が刻んだ印） */
   requestedByModule?: { name: string; conn: string };
-  /** systemd の単位の名前（`banto-shell-<id>`） */
+  /** systemd の単位の名前（`banto-shell-<id>`。残ったプロセスの記録は `banto-shell-<乱数>.scope`） */
   unit: string;
+  /**
+   * **待つ形の runCommand のあとに、仕事の組に残ったプロセス**（追加・2026-10-23、Backlog #527）。起動役も札も無く、終わりは
+   * 届けない——一覧に出し、`cancelCommand` で組ごと止める。動いているかは cgroup（`/sys/fs/cgroup` からの相対）で見る
+   */
+  leftover?: { cgroup: string };
   /** `cancelCommand` で止めると頼んだ時刻。これが無いのに止められたものは「外から止められた」 */
   cancelRequestedAt?: string;
   /**

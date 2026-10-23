@@ -66,7 +66,8 @@ const BACKGROUND_TOOLS = [
     description:
       "runCommand の runInBackground で待たずに流したコマンドの一覧（この会話（Thread）で流したものだけ。動いているものは全部、終わったものは新しい順に 20 件まで）。" +
       "commandId・label（付けた呼び名）・command・cwd・startedAt・status（running：動いている／exited：終わった（exitCode）／timedOut：時間切れ／" +
-      "cancelled：止めた（cancelCommand。人が画面で止めたものは cancelledBy: \"human\"）／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile",
+      "cancelled：止めた（cancelCommand。人が画面で止めたものは cancelledBy: \"human\"）／stopped：外から止められた／lost：終わり方の記録が無い）・outputFile。" +
+      "待つ形の runCommand のあとに後ろに回したプロセス（`&`・setsid・nohup）が残っていたものも leftover: true で出る（cancelCommand で止められる。終わっても届かない）",
     inputSchema: { type: "object", properties: {} },
     // **読むだけ**（アーキ仕様 §4.4）——流したコマンドの記録を読むだけで、止めも流しもしない
     _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
@@ -335,6 +336,14 @@ export function createShellServer(deps: ShellServerDeps) {
         }
         const willDeliver = background.willDeliver(id);
         const after = await background.cancel(id);
+        if (found.record.leftover) {
+          // 残ったプロセスは届ける約束を持たない（Backlog #527）
+          return text({
+            ok: true,
+            ...after,
+            note: after.status === "cancelled" ? "残っていたプロセスを仕事の組ごと止めました" : `止める前にもう終わっていました（状態：${after.status}）`,
+          });
+        }
         // **止める前に自然に終わっていたら、止めたとは言わない**（訂正・2026-10-07、Fable のレビュー）。届く知らせも
         // ファイルから決まるので「終わりました」「失敗しました」になる
         const stopped = after.status === "cancelled";
@@ -481,6 +490,8 @@ export function createShellServer(deps: ShellServerDeps) {
         };
       }
 
+      const requestedBy = threadOf(meta);
+      const requestedByModule = callerModuleOf(meta);
       const result = await runCommand(
         {
           command: String(args.command),
@@ -496,6 +507,10 @@ export function createShellServer(deps: ShellServerDeps) {
           homeDir: deps.homeDir,
           inContainer: deps.inContainer,
           relayClient: deps.relayClient,
+          // 後ろに残ったプロセスは一覧に出す（Backlog #527）。待たない形の無い Shell では組ごと止める
+          ...(deps.background ? { leftovers: deps.background } : {}),
+          ...(requestedBy ? { requestedBy } : {}),
+          ...(requestedByModule ? { requestedByModule } : {}),
           onProgress:
             progressToken !== undefined
               ? (note, outputChars) => {

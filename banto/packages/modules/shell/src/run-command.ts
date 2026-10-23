@@ -8,7 +8,8 @@ import { dirname, resolve } from "node:path";
 import { NoBatchToolError, type AliasPlace, type HostRelayClient } from "./host-relay-client.js";
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 import type { BackgroundCommands } from "./background.js";
-import { inWorkScope } from "@banto/module-contract";
+import { SystemdScopes, type ScopeControl } from "./leftover-scope.js";
+import { inWorkScope, type WorkScopeLaunch } from "@banto/module-contract";
 
 export interface RunCommandInput {
   command: string;
@@ -49,6 +50,18 @@ export interface RunCommandDeps {
   progressIntervalMs?: number;
   /** 長い出力の上限（`output-capture.ts`）。**試験で小さくするための穴**——本番では既定のまま。 */
   outputLimits?: Partial<OutputLimits>;
+  /**
+   * **終わったあと仕事の組に残ったプロセスの引き取り先**（追加・2026-10-23、Backlog #527）。一覧（`listCommands`）に出し、
+   * `cancelCommand` で止められるようにする。無ければ組ごと止める——見えず止められないものを残さない
+   */
+  leftovers?: Pick<BackgroundCommands, "adoptLeftover">;
+  /** 引き取ったものの持ち主（`cancelCommand` で止められるのは、ここからだけ） */
+  requestedBy?: { projectId: string; threadId: string };
+  requestedByModule?: { name: string; conn: string };
+  /** 仕事の組を見る・止める口。**試験で差し替えるための穴** */
+  scopes?: ScopeControl;
+  /** 仕事の組に入れられるか（`inWorkScope` の `available`）。**試験で差し替えるための穴** */
+  workScopeAvailable?: () => boolean;
 }
 
 export interface RunCommandResult {
@@ -69,6 +82,12 @@ export interface RunCommandResult {
    * 「自分の端末では動くのに」の理由がこれで分かる。弾かれた気配が無ければ持たない。
    */
   confinementNote?: string;
+  /**
+   * **終わったあと仕事の組にプロセスが残っていたとき**（追加・2026-10-23、Backlog #527）。`&`・setsid・nohup で後ろに回した
+   * ものは、sh が終わっても同じ組で動き続ける。普通に終わったなら引き取って一覧に出し（`commandId`）、時間切れ・取り消しなら
+   * 組ごと止める（`stopped`）。残っていなければ持たない
+   */
+  leftover?: { commandId?: string; stopped: boolean; note: string };
 }
 
 /**
@@ -306,7 +325,11 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
     return await new Promise<RunCommandResult>((resolvePromise, reject) => {
       // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——メモリを食い尽くしても組の中だけで止まり、
       // Module（この Shell も）は巻き込まれない。入れられなければ今までどおり
-      const launch = inWorkScope("/bin/sh", ["-c", input.command], { kind: "shell", env });
+      const launch = inWorkScope("/bin/sh", ["-c", input.command], {
+        kind: "shell",
+        env,
+        ...(deps.workScopeAvailable ? { available: deps.workScopeAvailable } : {}),
+      });
       const child = spawn(launch.command, launch.args, {
         cwd,
         env: launch.env,
@@ -320,6 +343,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
         ...deps.outputLimits,
       });
       let timedOut = false;
+      let aborted = false;
 
       // 文字数で数えるので、文字の途中で切らずに受け取る
       child.stdout?.setEncoding("utf8");
@@ -339,6 +363,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       heartbeat.unref();
 
       const onAbort = () => {
+        aborted = true;
         child.kill("SIGTERM");
       };
       input.signal?.addEventListener("abort", onAbort, { once: true });
@@ -354,7 +379,14 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       });
       child.on("exit", (code, signal) => {
         if (signal === "SIGTERM" && code === null) timedOut = true;
-        void capture.finish().then((out) => {
+        void capture.finish().then(async (out) => {
+          const leftover = await settleLeftover(launch, {
+            command: input.command,
+            cwd,
+            startedAt: new Date(startedAt).toISOString(),
+            stopAll: timedOut || aborted,
+            deps,
+          });
           const confinementNote =
             code === 0
               ? undefined
@@ -373,6 +405,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
               ...(out.stdoutFile ? { stdoutFile: out.stdoutFile } : {}),
               ...(out.stderrFile ? { stderrFile: out.stderrFile } : {}),
               ...(confinementNote ? { confinementNote } : {}),
+              ...(leftover ? { leftover } : {}),
             }),
           );
         }, (err: unknown) => settle(() => reject(err)));
@@ -383,6 +416,65 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
     // （規則2、決定・2026-09-02「既知の限界として受け入れる」節のTODO対応の一部）。
     await removeSecretFiles(writtenSecretFiles);
   }
+}
+
+/**
+ * **組に残ったプロセスの始末**（Backlog #527、上の `leftover`）。時間切れ・取り消しは組ごと止める（止めると頼まれたのはコマンド
+ * 全体）。普通に終わったものは引き取って一覧に出す——後ろに回したのはわざとかもしれない（開発サーバ等）。引き取り先が無い・
+ * 止められなかったときは、そう言う（黙って残さない）
+ */
+async function settleLeftover(
+  launch: WorkScopeLaunch,
+  ctx: { command: string; cwd: string; startedAt: string; stopAll: boolean; deps: RunCommandDeps },
+): Promise<RunCommandResult["leftover"]> {
+  if (!launch.scoped || !launch.unit) return undefined;
+  const { deps } = ctx;
+  const scopes = deps.scopes ?? new SystemdScopes();
+  const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  let cgroup: string | undefined;
+  try {
+    cgroup = await scopes.leftover(launch.unit, launch.env);
+  } catch (err) {
+    return { stopped: false, note: `コマンドのあとに仕事の組（${launch.unit}）にプロセスが残っているか確かめられませんでした：${reason(err)}` };
+  }
+  if (!cgroup) return undefined;
+
+  let stopFailure: string | undefined;
+  if (ctx.stopAll || !deps.leftovers) {
+    try {
+      await scopes.stop(launch.unit, cgroup, launch.env);
+      return {
+        stopped: true,
+        note: ctx.stopAll
+          ? "時間切れ・取り消しで止めたので、後ろに残っていたプロセスも仕事の組ごと止めました。"
+          : "コマンドのあとに後ろに回したプロセス（`&`・setsid・nohup など）が残っていましたが、この Shell では一覧に出せないので止めました。" +
+            "止めるまで動き続けるものは Service に登録してください。",
+      };
+    } catch (err) {
+      stopFailure = reason(err);
+      if (!deps.leftovers) {
+        return { stopped: false, note: `コマンドのあとに仕事の組（${launch.unit}）にプロセスが残っていて、止められませんでした：${stopFailure}` };
+      }
+    }
+  }
+  const adopted = deps.leftovers!.adoptLeftover({
+    command: ctx.command,
+    cwd: ctx.cwd,
+    startedAt: ctx.startedAt,
+    unit: launch.unit,
+    cgroup,
+    ...(deps.requestedBy ? { requestedBy: deps.requestedBy } : {}),
+    ...(deps.requestedByModule ? { requestedByModule: deps.requestedByModule } : {}),
+  });
+  return {
+    commandId: adopted.commandId,
+    stopped: false,
+    note:
+      (stopFailure ? `残っていたプロセスを止められませんでした（${stopFailure}）。` : "") +
+      "コマンドは終わりましたが、後ろに回したプロセス（`&`・setsid・nohup など）がまだ動いています。" +
+      `listCommands に commandId ${adopted.commandId}（leftover: true）として出ています。要らなければ cancelCommand で止めてください。` +
+      "長いものは runInBackground で、止めるまで動き続けるもの（開発サーバ等）は Service で流してください。",
+  };
 }
 
 /** 待たない形の返り値（すぐ返す）。結果は終わったら札で届く */
@@ -425,7 +517,8 @@ export async function runCommandInBackground(
     return {
       commandId: started.commandId,
       status: "running",
-      outputFile: started.outputFile,
+      // 待たない形で流したものには必ずある（無いのは残ったプロセスの記録だけ）
+      outputFile: started.outputFile!,
       note:
         "待たずに流しました。終わったら終了コードと出力の末尾がこの会話に届き、あなたが起こされます。" +
         "それまで他の仕事を続けてよい（結果を待つために同じコマンドを流し直さない）。途中の出力は outputFile を tail・grep で読めます。" +

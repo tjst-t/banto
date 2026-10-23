@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { CONTAINER_NODE_PATH, ContainerAddressUnavailable, instanceContainerId, type ProjectContainers } from "@banto/container";
+import { CONTAINER_NODE_PATH, ContainerAddressUnavailable, containerNameFor, instanceContainerId, type ProjectContainers } from "@banto/container";
 import { HostContainerRuntime } from "./host-container.js";
 import { RuntimeStopError } from "./runtime.js";
 
@@ -94,6 +94,20 @@ test("止められなければ、どの箱が残ったかを添えて投げる�
     return true;
   });
   assert.deepEqual(rt.resourceTargets(), []);
+});
+
+test("用意したことを覚えていなくても（host を起こし直したあと）、止めると言われたら名前で止める（Backlog #527）", async () => {
+  const stopped: string[] = [];
+  const rt = new HostContainerRuntime(opts, { ok: true, problems: [] }, fakeContainers({
+    stop: async (name: string) => {
+      stopped.push(name);
+    },
+  }), async () => "img");
+  // 起こし直した host：この走行では prepare していない
+  await rt.release("p1", { stop: false });
+  assert.deepEqual(stopped, []);
+  await rt.release("p1", { stop: true });
+  assert.deepEqual(stopped, [containerNameFor("p1")]);
 });
 
 test("Project のコンテナを消す（使っていないチャットを閉じるとき）：名前で消し、用意したことを忘れる", async () => {
