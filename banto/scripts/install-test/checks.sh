@@ -56,6 +56,19 @@ if [[ $MODE == full ]]; then
     fail "b: Cloudflare の形：$(echo "$out" | tail -2)"
   fi
 
+  # /api/* は JSON と HTML だけ圧縮する（v4-security.md §1「入口は Caddy」、#529）——動いている Caddy の設定で見る
+  if curl -s localhost:2019/config/ | node -e '
+      let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        const enc = [];
+        (function walk(v) { if (v && typeof v === "object") { if (v.handler === "encode") enc.push(v); Object.values(v).forEach(walk); } })(JSON.parse(s));
+        const ok = enc.some((e) => e.encodings?.zstd && e.encodings?.gzip && JSON.stringify(e.match ?? {}).includes("application/json") && JSON.stringify(e.match ?? {}).includes("text/html") && !JSON.stringify(e.match ?? {}).includes("event-stream"));
+        process.exit(ok ? 0 : 1);
+      })'; then
+    pass "b: 入口の /api/* に encode（zstd・gzip、JSON と HTML だけ）が効いている"
+  else
+    fail "b: 入口の /api/* に JSON と HTML だけの encode が無い"
+  fi
+
   # 権限
   [[ $(stat -c %a "$HOME/.config/banto/config.json") == 600 ]] && pass "b: config.json は 0600" || fail "b: config.json は $(stat -c %a "$HOME/.config/banto/config.json")"
   [[ $(stat -c %a "$HOME/.config/banto") == 700 ]] && pass "b: ~/.config/banto は 0700" || fail "b: ~/.config/banto は $(stat -c %a "$HOME/.config/banto")"

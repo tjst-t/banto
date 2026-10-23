@@ -908,6 +908,13 @@ render_banto_caddy() {
 $domain {
 $tls
 	handle /api/* {
+		# JSON と HTML だけ圧縮する。text/event-stream（ターンの流れ）は圧縮しない——溜まって画面が止まらないように
+		encode zstd gzip {
+			match {
+				header Content-Type application/json*
+				header Content-Type text/html*
+			}
+		}
 		reverse_proxy 127.0.0.1:$PORT_HOST
 	}
 	handle {
