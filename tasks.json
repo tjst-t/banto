@@ -7204,7 +7204,7 @@
       "number": 294,
       "kind": "bug",
       "title": "サブエージェントの仕事が終わっても、claude-agent-acp のプロセス（banto-subagent-*.scope）が残り続ける",
-      "status": "ready",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -7219,7 +7219,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-14T02:36:26.031Z",
-      "updatedAt": "2026-10-14T02:36:26.031Z",
+      "updatedAt": "2026-10-23T11:38:48.946Z",
       "closedAt": null,
       "extra": {}
     },
