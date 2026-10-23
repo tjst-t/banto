@@ -12825,7 +12825,7 @@
       "number": 537,
       "kind": "task",
       "title": "host: メタ Project の権限(spec・LAN内 publish まで既定で任せる、release は既定「任せる」)を実装",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f"
@@ -12839,7 +12839,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:30:56.554Z",
       "closedAt": null,
       "extra": {}
     },
