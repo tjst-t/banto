@@ -27,6 +27,7 @@ import {
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
   autoApproveOf,
+  autoApproveReachOf,
   callerOf,
   type CallerStamp,
 } from "@banto/module-contract";
@@ -160,6 +161,13 @@ export function createPublishCaddyServer(publisher: CaddyPublisher, store: Publi
     ],
   }));
 
+  // Project の刻印の呼び出しが、人を待たずに道を張ってよいか。LAN までの印は**この実装がいま名乗る届く範囲**で確かめる
+  // （窓口が見た範囲を信じない——間に人が設定を変えていれば、変えた後の範囲で決める）
+  async function projectMayPublish(meta: Record<string, unknown> | undefined): Promise<boolean> {
+    if (autoApproveOf(meta)) return true;
+    return autoApproveReachOf(meta, (await store.settings()).reach);
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const stamp = callerOf(request.params._meta as Record<string, unknown> | undefined);
@@ -171,8 +179,9 @@ export function createPublishCaddyServer(publisher: CaddyPublisher, store: Publi
         case "planPublish":
           return json(await publisher.plan({ ...args, projectId: projectFor(stamp, args) }, args.config));
         case "publishRoute":
-          // 人が押した（`admin`）か、その Project で人が承認の役を降りている（Project の刻印＋自動で許可の印）
-          if (!stamp || !("admin" in stamp || ("project" in stamp && autoApproveOf(request.params._meta as Record<string, unknown> | undefined)))) {
+          // 人が押した（`admin`）か、その Project で人が承認の役を降りている（Project の刻印＋自動で許可の印）か、
+          // メタ Project で、この出し方の届く範囲が LAN までのとき（Project の刻印＋LAN までの印。追加・2026-10-23、アーキ仕様 §4.6「権限」）
+          if (!stamp || !("admin" in stamp || ("project" in stamp && (await projectMayPublish(request.params._meta as Record<string, unknown> | undefined))))) {
             throw new PublishError("公開は人が承認の画面で押したときだけできます");
           }
           return json(await publisher.publish({ ...args, projectId: projectFor(stamp, args) }, args.config));

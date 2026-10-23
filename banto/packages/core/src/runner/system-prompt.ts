@@ -103,6 +103,11 @@ export interface SystemPromptInput {
    * 足す。動的な後半に置く——オンオフは Project ごとなので、全 Project で前方一致する前半は変えない
    */
   turnSummary?: boolean;
+  /**
+   * 層3：**メタ Project の権限**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。メタ Project のときだけ渡す——何を人に聞かずに
+   * 決めてよく、何を人に残すか。動的な後半に置く（release の扱いは人が切り替えられる）。渡されなければ節を足さない
+   */
+  metaPermissions?: string;
 }
 
 /** 土台の指示の節の種類。右上の文脈のメーターで Memory の割合を出すのに使う（v4-frontend.md §6.50） */
@@ -114,6 +119,7 @@ export type SystemPromptPartKind =
   | "model"
   | "project-memory"
   | "turn-summary"
+  | "meta-permissions"
   | "instruction";
 
 export interface SystemPromptPart {
@@ -157,6 +163,8 @@ export function buildSystemPromptParts(input: SystemPromptInput): SystemPromptPa
   }
 
   if (input.turnSummary) parts.push({ kind: "turn-summary", text: TURN_SUMMARY_PROMPT_SECTION });
+
+  if (input.metaPermissions) parts.push({ kind: "meta-permissions", text: input.metaPermissions });
 
   const instruction = input.projectInstruction?.trim();
   if (instruction) {

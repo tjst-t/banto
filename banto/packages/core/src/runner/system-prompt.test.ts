@@ -179,3 +179,12 @@ test("buildSystemPromptParts labels each block and matches buildSystemPrompt exa
   assert.ok(memory.includes("[#3] 残る行"));
   assert.ok(!memory.includes("取り消した行"), "取り消した行は数えない");
 });
+
+// **メタ Project の権限**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。渡されたときだけ、境界より後に節が入る
+test("メタ Project の権限の節は渡されたときだけ、境界より後に入る", () => {
+  const withSection = buildSystemPrompt({ project, memory: [], metaPermissions: "# メタ Project の権限\n\n- spec：任されている" });
+  const boundary = withSection.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+  const at = withSection.findIndex((b) => b.startsWith("# メタ Project の権限"));
+  assert.ok(at > boundary, "権限の節が境界より前にある（全 Project で共有する前半を崩す）");
+  assert.ok(!buildSystemPrompt({ project, memory: [] }).some((b) => b.includes("メタ Project の権限")), "渡していないのに入った");
+});

@@ -34,13 +34,14 @@ import { AutomationClock } from "./automation/clock.js";
 import { AutomationWebhooks } from "./automation/webhook.js";
 import { AutomationEvents, EventLedger } from "./automation/events.js";
 import { awaitingAutomations, type AwaitedModule } from "./automation/keep-awake.js";
-import { TurnDecisions, autoApproveAllFor } from "./automation/turn-decisions.js";
+import { TurnDecisions, autoApproveAllFor, judgeAutomationOf } from "./automation/turn-decisions.js";
 import { Patrols } from "./automation/patrol.js";
 import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
 import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { SupervisorControls, supervisorSkipReason } from "./supervisor/guard.js";
+import { metaAutoApproveReachFor } from "./http/meta-permissions.js";
 import { GlobalMemoryStore } from "./global-memory/store.js";
 import { InboxStore } from "./inbox/store.js";
 import { judgmentAnswerText } from "./inbox/answer-text.js";
@@ -1198,6 +1199,11 @@ async function main(): Promise<void> {
     automations,
     projectThread,
   });
+  // **メタ Project の LAN までの公開**（追加・2026-10-23、アーキ仕様 §4.6「権限」）。上と同じく判断役の会話には効かせない
+  const autoApproveReach = metaAutoApproveReachFor({
+    projectThread,
+    isJudgeThread: (threadId) => judgeAutomationOf(automations, projectThread, threadId) !== undefined,
+  });
   /**
    * **読むだけの回**（決定・2026-10-20、アーキ仕様 §4.4）。どの回が読むだけかは会話に刻んだ印だけで決める。呼び出しのたびに引く
    */
@@ -1208,6 +1214,7 @@ async function main(): Promise<void> {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     // Module は設定を知らない——人を待つもの（Publish）のために、呼び出しに刻む
     autoApproveFor: autoApproveAll,
+    autoApproveReachFor: autoApproveReach,
     // 読むだけの回は、読むだけの tool だけを見せ・通す（守りの 3.）
     restrictionFor,
     patrolAllowedTools: patrolAllowed,
@@ -2951,6 +2958,7 @@ async function main(): Promise<void> {
   const relayEndpoint = new HostRelayEndpoint({
     registry,
     autoApproveFor: autoApproveAll,
+    autoApproveReachFor: autoApproveReach,
     // 読むだけの回から始まった中継は、宛先も読むだけのものに限り、人に聞かない（§4.4）
     restrictionFor,
     patrolAllowedTools: patrolAllowed,

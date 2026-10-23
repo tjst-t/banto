@@ -968,6 +968,28 @@ Memory（AI が `remember_decision` で残す「決まったこと」の一覧�
   られる場所に「人が書く指示」を置かないため、また真実を2箇所にしないため（規則3）
 - 長さの上限は Memory と同じ考え方で決める（仮に 8,000 字、超えたら保存を断る）
 
+#### メタ Project の権限（実装・2026-10-23、Backlog #537。§4.6「権限——人に残すのは publish・money・destructive」）
+
+メタ Project（`kind: "meta"`）では、仕様の向き（spec）と LAN の中だけに届く公開まで AI に任せ、release を任せるかは Project ごとに
+選べる（既定は「任せる」）。インターネットに届く公開・お金・消す操作は人に残す。**メタ Project でない Project（普通の Project・
+チャット）には何も効かない**——鍵を読まず、下の節も印も出さない。実装は `http/meta-permissions.ts`。
+
+- **spec・release**——AI が自分で決めてよいか（まとめの決めることで人に聞くか）は、`buildSystemPrompt` の `metaPermissions`
+  （層3、まとめの節の後・「AI への指示」の前に「# メタ Project の権限」）で伝える。**毎ターン引く**——release の扱いを人が
+  切り替えたら次のターンから効く（「AI への指示」と同じ例外）。止める仕組みは host に無い：spec・release に当たる操作を
+  host が見分ける口は無く、守っているのは AI の判断（人に残すものに当たる操作は、それぞれの承認が今どおり止める）
+- **release の置き場**：Configuration の Project の層の鍵 `metaProject.release`（文字列 `"human"` だけを持つ。値が無ければ
+  「任せる」。任せるに戻したら上書きを外す）。HTTP は `GET/PUT /api/projects/:id/meta-release`（`{ release: "delegate" | "human" }`）。
+  メタ Project でなければ 409。**画面のスイッチはまだ無い**（Backlog #538 で繋ぐ。モックは fork/meta-project の
+  `meta-project-panel.tsx`）
+- **LAN の中の公開**——host が、メタ Project のための AI のターンから始まった Module への呼び出し（AI の代理接続と、その処理の
+  中の中継）に `dev.banto/autoApproveReach: "lan"` を刻む（`autoApprove` と同じ刻み方。読むだけの回・人の画面からの呼び出しには
+  刻まない）。Publish の窓口と実装が、自分の名乗る届く範囲（`machine`・`lan`）で確かめて人を待たずに公開する
+  （v4-modules.md §4.3）。**インターネットに届く出し方なら、印があっても今までどおり人を待つ**
+- **判断役の会話には効かせない**（「承認をすべて自動で許可する」と同じ守り、§4.3）。spec の節は出るが、印は刻まない
+- §4.5 の番頭の方針表（`supervisor.delegate`）とは**繋いでいない**——この版（main）に番頭は入っていない。メタ Project の任せ方は
+  番頭の表を引かず、上の形で独立に持つ（`docs/notes/2026-10-23-meta-project-permissions.md`）
+
 #### ターンごとに変わるものは system prompt に入れず、そのターンに添える（決定・2026-09-05）
 
 **system prompt に入れてよいのは、その Thread の中で変わらないものだけ。** 変わる

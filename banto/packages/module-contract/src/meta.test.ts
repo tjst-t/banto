@@ -18,6 +18,8 @@ import {
   CALLER_META_KEY,
   callIdOf,
   callerOf,
+  AUTO_APPROVE_REACH_META_KEY,
+  autoApproveReachOf,
   threadOf,
   THREAD_META_KEY,
   fillCardText,
@@ -359,4 +361,16 @@ test("batchOf：名乗りを読む——形が違えば undefined だが、名�
   assert.equal(batchOfMeta(bad), undefined);
   assert.equal(declaresBatchOf(bad), true);
   assert.equal(declaresBatchOf({}), false);
+});
+
+// **LAN までの公開は聞かずに許可してよい**（追加・2026-10-23、Backlog #537）。インターネットに届く公開には効かない
+test("autoApproveReachOf：\"lan\" の刻印は machine・lan だけを通し、internet・形の違う刻印・刻印無しは通さない", () => {
+  const lan = { [AUTO_APPROVE_REACH_META_KEY]: "lan" };
+  assert.equal(AUTO_APPROVE_REACH_META_KEY, "dev.banto/autoApproveReach");
+  assert.equal(autoApproveReachOf(lan, "machine"), true);
+  assert.equal(autoApproveReachOf(lan, "lan"), true);
+  assert.equal(autoApproveReachOf(lan, "internet"), false);
+  assert.equal(autoApproveReachOf({ [AUTO_APPROVE_REACH_META_KEY]: "internet" }, "internet"), false);
+  assert.equal(autoApproveReachOf({ [AUTO_APPROVE_REACH_META_KEY]: true }, "lan"), false);
+  assert.equal(autoApproveReachOf(undefined, "lan"), false);
 });

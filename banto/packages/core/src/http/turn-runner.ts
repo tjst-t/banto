@@ -64,6 +64,7 @@ import { notInterruptedReason, type InterruptedTurn } from "../project-thread/in
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { AUTO_APPROVED_ANSWER_TEXT, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 import type { TurnEventBus } from "./turn-events.js";
+import { metaPermissionsPromptSection, type MetaProjectPermissions } from "./meta-permissions.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionSkillSet } from "../skills/types.js";
 
@@ -428,6 +429,11 @@ async function* runThreadTurnInner(
      */
     projectInstruction?(projectId: string): string | undefined;
     /**
+     * **メタ Project の権限**（追加・2026-10-23、§4.6「権限」）。**毎ターン引く**——メタ Project なら任せ方を返し、system prompt に
+     * 節を足す（release の扱いを人が切り替えたら次のターンから）。メタ Project でなければ undefined。渡されなければ無し
+     */
+    metaPermissions?(projectId: string): MetaProjectPermissions | undefined;
+    /**
      * **会話の本体の CLI の環境**（§2「Claude のアカウントを複数持つ」の 2.——Claude のログインの中継を通す）。ターンを始める
      * ときに1回引く。渡されなければ Runner の既定（process.env に付随の通信を止める印）
      */
@@ -662,6 +668,7 @@ async function* runThreadTurnInner(
   // 入るので、変えると Fork が親のキャッシュを引き継げない（§3）
   // **ターンの終わりのまとめ**（追加・2026-10-06）。オンの Project だけ tool・指示・Stop hook を渡す
   const projectInstruction = deps.projectInstruction?.(thread.projectId);
+  const metaPermissions = deps.metaPermissions?.(thread.projectId);
   // 読むだけの回・番頭の回では `report_turn` を出さない（core の tool は読むだけのものだけ、§4.4。番頭はまとめを出さない、§4.5）
   const turnSummary: TurnSummaryState | undefined =
     !restricted && deps.turnSummaryEnabled?.(thread.projectId) === true ? { startedAt: Date.now() } : undefined;
@@ -816,6 +823,7 @@ async function* runThreadTurnInner(
         ...(input.modelIdentity ? { model: input.modelIdentity } : {}),
         ...(turnSummary ? { turnSummary: true } : {}),
         ...(projectInstruction ? { projectInstruction } : {}),
+        ...(metaPermissions ? { metaPermissions: metaPermissionsPromptSection(metaPermissions) } : {}),
       }),
       // まとめは記録するだけ——承認モードに依らず聞かずに通す（毎ターン承認を求めない）。自分の Fork を閉じるのも聞かない
       // （開き直せば元に戻る、§2.2「AI が自分の Fork を閉じる」）

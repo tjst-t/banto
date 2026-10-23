@@ -34,6 +34,7 @@ import {
   VALUE_FREE_META_KEY,
   VISIBILITY_META_KEY,
   autoApproveOf,
+  autoApproveReachOf,
   callIdOf,
   callerOf,
   replyToOf,
@@ -214,10 +215,8 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
     const { routes } = await r.callJson<{ routes: RouteStatus[] }>(implementation, "listRoutes", { projectId });
     const already = routes.find((r) => r.service === name && r.port === port);
     if (already) throw new PublishDirectoryError(`${name}:${port} はもう公開しています（${already.url}）`);
-    // **承認をすべて自動で許可する**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4）。窓口は Project の設定を知らない
-    // ——host が刻んだ印だけを見る。立っていれば承認画面の既定の値（設定は `{}`＝出し方の既定）でそのまま公開する。
-    // 実装も同じ印を確かめてから道を張る（人の刻印の代わり）。結果はその場で返す（札で後から届けるものは無い）
-    if (autoApproveOf(meta)) {
+    // 人に聞かずに既定の設定で公開する。`why` は回答に添える理由（どの印で通したか）
+    const publishWithoutAsking = async (why: string) => {
       const out = await r.callJson<{ url: string; reach: Reach }>(implementation, "publishRoute", { projectId, service: name, port, config: {} });
       const done = await requests.addPublished({ projectId, service: name, port, implementation, plannedUrl: out.url, reach: out.reach }, out.url);
       return {
@@ -226,13 +225,25 @@ export function createPublishDirectoryServer(deps: PublishDirectoryDeps) {
             type: "text" as const,
             text:
               `公開しました：${name}:${port} を「${info.title}」で ${out.url} に（届く範囲：${REACH_LABEL[out.reach]}）。` +
-              "この Project は「承認をすべて自動で許可する」がオンなので、人に聞かずに既定の設定で公開しました。" +
+              why +
               `\n${REQUEST_ID_LABEL}${done.id}`,
           },
         ],
       };
+    };
+    // **承認をすべて自動で許可する**（追加・2026-10-05、ユーザー。v4-frontend.md §6.4）。窓口は Project の設定を知らない
+    // ——host が刻んだ印だけを見る。立っていれば承認画面の既定の値（設定は `{}`＝出し方の既定）でそのまま公開する。
+    // 実装も同じ印を確かめてから道を張る（人の刻印の代わり）。結果はその場で返す（札で後から届けるものは無い）
+    if (autoApproveOf(meta)) {
+      return publishWithoutAsking("この Project は「承認をすべて自動で許可する」がオンなので、人に聞かずに既定の設定で公開しました。");
     }
     const plan = await r.callJson<{ url: string; reach: Reach }>(implementation, "planPublish", { projectId, service: name, port, config: {} });
+    // **LAN までの公開は人に聞かない**（追加・2026-10-23、アーキ仕様 §4.6「権限」——メタ Project）。窓口は Project の種類を知らない
+    // ——host が刻んだ印と、実装が名乗った届く範囲だけを見る。インターネットに届くなら今までどおり人を待つ。実装も同じ印と自分の
+    // 届く範囲を確かめてから道を張る
+    if (autoApproveReachOf(meta, plan.reach)) {
+      return publishWithoutAsking("この Project はメタ Project で、LAN の中までに届く公開は任されているので、人に聞かずに既定の設定で公開しました。");
+    }
 
     const replyTo = replyToOf(meta);
     const req = await requests.add({

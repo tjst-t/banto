@@ -286,6 +286,19 @@ export function autoApproveOf(meta: Record<string, unknown> | undefined): boolea
 }
 
 /**
+ * **届く範囲がここまでの公開なら、人に聞かずに許可してよい**（追加・2026-10-23、アーキ仕様 §4.6「権限」、Backlog #537）。
+ * host だけが刻む——メタ Project のための、AI のターンから始まった呼び出しにだけ（刻み方は {@link AUTO_APPROVE_META_KEY} と同じ）。
+ * 値は `"lan"` だけ（この機械だけ・LAN に届く公開まで）。インターネットに届く公開は、これが立っていても今までどおり人を待つ。
+ * 受け手は**自分が名乗る届く範囲**で確かめる。刻印が無い・形が違えば立っていない
+ */
+export const AUTO_APPROVE_REACH_META_KEY = `${VENDOR_PREFIX}/autoApproveReach`;
+
+/** 届く範囲 `reach` の公開を、host の刻印で人に聞かずに許可してよいか */
+export function autoApproveReachOf(meta: Record<string, unknown> | undefined, reach: string): boolean {
+  return meta?.[AUTO_APPROVE_REACH_META_KEY] === "lan" && (reach === "machine" || reach === "lan");
+}
+
+/**
  * **その tool は読むだけ**の名乗り（追加・2026-10-20、アーキ仕様 §4.4「土台：読むだけの印」）。値は `"read"` だけ。
  *
  * 読むだけ＝(1) 環境（ファイル・プロセス・Service・外のサービスの状態・banto の台帳）を変えない (2) 外へ問い合わせる相手は
