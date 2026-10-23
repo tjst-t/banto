@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import type { Socket } from "node:net";
 import { join } from "node:path";
 import { Readable, Transform, type TransformCallback } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refresh.js";
 import { freshUsage, HOST_ACCOUNT_ID, usageFromUsageApi, type AccountUsage, type ClaudeAccountStore } from "./accounts.js";
 import { CacheKeepAlive, usageFromJson, type CacheUsage, type MarginCheck, type WarmOutcome, type WarmRequest } from "./keep-alive.js";
@@ -873,6 +874,11 @@ export class ClaudeLoginRelay {
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const room = Math.min(RETRY_BODY_LIMIT, Math.max(0, RETRY_BODY_TOTAL_LIMIT - this.bufferedBytes));
     const body: { buffered?: Buffer; stream?: Readable } = hasBody ? await readBodyUpTo(req, room) : {};
+    // クライアントが途中で切ると `abort.abort()` が呼ばれ、この stream（まだ fetch に渡して読まれている途中）が
+    // AbortError で 'error' を emit し得る。リスナーが1つも無いと Node はプロセス全体を落とす（規則2——起きなければ
+    // 大丈夫、ではなく明示的に受ける）。ここでは中継の責務を終えるだけで、エラー自体は `fetch` の `signal` 経由で
+    // 呼び出し側（`sendAs`・ループ）が検知する
+    body.stream?.on("error", () => {});
     const held = body.buffered?.length ?? 0;
     this.bufferedBytes += held;
     /** 本文を持てた（または本文が無い）——401 の試し直し・429 の送り直しができる */
@@ -977,8 +983,17 @@ export class ClaudeLoginRelay {
     if (observe && (!upstreamRes.ok || !upstreamRes.body)) observe(undefined);
     if (upstreamRes.body) {
       const piped = Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream);
-      if (observe && upstreamRes.ok) piped.pipe(new UsageTap((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), observe)).pipe(res);
-      else piped.pipe(res);
+      // **`pipeline()` で流す**（改訂・2026-10-23、実測の不具合——クライアントが途中で接続を切ると `res` の
+      // `close` → `abort.abort()` で `piped`（上流からの応答）側が AbortError を出し、`.pipe()` は送り先へエラーを
+      // 伝播しないので、ソース側にリスナーが無いと未処理の 'error' イベントとして banto-host プロセス全体を落とす。
+      // `pipeline()` はどの段がエラーでも中継全体を畳んで reject するので、ここで確実に受け切る）
+      const run =
+        observe && upstreamRes.ok
+          ? pipeline(piped, new UsageTap((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), observe), res)
+          : pipeline(piped, res);
+      run.catch(() => {
+        // クライアントが途中で切った・上流が途中で切れた——もう誰も見ていないので、ここでは黙って終える
+      });
     } else res.end();
   }
 
