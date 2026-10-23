@@ -68,6 +68,10 @@ export class RuntimeMoveConflictError extends Error {}
 export class ProjectSleepConflictError extends Error {}
 /** チャットにしかできないこと（Project にする）を、普通の Project に頼んだ（409） */
 export class NotChatProjectError extends Error {}
+/** メタ Project にしかできないこと（管理対象を選ぶ）を、ほかの Project に頼んだ（409） */
+export class NotMetaProjectError extends Error {}
+/** 管理対象に選べない Project（自分自身・メタ Project・閉じた Project）を選んだ（400） */
+export class InvalidManagedProjectError extends Error {}
 
 export class NotFoundError extends Error {}
 export class InvalidProjectRootError extends Error {}
@@ -118,6 +122,8 @@ export class ProjectThreadStore {
     //     （決定・2026-09-07。古いスナップショットには無いので畳み直す）
     // v6：MessageEntry に uiToolCalls を足した（決定・2026-09-07）
     // v10：ProjectState に kind（チャット）を足した（2026-10-21、アーキ仕様 §2.2「チャット」）。read model の形を変えたので上げる
+    // （上げていない：2026-10-23 に足した ProjectState.managedProjectIds・ThreadState.managedProjectId も、新しいイベントからしか
+    //  生まれない）
     // （上げていない：2026-09-25 に足した deliveries・awaitingReplies・MessageEntry.origin は、新しいイベントからしか
     //  生まれない——前の snapshot に畳み直すべきものが無い）
     this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 10);
@@ -267,6 +273,49 @@ export class ProjectThreadStore {
     const unique = [...new Set(senders)].filter((s) => s !== id);
     const event = await this.log.append("project.message_senders_set", { id, senders: unique });
     this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
+  /**
+   * **メタ Project の管理対象を選ぶ**（追加・2026-10-23、アーキ仕様 §4.6「メタ Project の構成」）。一覧そのものを置き換え、
+   * 選んだ Project ごとに Base Thread の下へ**専用の Fork を1本**立てる（まだ無ければ。会話は引き継がない——自動化の
+   * 専用の Fork と同じ形）。前に立てて閉じたものがあれば開き直す——同じ Project に2本目を立てない。外した Project の
+   * 専用の Fork は閉じる（消さない——選び直せば開き直る）。
+   * 選べるのは、開いている普通の Project・チャットだけ。自分自身・メタ Project・閉じた Project・知らない id は断る
+   */
+  async setManagedProjects(id: ProjectId, projectIds: readonly ProjectId[]): Promise<ProjectState> {
+    const project = this.getProject(id);
+    if (!project) throw new NotFoundError(`project ${id} not found`);
+    if (project.kind !== "meta") throw new NotMetaProjectError("この Project はメタ Project ではありません");
+    const unique = [...new Set(projectIds)];
+    for (const managedId of unique) {
+      const managed = this.getProject(managedId);
+      if (!managed) throw new InvalidManagedProjectError(`Project ${managedId} がありません`);
+      if (managedId === id) throw new InvalidManagedProjectError("メタ Project 自身は管理対象にできません");
+      if (managed.kind === "meta") throw new InvalidManagedProjectError(`「${managed.name}」はメタ Project なので管理対象にできません`);
+      if (managed.status !== "active") throw new InvalidManagedProjectError(`「${managed.name}」は閉じています`);
+    }
+    const event = await this.log.append("project.managed_projects_set", { id, projectIds: unique });
+    this.projection.applyOne(event);
+
+    const threads = this.listThreadsForProject(id);
+    const dedicated = threads.filter((t) => t.kind === "fork" && t.managedProjectId);
+    let base = threads.find((t) => t.kind === "base" && t.status === "active");
+    for (const managedId of unique) {
+      const existing = dedicated.find((t) => t.managedProjectId === managedId);
+      if (existing) {
+        if (existing.status === "closed") await this.reopenThread(existing.id);
+        continue;
+      }
+      base ??= await this.createBaseThread(id);
+      await this.forkThread(base.id, { title: this.getProject(managedId)!.name, fresh: true, managedProjectId: managedId });
+    }
+    for (const t of dedicated) {
+      if (t.status === "active" && !unique.includes(t.managedProjectId!)) {
+        await this.closeThread(t.id, { by: "human", reason: "管理対象から外しました" });
+      }
+    }
+    this.notifyProjectsChanged();
     return this.getProject(id)!;
   }
 
@@ -599,7 +648,15 @@ export class ProjectThreadStore {
      * `restriction`：読むだけの回として立てる（追加・2026-10-20、アーキ仕様 §4.4）。**読むだけの会話から分けた Fork は、
      * 渡さなくても読むだけ**——外の文を読んだ文脈を、分けるだけでふつうの会話に戻さない。番頭の回（`supervisor`、§4.5）も同じ
      */
-    options: { resumePoint?: string; fromSeq?: number; title?: string; fresh?: boolean; restriction?: ThreadRestriction } = {},
+    /** `managedProjectId`：メタ Project の管理対象専用の Fork（`setManagedProjects` だけが渡す、アーキ仕様 §4.6） */
+    options: {
+      resumePoint?: string;
+      fromSeq?: number;
+      title?: string;
+      fresh?: boolean;
+      restriction?: ThreadRestriction;
+      managedProjectId?: ProjectId;
+    } = {},
   ): Promise<ThreadState> {
     const parent = this.getThread(parentThreadId);
     if (!parent) throw new NotFoundError(`thread ${parentThreadId} not found`);
@@ -621,6 +678,7 @@ export class ProjectThreadStore {
       ...(options.title ? { title: options.title } : {}),
       ...(options.fresh ? { fresh: true } : {}),
       ...(restriction ? { restriction } : {}),
+      ...(options.managedProjectId ? { managedProjectId: options.managedProjectId } : {}),
     });
     this.projection.applyOne(event);
     return this.mustGetThread(id);

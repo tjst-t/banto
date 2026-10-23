@@ -3433,3 +3433,53 @@ test("GET /api/threads/:id は指紋を付け、渡されたら後ろの発言�
     assert.deepEqual(full.messages.map((m) => m.text), ["一つ目", "二つ目", "二つ目の返事"]);
   });
 });
+
+test("kind: meta で作ったメタ Project に管理対象を選ぶと、専用の Fork が一覧に出る。普通の Project には選べない", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const post = async (body: unknown) =>
+      fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify(body) });
+
+    for (const body of [
+      { kind: "meta", root: dir },
+      { kind: "meta", name: "m" },
+      { kind: "meta", name: "m", root: dir, runtime: "remote:vm" },
+      { kind: "meta", name: "m", root: dir, start: { kind: "init" } },
+    ]) {
+      assert.equal((await post(body)).status, 400, JSON.stringify(body));
+    }
+
+    const managed = await (await post({ name: "banto", root: dir })).json();
+    const metaRes = await post({ kind: "meta", name: "orchestrator", root: dir });
+    assert.equal(metaRes.status, 201);
+    const meta = await metaRes.json();
+    assert.equal(meta.kind, "meta");
+    const listed = (await (await fetch(`${base}/api/projects`, { headers })).json()) as Array<{ id: string; kind?: string }>;
+    assert.equal(listed.find((p) => p.id === meta.id)?.kind, "meta");
+
+    const put = (projectId: string, body: unknown) =>
+      fetch(`${base}/api/projects/${projectId}/managed-projects`, { method: "PUT", headers, body: JSON.stringify(body) });
+    assert.equal((await put(meta.id, { projectIds: "x" })).status, 400);
+    assert.equal((await put(meta.id, { projectIds: [meta.id] })).status, 400);
+    assert.equal((await put(managed.id, { projectIds: [] })).status, 409);
+    assert.equal((await put("nope", { projectIds: [] })).status, 404);
+
+    const setRes = await put(meta.id, { projectIds: [managed.id] });
+    assert.equal(setRes.status, 200);
+    assert.deepEqual((await setRes.json()).managedProjectIds, [managed.id]);
+
+    const threads = (await (await fetch(`${base}/api/projects/${meta.id}/threads`, { headers })).json()) as Array<{
+      kind: string;
+      title?: string;
+      managedProjectId?: string;
+      status: string;
+    }>;
+    assert.deepEqual(
+      threads.map((t) => [t.kind, t.title ?? null, t.managedProjectId ?? null, t.status]),
+      [
+        ["base", null, null, "active"],
+        ["fork", "banto", managed.id, "active"],
+      ],
+    );
+  });
+});

@@ -52,6 +52,8 @@ import {
   InvalidProjectRootError,
   InvalidProjectGroupError,
   NotChatProjectError,
+  NotMetaProjectError,
+  InvalidManagedProjectError,
   NotFoundError,
   ProjectGroupConflictError,
   RemoteProjectError,
@@ -1537,6 +1539,8 @@ function toThreadSummary(thread: ThreadState) {
     closedReason: thread.closedReason,
     /** 読むだけの回（追加・2026-10-20、アーキ仕様 §4.4）。印の無い会話には無い */
     restriction: thread.restriction,
+    /** メタ Project の管理対象専用の Fork なら、その Project（追加・2026-10-23、アーキ仕様 §4.6） */
+    managedProjectId: thread.managedProjectId,
     permissionMode: thread.permissionMode,
     model: thread.model,
     effort: thread.effort,
@@ -2406,8 +2410,25 @@ export function createApp(deps: AppDeps) {
         };
         // **チャット**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。名前も根も host が決め、この機械のコンテナだけ
         // （別のサーバではチャットを始めない——ユーザー・2026-10-21）。渡されたものを黙って捨てずに断る（規則2）
+        // **メタ Project**（追加・2026-10-23、アーキ仕様 §4.6）。名前と根は普通の Project と同じに受ける。この機械のコンテナだけ
+        // （別のサーバ・始め方は、要ると決まるまで受けない）。管理対象は作ったあとに `managed-projects` で選ぶ
+        if (body.kind === "meta") {
+          if (body.runtime !== undefined && body.runtime !== "host-container") {
+            return json(res, 400, { error: "メタ Project はこの機械のコンテナでだけ作れます（runtime は渡さないか host-container）" });
+          }
+          const extra = (["start", "parent", "folder"] as const).filter((k) => body[k] !== undefined);
+          if (extra.length > 0) return json(res, 400, { error: `メタ Project は ${extra.join("・")} を受けません` });
+          if (typeof body.name !== "string" || !body.name.trim()) return json(res, 400, { error: "Project の名前が要ります" });
+          if (typeof body.root !== "string" || !body.root) return json(res, 400, { error: "Project の根が要ります" });
+          try {
+            return json(res, 201, await withSettings(await deps.projectThread.createProject(body.name, body.root, { kind: "meta" })));
+          } catch (err) {
+            if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
+            throw err;
+          }
+        }
         if (body.kind !== undefined) {
-          if (body.kind !== "chat") return json(res, 400, { error: "kind は chat だけを受けます（普通の Project は kind を渡さない）" });
+          if (body.kind !== "chat") return json(res, 400, { error: "kind は chat か meta だけを受けます（普通の Project は kind を渡さない）" });
           if (body.runtime !== undefined && body.runtime !== "host-container") {
             return json(res, 400, { error: "チャットはこの機械のコンテナでだけ始めます（runtime は渡さないか host-container）" });
           }
@@ -3234,6 +3255,25 @@ export function createApp(deps: AppDeps) {
           json(res, 200, await deps.projectThread.setMessageSenders(sendersMatch[1]!, body.senders as string[]));
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+        return;
+      }
+
+      // **メタ Project の管理対象**（追加・2026-10-23、アーキ仕様 §4.6）。一覧そのものを置き換え、選んだ Project ごとに
+      // 専用の Fork を立てる（`setManagedProjects`）
+      const managedMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/managed-projects$/);
+      if (managedMatch && req.method === "PUT") {
+        const body = (await readJsonBody(req)) as { projectIds: unknown };
+        if (!Array.isArray(body.projectIds) || body.projectIds.some((id) => typeof id !== "string")) {
+          return json(res, 400, { error: "projectIds must be an array of project ids" });
+        }
+        try {
+          json(res, 200, await deps.projectThread.setManagedProjects(managedMatch[1]!, body.projectIds as string[]));
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          if (err instanceof NotMetaProjectError) return json(res, 409, { error: err.message });
+          if (err instanceof InvalidManagedProjectError) return json(res, 400, { error: err.message });
           throw err;
         }
         return;

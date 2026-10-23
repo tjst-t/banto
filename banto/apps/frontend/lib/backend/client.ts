@@ -144,8 +144,9 @@ export interface RealProject {
   start?: RealProjectStart;
   /** 特権コンテナにした（v4-security.md §1「`containers` で仮想化（KVM）」の 4.。サイドバーの行に印）。そうでなければ無い */
   privileged?: true;
-  /** **チャット**（追加・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project。「Project にする」で外れる */
-  kind?: "chat";
+  /** **チャット**（追加・2026-10-21、アーキ仕様 §2.2「チャット」）。無ければ普通の Project。「Project にする」で外れる。
+   *  `meta`：メタ Project（追加・2026-10-23、アーキ仕様 §4.6）——画面はまだ普通の Project として扱う */
+  kind?: "chat" | "meta";
   /** 試作を始めたか（チャットだけが立てる。一覧の口は全部に真偽で添える） */
   prototyping?: boolean;
   createdAt: string;
