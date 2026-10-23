@@ -12645,6 +12645,27 @@
       "updatedAt": "2026-10-22T15:50:56.925Z",
       "closedAt": "2026-10-22T15:50:56.925Z",
       "extra": {}
+    },
+    {
+      "id": "tool-output-diet",
+      "number": 524,
+      "kind": "story",
+      "title": "tool の出力を短くして、会話の履歴を軽くする",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [],
+      "body": "## なぜ\n本体の会話の履歴の75%は tool の結果（readFile 37%・runCommand 28%・browserScreenshot 28%）、サブエージェントでは84%（Bash 55%・Read 44%）。実測 2026-10-20（docs/notes/2026-10-20-memory-diet.md・memory-moved.md）。会話が育つほど毎回の読み出しに乗るので、短くすれば本体で1〜2割、サブエージェントでそれ以上減る見込み（試していない）。\n\n## 案の候補（まだ決めていない）\n- Shell と FileSystem の結果に既定の上限を付け、超えたら頭と末尾と「続きはこう読む」を返す\n- スクリーンショットの大きさ・解像度を抑える、テキストで足りるときは browserSnapshot を勧める\n- 土台の指示とサブエージェントへの指示に「読む範囲を絞る（grep・行の範囲）」を書く\n\n## 進め方\n案を作って人に見せ、仕様を書いて Fable のレビューを通してからタスクに分ける。",
+      "doneWhen": "測りのスクリプトで、本体の会話の履歴に占める tool の結果の割合と1要求あたりの量が、入れる前より下がっている",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T02:40:54.269Z",
+      "updatedAt": "2026-10-23T02:40:54.269Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
