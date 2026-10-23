@@ -12826,6 +12826,30 @@
       "updatedAt": "2026-10-23T12:37:08.515Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "uid-1000-project-shell",
+      "number": 531,
+      "kind": "bug",
+      "title": "uid が 1000 でないユーザーで入れると、Project のコンテナの中に自分のユーザーが無く Shell が落ちる",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "high",
+      "labels": [
+        "container",
+        "install"
+      ],
+      "body": "install の試験（#530 で直した試験の場、ユーザー bantotester・uid 1001）で見つけた。Project のコンテナの中の Shell の Module が `os.userInfo()` で `uv_os_get_passwd returned ENOENT` を投げて落ち（background-launcher.ts の SystemdLauncher.runtimeDir）、`/modules` で connected:false、コンテナの中に Shell のプロセスが無い。\n\nコンテナは `raw.idmap: both 1001 1001` で中の番号は 1001 だが、中の /etc/passwd には ubuntu（1000）しか無く 1001 のユーザーが居ない。packages/container/src/project-container.ts の用意は、中のユーザーを作る `ensureUser` を `spec.inside` があるとき（別のサーバ）にしか呼ばない。この機械で動く（inside が無い）コンテナでは作らないので、ホストのユーザーの uid がイメージの既定のユーザーと違うと番号だけのユーザーになる。banto-dev-vm（ubuntu・1000）では表に出ていなかった。\n\n直し方の案：`ensureUser` をいつも、いま使う中の番号（effectiveInsideIds）で呼ぶ。既にその番号のユーザーがあれば何もしない（getent で見ている）。",
+      "doneWhen": "単体試験：inside が無いときも中の番号のユーザーを作る。install の試験（run.sh --first-only、uid 1001）の e（Project を作り Shell がつながる・コンテナの中に Shell のプロセスがある）が通る。",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-23T12:53:05.201Z",
+      "updatedAt": "2026-10-23T12:53:05.201Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
