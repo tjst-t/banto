@@ -2,7 +2,7 @@ import type { MockProject, MockProjectOverrides } from "./types";
 import type { RealNewProjectSettings, RealProjectStartRequest } from "../backend/client";
 import { noteProjectStart } from "../backend/project-starts";
 import { notifyMockStoreChange } from "./store-events";
-import { getThread, registerRealFork, registerRealThread } from "./threads";
+import { getThread, markThreadClosed, markThreadReopened, registerRealFork, registerRealThread } from "./threads";
 import { seedThreadPermissionMode } from "./permission-mode";
 import { seedThreadModel } from "../backend/thread-model";
 import { setProjectOverrides } from "./settings";
@@ -91,10 +91,10 @@ export function isChatTitling(p: MockProject): boolean {
   return isChat(p) && p.name === NEW_CHAT_NAME;
 }
 
-/** host の記録のうち、チャットの印と作った時刻（写すときに添える） */
+/** host の記録のうち、チャット・メタ Project の印と作った時刻（写すときに添える） */
 function chatFieldsOf(rp: RealProject): Pick<MockProject, "kind" | "prototyping" | "createdAt"> {
   return {
-    ...(rp.kind === "chat" ? { kind: "chat" as const } : {}),
+    ...(rp.kind ? { kind: rp.kind } : {}),
     ...(rp.prototyping ? { prototyping: true as const } : {}),
     createdAt: rp.createdAt,
   };
@@ -532,6 +532,22 @@ export async function registerNewRealForks(projectId: string): Promise<void> {
     );
     seedThreadPermissionMode(fork.id, fork.permissionMode);
     seedThreadModel(fork.id, fork.model, fork.effort);
+  }
+}
+
+/**
+ * **host が立てた・閉じた・開き直した Fork を手元へ写す**（追加・2026-10-23、アーキ仕様 §4.6）。メタ Project の管理対象を
+ * 選ぶと、host が専用の Fork を立て（前のものは開き直し）、外したものを閉じる——知らない Fork は足し、知っている Fork は
+ * 開いているか閉じているかを host に合わせる
+ */
+export async function syncRealForks(projectId: string): Promise<void> {
+  await registerNewRealForks(projectId);
+  if (!getBackendConfig()) return;
+  for (const fork of (await listRealThreads(projectId)).filter((t) => t.kind === "fork")) {
+    const local = getThread(fork.id);
+    if (!local) continue;
+    if (fork.status === "closed" && local.status !== "closed") markThreadClosed(fork.id, { by: fork.closedBy ?? "human", reason: fork.closedReason });
+    if (fork.status !== "closed" && local.status === "closed") markThreadReopened(fork.id);
   }
 }
 

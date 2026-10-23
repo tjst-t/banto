@@ -2969,3 +2969,19 @@ banto 全体の設定「Claude のアカウント」の「切り替える閾値�
 - 「見回りで使ってよい tool」の節：入れてある第三者の Module ごとに tool と「資源を読む」を並べ、人がチェックで許す。各 tool に Module の
   名乗り（`readOnlyHint`・`openWorldHint`）を薄く出すが、既定でチェックは入れない。同梱の Module の読むだけの tool は「banto が確かめた
   読むだけの tool」として一覧で見せるだけ（外せない）
+
+### 6.48 メタ Project の設定——管理対象の Project と release の扱い（実装・2026-10-24、Backlog #538。main では §6.55——main にある
+§6.48〜6.54（会話の右上整理・別サーバの始め方・文脈のメーター・新しい Project の3つのスイッチ・空いた会話の要約・チャット・番頭の画面）は
+まだ release に入っていないため、この版では欠番。仕組みはアーキ仕様 §4.6）
+
+メタ Project（`kind: "meta"`）の Project の設定にだけ、「一般」のすぐ下に節「メタ Project」が出る（普通の Project・チャットには出ない）。
+実装は `components/banto/settings/meta-project-panel.tsx`。**押したらすぐ保存する**——表示するのは host が返した値で、断られたら
+理由を出して表示は host の値のまま（規則2・3）。眠っている間も出す（Module を通らない）。
+
+- **管理対象の Project**：候補はサイドバーと同じ並び（グループなし → グループの見出しの下 → スリープ中）。自分自身とメタ Project は
+  出さない。スイッチは一覧そのものを `PUT /api/projects/:id/managed-projects` に渡し、host が立てた・閉じた・開き直した専用の Fork を
+  サイドバーへ写す。行の下の文は「専用 Fork を1本持つ」／「管理していない」
+- **release（main → release の取り込み）**：スイッチがオンで「任せる」（既定）、オフで「人に残す」。`GET/PUT /api/projects/:id/meta-release`
+- **Backlog の置き場（tasks.json・GitHub Gist）はここに置かない**——Backlog Module 自身の設定面で選ぶ、普通の Module 設定の範囲
+  （v4-modules.md §4.4「Gist の置き場」）
+- サイドバーのメタ Project の目印（モックの丸形の頭文字）はまだ入れていない

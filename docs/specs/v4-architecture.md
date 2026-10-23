@@ -906,8 +906,7 @@ Memory（AI が `remember_decision` で残す「決まったこと」の一覧�
   host が見分ける口は無く、守っているのは AI の判断（人に残すものに当たる操作は、それぞれの承認が今どおり止める）
 - **release の置き場**：Configuration の Project の層の鍵 `metaProject.release`（文字列 `"human"` だけを持つ。値が無ければ
   「任せる」。任せるに戻したら上書きを外す）。HTTP は `GET/PUT /api/projects/:id/meta-release`（`{ release: "delegate" | "human" }`）。
-  メタ Project でなければ 409。**画面のスイッチはまだ無い**（Backlog #538 で繋ぐ。モックは fork/meta-project の
-  `meta-project-panel.tsx`）
+  メタ Project でなければ 409。画面は Project の設定の「メタ Project」の節のスイッチ（v4-frontend.md §6.55「メタ Project の設定」）
 - **LAN の中の公開**——host が、メタ Project のための AI のターンから始まった Module への呼び出し（AI の代理接続と、その処理の
   中の中継）に `dev.banto/autoApproveReach: "lan"` を刻む（`autoApprove` と同じ刻み方。読むだけの回・人の画面からの呼び出しには
   刻まない）。Publish の窓口と実装が、自分の名乗る届く範囲（`machine`・`lan`）で確かめて人を待たずに公開する
