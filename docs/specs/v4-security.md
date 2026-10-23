@@ -251,6 +251,10 @@ Docker が居れば上の drop-in。確かめる口：`node packages/container/d
   最小のものを作り、`import /etc/caddy/banto.d/*.caddy` の1行だけを足す。banto の設定はそのファイルに生成する：
   `<名前>`（`/api/*` → 4737、ほか → 4175）・`sandbox.<名前>` → 4176・それ以外の `*.<名前>` は 404（Publish の道は
   publish-caddy が admin API でこの前に差し込む。admin API は localhost:2019 のまま）・http は https へ転送。
+  **`/api/*` は JSON と HTML だけを圧縮する**（追加・2026-10-23、ユーザー、Backlog #529）：`encode zstd gzip` を `Content-Type` が
+  `application/json*` か `text/html*` の応答にだけ掛ける。core は圧縮しない（画面の JS は Next が自分で圧縮する）。
+  `text/event-stream`（ターンの流れ・知らせ）は圧縮しない——溜めて画面が止まって見えないように。圧縮を入口に置くのは、流れを外す
+  扱いを core に書かずに済むため。install.sh を使わず自分で立てた proxy の後ろでは効かない（要望が出たら core に足すかを決める）
   Caddy が受け付けない設定は元に戻して止まる。**動いている Caddy の設定を admin API で読み、Caddyfile を JSON にした
   ものと比べて（publish-caddy が足した道は除く）違うときだけ読み直す**——読み直すと publish-caddy の道が次の突き合わせ
   （15 秒ごと）まで消えるので毎回はしない。ファイルの変更ではなく実物と比べるので、前の回に読み直し損ねていても直る。
