@@ -43,3 +43,24 @@
 
 作業者の側では、release 用の枝・worktree を作る操作が権限の確かめで断られ、また Factory の決まりで push しないので、
 **衝突の解消・その版での build と試験・`origin/release` への push は人（または権限のある作業者）に残した。**
+
+## #539 はブロック（完了にしない）
+
+レビュー（2回）の指摘どおり、完了条件の後半「release に反映されている」は満たしていない。**#539 は完了ではなく、次の2つが
+揃うまでブロック**として人に上げる。Backlog の状態を変える tool はこの作業者に無いので、ここに書き、報告で上げた。
+
+1. **番頭と重なる3点を人が決める**（決まったら `docs/specs/v4-architecture.md` §4.5／§4.6 に書く。まだ決まっていないので
+   仕様書には書いていない）。作業者の案（決定ではない）：
+   - ① `restriction` は release の `ThreadRestriction`（`read-only`｜`supervisor`）のまま、`managedProjectId` は別の欄として
+     足す。専用 Fork はふつうの会話で、番頭の回にはならない
+   - ② 番頭の回にも `AUTO_APPROVE_REACH_META_KEY` を刻まない（release の `if (restricted()) return {};` の後ろに置く）——
+     「番頭の会話の承認は必ず聞く」を保つ
+   - ③ `report_turn` の抑止は release の `!restricted` のまま。`metaPermissions` は Project ごとに引いて system prompt の節を
+     足すだけなので並べて置く（番頭の回に節を出すかは①②と合わせて決める）
+2. **release 用の枝を作ることと `origin/release` への push を許す**（または権限のある人・作業者が行う）。なお2回目のレビューでは
+   `git fetch` がアクセス権のエラーで失敗しており、`origin/release` は手元に残った参照（先頭 `b1ed33d49`）で見ている。
+   当てる前に取り直しが要る
+
+揃ったら：7コミットを最新の `origin/release` に1つずつ当てて衝突を解き、その版で `npm run build`・決まった単体と結合の試験・
+上の 32 spec の E2E（`subagent-from-module` は `HOME=/home/ubuntu` でも確かめる）を流し、spec 名と件数、push したコミットを
+このノートに書き足す。
