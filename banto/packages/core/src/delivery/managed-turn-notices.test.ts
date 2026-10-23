@@ -37,14 +37,15 @@ async function setup(
     const notices: Array<{ title: string }> = [];
     const deliveries = new ThreadDeliveries({ projectThread: store, turns, notify: async (n) => void notices.push(n) });
     const runs: Array<{ threadId: string; hop: number }> = [];
-    // 起こされたターンは鍵を取って、すぐ終える（届いたものを渡し終えたことにする）
+    // 起こされたターンは鍵を取って、すぐ終える（届いたものを渡し終えたことにする）。runs に入るのは渡し終えてから
+    // ——先に入れると、runs を見た試験が書き込みの途中の deliveries を見る
     deliveries.setTurnRunner(async (threadId, hop) => {
       const release = turns.tryAcquire(threadId, hop);
       if (!release) return false;
-      runs.push({ threadId, hop });
       for (const d of store.getThread(threadId)!.deliveries ?? []) {
         await store.appendMessage(threadId, "user", d.text, undefined, { from: d.from, title: d.title, hop: d.hop, deliveryId: d.deliveryId });
       }
+      runs.push({ threadId, hop });
       release();
       return true;
     });
@@ -63,12 +64,21 @@ async function setup(
   }
 }
 
+/** 「起きない・届かない」を見るための間。届く・起きるほうは決まった時間で見ず、waitFor で中身が出るまで待つ（規則14） */
 const settle = () => new Promise((res) => setTimeout(res, 20));
+
+async function waitFor(cond: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.fail(`待ちきれませんでした: ${what}`);
+}
 
 test("管理対象 Project でターンが終わると、メタ Project の専用 Fork に知らせが届き、AI が起きる（ホップは＋1）", async () => {
   await setup(async ({ store, turns, runs, managed, meta }) => {
     turns.tryAcquire(managed.baseId, 0)!();
-    await settle();
+    await waitFor(() => runs.length > 0, "専用 Fork が起きない");
     assert.deepEqual(runs, [{ threadId: meta.forkId, hop: 1 }], "専用 Fork が起きない");
     assert.equal(store.getThread(meta.forkId)!.deliveries?.length ?? 0, 0, "起きたターンに渡っていない");
   });
@@ -79,7 +89,7 @@ test("知らせの中身：管理対象の Project と Thread を指し、banto 
     // 専用 Fork が走っている間に終わらせて、知らせを溜めたまま中身を見る
     const releaseFork = turns.tryAcquire(meta.forkId, 0)!;
     turns.tryAcquire(managed.baseId, 0)!();
-    await settle();
+    await waitFor(() => (store.getThread(meta.forkId)!.deliveries?.length ?? 0) > 0, "知らせが届かない");
     const delivered = store.getThread(meta.forkId)!.deliveries ?? [];
     assert.equal(delivered.length, 1);
     const d = delivered[0]!;
@@ -100,13 +110,13 @@ test("同じ Thread の知らせがまだ渡っていなければ積み増さな
   await setup(async ({ store, turns, managed, meta }) => {
     const releaseFork = turns.tryAcquire(meta.forkId, 0)!;
     turns.tryAcquire(managed.baseId, 0)!();
-    await settle();
+    await waitFor(() => (store.getThread(meta.forkId)!.deliveries?.length ?? 0) > 0, "知らせが届かない");
     turns.tryAcquire(managed.baseId, 0)!();
     await settle();
     assert.equal(store.getThread(meta.forkId)!.deliveries!.length, 1, "同じ Thread の知らせを積み増した");
     const sub = await store.forkThread(managed.baseId, { title: "調べもの" });
     turns.tryAcquire(sub.id, 0)!();
-    await settle();
+    await waitFor(() => store.getThread(meta.forkId)!.deliveries!.length >= 2, "別の Thread の知らせが届かない");
     assert.equal(store.getThread(meta.forkId)!.deliveries!.length, 2, "別の Thread の知らせが届かない");
     releaseFork();
     await settle();
