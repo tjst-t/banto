@@ -156,3 +156,21 @@ export async function hasOrigin(root: string): Promise<boolean> {
   if (!r.ok) throw gitFailure("remote を読めません", r);
   return r.stdout.split("\n").some((l) => l.trim() === "origin");
 }
+
+/**
+ * 親のコミットのほかのファイルを残したまま、tasks.json だけを差し替えたコミットを作る（ref はまだ動かさない）。
+ * Gist の置き場で使う——人が同じ Gist に置いた README 等を、一覧を書くたびに消さない（Gist は入れ子のフォルダを持たない）
+ */
+export async function commitTasksKeeping(root: string, text: string, parent: string, message: string): Promise<string> {
+  const listed = await runGit(root, ["ls-tree", "-z", parent]);
+  if (!listed.ok) throw gitFailure("前のコミットの中身を読めません", listed);
+  const blob = await runGit(root, ["hash-object", "-w", "--stdin"], { input: text });
+  if (!blob.ok) throw gitFailure(`${TASKS_FILE} を書けません`, blob);
+  const others = listed.stdout.split("\0").filter((l) => l !== "" && !l.endsWith(`\t${TASKS_FILE}`));
+  const entries = [...others, `100644 blob ${blob.stdout.trim()}\t${TASKS_FILE}`];
+  const tree = await runGit(root, ["mktree", "-z"], { input: `${entries.join("\0")}\0` });
+  if (!tree.ok) throw gitFailure("tree を作れません", tree);
+  const commit = await runGit(root, ["commit-tree", tree.stdout.trim(), "-p", parent, "-F", "-"], { input: message });
+  if (!commit.ok) throw gitFailure("コミットを作れません", commit);
+  return commit.stdout.trim();
+}

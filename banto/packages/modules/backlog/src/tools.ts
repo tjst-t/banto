@@ -40,8 +40,8 @@ import {
   type NewItemInput,
   type SplitTaskInput,
 } from "./model.js";
-import { conversionCommand, conversionHint, type BacklogStore, type MutateResult, type Snapshot, type SyncState } from "./store.js";
-import { checkSshIdentity, readSettings, writeSettings } from "./settings.js";
+import { conversionCommand, conversionHint, type BacklogBackend, type GistPlace, type MutateResult, type Snapshot, type SyncState } from "./store.js";
+import { BACKENDS, checkGistToken, checkSshIdentity, readSettings, writeSettings, type BacklogBackendKind, type BacklogSettings } from "./settings.js";
 
 export interface ToolResult {
   [key: string]: unknown;
@@ -154,12 +154,28 @@ export const TOOLS = [
   adminTool("boardUpdateItem", "画面から欄を変える（結果は一覧ごと）", UPDATE_SCHEMA),
   adminTool("boardSplitStory", "画面からタスクに分ける（結果は一覧ごと）", SPLIT_SCHEMA),
   adminTool("boardMoveItem", "画面から並べ替える（結果は一覧ごと）", MOVE_SCHEMA),
-  adminTool("getSettings", "この Module のいまの設定（一覧を置くブランチ・送るときに使う SSH 鍵）", { properties: {} }),
-  adminTool("setSettings", "一覧を置くブランチ（中は tasks.json 1つ）と送るときに使う SSH 鍵を変える。sshIdentity は空で使わない・省けばそのまま", {
-    properties: { branch: { type: "string" }, sshIdentity: { type: "string" } },
-    required: ["branch"],
-  }),
+  adminTool("getSettings", "この Module のいまの設定（一覧の置き場・一覧を置くブランチ・送るときに使う SSH 鍵・Gist）", { properties: {} }),
+  adminTool(
+    "setSettings",
+    "一覧の置き場（tasks-json＝リポジトリの一覧のブランチ・gist＝GitHub Gist）、一覧を置くブランチ（中は tasks.json 1つ）、送るときに使う SSH 鍵、" +
+      "Gist の id と Gist に書くトークン（Vault の名前）を変える。sshIdentity は空で使わない。backend・sshIdentity・gistId・gistToken は省けばそのまま",
+    {
+      properties: {
+        backend: { type: "string", enum: [...BACKENDS] },
+        branch: { type: "string" },
+        sshIdentity: { type: "string" },
+        gistId: { type: "string" },
+        gistToken: { type: "string" },
+      },
+      required: ["branch"],
+    },
+  ),
   adminTool("listSshIdentities", "送るときに選べる SSH 鍵（Vault の ssh-identity の alias。この Project から引けるもの）", { properties: {} }),
+  adminTool("listGistTokens", "Gist に書くトークンに選べるもの（Vault の secret・oauth-token の alias。この Project から引けるもの）", { properties: {} }),
+  adminTool("createGist", "非公開の Gist を新しく作り（中は空の一覧）、一覧の置き場をそこに変える。gistToken は Vault の名前", {
+    properties: { gistToken: { type: "string" }, description: { type: "string" } },
+    required: ["gistToken"],
+  }),
 ];
 
 // ---- 引数を読む（型が違えば理由を言って断る）------------------------------------------------
@@ -382,14 +398,27 @@ function fail(message: string): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-/** 読めない中身のときに言うこと（古い形なら変換の手段も） */
+/** 読めない中身のときに言うこと（古い形なら変換の手段も——ブランチの店だけ） */
 function refusal(snapshot: Extract<Snapshot, { state: "refused" }>): string {
+  if (snapshot.gist) return `Gist ${snapshot.gist.id} の tasks.json を読めません：${snapshot.reason}`;
   return `ブランチ ${snapshot.branch} の tasks.json を読めません：${snapshot.reason}。` + (snapshot.legacy ? conversionHint(snapshot.branch) : "");
 }
 
-/** ブランチがまだ無いときに言うこと（作業ツリーに一覧が残っていれば、移す道も） */
+/** 置き場をまったく使えない理由（根が git でない・Gist から一度も取ってこれていない）。無ければ undefined */
+function unusable(snapshot: Snapshot): string | undefined {
+  return snapshot.state === "missing" ? (snapshot.notRepository ?? snapshot.unavailable) : undefined;
+}
+
+/** 書いた置き場の呼び名（「一覧のブランチ backlog」・「Gist <id> の tasks.json」） */
+function placeName(where: { branch: string; gist?: GistPlace }): string {
+  return where.gist ? `Gist ${where.gist.id} の tasks.json` : `一覧のブランチ ${where.branch}`;
+}
+
+/** ブランチがまだ無い（Gist に tasks.json がまだ無い）ときに言うこと（作業ツリーに一覧が残っていれば、移す道も） */
 function missingNote(snapshot: Extract<Snapshot, { state: "missing" }>): string {
-  if (snapshot.notRepository) return snapshot.notRepository;
+  const why = unusable(snapshot);
+  if (why) return why;
+  if (snapshot.gist) return `まだ Gist ${snapshot.gist.id} に tasks.json がありません`;
   return (
     `まだ一覧のブランチ ${snapshot.branch} がありません` +
     (snapshot.leftover
@@ -400,6 +429,11 @@ function missingNote(snapshot: Extract<Snapshot, { state: "missing" }>): string 
 
 function problemsNote(problems: readonly string[]): string {
   return problems.length > 0 ? `\n（一覧に問題があります：${problems.join("／")}）` : "";
+}
+
+/** Gist から取ってこれなかったときの1行（出しているのは最後に取ってきた写し） */
+function gistNote(snapshot: Snapshot): string {
+  return snapshot.gist && snapshot.sync.fetchError ? `\n（Gist から取ってこれませんでした——最後に取ってきた中身です：${snapshot.sync.fetchError}）` : "";
 }
 
 /** origin との様子で、知らせることがあれば1行（送っていない・食い違い・取ってこれなかった） */
@@ -451,11 +485,18 @@ function describePatch(patch: Record<string, unknown>): string {
 // ---- 処理 ----------------------------------------------------------------------
 
 export interface ToolContext {
-  store: BacklogStore;
+  store: BacklogBackend;
   root: string;
   now?: () => string;
   /** 設定で選べる SSH 鍵の一覧（Vault の目録から）。無ければ選べない */
   sshIdentities?: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+  /** Gist の置き場で使う口（§4.4「Gist の置き場」）。無ければ Gist を選べない */
+  gist?: {
+    /** 選べるトークン（Vault の目録の secret・oauth-token） */
+    tokens: (callId?: string) => Promise<{ names: string[]; warning?: string }>;
+    /** そのトークンで非公開の Gist を作る */
+    create: (gistToken: string, description: string, callId?: string) => Promise<GistPlace>;
+  };
   /**
    * **出来事を出す**（追加・2026-10-16、アーキ仕様 §4.3「最初に出す出来事」、Backlog #347）。出口の箱に書いてから host へ
    * 出す口（`EventPublisher.publish`）。無ければ出さない
@@ -532,10 +573,18 @@ async function board(ctx: ToolContext, since?: string): Promise<ToolResult> {
     return ok("変わっていません", { unchanged: true, version: snapshot.version });
   }
   const root = displayRoot(ctx.root);
-  const base = { root, branch: snapshot.branch, version: snapshot.version, state: snapshot.state, sync: snapshot.sync };
+  const base = {
+    root,
+    branch: snapshot.branch,
+    version: snapshot.version,
+    state: snapshot.state,
+    sync: snapshot.sync,
+    ...(snapshot.gist ? { gist: snapshot.gist } : {}),
+  };
   if (snapshot.state === "missing") {
     return ok(missingNote(snapshot), {
       ...base,
+      ...(snapshot.unavailable ? { unavailable: snapshot.unavailable } : {}),
       ...(snapshot.leftover ? { leftover: snapshot.leftover } : {}),
       ...(snapshot.notRepository ? { notRepository: snapshot.notRepository } : {}),
     });
@@ -580,8 +629,8 @@ export async function callTool(
         announce(ctx, written, now(), callId);
         const { result, doc, branch, created } = written;
         return ok(
-          `${created ? `一覧のブランチ ${branch} を作り、` : ""}足しました：${line(result, doc.items)}${pushNote(written)}`,
-          { item: result, branch, ...pushField(written) },
+          `${created ? `${placeName(written)} を作り、` : ""}足しました：${line(result, doc.items)}${pushNote(written)}`,
+          { item: result, branch, ...(written.gist ? { gist: written.gist } : {}), ...pushField(written) },
         );
       }
       case "updateItem": {
@@ -650,10 +699,8 @@ export async function callTool(
         await ctx.store.mutate((d) => moveChange(d, move), (r) => `backlog: moveItem ${r.moved}（${r.target} の${where(move.where)}）`, callId);
         return await board(ctx);
       }
-      case "getSettings": {
-        const s = readSettings();
-        return ok(JSON.stringify(s), { branch: s.branch, sshIdentity: s.sshIdentity ?? null });
-      }
+      case "getSettings":
+        return settingsResult(readSettings());
       case "setSettings": {
         const current = readSettings();
         const asked = str(args, "sshIdentity");
@@ -670,8 +717,56 @@ export async function callTool(
           }
           if (!names.includes(sshIdentity)) return fail(`${sshIdentity} は、この Project から使える Vault の SSH 鍵（ssh-identity）にありません`);
         }
-        const saved = writeSettings({ branch: requiredStr(args, "branch"), sshIdentity: sshIdentity ?? "" });
-        return ok(JSON.stringify(saved), { branch: saved.branch, sshIdentity: saved.sshIdentity ?? null });
+        const backend = enumOf<BacklogBackendKind>(BACKENDS, args, "backend") ?? current.backend;
+        const gistId = str(args, "gistId") ?? current.gistId;
+        const askedToken = str(args, "gistToken");
+        const gistToken = askedToken === undefined ? current.gistToken : checkGistToken(askedToken);
+        // トークンも同じ——選び直したものだけ、目録に在ることを確かめる
+        if (gistToken && gistToken !== current.gistToken) {
+          const why = await missingToken(ctx, gistToken, callId);
+          if (why) return fail(why);
+        }
+        const saved = writeSettings({
+          backend,
+          branch: requiredStr(args, "branch"),
+          ...(sshIdentity ? { sshIdentity } : {}),
+          ...(gistId ? { gistId } : {}),
+          ...(gistToken ? { gistToken } : {}),
+        });
+        return settingsResult(saved);
+      }
+      case "listGistTokens": {
+        if (!ctx.gist) return fail("この Backlog は Vault を呼べないので、Gist のトークンを選べません");
+        try {
+          const listed = await ctx.gist.tokens(callId);
+          return ok(JSON.stringify(listed), { ...listed });
+        } catch (err) {
+          return fail(`Vault のトークンの一覧を読めません：${(err as Error).message}`);
+        }
+      }
+      case "createGist": {
+        if (!ctx.gist) return fail("この Backlog は Vault を呼べないので、Gist を作れません");
+        const gistToken = checkGistToken(requiredStr(args, "gistToken"));
+        if (!gistToken) return fail("gistToken が要ります");
+        const current = readSettings();
+        if (gistToken !== current.gistToken) {
+          const why = await missingToken(ctx, gistToken, callId);
+          if (why) return fail(why);
+        }
+        const description = str(args, "description") ?? `banto Backlog（${basename(ctx.root)}）`;
+        let place: GistPlace;
+        try {
+          place = await ctx.gist.create(gistToken, description, callId);
+        } catch (err) {
+          return fail(`Gist を作れませんでした：${(err as Error).message}`);
+        }
+        // 作れたのに設定を書けなかったら、そう言う（作った Gist の場所も——人がそれを選び直せるように）
+        try {
+          const saved = writeSettings({ ...current, backend: "gist", gistId: place.id, gistToken });
+          return settingsResult(saved, `非公開の Gist を作り、一覧の置き場にしました（${place.url}）`);
+        } catch (err) {
+          return fail(`Gist は作りました（${place.url}）が、設定を書けませんでした：${(err as Error).message}`);
+        }
       }
       case "listSshIdentities": {
         if (!ctx.sshIdentities) return fail("この Backlog は Vault を呼べないので、SSH 鍵を選べません");
@@ -705,9 +800,11 @@ async function listItems(ctx: ToolContext, args: Args): Promise<ToolResult> {
 
   const snapshot = await ctx.store.read();
   if (snapshot.state === "missing") {
-    if (snapshot.notRepository) return fail(snapshot.notRepository);
-    return ok(`${missingNote(snapshot)}。createItem で最初の項目を足すと作ります`, {
+    const why = unusable(snapshot);
+    if (why) return fail(why);
+    return ok(`${missingNote(snapshot)}。createItem で最初の項目を足すと作ります${gistNote(snapshot)}`, {
       branch: snapshot.branch,
+      ...(snapshot.gist ? { gist: snapshot.gist } : {}),
       exists: false,
       items: [],
       ...(snapshot.leftover ? { leftover: snapshot.leftover } : {}),
@@ -729,8 +826,9 @@ async function listItems(ctx: ToolContext, args: Args): Promise<ToolResult> {
     picked.length === 0
       ? "合う項目はありません"
       : `${picked.length} 件（上ほど優先）\n${picked.map((i) => line(i, items)).join("\n")}`;
-  return ok(text + problemsNote(snapshot.problems) + syncNote(snapshot.sync, snapshot.branch), {
+  return ok(text + problemsNote(snapshot.problems) + syncNote(snapshot.sync, snapshot.branch) + gistNote(snapshot), {
     branch: snapshot.branch,
+    ...(snapshot.gist ? { gist: snapshot.gist } : {}),
     exists: true,
     items: picked.map((i) => summary(i, items)),
     sync: snapshot.sync,
@@ -761,4 +859,28 @@ async function getItem(ctx: ToolContext, target: ItemRef): Promise<ToolResult> {
     .filter((s) => s !== "")
     .join("\n");
   return ok(text, { item, waitingOn: waiting, dependents: after, children: childrenOf(item, doc.items).map((i) => i.id) });
+}
+
+/** 設定の返し方（画面と同じ形。無いものは null） */
+function settingsResult(s: BacklogSettings, text?: string): ToolResult {
+  return ok(text ?? JSON.stringify(s), {
+    backend: s.backend,
+    branch: s.branch,
+    sshIdentity: s.sshIdentity ?? null,
+    gistId: s.gistId ?? null,
+    gistUrl: s.gistId ? `https://gist.github.com/${s.gistId}` : null,
+    gistToken: s.gistToken ?? null,
+  });
+}
+
+/** そのトークンの名前が Vault の目録（この Project から引けるもの）に無ければ、その理由 */
+async function missingToken(ctx: ToolContext, gistToken: string, callId: string | undefined): Promise<string | undefined> {
+  if (!ctx.gist) return "この Backlog は Vault を呼べないので、Gist のトークンを選べません";
+  let names: string[];
+  try {
+    ({ names } = await ctx.gist.tokens(callId));
+  } catch (err) {
+    return `Vault のトークンの一覧を読めません：${(err as Error).message}`;
+  }
+  return names.includes(gistToken) ? undefined : `${gistToken} は、この Project から使える Vault のトークン（secret・oauth-token）にありません`;
 }
