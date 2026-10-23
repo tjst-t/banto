@@ -12774,14 +12774,16 @@
       "title": "入口の Caddy で /api/* の JSON と HTML を圧縮する（encode zstd gzip）",
       "status": "in-progress",
       "parent": null,
-      "dependsOn": [],
+      "dependsOn": [
+        "install-loop-incus"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [
         "perf",
         "install"
       ],
-      "body": "決定・2026-10-23、ユーザー。core の API の応答は圧縮されずに届いている（会話の記録 92KB・ui-resource 316KB。画面の JS は Next が gzip 済み）。install.sh が作る banto.caddy の `handle /api/*` に、Content-Type が application/json と text/html のときだけ `encode zstd gzip` を足す。text/event-stream（ターンの流れ等）は圧縮しない——溜まって画面が止まらないように。\n\n仕様：v4-security.md §1「入口は Caddy」。ブランチ fork/api-encode（eb5d278cf）。\n\n確かめたこと（2026-10-23、Caddy v2.10.2 を手元で、install.sh の /api/* の handle をそのまま使って）：JSON・HTML は Accept-Encoding に合わせて zstd／gzip で返り、受けないと言えば圧縮なし。event-stream は gzip・zstd を受けると言っても圧縮されず、1秒ごとの5件が 1.0〜5.0 秒にそれぞれ届いた（溜まらない）。render_banto_caddy の全体が caddy validate を通る。core の応答の種類は JSON（content-length 付き）・HTML・event-stream・画像だけで、流すのは event-stream だけ。install の試験（checks.sh）に、動いている Caddy の設定で encode を見る確かめを足した。\n\n更新での当て方：banto.caddy は root のファイルで、画面の更新（update.mjs）は root を持たないので、今は人が install.sh を打ち直す（引数なしでよい・何度打っても壊れない）。",
+      "body": "決定・2026-10-23、ユーザー。core の API の応答は圧縮されずに届いている（会話の記録 92KB・ui-resource 316KB。画面の JS は Next が gzip 済み）。install.sh が作る banto.caddy の `handle /api/*` に、Content-Type が application/json と text/html のときだけ `encode zstd gzip` を足す。text/event-stream（ターンの流れ等）は圧縮しない——溜まって画面が止まらないように。\n\n仕様：v4-security.md §1「入口は Caddy」。main eb5d278cf。\n\n確かめたこと（2026-10-23、Caddy v2.10.2 を手元で、install.sh の /api/* の handle をそのまま使って）：JSON・HTML は Accept-Encoding に合わせて zstd／gzip で返り、受けないと言えば圧縮なし。event-stream は gzip・zstd を受けると言っても圧縮されず、1秒ごとの5件が 1.0〜5.0 秒にそれぞれ届いた（溜まらない）。render_banto_caddy の全体が caddy validate を通る。core の応答の種類は JSON（content-length 付き）・HTML・event-stream・画像だけで、流すのは event-stream だけ。install の試験（checks.sh）に、動いている Caddy の設定で encode を見る確かめを足した。\n\n更新での当て方（決定・2026-10-23、ユーザー、案A）：banto.caddy は root のファイルで、画面の更新（update.mjs）は root を持たないので、人が install.sh を打ち直す（引数なしでよい・何度打っても壊れない）。画面の知らせは作らない。\n\n残り：install の試験（#530 で試験の場を直してから）を通す。",
       "doneWhen": "本物の Caddy で：JSON と HTML は zstd/gzip で返り、event-stream は圧縮されず1件ずつ遅れなく届く（溜まらない）。install.sh の生成物が caddy validate を通る。更新での当て方の案を人に出す。",
       "resolution": null,
       "refs": [],
@@ -12792,7 +12794,7 @@
         }
       ],
       "createdAt": "2026-10-23T11:46:13.201Z",
-      "updatedAt": "2026-10-23T11:48:27.179Z",
+      "updatedAt": "2026-10-23T12:38:04.173Z",
       "closedAt": null,
       "extra": {}
     },
