@@ -12795,6 +12795,35 @@
       "updatedAt": "2026-10-23T11:48:27.179Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "install-loop-incus",
+      "number": 530,
+      "kind": "bug",
+      "title": "install の試験の場で loop デバイスが使えず、Incus の置き場を作る段で止まる",
+      "status": "in-progress",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "install",
+        "test"
+      ],
+      "body": "banto/scripts/install-test/run.sh で install.sh を入れ子のコンテナに流すと、step_incus の「置き場 banto を作る（btrfs のループファイル 50GiB）」で `losetup: cannot find an unused loop device: No such file or directory` になり、1回目が rc=1 で止まる。2026-10-23 02:41 と 11:48 の回で同じ。install.sh ではなく試験の場（入れ子のコンテナに loop デバイスが見えない）の問題とみる。直すのは run.sh の「3段目の手当て」の側（install.sh には入れない）。\n\n見つけたきっかけ：#529（入口の Caddy の encode）の install の試験。",
+      "doneWhen": "run.sh --first-only が 1回目を通り、a〜e・g の確かめが通る（#529 で足した encode の確かめを含む）。",
+      "resolution": null,
+      "refs": [],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "c43ab8cc-0e67-4253-b071-c221d2807411"
+        }
+      ],
+      "createdAt": "2026-10-23T12:37:08.515Z",
+      "updatedAt": "2026-10-23T12:37:08.515Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
