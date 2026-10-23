@@ -227,6 +227,34 @@ test("同じ鍵で ssh-agent を増やさない——使い回して、最後に
   });
 });
 
+test("ssh-agent が外から SIGKILL で死んで、ソケットの残骸だけ残っていても、使い回さず立て直す", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    const { privateKeyRef } = await backend.generateKeypair("ssh", "keys/deploy");
+    const first = await backend.loadIntoAgent(privateKeyRef);
+    assert.ok(existsSync(first.socketPath));
+
+    const { stdout: psOut } = await execFileP("sh", [
+      "-c",
+      `ps -eo pid,args | grep -F ${JSON.stringify(first.socketPath)} | grep -v grep`,
+    ]);
+    const pid = parseInt(psOut.trim().split(/\s+/)[0]!, 10);
+    assert.ok(pid > 0, `ssh-agent の pid を見つけられなかった: ${psOut}`);
+    process.kill(pid, "SIGKILL");
+    await new Promise((r) => setTimeout(r, 300));
+
+    assert.ok(existsSync(first.socketPath), "ソケットのファイルが残っていない——前提が成り立っていない");
+
+    const second = await backend.loadIntoAgent(privateKeyRef);
+    assert.notEqual(second.socketPath, first.socketPath, "死んだ agent の窓口を使い回してしまった");
+
+    const listed = await execFileP("ssh-add", ["-l"], { env: { ...process.env, SSH_AUTH_SOCK: second.socketPath } });
+    assert.match(listed.stdout, /ED25519/, "立て直した agent に鍵が入っていない");
+    await backend.stopAgents();
+  });
+});
+
 // **鍵を置き換えたら、その鍵で立てた ssh-agent は落とす**（追加・2026-10-07、値の置き換え `replaceSecretValue`）。
 // agent は鍵を抱えたまま使い回すので、落とさないと次の startSshAgent が**古い鍵**を配り続ける
 // ——相手（GitHub）には新しい公開鍵を登録したのに、古い鍵で名乗って断られる

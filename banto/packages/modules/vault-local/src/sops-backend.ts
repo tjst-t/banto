@@ -266,7 +266,7 @@ export class SopsBackend implements VaultBackend {
     // **置き場ごとに1つ**——同じ鍵でも、コンテナが違えば見える窓口が要る（追加・2026-09-27）
     const agentKey = opts.socketDir ? `${privateKeyRef}\0${opts.socketDir}` : privateKeyRef;
     const running = this.agents.get(agentKey);
-    if (running && this.isAlive(running.pid) && existsSync(running.socketPath)) {
+    if (running && (await this.socketAlive(running.socketPath))) {
       return { socketPath: running.socketPath };
     }
     if (running) this.agents.delete(agentKey); // 死んでいた——立て直す
@@ -342,7 +342,30 @@ export class SopsBackend implements VaultBackend {
     }
   }
 
-  /** **鍵を持ったプロセスを置き去りにしない**——Vault が終わるときに落とす。 */
+  /**
+   * その窓口は本当に生きているか（追加・2026-10-23、実測の不具合——別のサーバの実行場所への SSH が
+   * 「Permission denied」で失敗する障害があり、banto-host が落ちて systemd に再起動されたとき、
+   * cgroup ごと巻き込まれて死んだ ssh-agent を、使い回しの判定が誤って「生きている」と見ていた疑い）。
+   *
+   * 前は isAlive(pid)（そのプロセス番号が存在するか）と existsSync(socketPath)（ファイルが残っているか）
+   * だけで判定していた。どちらも「本当にその agent が鍵の問い合わせに答えるか」は見ていない——
+   * pid は再利用されることがあり、Unix ソケットのファイルは agent が SIGKILL で死んでも自分では消えず
+   * 残り続ける。実際に軽い問い合わせ（ssh-add -l）を打ち、agent として応答したかで判定する。
+   */
+  private async socketAlive(socketPath: string): Promise<boolean> {
+    if (!existsSync(socketPath)) return false;
+    try {
+      await execFileP("ssh-add", ["-l"], { env: { ...process.env, SSH_AUTH_SOCK: socketPath }, timeout: 3000 });
+      return true;
+    } catch (err) {
+      // 鍵が1つも無い agent は exit 1 で「The agent has no identities.」——それでも agent 自体は生きている。
+      // それ以外（繋がらない・時間切れ）は死んでいる
+      const code = (err as { code?: unknown }).code;
+      return code === 1;
+    }
+  }
+
+  /** 鍵を持ったプロセスを置き去りにしない——Vault が終わるときに落とす。 */
   private registerAgentCleanup(): void {
     if (this.agentCleanupRegistered) return;
     this.agentCleanupRegistered = true;
