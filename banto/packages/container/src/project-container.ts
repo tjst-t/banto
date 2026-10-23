@@ -735,7 +735,9 @@ export class ProjectContainers {
     if (needsRestart || st.status !== "Running") await this.incus(["start", name], `コンテナ ${name} を起こすの`);
     await this.waitReady(name);
     await this.ensureNode(name, spec);
-    if (spec.inside) await this.ensureUser(name, spec.inside);
+    // **中のユーザーはいつも作る**（Backlog #531）：この機械のコンテナ（inside が無い）でも、中の番号＝ホストの uid の
+    // ユーザーがイメージに居るとは限らない（uid 1001 で入れると中は ubuntu（1000）だけで、Shell が userInfo() で落ちた）
+    await this.ensureUser(name, effectiveInsideIds(st.config, spec));
     await this.ensureWorkSlices(name, insideIds(spec).uid, spec.limits);
     if (spec.virtualization !== undefined) await this.ensureKvmAccess(name, spec.virtualization?.kvm === true);
     return { name, created, inside: insideIds(spec) };
