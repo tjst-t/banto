@@ -217,11 +217,12 @@ export function unitLabel(unit: string): string {
 
 /**
  * ユーザーの systemd の単位を、内訳のどこに数えるか（段2a で仕事の組に入れたものも）。
- * `banto-shell-<16進>.scope`＝待つ形のコマンド、`banto-shell-<id>.service`＝待たない形、`banto-subagent-*.scope`＝サブエージェント、
+ * `banto-shell-<印>-<16進>.scope`（印の無い古い形も）＝待つ形のコマンド、`banto-shell-<id>.service`＝待たない形、`banto-subagent-*.scope`＝サブエージェント、
  * `banto-factory-test-*.scope`＝Factory のテスト、`banto-terminal-*.scope`・`tmux-spawn-*.scope`＝Terminal の tmux（人のシェル）、そのほかの `banto-<名前>.service`＝Service
  */
 export function unitServiceName(unit: string): { group: ConsumerGroupId; name: string } | undefined {
-  if (/^banto-shell-[0-9a-f]+\.scope$/.test(unit)) return { group: "commands", name: "コマンド" };
+  // 印（その1本の Shell の、16進8桁）が入る形も（Backlog #294：`banto-shell-<印>-<乱数>.scope`）
+  if (/^banto-shell-(?:[0-9a-f]{8}-)?[0-9a-f]+\.scope$/.test(unit)) return { group: "commands", name: "コマンド" };
   const shell = /^banto-shell-(.+)\.service$/.exec(unit);
   if (shell) return { group: "commands", name: `待たないコマンド ${shell[1]}` };
   if (/^banto-subagent-.+\.scope$/.test(unit)) return { group: "work", name: "サブエージェント" };

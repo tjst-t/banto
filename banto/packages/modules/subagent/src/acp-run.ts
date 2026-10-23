@@ -26,7 +26,7 @@ import {
   type Stream,
   type Usage,
 } from "@agentclientprotocol/sdk";
-import { inWorkScope, stopWorkScope } from "@banto/module-contract";
+import { inWorkScope, stopWorkScope, workScopeOwner } from "@banto/module-contract";
 import { clipLine, STEP_TITLE_MAX, type PlanEntry, type StepStatus, type ToolCallView } from "./runs.js";
 
 export interface AgentLaunch {
@@ -262,13 +262,21 @@ export function agentScopesOfThisProcess(): ReadonlySet<string> {
   return liveUnits;
 }
 
+/**
+ * この1本の印（host が渡す `BANTO_MODULE_NAME` から）。組の名前に入れ、起きたときの片づけはこの印の組だけを止める——同じ
+ * Project に Subagent を2本立てても、互いの仕事を止めない（Backlog #294）
+ */
+export function agentScopeOwner(): string {
+  return workScopeOwner("subagent");
+}
+
 function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
   // **自分のプロセスグループで起こす**（追加・2026-10-05）——エージェントが起こす子（claude-agent-acp の CLI など）ごと
   // 止められるように。Module が止まっても（banto の起こし直し）エージェントと子は残るので、続ける前にグループで止める
   // **仕事の組に入れて起こす**（段2a、`docs/specs/v4-security.md` §1）——エージェントと子（Claude Code・ブラウザ等）が
   // メモリを食い尽くしても組の中だけで止まり、Module は巻き込まれない。`systemd-run --scope` はその場で exec するので、
   // 標準入出力（ACP）とプロセスグループはそのまま
-  const scoped = inWorkScope(launch.command, launch.args, { kind: "subagent", env: launch.env });
+  const scoped = inWorkScope(launch.command, launch.args, { kind: "subagent", owner: agentScopeOwner(), env: launch.env });
   if (scoped.unit) liveUnits.add(scoped.unit);
   const child = spawn(scoped.command, scoped.args, { cwd, env: scoped.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let stderr = "";

@@ -9,7 +9,7 @@ import { NoBatchToolError, type AliasPlace, type HostRelayClient } from "./host-
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 import type { BackgroundCommands } from "./background.js";
 import { SystemdScopes, type ScopeControl } from "./leftover-scope.js";
-import { inWorkScope, sweepWorkScopes, type WorkScopeLaunch } from "@banto/module-contract";
+import { inWorkScope, sweepWorkScopes, workScopeOwner, type WorkScopeLaunch } from "@banto/module-contract";
 
 export interface RunCommandInput {
   command: string;
@@ -324,16 +324,25 @@ async function removeSecretFiles(paths: string[]): Promise<void> {
 const liveUnits = new Set<string>();
 
 /**
+ * この1本の印（host が渡す `BANTO_MODULE_NAME` から）。待つ形の組の名前に入れ、起きたときの片づけはこの印の組だけを止める
+ * ——同じ Project に Shell を2本立てても、互いのコマンドを止めない（Backlog #294）
+ */
+export function commandScopeOwner(): string {
+  return workScopeOwner("shell");
+}
+
+/**
  * **起きたときに、前の走行が残した待つ形の組を片づける**（追加・2026-10-23、Backlog #294）。Shell が止まると（banto の
  * 起こし直し）、待っていたコマンドの組（banto-shell-*.scope）は答えを返す相手も止める人も居ないまま残る。残すのは、引き取った
- * 残り（leftover——一覧から cancelCommand で止める）と、このプロセスがいま走らせているもの。**組の名前の頭が同じものは、この
- * Shell のもの**——1つの Project のコンテナに Shell Module は1つ
+ * 残り（leftover——一覧から cancelCommand で止める）と、このプロセスがいま走らせているもの。**止めるのはこの1本の印
+ * （`commandScopeOwner`）の組だけ**——同じ Project に同じ実装を2本立ててよい（`docs/specs/v4-modules.md`）ので、別の1本が
+ * 待っているコマンドには触らない
  */
 export function sweepLeftoverCommandScopes(
   leftovers: { leftoverUnits(): Set<string> } | undefined,
-  opts: { kind?: string; available?: () => boolean; graceMs?: number } = {},
+  opts: { kind?: string; owner?: string; available?: () => boolean; graceMs?: number } = {},
 ): ReturnType<typeof sweepWorkScopes> {
-  return sweepWorkScopes(opts.kind ?? "shell", {
+  return sweepWorkScopes(opts.kind ?? "shell", opts.owner ?? commandScopeOwner(), {
     // 1つずつ読み直す——一覧を読んでから止めるまでの間に引き取られたもの（走っていた間は liveUnits にある）も残す
     keep: (unit) => liveUnits.has(unit) || (leftovers?.leftoverUnits().has(unit) ?? false),
     ...(opts.available ? { available: opts.available } : {}),
@@ -351,6 +360,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       // Module（この Shell も）は巻き込まれない。入れられなければ今までどおり
       const launch = inWorkScope("/bin/sh", ["-c", input.command], {
         kind: "shell",
+        owner: commandScopeOwner(),
         env,
         ...(deps.workScopeAvailable ? { available: deps.workScopeAvailable } : {}),
       });

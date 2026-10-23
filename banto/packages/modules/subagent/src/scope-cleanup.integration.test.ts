@@ -3,7 +3,8 @@
 //   - Factory と同じ頼み方（待たない形・worktree の cwd）で1件流し終えたら、組が無い。グループを抜けた子（setsid——
 //     ssh-agent -D・E2E が後ろに回したものと同じ）も残らない
 //   - 待つ形も同じ
-//   - 起きたときの片づけ：記録に無い組は止め、走っている仕事の記録にある組は残す（続ける前に止める道がある）
+//   - 起きたときの片づけ：記録に無い組は止め、走っている仕事の記録にある組は残す（続ける前に止める道がある）。
+//     同じ Project の同じ実装の別の1本（印が違う）の組・印の無い組には触らない
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -13,9 +14,10 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { REPLY_TO_META_KEY, THREAD_META_KEY, inWorkScope, resetWorkScopeProbe, workScopeAvailable, workScopeEnv } from "@banto/module-contract";
+import { REPLY_TO_META_KEY, THREAD_META_KEY, inWorkScope, resetWorkScopeProbe, workScopeAvailable, workScopeEnv, workScopeOwner } from "@banto/module-contract";
 import { listAgents } from "./agents.js";
 import { createSubagentServer, sweepLeftoverAgentScopes } from "./server.js";
+import { agentScopeOwner } from "./acp-run.js";
 import { RunningStore, type RunningRecord } from "./running.js";
 import { fakeVault } from "./testing/harness.js";
 
@@ -93,7 +95,8 @@ test("Factory と同じ頼み方で1件流し終えたら、エージェント�
       if (!unit) await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(unit, "走っている仕事の記録に組の名前が残らない");
-    assert.match(unit, /^banto-subagent-[0-9a-f]{8}\.scope$/);
+    assert.equal(unit, `banto-subagent-${agentScopeOwner()}-${unit.slice(-14, -6)}.scope`);
+    assert.match(unit, /^banto-subagent-[0-9a-f]{8}-[0-9a-f]{8}\.scope$/);
     assert.equal(scopeActive(unit), true, "走っている間に組が無い（試験の前提）");
     for (let i = 0; i < 400 && delivered.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
     assert.equal(delivered.length, 1, "終わりが届かない");
@@ -113,11 +116,14 @@ test("待つ形でも、終わったらグループを抜けた子ごと止ま�
   });
 });
 
-test("起きたときの片づけ：記録に無い組は止め、走っている仕事の記録にある組は残す", { skip }, async () => {
+test("起きたときの片づけ：記録に無い組は止め、走っている仕事の記録にある組・別の1本の組は残す", { skip }, async () => {
   // 本物の banto-subagent-*.scope（この機械で走っている仕事）に触らないよう、試験だけの頭を使う
   const kind = `subagent-sweeptest-${randomBytes(3).toString("hex")}`;
-  const start = () => {
-    const launch = inWorkScope(process.execPath, ["-e", "setTimeout(() => {}, 300000)"], { kind });
+  const owner = agentScopeOwner();
+  const otherOwner = workScopeOwner("subagent", { BANTO_MODULE_NAME: "subagent-second" });
+  assert.notEqual(owner, otherOwner);
+  const start = (o: string | null = owner) => {
+    const launch = inWorkScope(process.execPath, ["-e", "setTimeout(() => {}, 300000)"], { kind, ...(o ? { owner: o } : {}) });
     assert.ok(launch.unit);
     const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "ignore", detached: true });
     child.unref();
@@ -125,10 +131,13 @@ test("起きたときの片づけ：記録に無い組は止め、走ってい�
   };
   const stray = start();
   const recorded = start();
+  // 同じ Project に立てた2本目の Subagent が走らせている仕事・印の無い組（この1本のものか分からない）
+  const others = [start(otherOwner), start(null)];
   const data = mkdtempSync(join(tmpdir(), "subagent-sweep-"));
   try {
-    for (let i = 0; i < 100 && !(scopeActive(stray) && scopeActive(recorded)); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.ok(scopeActive(stray) && scopeActive(recorded), "組が起きない（試験の前提）");
+    const all = [stray, recorded, ...others];
+    for (let i = 0; i < 100 && !all.every(scopeActive); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(all.every(scopeActive), "組が起きない（試験の前提）");
     new RunningStore(data).write({
       id: "r1",
       agent: "fake",
@@ -147,8 +156,9 @@ test("起きたときの片づけ：記録に無い組は止め、走ってい�
     assert.deepEqual(r, { stopped: [stray], failed: [] });
     assert.equal(scopeActive(stray), false);
     assert.equal(scopeActive(recorded), true, "記録にある組まで止めた");
+    for (const u of others) assert.equal(scopeActive(u), true, `この1本のものでない組 ${u} まで止めた`);
   } finally {
-    spawnSync("systemctl", ["--user", "stop", stray, recorded], { env: workScopeEnv() });
+    spawnSync("systemctl", ["--user", "stop", stray, recorded, ...others], { env: workScopeEnv() });
     rmSync(data, { recursive: true, force: true });
   }
 });

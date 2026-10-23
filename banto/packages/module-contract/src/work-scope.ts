@@ -13,7 +13,7 @@
 
 import { existsSync } from "node:fs";
 import { execFile, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export const WORK_JOBS_SLICE = "banto-work-jobs.slice";
 export const WORK_SERVICES_SLICE = "banto-work-services.slice";
@@ -23,6 +23,11 @@ export const WORK_OOM_SCORE_ADJ = 500;
 export interface WorkScopeOptions {
   /** 単位の名前の頭（例 "shell"・"subagent"・"factory-test"）。後ろに乱数を付ける */
   kind: string;
+  /**
+   * 起こした Module の印（`workScopeOwner`）。あれば単位の名前を `banto-<頭>-<印>-<乱数>` にする——起きたときの片づけ
+   * （`sweepWorkScopes`）が、同じ Project に立てた同じ実装の別の1本の組を止めないように（Backlog #294）
+   */
+  owner?: string;
   /** 子の環境。ユーザーの systemd に繋ぐ変数（XDG_RUNTIME_DIR・DBUS_SESSION_BUS_ADDRESS）を足して返す */
   env?: NodeJS.ProcessEnv;
   /** 試験用：本当にコンテナの中・バスがあるかの確かめを差し替える */
@@ -110,7 +115,8 @@ export function inWorkScope(command: string, args: readonly string[], opts: Work
   const ok = opts.available ? opts.available() : workScopeAvailable(uid);
   if (!ok) return { command, args: [...args], env: base, scoped: false };
   const runtime = `/run/user/${uid}`;
-  const unit = `banto-${opts.kind}-${randomBytes(4).toString("hex")}`;
+  if (opts.owner !== undefined && !OWNER_RE.test(opts.owner)) throw new Error(`仕事の組の印が不正です: ${opts.owner}`);
+  const unit = `banto-${opts.kind}-${opts.owner !== undefined ? `${opts.owner}-` : ""}${randomBytes(4).toString("hex")}`;
   return {
     command: "systemd-run",
     args: [
@@ -141,6 +147,18 @@ export function inWorkScope(command: string, args: readonly string[], opts: Work
 // プロセスグループを抜けた子（`setsid`・`ssh-agent -D`・E2E が後ろに回したもの）は組に残る——グループで止めても届かない
 // （実測・2026-10-23：Project のコンテナに banto-subagent-*.scope が40、残っていたのは ssh-agent・tail -F・E2E の子）。
 // 止めるのは組ごと（`systemctl --user kill`）。memory.oom.group はメモリを食い尽くしたときにしか効かない。
+
+const OWNER_RE = /^[0-9a-f]{8}$/;
+
+/**
+ * **この1本の印**：host が渡す宣言上の名前（`BANTO_MODULE_NAME`、無ければ `defaultName`＝その実装の既定の名前）から作る
+ * 16進8桁。同じ実装を2本以上立ててよい（`docs/specs/v4-modules.md`「同じ実装を2本以上立てられる」）ので、組の名前に入れて
+ * 自分の組だけを片づける。名前をそのまま入れないのは、単位の名前に使えない字があるかもしれないから
+ */
+export function workScopeOwner(defaultName: string, env: NodeJS.ProcessEnv = process.env): string {
+  const name = env.BANTO_MODULE_NAME || defaultName;
+  return createHash("sha256").update(name).digest("hex").slice(0, 8);
+}
 
 /** 組を止めるときの環境（ユーザーの systemd に繋ぐ変数） */
 export function workScopeEnv(base: NodeJS.ProcessEnv = process.env, uid: number = defaultUid()): NodeJS.ProcessEnv {
@@ -186,29 +204,41 @@ export async function stopWorkScope(unit: string, opts: { env?: NodeJS.ProcessEn
   if (await scopeAlive(unit, env)) throw new Error(`仕事の組 ${unit} に SIGKILL を送っても、プロセスが残っています`);
 }
 
-/** いまある組のうち、`banto-<kind>-` で始まるもの（単位の名前） */
-export async function listWorkScopes(kind: string, opts: { env?: NodeJS.ProcessEnv } = {}): Promise<string[]> {
-  const env = opts.env ?? workScopeEnv();
-  const r = await systemctlUser(["list-units", "--type=scope", "--all", "--plain", "--no-legend", "--full", `banto-${kind}-*.scope`], env);
-  if (r.code !== 0) throw new Error(`仕事の組の一覧を読めませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
-  return r.stdout
+/**
+ * `systemctl list-units` の出力から、`kind` と `owner` の1本が起こした組（`banto-<kind>-<owner>-<乱数8桁>.scope` に完全に
+ * 合うもの）だけを拾う。頭が前に一致するだけのもの（別の kind の `banto-<kind>-xxx-…`・印の無い古い形・別の1本の印）は拾わない
+ */
+export function ownWorkScopes(listing: string, kind: string, owner: string): string[] {
+  if (!OWNER_RE.test(owner)) throw new Error(`仕事の組の印が不正です: ${owner}`);
+  const re = new RegExp(`^banto-${kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-${owner}-[0-9a-f]{8}\\.scope$`);
+  return listing
     .split("\n")
     .map((line) => line.trim().split(/\s+/)[0] ?? "")
-    .filter((unit) => unit.startsWith(`banto-${kind}-`) && unit.endsWith(".scope"));
+    .filter((unit) => re.test(unit));
+}
+
+/** いまある組のうち、`kind` と `owner` の1本が起こしたもの（単位の名前、`ownWorkScopes`） */
+export async function listWorkScopes(kind: string, owner: string, opts: { env?: NodeJS.ProcessEnv } = {}): Promise<string[]> {
+  const env = opts.env ?? workScopeEnv();
+  const r = await systemctlUser(["list-units", "--type=scope", "--all", "--plain", "--no-legend", "--full", `banto-${kind}-${owner}-*.scope`], env);
+  if (r.code !== 0) throw new Error(`仕事の組の一覧を読めませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+  return ownWorkScopes(r.stdout, kind, owner);
 }
 
 /**
  * **起きたときに、前の走行が残した組を片づける**（Backlog #294）。Module が止まると（banto の起こし直し）、走らせていた
- * 仕事の組は誰も止めずに残る。`keep` が true を返す組（記録にあって、ほかの道で始末するもの）は残す。組に入れられない
+ * 仕事の組は誰も止めずに残る。**止めるのは `kind` と `owner`（この1本の印）に完全に合う組だけ**——同じ Project の
+ * コンテナに同じ実装の別の1本が居ても、その組には触らない。`keep` が true を返す組（記録にあって、ほかの道で始末するもの）は残す。組に入れられない
  * 所（コンテナの外・入れ子）では何もしない。止められなかった組は理由ごと返す（呼ぶ側がログに出す）
  */
 export async function sweepWorkScopes(
   kind: string,
+  owner: string,
   opts: { keep?: (unit: string) => boolean; env?: NodeJS.ProcessEnv; available?: () => boolean; graceMs?: number } = {},
 ): Promise<{ stopped: string[]; failed: Array<{ unit: string; error: string }> }> {
   if (!(opts.available ? opts.available() : workScopeAvailable())) return { stopped: [], failed: [] };
   const env = opts.env ?? workScopeEnv();
-  const targets = (await listWorkScopes(kind, { env })).filter((unit) => !opts.keep?.(unit));
+  const targets = (await listWorkScopes(kind, owner, { env })).filter((unit) => !opts.keep?.(unit));
   const stopped: string[] = [];
   const failed: Array<{ unit: string; error: string }> = [];
   await Promise.all(

@@ -11,6 +11,10 @@ test("向こうの単位を内訳に振り分ける：起動役が包んだ Modu
   assert.deepEqual(remoteUnitKind(`banto-mod-vault-local-${P}.service`), { group: "modules", name: "vault-local" });
   assert.deepEqual(remoteUnitKind("banto-terminal-d929fbdf.scope"), { group: "commands", name: "Terminal" });
   assert.deepEqual(remoteUnitKind("banto-subagent-61da8065.scope"), { group: "work", name: "サブエージェント" });
+  // その1本の印が入った形（Backlog #294）
+  assert.deepEqual(remoteUnitKind("banto-subagent-1f2e3d4c-61da8065.scope"), { group: "work", name: "サブエージェント" });
+  assert.deepEqual(remoteUnitKind("banto-shell-1f2e3d4c-c3a89b55.scope"), { group: "commands", name: "コマンド" });
+  assert.deepEqual(remoteUnitKind("banto-shell-c3a89b55.scope"), { group: "commands", name: "コマンド" });
   assert.deepEqual(remoteUnitKind("banto-mock-schedule.service"), { group: "services", name: "mock-schedule" });
   assert.equal(remoteUnitKind("dbus.service"), undefined);
 });
