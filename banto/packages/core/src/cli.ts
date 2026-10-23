@@ -121,6 +121,7 @@ import { ModuleReplies } from "./delivery/module-replies.js";
 import { receivesReplies, TOOLS_PREPARING_MARKER, type ModuleReplyArguments } from "@banto/module-contract";
 import type { CallerIdentity } from "./relay/host-relay-endpoint.js";
 import { ThreadDeliveries } from "./delivery/thread-deliveries.js";
+import { ManagedTurnNotices, managedProjectOf } from "./delivery/managed-turn-notices.js";
 import { continueStoppedTurn, resumeHoldReason, sdkSessionReader } from "./delivery/turn-continuation.js";
 import { RateLimitContinuations } from "./delivery/rate-limit-continuation.js";
 import { rateLimitWaitOf } from "./project-thread/rate-limit-wait.js";
@@ -737,6 +738,8 @@ async function main(): Promise<void> {
     // E2E だけが縮める（眠っている Project に留めた届けものでは起きない、を見る——アーキ仕様 §2.2「起こす」）
     ...(Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) > 0 ? { wakesPerHour: Number(process.env.BANTO_TEST_DELIVERY_WAKES_PER_HOUR) } : {}),
   });
+  // **管理対象 Project のターンが終わったら、メタ Project の専用 Fork に知らせて起こす**（アーキ仕様 §4.6「通知」、Backlog #534）
+  new ManagedTurnNotices({ projectThread, turns: threadTurns, deliveries });
   // **上限で止まったターンを、リセットのあと人を待たずに続ける**（決定・2026-10-18、v4-security.md §2「Claude のアカウントを
   // 複数持つ」の 9.）。続ける時刻は中継が持つ一番早いリセット（無ければ Runner の `rate_limit_event`）の1分後
   rateLimits = new RateLimitContinuations({
@@ -3446,6 +3449,8 @@ async function main(): Promise<void> {
     rateLimitContinueAt: (threadId, resetsAt) => rateLimitContinuations.continueAt(threadId, resetsAt),
     rateLimitWaits: rateLimitContinuations,
     idleCompactions,
+    // メタ Project の専用 Fork だけが、受け持つ管理対象 Project の Thread を読める（アーキ仕様 §4.6「読む」）
+    readableProjectOf: (threadId) => managedProjectOf(projectThread, threadId),
     ...(listModelsOverride ? { listModels: listModelsOverride } : {}),
     projectThread,
     globalMemory,
