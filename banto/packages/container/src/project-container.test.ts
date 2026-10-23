@@ -847,6 +847,28 @@ test("中の番号：新しいコンテナは最初から U（raw.idmap uid U U�
   );
 });
 
+test("この機械のコンテナ（inside が無い）でも、中の番号＝ホストの uid のユーザーを作る（#531：uid 1001 で入れると中に居なかった）", async () => {
+  const f = statefulIncus();
+  const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
+  const r = await c.ensure({
+    projectId: "p1",
+    bantoDir: "/c",
+    nodePath: "/c/bin/node",
+    nodeVersion: "v22.0.0",
+    nesting: false,
+    image: "i",
+    owner: "/data",
+    uid: 1001,
+    gid: 1001,
+    proxies: {},
+    limits: defaultContainerLimits({ memoryBytes: 8 * 1024 ** 3, cpus: 4 }),
+  });
+  assert.deepEqual(r.inside, { uid: 1001, gid: 1001 });
+  const user = f.calls.find((a) => a[0] === "exec" && a.at(-1)!.includes("useradd"));
+  assert.ok(user, "中のユーザーを作っていない");
+  assert.match(user.at(-1)!, /getent passwd 1001 >\/dev\/null \|\| useradd -m -u 1001 -g 1001/);
+});
+
 test("中の番号：札の無い前のコンテナ（中 1000）は、用意しても付け替えず前の番号で使い、止めたときに1回だけ付け替える。2回目はしない", async () => {
   const f = migratingIncus();
   const c = new ProjectContainers(f.run, { operationMs: 1000, stopSec: 1, readyMs: 1000 });
