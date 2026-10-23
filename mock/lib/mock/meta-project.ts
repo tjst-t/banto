@@ -4,13 +4,15 @@ import { getAllProjects } from "./projects";
 
 // メタ Project（v4-architecture.md §4.6）の設定のモックデータ。UI を固める
 // ことが目的——バックエンドとは繋がっていない（`mock/README.md`）。
+// Backlog のバックエンドはここに持たない——Backlog Module 自身の設定面
+// （project-modules、`lib/mock/backlog.ts` の getBacklogBackend/
+// setBacklogBackend）から選ぶ、通常の Module 設定の範囲（レビュー指摘・2026-10-23）
 
 let mockMetaProjectSettings: MockMetaProjectSettings[] = [
   {
     projectId: "orchestrator",
     managedProjectIds: ["banto", "home", "hermes"],
-    backlogBackend: "gist",
-    // 既定は「任せる」（決定・2026-10-23）——このサンプルは既定のまま
+    // 既定は「任せる」（決定・2026-10-23)——このサンプルは既定のまま
     releasePolicy: "delegate",
   },
 ];
@@ -20,7 +22,6 @@ export function getMetaProjectSettings(projectId: ProjectId): MockMetaProjectSet
     mockMetaProjectSettings.find((s) => s.projectId === projectId) ?? {
       projectId,
       managedProjectIds: [],
-      backlogBackend: "gist",
       releasePolicy: "delegate",
     }
   );

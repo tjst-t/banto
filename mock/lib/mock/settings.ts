@@ -676,10 +676,9 @@ export const mockModuleConfigFields: Readonly<
     { label: "既定の clone 方式", value: "SSH" },
     { label: "worktree の置き場", value: "~/.local/share/banto/worktrees" },
   ],
-  "banto.backlog": [
-    { label: "tasks.json の場所", value: BACKLOG_DEFAULT_PATH },
-    { label: "バックエンド", value: "tasks.json" },
-  ],
+  // 「バックエンド」は静的な表示ではなく BacklogConfigSection(Select)で選べるようにした
+  // (決定・2026-10-23、レビュー指摘)
+  "banto.backlog": [{ label: "tasks.json の場所", value: BACKLOG_DEFAULT_PATH }],
 };
 
 export const mockCredentials: readonly MockCredential[] = [
@@ -751,6 +750,9 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "hermes", implementationId: "banto.repositories" },
   { projectId: "hermes", implementationId: "banto.backlog" },
   { projectId: "hermes", implementationId: "banto.vault-ui" },
+  // メタ Project のサンプル「全体統括」。Backlog は複数 Project をまたぐ計画を持つ場所
+  // （getBacklogBackend の既定が "gist" なのはこの Project だけ、backlog.ts 参照）
+  { projectId: "orchestrator", implementationId: "banto.backlog" },
 ];
 
 /**

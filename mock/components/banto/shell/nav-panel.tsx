@@ -19,6 +19,7 @@ import {
   GitMerge,
   LoaderCircle,
   MessageSquare,
+  Network,
   Plus,
   Search,
   Settings,
@@ -80,16 +81,33 @@ export function ProjectInitialOrRunning({ project, active }: { project: MockProj
   );
 }
 
-/** Project の頭文字。名前の隣、または畳んだレールでは単独で Project を表す */
+/**
+ * Project の頭文字。名前の隣、または畳んだレールでは単独で Project を表す。
+ * メタ Project（`kind: "meta"`）は、複数 Project を横断する特別な Project だと
+ * 一目で分かるように、丸い形＋右下の小さい印（Network）を重ねる——色の塗りでは
+ * なく形で区別する（塗ってよいのは turn だけ、という決まりを崩さないため）
+ */
 export function ProjectInitial({ project, active }: { project: MockProject; active: boolean }) {
+  const isMeta = project.kind === "meta";
   return (
-    <span
-      className={cn(
-        "flex size-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
-        active ? "bg-accent-soft text-accent-ink" : "bg-surface-3 text-ink-2",
-      )}
-    >
-      {project.initial}
+    <span className="relative flex size-6 shrink-0">
+      <span
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center text-xs font-semibold",
+          isMeta ? "rounded-full" : "rounded-md",
+          active ? "bg-accent-soft text-accent-ink" : "bg-surface-3 text-ink-2",
+        )}
+      >
+        {project.initial}
+      </span>
+      {isMeta ? (
+        <span
+          className="absolute -right-0.5 -bottom-0.5 flex size-3 items-center justify-center rounded-full border border-background bg-surface-3 text-ink-2"
+          aria-label="メタ Project"
+        >
+          <Network className="size-2" />
+        </span>
+      ) : null}
     </span>
   );
 }

@@ -4,18 +4,14 @@
 // 横断してオーケストレーションする特別な Project だけが持つ、カスケードの
 // 上書きとは別の正式な設定（§6.1 とは別の階層）。
 //
-// レビュー指摘（決定・2026-10-23）で、Backlog のバックエンドと release の扱いは
-// どちらも「使うことを強制しない、メタ Project ごとに選べる」形にした——この
-// パネルはその選び方を固める最初のモック。専用 Fork を実際に作る操作はまだ無い
-// （「作る前にモックで考える」段階、v4-architecture.md §4.6「まだ決めていないこと」）。
-import { GitBranch, Network, Rocket } from "lucide-react";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+// Backlog のバックエンド選択はここに置かない——通常の Module 設定の範囲
+// （Backlog Module 自身の設定面、project-modules）として選ぶもの
+// （レビュー指摘・2026-10-23）。ここに残るのは、このメタ Project だけが
+// 持つ設定——管理対象 Project の一覧と、release の扱い。
+//
+// 専用 Fork を実際に作る操作はまだ無い（「作る前にモックで考える」段階、
+// v4-architecture.md §4.6「まだ決めていないこと」）。
+import { Network, Rocket } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
@@ -24,12 +20,7 @@ import {
   setMetaProjectSettings,
 } from "@/lib/mock/meta-project";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
-import type { MockBacklogBackendKind, MockReleasePolicy } from "@/lib/mock/types";
-
-const BACKLOG_BACKEND_LABEL: Record<MockBacklogBackendKind, string> = {
-  "tasks-json": "tasks.json（リポジトリの専用ブランチ）",
-  gist: "GitHub Gist（非公開）",
-};
+import type { MockReleasePolicy } from "@/lib/mock/types";
 
 export function MetaProjectPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -96,37 +87,6 @@ export function MetaProjectPanel({ projectId }: { projectId: string }) {
           {candidates.length === 0 ? (
             <p className="py-3 text-xs text-ink-3">他に選べる Project が無い。</p>
           ) : null}
-        </div>
-      </section>
-
-      {/* Backlog バックエンド——強制しない、メタ Project ごとに選べる（決定・2026-10-23） */}
-      <section className="mb-5 rounded-md border border-border px-3 py-2.5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <Label
-              htmlFor="meta-backlog-backend"
-              className="flex items-center gap-1.5 text-sm font-medium text-foreground"
-            >
-              <GitBranch className="size-3.5 text-ink-3" />
-              Backlog のバックエンド
-            </Label>
-            <p className="mt-0.5 text-xs text-ink-3">
-              複数 Project をまたぐ計画を持つ場所。Backlog Module の「窓口1本・バックエンドは複数」
-              の作りをそのまま使う——どちらも dependsOn・parent を含む今のモデルを持ち込む。
-            </p>
-          </div>
-          <Select
-            value={settings.backlogBackend}
-            onValueChange={(v) => patch({ backlogBackend: v as MockBacklogBackendKind })}
-          >
-            <SelectTrigger id="meta-backlog-backend" className="h-8 w-56 shrink-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="gist">{BACKLOG_BACKEND_LABEL.gist}</SelectItem>
-              <SelectItem value="tasks-json">{BACKLOG_BACKEND_LABEL["tasks-json"]}</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
       </section>
 

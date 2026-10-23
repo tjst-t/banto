@@ -18,6 +18,7 @@ import { RepoList } from "@/components/banto/canvas/repo-list-view";
 import { GithubAccountsSection } from "./github-accounts-section";
 import { RepoHomeSection } from "./repo-home-section";
 import { FactoryConfigSection } from "./factory-config-section";
+import { BacklogConfigSection } from "./backlog-config-section";
 
 export function ModuleConfigPane({
   implementationId,
@@ -67,6 +68,24 @@ export function ModuleConfigPane({
         <div className="@container rounded-md border border-border bg-card p-3">
           {impl.roleId === "factory" && projectId ? (
             <FactoryConfigSection projectId={projectId} />
+          ) : impl.roleId === "backlog" && projectId ? (
+            <>
+              <BacklogConfigSection projectId={projectId} />
+              {fields.length > 0 ? (
+                <dl className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
+                  {fields.map((f, i) => (
+                    <div
+                      key={f.label}
+                      id={`anchor-module-config-${implementationId}-${i}`}
+                      className="flex items-center justify-between gap-3 rounded-md text-sm"
+                    >
+                      <dt className="text-ink-3">{f.label}</dt>
+                      <dd className="font-mono text-xs text-foreground">{f.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+            </>
           ) : fields.length === 0 ? (
             <p className="text-sm text-ink-3">この Module はまだ設定項目を公開していない</p>
           ) : (

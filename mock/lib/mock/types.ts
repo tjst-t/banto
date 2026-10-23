@@ -437,9 +437,12 @@ export interface MockProjectModuleLink {
 /**
  * Backlog Module の「窓口1本・バックエンドは複数」（v4-modules.md §4.4）の
  * どちらを使うか。`tasks-json` は既存（リポジトリの専用ブランチ）、`gist` は
- * メタ Project 向けに新しく作る GitHub Gist（非公開）。どちらも「今の Backlog の
- * モデル（dependsOn・parent 含む）をそのまま持ち込む」という前提は共通
- * （決定・2026-10-23）
+ * 複数 Project をまたぐ計画を持つ場所として新しく作る GitHub Gist（非公開）。
+ * **Project 単位の設定**（`lib/mock/backlog.ts` の getBacklogBackend/
+ * setBacklogBackend）——Backlog Module 自身の設定面（project-modules）から
+ * 選ぶ、通常の Module 設定の範囲。メタ Project 専用の設定ではない
+ * （決定・2026-10-23、レビュー指摘）。どちらも「今の Backlog のモデル
+ * （dependsOn・parent 含む）をそのまま持ち込む」という前提は共通
  */
 export type MockBacklogBackendKind = "tasks-json" | "gist";
 
@@ -452,12 +455,13 @@ export type MockReleasePolicy = "delegate" | "human";
 
 /**
  * メタ Project（`kind: "meta"`）自身の設定。instance 既定からの上書きではなく、
- * そのメタ Project だけが持つ正式な設定（v4-architecture.md §4.6、決定・2026-10-23）
+ * そのメタ Project だけが持つ正式な設定（v4-architecture.md §4.6、決定・2026-10-23）。
+ * Backlog のバックエンドはここに持たない——通常の Module 設定の範囲
+ * （`getBacklogBackend`/`setBacklogBackend`、レビュー指摘・2026-10-23）
  */
 export interface MockMetaProjectSettings {
   projectId: ProjectId;
   /** このメタ Project が扱う管理対象 Project。それぞれに専用 Fork が1本対応する */
   managedProjectIds: readonly ProjectId[];
-  backlogBackend: MockBacklogBackendKind;
   releasePolicy: MockReleasePolicy;
 }
