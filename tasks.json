@@ -12848,7 +12848,7 @@
       "number": 538,
       "kind": "task",
       "title": "メタ Project の設定画面を本実装につなぐ(モックから実配線へ)",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f",
@@ -12867,7 +12867,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:50:13.399Z",
       "closedAt": null,
       "extra": {}
     },
