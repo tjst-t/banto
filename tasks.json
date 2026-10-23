@@ -12711,6 +12711,32 @@
       "updatedAt": "2026-10-23T07:46:47.812Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "runcommand-setsid",
+      "number": 527,
+      "kind": "bug",
+      "title": "runCommand（待つ形）で & / setsid を使って背景化したプロセスが、記録にも出ず止める口も無い",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "shell",
+        "resources"
+      ],
+      "body": "別の Project（learning-type2-electrician）からの報告（2026-10-23）。\n\n## 起きたこと（報告より）\n- 待つ形の runCommand の中で `(setsid npx wrangler dev --local --port 8787 ... &)` のようにバックグラウンド化したコマンドを2026-10-10〜10-19 に十数回流した。\n- 片づけの `pkill -f` が自分を実行していたシェルにも一致して先に落ち、wrangler/workerd が7組・合わせて約3.5GB 残った。\n- Banto の Service の一覧・listCommands・人の画面のターミナルのどこにも出ず、人が別の方法でプロセスとメモリを見て気づいた。\n- その Project をスリープにしても、プロセスは残り続けた。\n- 2026-10-23 に PID を直接 `kill -9` して片づけた。\n\n## 調査（このProjectで確認したこと）\n- `packages/modules/shell/src/run-command.ts` の `runCommand`（待つ形。`runInBackground` ではない）は、`inWorkScope`（`packages/module-contract/src/work-scope.ts`）でコマンドを systemd の scope unit（仕事の組、v4-security.md §1 段2a）に入れて起こしているが、**scope の unit 名（`launch.unit`）をどこにも記録・追跡していない**。監視しているのは Node が spawn した直接の子（`/bin/sh -c \"...\"`）の `exit` イベントだけ。\n- `(cmd &)` のようにバックグラウンド化すると、親の `/bin/sh` はすぐ終了コード0で終わるが、中の孫プロセスは fork で同じ cgroup（scope）を継承したまま生き続ける——これは Node の監視からは見えない。\n- そのため、このプロセスは待たない形（`background.ts`・`BackgroundCommands`）の管理対象にも入らず、`listCommands`・`cancelCommand` の対象外になる。Service にも登録していないので Service の一覧にも出ない。報告の推測（記録にも cgroup の追跡にも残らない）は、「Banto 側の記録には残らない」という点で正しい（cgroup 自体は systemd 的には残っているはずだが、Banto はそれを見ていない）。\n- Project のスリープは、`keep`（出来事を待たれている Module）が空なら `runtime.release(projectId, { stop: true })` でコンテナそのものを `incus stop` する設計になっている（`project-sleep.ts`・`cli.ts` の `releaseProjectModules`）。コンテナを止めれば中の全プロセスは終わるはずなので、コード上は「スリープしても残る」はずが無い——報告のケースで本当に再現するなら、何らかの自動化がその Project の出来事を待っていて `keep` が空でなかった可能性がある（ここは未確認。再現できるか別途確かめる価値がある）。\n- 似た根の問題として Backlog #294（`subagent-scope-leak`：サブエージェントの仕事が終わっても `banto-subagent-*.scope` が残る）がある。「仕事の組（scope）が、直接の子の終了検知だけでは片づかない」という同じ型の不具合が複数箇所にある可能性がある。\n\n## 対応の方向（報告の要求がベース）\n1. runCommand（待つ形）が終わったとき、その scope unit（`launch.unit`）にまだプロセスが残っていれば、`RunCommandResult` に警告として出す・あるいは自動で止める（`systemctl --user stop <unit>` 相当）。\n2. 待たない形と同じように、残っている scope を一覧に出し、止められるようにする（見える化）。\n3. Project スリープで本当に片づくかどうかの再現確認（上記の未確認点）。\n4. （任意）runCommand で `&`・`setsid`・`nohup` を使ったら警告を返す。\n\n## 確かめ方の案（報告のまま）\n- runCommand で `(setsid sleep 100000 &)` を流す。終わったあと、そのプロセスが listCommands などに見えるか確かめる。\n- Project をスリープにして、そのプロセスが消えるか確かめる。\n\n## 対応したら\n送信元（learning-type2-electrician の Base Thread、projectId `627c2b8d-f0f8-4aaf-ac17-610c35195252`、threadId `55a83aaa-62b5-46c9-b74f-d40d0c9596b2`）に知らせる。",
+      "doneWhen": "runCommand（待つ形）で `(setsid sleep 100000 &)` のように背景化したコマンドを流したあと、残ったプロセスが Banto 側で見える化され、cancelCommand か Project スリープのどちらかで確実に片づくことを確かめた。",
+      "resolution": null,
+      "refs": [
+        "#294"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-23T08:15:32.283Z",
+      "updatedAt": "2026-10-23T08:15:32.283Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
