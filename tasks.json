@@ -12783,7 +12783,7 @@
       "number": 535,
       "kind": "task",
       "title": "Backlog Module: GitHub Gist(非公開)バックエンドを追加し、Project ごとに選べるようにする",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12795,7 +12795,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:06:41.898Z",
       "closedAt": null,
       "extra": {}
     },
