@@ -108,7 +108,13 @@ push_release() {
 }
 [[ -z $MIGRATE_FROM ]] || git -C "$LOG/src" reset -q --hard "$MIGRATE_FROM"
 make_bundle
-I launch "images:ubuntu/$IMAGE" "$NAME" \
+# **試験の場は btrfs の置き場に立てる**（Backlog #530）：中の / が btrfs なら、install.sh は Incus の置き場をその中のフォルダに作る。
+# 入れ子のコンテナはループ装置を使えないので、/ が btrfs でないと install.sh がループファイルの道に入って止まる（既定の置き場が
+# dir のホストで踏んだ）。INSTALL_TEST_POOL で選べ、無ければ btrfs の置き場の最初のもの。無ければ理由を出して止まる
+POOL=${INSTALL_TEST_POOL:-$(sudo incus storage list -f csv -c nD </dev/null | awk -F, '$2 == "btrfs" { print $1; exit }')}
+[[ -n $POOL ]] || { echo "btrfs の Incus の置き場がありません（入れ子のコンテナはループ装置を使えないため、試験の場の / を btrfs にする要があります）。sudo incus storage create <名前> btrfs で作るか、INSTALL_TEST_POOL で指してください" >&2; exit 1; }
+[[ $(sudo incus storage show "$POOL" </dev/null | awk '/^driver:/ { print $2 }') == btrfs ]] || { echo "置き場 $POOL は btrfs ではありません" >&2; exit 1; }
+I launch "images:ubuntu/$IMAGE" "$NAME" -s "$POOL" \
   -c security.nesting=true -c security.syscalls.intercept.mknod=true -c security.syscalls.intercept.setxattr=true \
   -c limits.cpu=3 -c limits.memory=6GiB >/dev/null
 X systemctl is-system-running --wait >/dev/null 2>&1 || true
