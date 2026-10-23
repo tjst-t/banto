@@ -12717,7 +12717,7 @@
       "number": 527,
       "kind": "bug",
       "title": "runCommand（待つ形）で & / setsid を使って背景化したプロセスが、記録にも出ず止める口も無い",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -12728,14 +12728,14 @@
       ],
       "body": "別の Project（learning-type2-electrician）からの報告（2026-10-23）。\n\n## 起きたこと（報告より）\n- 待つ形の runCommand の中で `(setsid npx wrangler dev --local --port 8787 ... &)` のようにバックグラウンド化したコマンドを2026-10-10〜10-19 に十数回流した。\n- 片づけの `pkill -f` が自分を実行していたシェルにも一致して先に落ち、wrangler/workerd が7組・合わせて約3.5GB 残った。\n- Banto の Service の一覧・listCommands・人の画面のターミナルのどこにも出ず、人が別の方法でプロセスとメモリを見て気づいた。\n- その Project をスリープにしても、プロセスは残り続けた。\n- 2026-10-23 に PID を直接 `kill -9` して片づけた。\n- 補足（送信元が list_automations で確認）：この Project に自動化は1つも無い。Service は 10/10〜10/11 に止めて外している。残っていたのは runCommand から起こしたプロセスのみ。\n\n## 調査（このProjectで確認したこと）\n- `packages/modules/shell/src/run-command.ts` の `runCommand`（待つ形。`runInBackground` ではない）は、`inWorkScope`（`packages/module-contract/src/work-scope.ts`）でコマンドを systemd の scope unit（仕事の組、v4-security.md §1 段2a）に入れて起こしているが、**scope の unit 名（`launch.unit`）をどこにも記録・追跡していない**。監視しているのは Node が spawn した直接の子（`/bin/sh -c \"...\"`）の `exit` イベントだけ。\n- `(cmd &)` のようにバックグラウンド化すると、親の `/bin/sh` はすぐ終了コード0で終わるが、中の孫プロセスは fork で同じ cgroup（scope）を継承したまま生き続ける——これは Node の監視からは見えない。\n- そのため、このプロセスは待たない形（`background.ts`・`BackgroundCommands`）の管理対象にも入らず、`listCommands`・`cancelCommand` の対象外になる。Service にも登録していないので Service の一覧にも出ない。\n- 自動化が無いことは確認済みなので、「`keep` が空でなかった」説は否定できた。代わりに**もっと疑わしい原因**を `packages/core/src/runtime/host-container.ts` で見つけた：\n  - `HostContainerRuntime.release(placeId, { stop })` は `if (!opts.stop || !ready) return;` ——**`ready`（`this.ready.get(placeId)`、host＝coreプロセスのメモリ上だけのマップ）が無ければ、`stop: true` を渡されても何もせず早期 return する**（コンテナを止めない）。\n  - `ready` は、その Project の `ensureContainer`（Module を起こす・`modules/prepare` のとき）が走ったときにしかセットされない。**host（core）が起こし直されると、このマップは空に戻る**（永続化されていない）。コンテナ自体（Incus 側）は host の再起動では止まらない設計なので、「コンテナは動いているが host の `ready` には記録が無い」という食い違いが起こり得る。\n  - その状態で `releaseProjectModules(projectId, { stopContainer: true })` が走っても、`runtime.release` は `ready` が無いので**実際には `containers.stop()` を呼ばない**——スリープの戻り値は正常に返り、台帳上は「眠った」ことになるが、コンテナと中のプロセスは動いたままになる。ログも「止められなかった」という警告（`RuntimeStopError` 経由の通知）も出ない（そもそも `stop()` を呼んでいないので失敗にもならない）。\n  - これが本当に今回のケースの原因かは未確認（host が再起動されたタイミングと、スリープを押したタイミングの前後関係が要る）だが、技術的には十分あり得る経路であり、既存のコードから見つかる唯一の「スリープが静かにコンテナを止め損なう」筋。\n- 似た根の問題として Backlog #294（`subagent-scope-leak`：サブエージェントの仕事が終わっても `banto-subagent-*.scope` が残る）がある。「仕事の組（scope）が、直接の子の終了検知だけでは片づかない」という同じ型の不具合が複数箇所にある可能性がある。\n\n## 対応の方向\n1. runCommand（待つ形）が終わったとき、その scope unit（`launch.unit`）にまだプロセスが残っていれば、`RunCommandResult` に警告として出す・あるいは自動で止める（`systemctl --user stop <unit>` 相当）。\n2. 待たない形と同じように、残っている scope を一覧に出し、止められるようにする（見える化）。\n3. **`HostContainerRuntime.release` の `ready` が無いケースを直す**——`ready` の有無に関わらず、Incus に「そのコンテナが実在し動いているか」を聞いて、動いていれば止める（`stopProjectContainer` と同じやり方に寄せる）。host の再起動で記録が消えても、スリープ・Project を畳む操作が静かに空振りしないようにする。\n4. （任意）runCommand で `&`・`setsid`・`nohup` を使ったら警告を返す。\n\n## 確かめ方の案\n- runCommand で `(setsid sleep 100000 &)` を流す。終わったあと、そのプロセスが listCommands などに見えるか確かめる。\n- host（core）を起こし直してから、何もしないまま Project をスリープにし、コンテナが本当に止まるか確かめる（`ready` が無い状態を作って再現する）。\n- Project をスリープにして、残したプロセスが消えるか確かめる。\n\n## 対応したら\n送信元（learning-type2-electrician の Base Thread、projectId `627c2b8d-f0f8-4aaf-ac17-610c35195252`、threadId `55a83aaa-62b5-46c9-b74f-d40d0c9596b2`）に知らせる。",
       "doneWhen": "runCommand（待つ形）で `(setsid sleep 100000 &)` のように背景化したコマンドを流したあと、残ったプロセスが Banto 側で見える化され、cancelCommand か Project スリープのどちらかで確実に片づくことを確かめた。",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/runcommand-setsid）",
       "refs": [
         "#294"
       ],
       "threads": [],
       "createdAt": "2026-10-23T08:15:32.283Z",
-      "updatedAt": "2026-10-23T09:40:33.170Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T09:55:39.801Z",
+      "closedAt": "2026-10-23T09:55:39.801Z",
       "extra": {}
     }
   ],
