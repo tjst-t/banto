@@ -11,7 +11,7 @@
 import { useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MoveRuntimeDialog } from "@/components/banto/settings/move-runtime-dialog";
-import { Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
+import { Network, Puzzle, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
+import { MetaProjectPanel } from "@/components/banto/settings/meta-project-panel";
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import {
   type SearchEntry,
@@ -51,14 +52,29 @@ import {
   MOCK_PERMISSION_MODES,
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
-import type { MockProjectOverrides } from "@/lib/mock/types";
+import type { MockProject, MockProjectOverrides } from "@/lib/mock/types";
 
+/** 普通の Project ならどの Project でも出る、共通のナビ */
 export const PROJECT_CATEGORIES: readonly SettingsNavItem[] = [
   { section: "project-modules", label: "この Project の Module", icon: Puzzle },
   { section: "project-overrides", label: "既定値の上書き", icon: SlidersHorizontal },
   { section: "project-security", label: "セキュリティ境界", icon: ShieldAlert },
   { section: "project-danger", label: "危険な操作", icon: TriangleAlert },
 ];
+
+/**
+ * この Project の左ナビに出す項目。`kind: "meta"`（メタ Project、v4-architecture.md §4.6）
+ * のときだけ、先頭に「メタ Project」の設定を足す——その他の Project では出さない
+ */
+export function projectCategoriesFor(project: MockProject): readonly SettingsNavItem[] {
+  if (project.kind === "meta") {
+    return [
+      { section: "project-meta", label: "メタ Project", icon: Network },
+      ...PROJECT_CATEGORIES,
+    ];
+  }
+  return PROJECT_CATEGORIES;
+}
 
 export function projectSearchEntries(projectId: string): readonly SearchEntry[] {
   const links = getProjectModuleLinks(projectId);
@@ -104,6 +120,10 @@ export function ProjectSettingsContent({
   }
 
   function renderSection(section: SettingsSection): ReactNode {
+    if (section === "project-meta") {
+      return <MetaProjectPanel projectId={projectId} />;
+    }
+
     if (section === "project-modules") {
       return <ProjectModulesPanel projectId={projectId} />;
     }

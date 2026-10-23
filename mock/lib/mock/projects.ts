@@ -102,11 +102,26 @@ let projects: MockProject[] = [
     status: "closed",
     closedAt: "2026-08-15",
   },
+  // メタ Project（v4-architecture.md §4.6）のモック——banto・自宅サーバ・記憶の検証を
+  // 横断して見る想定のサンプル
+  {
+    id: "orchestrator",
+    name: "全体統括",
+    initial: "統",
+    baseThreadId: "orchestrator-base",
+    basePath: "~/banto/orchestrator",
+    status: "active",
+    kind: "meta",
+  },
 ];
 
 // 整理のモックで足した Project には Base Thread だけ用意する（中身はダミー）
 for (const p of projects) {
-  if (["qemu-bmc", "site", "kaggle", "kakeibo", "trip", "papers", "proxmox-lab", "recipe"].includes(p.id)) {
+  if (
+    ["qemu-bmc", "site", "kaggle", "kakeibo", "trip", "papers", "proxmox-lab", "recipe", "orchestrator"].includes(
+      p.id,
+    )
+  ) {
     createBaseThreadForProject(p.id, p.baseThreadId, p.name);
   }
 }

@@ -19,8 +19,8 @@ import {
   type SettingsSection,
 } from "@/components/banto/settings/settings-shell";
 import {
-  PROJECT_CATEGORIES,
   ProjectSettingsContent,
+  projectCategoriesFor,
   projectConfigurableModules,
   projectSearchEntries,
 } from "@/components/banto/settings/project-settings-content";
@@ -265,7 +265,7 @@ export function SettingsContent() {
       label: project.name,
       labelBadge: <ProjectInitial project={project} active={false} />,
       startsLayer: true,
-      items: PROJECT_CATEGORIES,
+      items: projectCategoriesFor(project),
     });
     groups.push({
       label: projectModules.length > 0 ? "この Project の Module 設定" : undefined,
