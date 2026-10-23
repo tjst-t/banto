@@ -31,11 +31,13 @@ import {
   RESUME_AFTER_RESTART_TOOL,
   threadOf,
   callerModuleOf,
+  sweepWorkScopes,
   type ResumeAnswer,
   type SummarizeBackgroundWorkInput,
   type SummarizeBackgroundWorkReply,
 } from "@banto/module-contract";
 import {
+  agentScopesOfThisProcess,
   describeAgent,
   LoginExpiredError,
   runSubagent,
@@ -54,7 +56,7 @@ import { HostRelayClient, type AliasPlace } from "./host-relay-client.js";
 import { RUNS_APP_HTML, RUNS_APP_URI } from "./runs-app.js";
 import { clipLine, LABEL_MAX, labelOf, RunLog, STEP_TITLE_MAX } from "./runs.js";
 import { promptHeadOf, RunningStore, type RunningRecord } from "./running.js";
-import { stopOwnedGroup } from "./process-group.js";
+import { stopAgentProcess } from "./process-group.js";
 import { summaryMaterialOf } from "./summary.js";
 import { compileSchema, extractJson, fixPrompt, schemaInstruction, STRUCTURED_RETRIES, type CompiledSchema } from "./structured.js";
 
@@ -752,7 +754,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
   function abandon(record: RunningRecord): void {
     running.remove(record.id);
     if (record.agentProcess) {
-      void stopOwnedGroup(record.agentProcess).then((stopped) => {
+      void stopAgentProcess(record.agentProcess).then((stopped) => {
         if (!stopped) console.error(`[subagent] 続けない仕事 ${record.id} のエージェント（pid ${record.agentProcess!.pid}）が止まりません`);
       });
     }
@@ -784,7 +786,7 @@ export function createSubagentServer(deps: SubagentServerDeps) {
     const agent = agents.find((a) => a.id === record.agent)!;
     // **前の走行のエージェントが残っていれば、先に止める**（実測：Module が止まってもエージェントと子はコンテナの中で
     // 走り続ける）。止まったのを確かめてから続ける——同じ会話を2本が書かない。止まらなければ続けずに失敗を届ける
-    if (record.agentProcess && !(await stopOwnedGroup(record.agentProcess))) {
+    if (record.agentProcess && !(await stopAgentProcess(record.agentProcess))) {
       const message = `前の走行のエージェント（pid ${record.agentProcess.pid}）が止まらないので、続けられませんでした`;
       await deliverEnd(record.id, replyTo, `${agent.title} の仕事が失敗しました`, JSON.stringify({ runId: record.id, resumedAfterRestart: true, error: message }));
       return;
@@ -1094,6 +1096,25 @@ function text(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
 }
 
+/**
+ * **起きたときに、前の走行が残したエージェントの組を片づける**（追加・2026-10-23、Backlog #294）。Module が止まると
+ * （banto の起こし直し）、待つ形の仕事は記録が無いので誰も止めない——組（banto-subagent-*.scope）とエージェントと子が
+ * コンテナに残る。**走っている仕事の記録にある組は残す**：起き直した host に問われたら、続ける前・続けないと決めたときに
+ * 止める（`resumeRun`・`abandon`）。**組の名前の頭が同じものは、この Module のもの**——1つの Project のコンテナに
+ * Subagent Module は1つ
+ */
+export async function sweepLeftoverAgentScopes(
+  moduleDataDir: string,
+  opts: { kind?: string; available?: () => boolean; graceMs?: number } = {},
+): Promise<{ stopped: string[]; failed: Array<{ unit: string; error: string }> }> {
+  const recorded = new Set(new RunningStore(moduleDataDir).list().flatMap((r) => (r.agentProcess?.unit ? [r.agentProcess.unit] : [])));
+  return sweepWorkScopes(opts.kind ?? "subagent", {
+    keep: (unit) => recorded.has(unit) || agentScopesOfThisProcess().has(unit),
+    ...(opts.available ? { available: opts.available } : {}),
+    ...(opts.graceMs !== undefined ? { graceMs: opts.graceMs } : {}),
+  });
+}
+
 // **入口の判定は名前まで見る**——`settings-server.js` も同じ語尾なので、語尾だけだと取り違える
 if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
   const projectRoot = process.env.BANTO_PROJECT_ROOT;
@@ -1105,6 +1126,14 @@ if (process.argv[1] && process.argv[1].endsWith("/server.js")) {
     process.exit(1);
   }
   const relayClient = new HostRelayClient({ url: hostUrl, token: hostToken });
+  // 前の走行が残した組を片づける（上）。待たない——片づけで起動を遅らせない。止められなかった組はログに残す
+  void sweepLeftoverAgentScopes(moduleDataDir).then(
+    ({ stopped, failed }) => {
+      if (stopped.length > 0) console.error(`[subagent] 前の走行が残したエージェントの組を ${stopped.length} 個止めました: ${stopped.join(", ")}`);
+      for (const f of failed) console.error(`[subagent] 前の走行が残したエージェントの組 ${f.unit} を止められませんでした: ${f.error}`);
+    },
+    (err: unknown) => console.error("[subagent] 前の走行が残したエージェントの組を片づけられませんでした:", err),
+  );
   const server = createSubagentServer({
     projectRoot,
     moduleDataDir,

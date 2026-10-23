@@ -26,7 +26,7 @@ import {
   type Stream,
   type Usage,
 } from "@agentclientprotocol/sdk";
-import { inWorkScope } from "@banto/module-contract";
+import { inWorkScope, stopWorkScope } from "@banto/module-contract";
 import { clipLine, STEP_TITLE_MAX, type PlanEntry, type StepStatus, type ToolCallView } from "./runs.js";
 
 export interface AgentLaunch {
@@ -84,10 +84,10 @@ export interface RunDeps {
    */
   onSession?: (sessionId: string) => void;
   /**
-   * エージェントを起こした（pid＝自分のプロセスグループの id と、開始時刻）。走っている仕事の記録に残し、起こし直したあと
-   * 続ける前に残ったものをグループごと止める（追加・2026-10-05、`process-group.ts`）
+   * エージェントを起こした（pid＝自分のプロセスグループの id と、開始時刻と、仕事の組に入れたならその単位の名前）。走っている
+   * 仕事の記録に残し、起こし直したあと続ける前に残ったものをグループごと・組ごと止める（追加・2026-10-05、`process-group.ts`）
    */
-  onSpawn?: (agent: { pid: number; startTicks?: number }) => void;
+  onSpawn?: (agent: { pid: number; startTicks?: number; unit?: string }) => void;
   /** 返答を書き進めた（ここまでの全文）。走っている間の画面に、書きかけを見せるのに使う */
   onText?: (textSoFar: string) => void;
   askPermission: (question: PermissionQuestion) => Promise<PermissionAnswer>;
@@ -246,7 +246,20 @@ interface SpawnedAgent {
   exited: Promise<never>;
   /** 接続が閉じたとき、終了コードと stderr を待ってから伝えるための変換 */
   toError: (err: unknown) => Promise<SubagentError>;
-  stop: () => void;
+  /** 仕事の組に入れたなら、その単位の名前 */
+  unit?: string;
+  /** エージェントと子を止める。組に入れたなら組ごと止め、止まるまで待つ */
+  stop: () => Promise<void>;
+}
+
+/**
+ * この Module（このプロセス）が起こして、まだ止めていない組。起きたときの片づけ（`server.ts` の
+ * `sweepLeftoverAgentScopes`）が、片づけている間に起こした仕事の組を止めないように
+ */
+const liveUnits = new Set<string>();
+
+export function agentScopesOfThisProcess(): ReadonlySet<string> {
+  return liveUnits;
 }
 
 function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
@@ -256,6 +269,7 @@ function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
   // メモリを食い尽くしても組の中だけで止まり、Module は巻き込まれない。`systemd-run --scope` はその場で exec するので、
   // 標準入出力（ACP）とプロセスグループはそのまま
   const scoped = inWorkScope(launch.command, launch.args, { kind: "subagent", env: launch.env });
+  if (scoped.unit) liveUnits.add(scoped.unit);
   const child = spawn(scoped.command, scoped.args, { cwd, env: scoped.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let stderr = "";
   child.stderr.on("data", (d: Buffer) => {
@@ -296,10 +310,19 @@ function spawnAgent(launch: AgentLaunch, cwd: string): SpawnedAgent {
       if (exitError) return exitError;
       return new SubagentError(`${describeError(err)}${stderr.trim() ? `\nstderr: ${stderr.trim().slice(-1500)}` : ""}`);
     },
-    stop: () => {
+    ...(scoped.unit ? { unit: scoped.unit } : {}),
+    stop: async () => {
       child.removeAllListeners("exit");
       // グループごと（エージェントが起こした子も）。エージェントがもう終わっていても、子が残っていれば止める
       killGroup(child, "SIGTERM");
+      // **組ごと止める**（Backlog #294）——グループを抜けた子（setsid・ssh-agent -D・E2E が後ろに回したもの）はグループで
+      // 止めても残り、組（banto-subagent-*.scope）が終わらない。止められなければログに残す（結果はもう出ているので投げない）
+      if (scoped.unit) {
+        await stopWorkScope(scoped.unit, { env: scoped.env }).then(
+          () => liveUnits.delete(scoped.unit!),
+          (err: unknown) => console.error(`[subagent] エージェントの仕事の組 ${scoped.unit} を止められませんでした:`, err),
+        );
+      }
     },
   };
 }
@@ -344,14 +367,14 @@ export async function describeAgent(launch: AgentLaunch, cwd: string): Promise<A
   } catch (err) {
     throw await spawned.toError(err);
   } finally {
-    spawned.stop();
+    await spawned.stop();
   }
 }
 
 export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunResult> {
   const spawned = spawnAgent(deps.launch, deps.cwd);
   const { child } = spawned;
-  if (child.pid !== undefined) deps.onSpawn?.({ pid: child.pid, ...optionalTicks(child.pid) });
+  if (child.pid !== undefined) deps.onSpawn?.({ pid: child.pid, ...optionalTicks(child.pid), ...(spawned.unit ? { unit: spawned.unit } : {}) });
 
   const result: Omit<RunResult, "agent" | "sessionId" | "stopReason"> = {
     text: "",
@@ -522,6 +545,6 @@ export async function runSubagent(input: RunInput, deps: RunDeps): Promise<RunRe
     throw await spawned.toError(err);
   } finally {
     clearInterval(heartbeat);
-    spawned.stop();
+    await spawned.stop();
   }
 }
