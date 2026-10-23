@@ -12848,7 +12848,7 @@
       "number": 538,
       "kind": "task",
       "title": "メタ Project の設定画面を本実装につなぐ(モックから実配線へ)",
-      "status": "in-progress",
+      "status": "done",
       "parent": "project-2",
       "dependsOn": [
         "host-project-kind-meta-project-project-f",
@@ -12863,12 +12863,12 @@
       "labels": [],
       "body": "mock/components/banto/settings/meta-project-panel.tsx・backlog-config-section.tsx はモックとして先行実装済み。host 側の実装(kind:meta・読む口・通知・Backlog Gist・権限設定)が揃ったら、画面を実データに繋ぐ。管理対象 Project 選択・Backlog バックエンド選択・release 扱いの切り替えが、実際に host の状態を変えることを確認する。",
       "doneWhen": "メタ Project の設定画面の操作が実際に host の状態(管理対象 Project 一覧・Backlog バックエンド・release 扱い)に反映される。E2E で確認できる",
-      "resolution": null,
+      "resolution": "Factory が取り込みました（factory/project-3）",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:50:13.399Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-23T16:04:54.071Z",
+      "closedAt": "2026-10-23T16:04:54.071Z",
       "extra": {}
     },
     {
