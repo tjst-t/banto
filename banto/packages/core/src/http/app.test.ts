@@ -2298,6 +2298,26 @@ test("ターンの終わりのまとめのスイッチは Project ごとで、�
   });
 });
 
+// **自動化を作るのを聞かずに許可する**（追加・2026-10-23、Backlog #536）——Project ごとのスイッチ、既定はオフ。
+// 「承認をすべて自動で許可する」とは別の鍵
+test("自動化を作るのを聞かずに許可するスイッチは Project ごとで、既定はオフ。承認をすべて自動で許可するとは別。壊れた値は断る", async () => {
+  await withApp(async (base, token, dir, { runtimeConfig }) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await (
+      await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ name: "p", root: dir }) })
+    ).json();
+    const url = `${base}/api/projects/${project.id}/auto-approve-create-automation`;
+    assert.deepEqual(await (await fetch(url, { headers })).json(), { enabled: false });
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: true }) })).json(), { enabled: true });
+    assert.equal(runtimeConfig.layerValue("approvals.autoApproveCreateAutomation", project.id), true);
+    assert.deepEqual(await (await fetch(`${base}/api/projects/${project.id}/auto-approve`, { headers })).json(), { enabled: false });
+    assert.equal((await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: "yes" }) })).status, 400);
+    assert.deepEqual(await (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ enabled: false }) })).json(), { enabled: false });
+    assert.equal(runtimeConfig.layerValue("approvals.autoApproveCreateAutomation", project.id), undefined);
+    assert.equal((await fetch(`${base}/api/projects/nope/auto-approve-create-automation`, { headers })).status, 404);
+  });
+});
+
 // **新しい Project の画面の3つのスイッチ**（決定・2026-10-20、ユーザー。v4-frontend.md §6.51）——作るのと同じ処理の中で書く
 test("POST /api/projects の settings は作るときに Configuration へ書き、渡されなかった鍵は書かない", async () => {
   await withApp(async (base, token, dir, { runtimeConfig }) => {

@@ -11,6 +11,7 @@ import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { AutomationStore } from "./store.js";
 import { AutomationTools, automationForAi, describeAutomationSource } from "./tools.js";
 import type { Automation } from "./fold.js";
+import { AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT } from "../inbox/auto-approve.js";
 
 interface Ctx {
   store: ProjectThreadStore;
@@ -21,12 +22,16 @@ interface Ctx {
   projectId: string;
   baseId: string;
   judgments: Array<{ threadId: string; id: string; message: string; choices: string[] }>;
+  answered: Array<{ threadId: string; id: string; answer: string }>;
   prepared: string[];
   /** 鍵を捨てた自動化の id（消したとき） */
   forgotten: string[];
 }
 
-async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
+async function setup(
+  fn: (ctx: Ctx) => Promise<void>,
+  opts: { autoApproveCreate?: (projectId: string, threadId: string) => boolean } = {},
+): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "banto-automation-tools-"));
   try {
     const log = new EventLog(dir);
@@ -43,6 +48,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const base = await store.createBaseThread(project.id);
     const approvals = new PendingApprovalRegistry();
     const judgments: Ctx["judgments"] = [];
+    const answered: Ctx["answered"] = [];
     const prepared: string[] = [];
     const forgotten: string[] = [];
     const tools = new AutomationTools({
@@ -59,9 +65,11 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       inbox,
       pendingApprovals: approvals,
       publishJudgment: (threadId, j) => judgments.push({ threadId, id: j.id, message: j.message, choices: j.choices }),
+      publishAnswered: (threadId, a) => answered.push({ threadId, id: a.id, answer: a.answer }),
       judgeNotices: () => ["この Project はターンの終わりのまとめがオフなので、出来事 banto.turn-decisions が出ません"],
+      ...(opts.autoApproveCreate ? { autoApproveCreate: opts.autoApproveCreate } : {}),
     });
-    await fn({ store, automations, inbox, approvals, tools, projectId: project.id, baseId: base.id, judgments, prepared, forgotten });
+    await fn({ store, automations, inbox, approvals, tools, projectId: project.id, baseId: base.id, judgments, answered, prepared, forgotten });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -107,6 +115,55 @@ test("作るときは必ずカードで聞き、許したら作って専用の F
     assert.deepEqual(created.createdBy, { kind: "ai", threadId: ctx.baseId });
     assert.deepEqual(ctx.prepared, [created.id]);
   });
+});
+
+// **自動化を作るのを聞かずに許可する**（追加・2026-10-23、Backlog #536）
+test("「自動化を作るのを聞かずに許可する」がオンの Project では聞かずに作り、カードは答え済みで残す。オフ（既定）の Project では聞く", async () => {
+  let onProject = "";
+  await setup(
+    async (ctx) => {
+      onProject = ctx.projectId;
+      const result = await ctx.tools.create(ctx.baseId, FIELDS);
+      assert.equal(result.ok, true, result.text);
+      assert.match(result.text, /人に聞かずに自動化「毎朝のまとめ」を作った/);
+      const [created] = ctx.automations.list(ctx.projectId);
+      assert.ok(created);
+      assert.deepEqual(created.createdBy, { kind: "ai", threadId: ctx.baseId });
+      assert.deepEqual(ctx.prepared, [created.id]);
+      // カードは出し、出したそばから答え済み（受信箱に未解決を残さない。何を自動で通したかが後から読める）
+      assert.equal(ctx.judgments.length, 1);
+      const j = ctx.judgments[0]!;
+      assert.equal(j.message, "この自動化を作ってよいですか");
+      assert.deepEqual(ctx.answered, [{ threadId: ctx.baseId, id: j.id, answer: AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT }]);
+      const item = ctx.inbox.get(j.id);
+      assert.equal(item?.kind === "judgment" && item.source, "automation");
+      assert.equal(item?.kind === "judgment" && item.liveness, "answered");
+
+      // 変える・再開するは例外にしない——今までどおり聞く
+      const updating = ctx.tools.update(ctx.baseId, created.id, { name: "別の名前" });
+      const u = await nextJudgment(ctx, 2);
+      assert.equal(u.message, "この自動化を変えてよいですか");
+      assert.equal((ctx.inbox.get(u.id) as { liveness: string }).liveness, "live");
+      ctx.approvals.resolve(u.id, { behavior: "deny", message: "変えない" });
+      assert.equal((await updating).ok, false);
+    },
+    { autoApproveCreate: (projectId) => projectId === onProject },
+  );
+
+  // スイッチがオフ（既定）の Project では、今までどおり人が答えるまで作らない
+  await setup(
+    async (ctx) => {
+      const pending = ctx.tools.create(ctx.baseId, FIELDS);
+      const j = await nextJudgment(ctx, 1);
+      assert.equal((ctx.inbox.get(j.id) as { liveness: string }).liveness, "live");
+      assert.equal(ctx.automations.list(ctx.projectId).length, 0, "答える前に作っている");
+      assert.deepEqual(ctx.answered, []);
+      ctx.approvals.resolve(j.id, { behavior: "deny", message: "作らない" });
+      assert.equal((await pending).ok, false);
+      assert.equal(ctx.automations.list(ctx.projectId).length, 0);
+    },
+    { autoApproveCreate: () => false },
+  );
 });
 
 test("断ったら作らない", async () => {

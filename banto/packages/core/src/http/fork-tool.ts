@@ -84,7 +84,7 @@ export const SEND_MESSAGE_TOOL_NAME = "send_message";
 export const READ_THREAD_TOOL_NAME = "read_thread";
 export const CLOSE_FORK_TOOL_NAME = "close_fork";
 export const START_PROTOTYPING_TOOL_NAME = "start_prototyping";
-/** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く */
+/** **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。作る・変える・再開する・消すは必ず人に聞く（作るだけは Project のスイッチで外せる、Backlog #536） */
 export const CREATE_AUTOMATION_TOOL_NAME = "create_automation";
 export const UPDATE_AUTOMATION_TOOL_NAME = "update_automation";
 export const LIST_AUTOMATIONS_TOOL_NAME = "list_automations";
@@ -545,7 +545,7 @@ export function createForkMcpServer(
         CREATE_AUTOMATION_TOOL_NAME,
         [
           "自動化を作る：決まった時刻に、または Module や banto で出来事が起きたときに、決まった指示（instruction）でこの Project の AI を動かす。",
-          "人が見ていない時間に繰り返し動くので、**作る前に必ず会話のカードで人に聞く**（承認モードに依らない）。人が断ったら作らない。",
+          "人が見ていない時間に繰り返し動くので、**作る前に会話のカードで人に聞く**（承認モードに依らない）。人が断ったら作らない。Project の「自動化を作るのを聞かずに許可する」がオンなら、聞かずに作る。",
           "既定では自動化の名前の専用の Fork が立ち、毎回まっさらな会話で指示が届く。",
           "指示は、その時刻に何も知らない AI が読んでも分かるように、要ることを全部書く。",
         ].join(""),

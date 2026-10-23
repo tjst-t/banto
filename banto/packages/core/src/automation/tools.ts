@@ -4,12 +4,15 @@
 // - **作る・変える・再開する・消すは、承認モードにも Project の「承認をすべて自動で許可する」にも依らず、会話のカードで必ず
 //   人に聞く**——自動化は人が見ていない時間に繰り返し動く「立ち続ける許し」で、1回きりの操作とは性質が違う。自動化で
 //   起きたターンの中から呼ばれても同じく聞く（v4-frontend.md §6.42「AI が作るときのカード」）
+//   - **例外は作るだけ**：Project の「自動化を作るのを聞かずに許可する」がオンなら、カードを答え済みで出して作る（追加・
+//     2026-10-23、Backlog #536。`inbox/auto-approve.ts`）。変える・再開するは例外にしない
 // - 一覧と一時停止は聞かない（止める方向は危なくない）
 // - 触れるのは**呼んだ Thread の Project の自動化だけ**。入力の確かめは台帳（`store.ts`）に1つ——画面の口と同じ決まりで断る
 // - **Webhook の URL（印）は AI に返さない**。返す形はここで欄を選んで組む（台帳の形をそのまま渡さない——後から台帳に
 //   足した欄が黙って AI に漏れないように）
 
 import type { InboxStore } from "../inbox/store.js";
+import { AUTO_APPROVED_CREATE_AUTOMATION_ANSWER, AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT, raiseAutoApprovedJudgment } from "../inbox/auto-approve.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { Automation, AutomationRepeat, AutomationSource, AutomationTarget } from "./fold.js";
@@ -52,6 +55,11 @@ export interface AutomationToolsDeps {
    * 作った返事に添える（画面の口の `notices` と同じ）。無ければ添えない
    */
   judgeNotices?(projectId: string): string[];
+  /**
+   * **作るのを聞かずに許可するか**（Project の「自動化を作るのを聞かずに許可する」、Backlog #536）。作るたびに引く。無ければ
+   * いつも聞く
+   */
+  autoApproveCreate?(projectId: string, threadId: string): boolean;
   /** 今の時刻（「次は」の計算）。無ければ `new Date()`（試験が時刻を決める） */
   now?: () => Date;
   /** 走っているターンの画面へ、判断待ちが出たことを流す（会話の中の確認のカード） */
@@ -59,6 +67,8 @@ export interface AutomationToolsDeps {
     threadId: string,
     judgment: { id: string; message: string; serverName: string; toolInput: unknown; choices: string[] },
   ): void;
+  /** 走っているターンの画面へ、判断待ちが答え済みになったことを流す（聞かずに許可したカード） */
+  publishAnswered?(threadId: string, answered: { id: string; answer: string }): void;
 }
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -139,7 +149,10 @@ export class AutomationTools {
     return { ok: true, text: list.length === 0 ? "この Project に自動化はありません。" : JSON.stringify(list, null, 2) };
   }
 
-  /** 作る。**必ず人に聞く**（許されたら作り、専用の Fork を立てる） */
+  /**
+   * 作る。**人に聞く**（許されたら作り、専用の Fork を立てる）。Project の「自動化を作るのを聞かずに許可する」がオンなら、
+   * カードを答え済みで出して作る
+   */
   async create(threadId: string, raw: unknown, signal?: AbortSignal): Promise<AutomationToolResult> {
     const projectId = this.projectOf(threadId);
     if (!projectId) return { ok: false, text: "この Thread が見つかりません。" };
@@ -166,15 +179,23 @@ export class AutomationTools {
           "自動化の一覧から、いつでも一時停止・削除できます。",
         ].join(""),
       };
-      const answer = await this.ask(threadId, "この自動化を作ってよいですか", toolInput, AUTOMATION_CREATE_CHOICES, signal);
-      if (!answer.allowed) return { ok: false, text: `人が作らないと答えたので、自動化は作っていません。${answer.note}` };
+      const auto = this.deps.autoApproveCreate?.(projectId, threadId) === true;
+      if (auto) {
+        if (signal?.aborted) return { ok: false, text: "ターンが止まったので、自動化は作っていません。" };
+        await this.autoApprove(threadId, "この自動化を作ってよいですか", toolInput, AUTOMATION_CREATE_CHOICES);
+      } else {
+        const answer = await this.ask(threadId, "この自動化を作ってよいですか", toolInput, AUTOMATION_CREATE_CHOICES, signal);
+        if (!answer.allowed) return { ok: false, text: `人が作らないと答えたので、自動化は作っていません。${answer.note}` };
+      }
       const created = await this.deps.automations.create({ projectId, createdBy: { kind: "ai", threadId }, fields: raw });
       const prepared = (await this.deps.runner?.prepare(created)) ?? created;
       const notices = isJudgeAutomation(created) ? (this.deps.judgeNotices?.(projectId) ?? []) : [];
       return {
         ok: true,
         text: [
-          `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。`,
+          auto
+            ? `この Project は「自動化を作るのを聞かずに許可する」がオンなので、人に聞かずに自動化「${prepared.name}」を作った（id: ${prepared.id}）。`
+            : `人が許したので、自動化「${prepared.name}」を作った（id: ${prepared.id}）。`,
           ...notices.map((n) => `注意：${n}`),
           JSON.stringify(automationForAi(prepared, this.now()), null, 2),
         ].join("\n"),
@@ -314,6 +335,17 @@ export class AutomationTools {
       if (err instanceof AutomationInputError || err instanceof AutomationNotFoundError) return { ok: false, text: err.message };
       throw err;
     }
+  }
+
+  /** 聞かずに許可する。答え済みのカードだけを会話に残す（何を自動で通したかが後から読める。`delivery/thread-messages.ts` と同じ形） */
+  private async autoApprove(threadId: string, message: string, toolInput: Record<string, unknown>, choices: readonly string[]): Promise<void> {
+    const judgment = await raiseAutoApprovedJudgment(
+      this.deps.inbox,
+      { threadId, source: "automation", message, serverName: "banto", toolInput, choices: [...choices] },
+      AUTO_APPROVED_CREATE_AUTOMATION_ANSWER,
+    );
+    this.deps.publishJudgment?.(threadId, { id: judgment.id, message, serverName: "banto", toolInput, choices: [...choices] });
+    this.deps.publishAnswered?.(threadId, { id: judgment.id, answer: AUTO_APPROVED_CREATE_AUTOMATION_ANSWER_TEXT });
   }
 
   /**
