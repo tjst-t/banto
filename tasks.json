@@ -12717,7 +12717,7 @@
       "number": 532,
       "kind": "task",
       "title": "host: Project に kind:\"meta\" を追加し、メタ Project作成時に管理対象 Project ごとの専用 Fork を自動で作る",
-      "status": "ready",
+      "status": "in-progress",
       "parent": "project-2",
       "dependsOn": [],
       "milestone": null,
@@ -12729,7 +12729,7 @@
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T15:06:15.343Z",
+      "updatedAt": "2026-10-23T15:06:35.533Z",
       "closedAt": null,
       "extra": {}
     },
