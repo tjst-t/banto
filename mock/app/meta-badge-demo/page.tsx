@@ -251,25 +251,27 @@ const CASES: { id: number; title: string; note: string; render: () => ReactNode 
 
 export default function MetaBadgeDemoPage() {
   return (
-    <div className="mx-auto max-w-2xl px-6 py-10">
-      <h1 className="text-xl font-semibold text-foreground">サイドバーのメタ Project 目印・代替案</h1>
-      <p className="mt-1 text-sm text-ink-3">
-        色の塗りは使わず(塗ってよいのは turn だけ)、形・アイコン・線で見分ける案を並べている。
-        それぞれ、サイドバーの Project 行の文脈(頭文字バッジ + Project 名)で見せている。
-      </p>
+    <div className="h-full w-full overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-6 py-10">
+        <h1 className="text-xl font-semibold text-foreground">サイドバーのメタ Project 目印・代替案</h1>
+        <p className="mt-1 text-sm text-ink-3">
+          色の塗りは使わず(塗ってよいのは turn だけ)、形・アイコン・線で見分ける案を並べている。
+          それぞれ、サイドバーの Project 行の文脈(頭文字バッジ + Project 名)で見せている。
+        </p>
 
-      <div className="mt-8 flex flex-col gap-3">
-        {CASES.map((c) => (
-          <div key={c.id} className="rounded-lg border border-border bg-card p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium text-foreground">
-                案{c.id === 0 ? "0" : c.id}: {c.title}
-              </p>
+        <div className="mt-8 flex flex-col gap-3">
+          {CASES.map((c) => (
+            <div key={c.id} className="rounded-lg border border-border bg-card p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-foreground">
+                  案{c.id === 0 ? "0" : c.id}: {c.title}
+                </p>
+              </div>
+              <p className="mt-0.5 text-xs text-ink-3">{c.note}</p>
+              <div className="mt-2 rounded-md bg-surface-1 p-1">{c.render()}</div>
             </div>
-            <p className="mt-0.5 text-xs text-ink-3">{c.note}</p>
-            <div className="mt-2 rounded-md bg-surface-1 p-1">{c.render()}</div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );
