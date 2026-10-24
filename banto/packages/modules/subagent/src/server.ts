@@ -37,6 +37,7 @@ import {
   type SummarizeBackgroundWorkReply,
 } from "@banto/module-contract";
 import {
+  agentScopeOwner,
   agentScopesOfThisProcess,
   describeAgent,
   LoginExpiredError,
@@ -1100,15 +1101,15 @@ function text(value: unknown) {
  * **起きたときに、前の走行が残したエージェントの組を片づける**（追加・2026-10-23、Backlog #294）。Module が止まると
  * （banto の起こし直し）、待つ形の仕事は記録が無いので誰も止めない——組（banto-subagent-*.scope）とエージェントと子が
  * コンテナに残る。**走っている仕事の記録にある組は残す**：起き直した host に問われたら、続ける前・続けないと決めたときに
- * 止める（`resumeRun`・`abandon`）。**組の名前の頭が同じものは、この Module のもの**——1つの Project のコンテナに
- * Subagent Module は1つ
+ * 止める（`resumeRun`・`abandon`）。**止めるのはこの1本の印（`agentScopeOwner`）の組だけ**——同じ Project に同じ実装を
+ * 2本立ててよい（`docs/specs/v4-modules.md`）ので、別の1本が走らせている仕事には触らない
  */
 export async function sweepLeftoverAgentScopes(
   moduleDataDir: string,
-  opts: { kind?: string; available?: () => boolean; graceMs?: number } = {},
+  opts: { kind?: string; owner?: string; available?: () => boolean; graceMs?: number } = {},
 ): Promise<{ stopped: string[]; failed: Array<{ unit: string; error: string }> }> {
   const recorded = new Set(new RunningStore(moduleDataDir).list().flatMap((r) => (r.agentProcess?.unit ? [r.agentProcess.unit] : [])));
-  return sweepWorkScopes(opts.kind ?? "subagent", {
+  return sweepWorkScopes(opts.kind ?? "subagent", opts.owner ?? agentScopeOwner(), {
     keep: (unit) => recorded.has(unit) || agentScopesOfThisProcess().has(unit),
     ...(opts.available ? { available: opts.available } : {}),
     ...(opts.graceMs !== undefined ? { graceMs: opts.graceMs } : {}),

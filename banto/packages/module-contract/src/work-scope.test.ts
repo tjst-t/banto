@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inWorkScope } from "./work-scope.js";
+import { inWorkScope, ownWorkScopes, workScopeOwner } from "./work-scope.js";
 
 test("仕事の組に入れられないときは、そのまま起こす", () => {
   const r = inWorkScope("/bin/sh", ["-c", "echo hi"], { kind: "shell", available: () => false, env: { A: "1" } });
@@ -28,4 +28,29 @@ test("oomGroup: false なら oom_score_adj だけ書き、oom.group は書かな
   assert.match(prelude, /echo 500 > \/proc\/self\/oom_score_adj.*exec "\$@"/);
   assert.doesNotMatch(prelude, /oom\.group/);
   assert.deepEqual(r.args.slice(-4), ["banto-work", "tmux", "new-session", "-d"]);
+});
+
+test("印（owner）を渡すと単位の名前は banto-<頭>-<印>-<乱数>。印は宣言上の名前（BANTO_MODULE_NAME）ごとに違う（Backlog #294）", () => {
+  const a = workScopeOwner("subagent", { BANTO_MODULE_NAME: "subagent" });
+  const b = workScopeOwner("subagent", { BANTO_MODULE_NAME: "subagent-2" });
+  assert.match(a, /^[0-9a-f]{8}$/);
+  assert.notEqual(a, b);
+  assert.equal(workScopeOwner("subagent", {}), a, "名前が無ければ既定の名前");
+  const r = inWorkScope("/bin/sh", ["-c", "echo hi"], { kind: "subagent", owner: a, available: () => true, uid: 1000 });
+  assert.match(r.unit!, new RegExp(`^banto-subagent-${a}-[0-9a-f]{8}\\.scope$`));
+  assert.throws(() => inWorkScope("/bin/sh", [], { kind: "shell", owner: "x y", available: () => true }), /印が不正/);
+});
+
+test("片づけが拾うのは、この1本の印に完全に合う組だけ（別の1本・印の無い古い形・別の kind の頭は拾わない）", () => {
+  const mine = workScopeOwner("shell", { BANTO_MODULE_NAME: "shell" });
+  const other = workScopeOwner("shell", { BANTO_MODULE_NAME: "shell-2" });
+  const listing = [
+    `banto-shell-${mine}-0123abcd.scope   loaded active running /bin/sh`,
+    `banto-shell-${other}-0123abcd.scope  loaded active running /bin/sh`,
+    "banto-shell-0123abcd.scope            loaded active running /bin/sh",
+    `banto-shell-sweeptest-${mine}-0123abcd.scope loaded active running /bin/sh`,
+    `banto-shell-${mine}-0123abcd.scope.x  loaded active running /bin/sh`,
+    "",
+  ].join("\n");
+  assert.deepEqual(ownWorkScopes(listing, "shell", mine), [`banto-shell-${mine}-0123abcd.scope`]);
 });
