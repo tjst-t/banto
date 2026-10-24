@@ -1160,6 +1160,8 @@ export interface RealRemoteRuntime extends RealRuntimeInput {
   checks: RealRuntimeCheck[];
   checkedAt: string;
   usedBy: Array<{ id: string; name: string }>;
+  /** この実行場所を指したまま閉じている Project（外しても残り、同じ名前で登録し直すと再開できる） */
+  closedUsers?: Array<{ id: string; name: string }>;
   /** 新しい Project で選べない理由（選べるなら無し） */
   unavailableReason?: string;
   /** 仮想化（KVM）を許している（containers だけ。v4-security.md §1「`containers` で仮想化（KVM）」の 1.）。許していなければ無い */

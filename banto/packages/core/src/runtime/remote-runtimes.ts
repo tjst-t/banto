@@ -85,7 +85,7 @@ export interface RemoteRuntimeDeps {
   publicKeyOf(identity: string): Promise<string>;
   /**
    * その実行場所を使っている Project。**閉じたものは数えない**——閉じたら実行場所は空く（v4-security.md §1「閉じた Project は
-   * 数えない」）。`includeClosed` なら閉じたものも（外すときだけ——閉じた Project も再開・移すのに登録が要る）。移している
+   * 数えない」）。`includeClosed` なら閉じたものも（containers の根の重なり・設定に出す閉じた Project）。移している
    * 途中の Project は、移す先としても数える
    */
   projectsUsing(runtime: string, opts?: { includeClosed?: boolean }): Array<{ id: string; name: string; root?: string }>;
@@ -96,6 +96,8 @@ export interface RemoteRuntimeView extends RemoteRuntime {
   /** Project の記録に書く印（`remote:<名前>`） */
   runtime: string;
   usedBy: Array<{ id: string; name: string }>;
+  /** この実行場所を指したまま閉じている Project（外しても残り、同じ名前で登録し直すと再開できる） */
+  closedUsers: Array<{ id: string; name: string }>;
   /** 新しい Project で選べない理由。選べるなら無し */
   unavailableReason?: string;
 }
@@ -285,11 +287,15 @@ export class RemoteRuntimes {
     return this.recheck(name);
   }
 
-  /** 外す。使っている Project があれば外せない（閉じた Project も——再開・移すのに登録が要る） */
+  /**
+   * **外す**。開いている（眠っている・移してくる途中も）Project が使っていれば外せない。**閉じた Project は数えない**
+   * （改訂・2026-10-23、ユーザー指摘「閉じた Project が使っていると永遠に外せない」）——閉じた Project はこの実行場所を指した
+   * まま残り、同じ名前で登録し直せば（動かし方を変えても）再開できる。登録し直すまでは再開を理由つきで断る（`reopenProjectOn`）
+   */
   async remove(name: string): Promise<void> {
     if (!this.deps.store.get(name)) throw new RemoteRuntimeError(404, `実行場所「${name}」はありません`);
-    const used = this.deps.projectsUsing(runtimeIdOf(name), { includeClosed: true })[0];
-    if (used) throw new RemoteRuntimeError(409, `Project「${used.name}」が使っているあいだは外せません（閉じた Project も含む）`);
+    const used = this.deps.projectsUsing(runtimeIdOf(name))[0];
+    if (used) throw new RemoteRuntimeError(409, `Project「${used.name}」が使っているあいだは外せません（閉じれば外せます）`);
     await this.deps.store.remove(name);
   }
 
@@ -352,6 +358,14 @@ export class RemoteRuntimes {
    */
   async reopenProjectOn(name: string, projectId: string, reopen: () => Promise<void>): Promise<void> {
     return this.exclusive(name, async () => {
+      // 閉じている間に実行場所が外された——同じ名前で登録し直すまで再開できない
+      if (!this.deps.store.get(name)) {
+        throw new RemoteRuntimeError(
+          409,
+          `実行場所「${name}」は外されています。設定の「実行場所」で同じ名前「${name}」で登録し直すと再開できます（動かし方は変えてもかまいません）`,
+          { code: "runtime-missing", runtime: runtimeIdOf(name) },
+        );
+      }
       const used =
         this.deps.store.get(name)?.mode === "containers" ? undefined : this.deps.projectsUsing(runtimeIdOf(name)).find((p) => p.id !== projectId);
       const r = this.deps.store.get(name);
@@ -495,6 +509,10 @@ export class RemoteRuntimes {
       ...r,
       runtime: runtimeIdOf(r.name),
       usedBy: this.deps.projectsUsing(runtimeIdOf(r.name)),
+      closedUsers: this.deps
+        .projectsUsing(runtimeIdOf(r.name), { includeClosed: true })
+        .filter((p) => !this.deps.projectsUsing(runtimeIdOf(r.name)).some((u) => u.id === p.id))
+        .map(({ id, name }) => ({ id, name })),
       ...(reason ? { unavailableReason: reason } : {}),
     };
   }

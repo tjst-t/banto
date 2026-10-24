@@ -437,7 +437,9 @@ Backlog `runtime-seam`。host が Incus を呼ぶのはここだけ）：
   `MaxSessions` は root でないと `sshd -T` で読めないので設定のファイル（`sshd_config.d` が先・最初の値）を読み、10 未満なら
   注意。linger（`/var/lib/systemd/linger/<ユーザー>`）・tmux・Docker が無いのは注意
 - **選べない理由**（host が決め、画面はそのまま出す）：ほかの Project が使っている（閉じた Project は数えない——上。実行場所を
-  外すときだけ閉じた Project も数える：再開・移すのに登録が要る）→ host 鍵が
+  外すときも閉じた Project は数えない——改訂・2026-10-23、ユーザー指摘「閉じた Project が使っていると永遠に外せない」。閉じた
+  Project はその実行場所を指したまま残り、同じ名前で登録し直せば（動かし方を machine／containers で変えても）再開できる。
+  外されている間の再開は理由つきで断る（409・`code: "runtime-missing"`）。設定の行には外したあとも残る閉じた Project を出す）→ host 鍵が
   違う → 前提が足りない。同じ実行場所への Project の作成は1本ずつ通し、向こうで根を正規化したあとでもう一度確かめる
 - **画面**：設定（banto 全体）の「実行場所」・新しい Project の画面の一番上の「どこで動かすか」（Module に頼まれて開いた
   ときは出さない——頼んだ Module はこの機械のフォルダを用意している）・Project の設定の「一般」の Root パスの上に読むだけ
