@@ -228,7 +228,7 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
     if (anthropic) {
       const res = await fetch(`${process.env.ANTHROPIC_BASE_URL}${anthropic[1]}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${process.env.CLAUDE_CODE_OAUTH_TOKEN}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_AUTH_TOKEN}`, "content-type": "application/json" },
         body: "{}",
       });
       reply = `anthropic: ${res.status} ${(await res.text()).slice(0, 120)}`;

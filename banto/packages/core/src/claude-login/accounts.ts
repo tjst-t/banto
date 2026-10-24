@@ -11,12 +11,17 @@
 //
 // 使用率は中継が返事の見出しから読み、メモリに持ってファイルへは間引いて書く。リセットの時刻を過ぎた値は「分からない」
 // に戻す（分からないものは使える扱い——使えば見出しで分かる）。
+//
+// **API キーのアカウント**（種類 `api-key`、`docs/specs/v4-distribution.md` §3）：キーは Vault に置き、台帳には alias だけ
+// を持つ（キーは台帳にも Event Store にも書かない）。置き場（`.credentials.json`）は無い。5時間・週の枠は無く、使用量は
+// 使ったトークンと金額の目安（`tokenUsage`、中継が応答の usage から足す）。
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { replaceCredentialsFile, type OauthFields } from "./refresh.js";
 import { DEFAULT_THRESHOLDS, type UsageThresholds } from "./select.js";
+import { costOf, PRICE_TABLE_VERSION, type TokenCount } from "./prices.js";
 
 /** 最初の1つ（`~/.claude`）の id。外せない（並びから抜くだけ） */
 export const HOST_ACCOUNT_ID = "host";
@@ -50,10 +55,34 @@ export interface AccountUsage {
   readAt: string;
 }
 
+/**
+ * **API キーのアカウントの使用量**（足してからの合計）。5時間・週の枠の代わりに、使ったトークンと金額の目安を出す。
+ * 金額は表（`prices.ts`）に載っているモデルの分だけ——載っていないモデルは `unpricedModels` に残す
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  /** 金額の目安（米ドル） */
+  costUsd: number;
+  /** 値段の表に無かったモデル（その分は金額に入っていない） */
+  unpricedModels?: string[];
+  /** 数えた値段の表の版 */
+  priceTable: string;
+  /** 数え始めた時刻（足した時刻） */
+  since: string;
+  /** 最後に足した時刻 */
+  updatedAt?: string;
+}
+
+export type ClaudeAccountKind = "host" | "banto" | "api-key";
+const ACCOUNT_KINDS: readonly ClaudeAccountKind[] = ["host", "banto", "api-key"];
+
 export interface ClaudeAccount {
   id: string;
-  /** `host`＝今の `~/.claude`（人の CLI の置き場）、`banto`＝banto だけが触る置き場 */
-  kind: "host" | "banto";
+  /** `host`＝今の `~/.claude`（人の CLI の置き場）、`banto`＝banto だけが触る置き場、`api-key`＝Vault に置いた API キー */
+  kind: ClaudeAccountKind;
   /** 表示名（既定はメールアドレス） */
   label: string;
   email?: string;
@@ -62,6 +91,10 @@ export interface ClaudeAccount {
   rateLimitTier?: string;
   addedAt: string;
   usage?: AccountUsage;
+  /** `api-key` だけ：キーの Vault の alias（値ではない） */
+  keyAlias?: string;
+  /** `api-key` だけ：使ったトークンと金額の目安 */
+  tokenUsage?: TokenUsage;
 }
 
 /**
@@ -246,10 +279,11 @@ export class ClaudeAccountStore {
     if (unknown) throw new Error(`Claude のアカウント ${unknown} は台帳にありません`);
   }
 
-  /** そのアカウントの置き場（`.credentials.json`） */
+  /** そのアカウントの置き場（`.credentials.json`）。API キーのアカウントは置き場を持たない（投げる） */
   credentialsPathOf(id: string): string {
     const a = this.ledger.accounts.find((x) => x.id === id);
     if (!a) throw new Error(`Claude のアカウント ${id} は台帳にありません`);
+    if (a.kind === "api-key") throw new Error(`Claude のアカウント ${a.label} は API キーなので、ログインの置き場はありません`);
     return a.kind === "host" ? this.deps.hostCredentialsPath : join(this.accountDir(id), ".credentials.json");
   }
 
@@ -287,6 +321,63 @@ export class ClaudeAccountStore {
   }
 
   /**
+   * **API キーのアカウントを足す**（§3）。キーはもう Vault に置いてある前提で、台帳には alias だけを載せる。並びの末尾に足す
+   * ——並びの先頭に置くかは人が決める（サブスクと並べたときの優先は §10 の未決。当面は並び順に従う）
+   */
+  addApiKey(input: { label: string; keyAlias: string; id?: string }): ClaudeAccount {
+    const label = input.label.trim();
+    if (!label) throw new Error("名前を空にはできません");
+    if (!input.keyAlias.trim()) throw new Error("API キーの alias を空にはできません");
+    const id = input.id ?? newApiKeyAccountId();
+    if (this.ledger.accounts.some((a) => a.id === id)) throw new Error(`Claude のアカウント ${id} はもう台帳にあります`);
+    const now = this.now().toISOString();
+    const account: ClaudeAccount = {
+      id,
+      kind: "api-key",
+      label,
+      keyAlias: input.keyAlias,
+      addedAt: now,
+      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, costUsd: 0, priceTable: PRICE_TABLE_VERSION, since: now },
+    };
+    this.ledger.accounts.push(account);
+    this.ledger.defaultOrder.push(id);
+    this.write();
+    return this.view(account);
+  }
+
+  /** そのアカウントが API キーなら、キーの Vault の alias */
+  apiKeyAliasOf(id: string): string | undefined {
+    const a = this.ledger.accounts.find((x) => x.id === id);
+    return a?.kind === "api-key" ? a.keyAlias : undefined;
+  }
+
+  /**
+   * **API キーのアカウントの使ったトークンを足す**（中継が応答の usage を読んで呼ぶ）。サブスクのアカウントでは何もしない
+   * （枠の使用率は見出しから読む）。書くのは使用率と同じく間引く
+   */
+  recordTokens(id: string, model: string, t: TokenCount): void {
+    const a = this.ledger.accounts.find((x) => x.id === id);
+    if (!a || a.kind !== "api-key") return;
+    const now = this.now().toISOString();
+    const prev = a.tokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, costUsd: 0, priceTable: PRICE_TABLE_VERSION, since: a.addedAt };
+    const cost = costOf(model, t);
+    const unpriced = new Set(prev.unpricedModels ?? []);
+    if (cost === undefined) unpriced.add(model);
+    a.tokenUsage = {
+      inputTokens: prev.inputTokens + t.inputTokens,
+      outputTokens: prev.outputTokens + t.outputTokens,
+      cacheWriteTokens: prev.cacheWriteTokens + t.cacheWriteTokens,
+      cacheReadTokens: prev.cacheReadTokens + t.cacheReadTokens,
+      costUsd: prev.costUsd + (cost ?? 0),
+      ...(unpriced.size > 0 ? { unpricedModels: [...unpriced] } : {}),
+      priceTable: PRICE_TABLE_VERSION,
+      since: prev.since,
+      updatedAt: now,
+    };
+    this.scheduleUsageWrite();
+  }
+
+  /**
    * **同じメールアドレスの足したアカウント**（ログインし直しの見分け、§2 の 4. の 3.）。`~/.claude` のものは台帳に
    * メールアドレスを持たず、置き場も人の CLI のものなので、ここでは引かない
    */
@@ -317,7 +408,10 @@ export class ClaudeAccountStore {
     return this.view(a);
   }
 
-  /** **外す**：置き場を消し、台帳と並びから抜く。`~/.claude` のものは外せない（置き場は人の CLI のもの） */
+  /**
+   * **外す**：置き場を消し、台帳と並びから抜く。`~/.claude` のものは外せない（置き場は人の CLI のもの）。API キーのものは
+   * 置き場を持たない（Vault のキーは呼ぶ側が消す）
+   */
   remove(id: string): void {
     const a = this.ledger.accounts.find((x) => x.id === id);
     if (!a) throw new Error(`Claude のアカウント ${id} は台帳にありません`);
@@ -334,7 +428,7 @@ export class ClaudeAccountStore {
       this.ledger.projectOrders = orders;
     }
     this.write();
-    rmSync(this.accountDir(id), { recursive: true, force: true });
+    if (a.kind === "banto") rmSync(this.accountDir(id), { recursive: true, force: true });
   }
 
   /**
@@ -469,6 +563,11 @@ export function usageFromHeaders(headers: Headers, now: Date): AccountUsage | un
   };
 }
 
+/** API キーのアカウントの id（Vault の alias にもこの id を使う） */
+export function newApiKeyAccountId(): string {
+  return `key-${randomBytes(6).toString("hex")}`;
+}
+
 function checkMode(mode: unknown): asserts mode is ClaudeAccountMode {
   if (!CLAUDE_ACCOUNT_MODES.includes(mode as ClaudeAccountMode)) throw new Error(`使い方は ${CLAUDE_ACCOUNT_MODES.join("・")} のどれかで渡してください`);
 }
@@ -488,7 +587,14 @@ function loadLedger(path: string): Ledger | undefined {
     l !== null &&
     l.version === 1 &&
     Array.isArray(l.accounts) &&
-    l.accounts.every((a) => typeof a?.id === "string" && (a.kind === "host" || a.kind === "banto") && typeof a.label === "string") &&
+    l.accounts.every(
+      (a) =>
+        typeof a?.id === "string" &&
+        ACCOUNT_KINDS.includes(a.kind) &&
+        typeof a.label === "string" &&
+        // API キーのアカウントは alias が無いと使えない（黙って「ログインしていない」にしない）
+        (a.kind !== "api-key" || (typeof a.keyAlias === "string" && a.keyAlias !== "")),
+    ) &&
     Array.isArray(l.defaultOrder) &&
     l.defaultOrder.every((id) => typeof id === "string" && l.accounts!.some((a) => a.id === id)) &&
     (l.projectOrders === undefined ||

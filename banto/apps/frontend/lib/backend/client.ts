@@ -1822,16 +1822,37 @@ export interface ClaudeUsageWindow {
   status?: string;
 }
 
+/** API キーのアカウントの使用量（足してからの合計。host の `TokenUsage`） */
+export interface ClaudeTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  /** 金額の目安（米ドル）。値段の表に無いモデルの分は入っていない */
+  costUsd: number;
+  unpricedModels?: string[];
+  priceTable: string;
+  since: string;
+  updatedAt?: string;
+}
+
 export interface ClaudeAccountView {
   id: string;
-  /** `host`＝このマシンの Claude Code のログイン（`~/.claude`、人の claude コマンドと共有）。外せない・banto からログインし直さない */
-  kind: "host" | "banto";
+  /**
+   * `host`＝このマシンの Claude Code のログイン（`~/.claude`、人の claude コマンドと共有）。外せない・banto からログインし直さない。
+   * `api-key`＝Vault に置いた API キー（v4-distribution.md §3）。5時間・週の枠は無く、使ったトークンと金額の目安を出す
+   */
+  kind: "host" | "banto" | "api-key";
   label: string;
   email?: string;
   subscriptionType?: string;
   rateLimitTier?: string;
   addedAt: string;
   usage?: { fiveHour?: ClaudeUsageWindow; sevenDay?: ClaudeUsageWindow; status?: string; statusResetsAt?: string; readAt: string };
+  /** `api-key` だけ：キーの Vault の alias（値ではない） */
+  keyAlias?: string;
+  /** `api-key` だけ：使ったトークンと金額の目安 */
+  tokenUsage?: ClaudeTokenUsage;
   /** いまこのアカウントを使っている Project（上から順には中継が起こしてから覚えたもの、均すは直近1時間の固定） */
   usedBy: Array<{ projectId: string; name: string }>;
 }
@@ -1853,6 +1874,8 @@ export interface ClaudeAccountsState {
   hostLogin?: RealClaudeLogin["hostLogin"];
   /** 中継が取り直せない banto の理由（会話の本体は今のログインだけを使う） */
   noRefreshReason?: string;
+  /** 既定の並びに使えるアカウントが1つも無い（API キーを入れるところへ導く、v4-distribution.md §3） */
+  noUsableAccount?: boolean;
 }
 
 export async function fetchClaudeAccounts(): Promise<ClaudeAccountsState> {
@@ -1877,8 +1900,15 @@ export async function renameClaudeAccount(id: string, label: string): Promise<Cl
   return request<ClaudeAccountsState>(`/api/claude-accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ label }) });
 }
 
-export async function removeClaudeAccount(id: string): Promise<void> {
-  await request<{ ok: true }>(`/api/claude-accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
+/** 外す。API キーのアカウントで Vault のキーを消せなかったときは `warning`（外したことは戻らない） */
+export async function removeClaudeAccount(id: string): Promise<{ warning?: string }> {
+  const body = await request<{ ok: true; warning?: string }>(`/api/claude-accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return body.warning ? { warning: body.warning } : {};
+}
+
+/** **API キーのアカウントを足す**（v4-distribution.md §3）。キーは host が Vault に置き、返事には入らない */
+export async function addClaudeApiKey(input: { label: string; key: string }): Promise<ClaudeAccountsState & { account: ClaudeAccountView }> {
+  return request("/api/claude-accounts/api-key", { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function startClaudeAccountLogin(): Promise<{ loginId: string; url: string; expiresAt: string }> {

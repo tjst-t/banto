@@ -5,7 +5,7 @@
 import type { ReactNode } from "react";
 import { ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { ClaudeAccountMode, ClaudeAccountView, ClaudeAccountsState, ClaudeUsageWindow } from "@/lib/backend/client";
+import type { ClaudeAccountMode, ClaudeAccountView, ClaudeAccountsState, ClaudeTokenUsage, ClaudeUsageWindow } from "@/lib/backend/client";
 import { cn } from "@/lib/utils";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -35,6 +35,7 @@ export function planLabel(subscriptionType: string | undefined, rateLimitTier: s
 
 /** そのアカウントの契約（`~/.claude` のものは台帳に無いので、本体のログインから読む） */
 export function accountPlan(a: ClaudeAccountView, state: Pick<ClaudeAccountsState, "hostLogin">): string | undefined {
+  if (a.kind === "api-key") return "API キー";
   if (a.kind === "host" && state.hostLogin?.loggedIn) return planLabel(state.hostLogin.subscriptionType, state.hostLogin.rateLimitTier);
   return planLabel(a.subscriptionType, a.rateLimitTier);
 }
@@ -49,8 +50,21 @@ export const MODE_CHOICES: ReadonlyArray<readonly [ClaudeAccountMode, string, st
 
 export const modeName = (mode: ClaudeAccountMode) => MODE_CHOICES.find(([m]) => m === mode)?.[1] ?? mode;
 
-/** 「5時間 41%、週 —」——Project の並びの行の1行 */
+/** 金額の目安（米ドル）：1ドル未満は小数2桁まで、それ以上は小数2桁 */
+export function formatUsd(usd: number): string {
+  return `$${usd < 0.01 && usd > 0 ? "<0.01" : usd.toFixed(2)}`;
+}
+
+/** トークン数：1000 以上は k・100万以上は M */
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** 「5時間 41%、週 —」——Project の並びの行の1行。API キーは「使った金額の目安 $1.23」 */
 export function usageLine(a: ClaudeAccountView): string {
+  if (a.kind === "api-key") return `API キー・使った金額の目安 ${formatUsd(a.tokenUsage?.costUsd ?? 0)}`;
   const p = (w: ClaudeUsageWindow | undefined) => (w ? `${percent(w.utilization)}%` : "—");
   return `5時間 ${p(a.usage?.fiveHour)}、週 ${p(a.usage?.sevenDay)}`;
 }
@@ -207,6 +221,43 @@ export function AccountOrderEditor({
             </Button>
           ))}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * **API キーの使用量**（v4-distribution.md §3「使用量」）。5時間・週の枠の代わりに、足してから使ったトークン（入力・出力・
+ * キャッシュの書き・読み）と金額の目安。値段の表に無いモデルがあれば、その分は金額に入っていないと言う
+ */
+export function TokenSpend({ usage, testId }: { usage: ClaudeTokenUsage | undefined; testId?: string }) {
+  const u = usage ?? { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, costUsd: 0, priceTable: "", since: "" };
+  const rows: ReadonlyArray<readonly [string, number, string]> = [
+    ["入力", u.inputTokens, "input"],
+    ["出力", u.outputTokens, "output"],
+    ["キャッシュの書き", u.cacheWriteTokens, "cache-write"],
+    ["キャッシュの読み", u.cacheReadTokens, "cache-read"],
+  ];
+  return (
+    <div data-testid={testId} className="flex min-w-0 flex-col gap-1 text-xs">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-ink-2">使った金額の目安</span>
+        <span data-testid={testId ? `${testId}-cost` : undefined} className="text-sm font-semibold tabular-nums text-foreground">
+          {formatUsd(u.costUsd)}
+        </span>
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-2 text-ink-3">
+        {rows.map(([label, n, key]) => (
+          <div key={key} className="contents">
+            <dt>{label}</dt>
+            <dd data-testid={testId ? `${testId}-${key}` : undefined} className="text-right tabular-nums">
+              {formatTokens(n)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {u.unpricedModels && u.unpricedModels.length > 0 ? (
+        <span className="text-ink-3">値段の表に無いモデル（{u.unpricedModels.join("、")}）の分は金額に入っていません</span>
       ) : null}
     </div>
   );

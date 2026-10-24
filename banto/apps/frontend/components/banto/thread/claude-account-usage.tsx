@@ -14,7 +14,7 @@ import {
   type ClaudeAccountView,
   type ClaudeAccountsState,
 } from "@/lib/backend/client";
-import { percent, planLabel, UsageMeter } from "@/components/banto/settings/claude-accounts-shared";
+import { accountPlan, formatUsd, percent, TokenSpend, UsageMeter } from "@/components/banto/settings/claude-accounts-shared";
 
 export interface CurrentClaudeAccount {
   account: ClaudeAccountView;
@@ -83,11 +83,18 @@ export function ClaudeAccountChip({ current }: { current: CurrentClaudeAccount }
       <span data-testid="claude-account-chip-name" className="hidden max-w-28 truncate md:inline">
         {shortAccountName(account)}
       </span>
-      <span data-testid="claude-account-chip-usage" className="flex items-center gap-0.5">
-        {w(account.usage?.fiveHour, thresholds.fiveHour)}
-        <span className="text-ink-3">/</span>
-        {w(account.usage?.sevenDay, thresholds.sevenDay)}
-      </span>
+      {account.kind === "api-key" ? (
+        // API キーには枠が無い——使った金額の目安を出す（v4-distribution.md §3）
+        <span data-testid="claude-account-chip-usage" className="tabular-nums">
+          {formatUsd(account.tokenUsage?.costUsd ?? 0)}
+        </span>
+      ) : (
+        <span data-testid="claude-account-chip-usage" className="flex items-center gap-0.5">
+          {w(account.usage?.fiveHour, thresholds.fiveHour)}
+          <span className="text-ink-3">/</span>
+          {w(account.usage?.sevenDay, thresholds.sevenDay)}
+        </span>
+      )}
     </span>
   );
 }
@@ -103,13 +110,19 @@ export function ClaudeAccountSection({ current }: { current: CurrentClaudeAccoun
       </p>
       <p className="mt-1 truncate text-sm text-foreground">{account.kind === "host" ? "このマシンの Claude Code のログイン" : account.label}</p>
       <p className="truncate text-xs text-ink-3">
-        {account.kind === "host" ? "~/.claude" : (account.email ?? account.id)}
-        {planLabel(account.subscriptionType, account.rateLimitTier) ? `（${planLabel(account.subscriptionType, account.rateLimitTier)}）` : ""}
+        {account.kind === "host" ? "~/.claude" : account.kind === "api-key" ? "API キー" : (account.email ?? account.id)}
+        {account.kind !== "api-key" && accountPlan(account, {}) ? `（${accountPlan(account, {})}）` : ""}
       </p>
-      <div className="mt-2 grid grid-cols-2 gap-3">
-        <UsageMeter label="5時間" window={account.usage?.fiveHour} threshold={thresholds.fiveHour} now={now} />
-        <UsageMeter label="週" window={account.usage?.sevenDay} threshold={thresholds.sevenDay} now={now} />
-      </div>
+      {account.kind === "api-key" ? (
+        <div className="mt-2">
+          <TokenSpend usage={account.tokenUsage} />
+        </div>
+      ) : (
+        <div className="mt-2 grid grid-cols-2 gap-3">
+          <UsageMeter label="5時間" window={account.usage?.fiveHour} threshold={thresholds.fiveHour} now={now} />
+          <UsageMeter label="週" window={account.usage?.sevenDay} threshold={thresholds.sevenDay} now={now} />
+        </div>
+      )}
     </div>
   );
 }

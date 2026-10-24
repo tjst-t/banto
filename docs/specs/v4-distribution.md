@@ -111,13 +111,28 @@ Anthropic の文書（2026-10-21 に読んだ。引用はノート）は、承�
 
 - **API キーのアカウント**：Claude のアカウントの台帳に種類 `api-key` を足す。キーは Vault に置き、台帳には alias だけ
   （キーは台帳にも Event Store にも書かない）。自分用の版でも使える
+  - 設定「Claude のアカウント」の「API キーを足す」で名前とキーを入れる。core が banto 全体の印で Vault に置く（alias は
+    `claude-api-key-<id>`、banto が置いたものの種別——Module の起動の差し込みには入らない）。中継は要求のたびに Vault から引く
+  - 外すと台帳・並びから抜き、Vault からも消す。消せなかったら外したことは戻さず、残ったことを画面に出す
+  - 並びの末尾に足す。サブスクと並べたときは当面、並び順に従う（§10）
 - **中継**：Runner とコンテナには合言葉を **`ANTHROPIC_AUTH_TOKEN`** で渡す（`Authorization: Bearer` で送られる。`ANTHROPIC_API_KEY`
   で渡すと `x-api-key` で届き、中継が外して 401 になる）。中継は上流へ出すとき `Authorization` を外して `x-api-key` を差し込み、
   `anthropic-beta: oauth-…` を付けない。`CLAUDE_CODE_SUBSCRIPTION_TYPE`・`CLAUDE_CODE_RATE_LIMIT_TIER` は渡さない。
   **キーはコンテナに入らない**
+  - 合言葉の変数は、起こすときに選ばれるアカウント（コンテナはその Project の並びで選ばれるもの、本体はそのセッションの固定先）の
+    種類で決める：API キーなら `ANTHROPIC_AUTH_TOKEN`、サブスクなら今の `CLAUDE_CODE_OAUTH_TOKEN` と契約の種類
+  - 起こしたあとに中継が並びの別の種類へ移しても通るよう、中継は上流へ出すときに `anthropic-beta` を揃える（API キーでは
+    `oauth-…` を外し、サブスクでは無ければ足す）
+  - API キーが 401 なら送り直さず、そのアカウントのカードを出す（取り直しは無い）。Vault から引けなければ並びの次へ
+  - 空いた会話の温め直しは API キーのアカウントでは送らない（お金になる）
 - **使用量**：API キーには 5時間・週の枠が無い。メーターは使ったトークン（入力・出力・キャッシュの書き・読み）と金額の目安。
   金額の目安の値段の表は banto に版つきで持つ（出どころと更新の仕方は §10）
+  - 表は `claude-login/prices.ts`（版 `PRICE_TABLE_VERSION`）。キャッシュの書きは寿命（5分・1時間）で分けて数える。表に無い
+    モデルは金額に入れず、名前を残して画面に出す
+  - 数えるのは推論の要求（`/v1/messages`）の応答の usage。台帳に足してからの合計を持つ（AI の tool `claude_usage` にも出す）
 - 初めて起こしたとき API キーが無ければ、画面がキーを入れるところへ導く（Claude Console へのリンクつき）
+  - 「既定の並びに使えるアカウントが1つも無い」（このマシンのログインはログインしているときだけ数える）とき、画面の下に帯を出し、
+    設定の API キーのダイアログへ導く
 
 ## 4. 配布用リポジトリ `tjst-t/banto-releases`
 

@@ -650,7 +650,7 @@ export async function* runTurn(opts: {
     // assistant の発言は返さない（要約の本文は synthetic の user の発言）
     const remembered = relayCacheReads.get(sessionId);
     const base = opts.env?.ANTHROPIC_BASE_URL;
-    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN;
+    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN ?? opts.env?.ANTHROPIC_AUTH_TOKEN;
     if (remembered !== undefined && base && token) {
       const res = await fetch(`${base}/v1/messages?beta=true`, {
         method: "POST",
@@ -700,8 +700,8 @@ export async function* runTurn(opts: {
 
   for (let i = 0; i < (plan.relayRequests ?? 0); i++) {
     const base = opts.env?.ANTHROPIC_BASE_URL;
-    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN;
-    if (!base || !token) throw new Error("relayRequests：会話の本体の env に ANTHROPIC_BASE_URL・CLAUDE_CODE_OAUTH_TOKEN がありません（中継が取り直せない banto）");
+    const token = opts.env?.CLAUDE_CODE_OAUTH_TOKEN ?? opts.env?.ANTHROPIC_AUTH_TOKEN;
+    if (!base || !token) throw new Error("relayRequests：会話の本体の env に ANTHROPIC_BASE_URL・合言葉（CLAUDE_CODE_OAUTH_TOKEN か ANTHROPIC_AUTH_TOKEN）がありません（中継が取り直せない banto）");
     const custom = customHeaders(opts.env);
     if (plan.relayCacheReadTokens !== undefined) relayCacheReads.set(sessionId, plan.relayCacheReadTokens);
     const res = await fetch(`${base}/v1/messages?beta=true`, {

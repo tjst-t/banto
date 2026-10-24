@@ -19,6 +19,7 @@ import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
 import { MobileNavProvider } from "./mobile-nav-drawer";
 import { NewBuildBanner } from "./new-build-banner";
+import { ClaudeApiKeyBanner } from "./claude-api-key-banner";
 import { RequestedNewProjectDialog } from "@/components/banto/project/requested-new-project-dialog";
 import { RequestedCloseProjectsDialog } from "@/components/banto/project/requested-close-projects-dialog";
 import {
@@ -170,6 +171,8 @@ function AppShellInner({ children }: { children: ReactNode }) {
       <RequestedCloseProjectsDialog />
       {/* banto を更新した・前の版に戻したあと、開いたままの画面に「別の版の画面があります」を出す（2026-10-05、文は 2026-10-19） */}
       <NewBuildBanner />
+      {/* 使える Claude のアカウントが無ければ、API キーを入れるところへ導く（v4-distribution.md §3）。設定を開いている間は設定の中の帯が言う */}
+      <ClaudeApiKeyBanner hidden={settingsOpen} />
       <CommandPalette
         projectId={projectId}
         stack={stack}

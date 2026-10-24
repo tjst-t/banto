@@ -16,6 +16,11 @@
 // 待ち受けは複数持てる（`ClaudeLoginListener`）。core の口ではコンテナのアドレスで送り元を縛り、別のサーバ用の
 // 専用の待ち受け（`relay-listener.ts`）では、待ち受けそのものが送り元の代わりになる（§2、2026-10-08）。
 //
+// **API キーのアカウント**（`docs/specs/v4-distribution.md` §3）：合言葉は `ANTHROPIC_AUTH_TOKEN` で渡す（`Authorization: Bearer`
+// で届く。`ANTHROPIC_API_KEY` だと `x-api-key` で届き、中継が外して 401 になる）。中継は上流へ出すとき `Authorization` を外して
+// Vault から引いたキーを `x-api-key` に差し込み、`anthropic-beta` の `oauth-…` を付けない。契約の種類は渡さない。**キーは
+// コンテナに入らない**。使ったトークン（応答の usage）を台帳に足し、金額の目安を出す。
+//
 // 資格情報で認証を差し込む中継は既知の形（規則12——サンドボックスの外で鍵を足す egress proxy）。
 // 実測（poc/08-subagent-acp/proxy-probe.mjs）：Claude Code が中継に投げたのは `/v1/messages` だけ。
 
@@ -32,6 +37,7 @@ import { CredentialRefresher, type CloseWhen, type RefreshOutcome } from "./refr
 import { freshUsage, HOST_ACCOUNT_ID, usageFromUsageApi, type AccountUsage, type ClaudeAccountStore } from "./accounts.js";
 import { CacheKeepAlive, usageFromJson, type CacheUsage, type MarginCheck, type WarmOutcome, type WarmRequest } from "./keep-alive.js";
 import { blockedBy, chooseAccount, chooseBalanced, earliestRecovery, type Blocked, type Choice } from "./select.js";
+import type { TokenCount } from "./prices.js";
 
 const UPSTREAM = "https://api.anthropic.com";
 /** アカウントの使用率を読む口（§2 の 7.。#397 で scope `user:inference user:profile` で通るのを確かめた） */
@@ -82,6 +88,8 @@ const RATELIMIT_STATUS_HEADER = "anthropic-ratelimit-unified-status";
 const RECOVERY_CHECK_DELAY_MS = 1_000;
 /** どの Thread の要求かの印（本体の CLI が `ANTHROPIC_CUSTOM_HEADERS` で付ける）。中継が読み、上流へは流さない */
 export const THREAD_ID_HEADER = "x-banto-thread-id";
+/** サブスクのトークン（OAuth）で上流に出すときに要る `anthropic-beta`。API キーでは付けない */
+const OAUTH_BETA = "oauth-2025-04-20";
 const HOP_BY_HOP = ["host", "connection", "content-length", "authorization", "x-api-key", "keep-alive", "transfer-encoding", THREAD_ID_HEADER];
 /**
  * **本体用の合言葉を受ける送り元**：host の loopback だけ。core は 0.0.0.0 で待ち受けるので3つとも来うる
@@ -280,6 +288,11 @@ export interface ClaudeLoginRelayDeps {
   upstream?: string;
   /** 取り直しの口（試験・E2E で差し替える。既定は本番） */
   tokenUrl?: string;
+  /**
+   * **API キーのアカウントのキーを Vault から引く**（§3。alias から値へ）。要求のたびに呼ぶ（写しを持たない——Vault で替えた
+   * キーがそのまま効く）。無ければ API キーのアカウントは使えない（理由を返す）
+   */
+  resolveApiKey?(alias: string): Promise<string>;
   /** 使用率を読む口（試験・E2E で差し替える。既定は本番の `/api/oauth/usage`） */
   usageUrl?: string;
   /** 均すときに選ぶ側が読み直しを待つ上限（試験だけが縮める。既定は3秒） */
@@ -374,8 +387,7 @@ export class ClaudeLoginRelay {
     }
     return {
       ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
-      CLAUDE_CODE_OAUTH_TOKEN: secret,
-      ...(await this.accountEnv(projectId)),
+      ...(await this.secretEnvOf(this.accountFor(projectId), secret)),
     };
   }
 
@@ -416,19 +428,23 @@ export class ClaudeLoginRelay {
     return {
       ...base,
       ANTHROPIC_BASE_URL: `${baseUrl}${CLAUDE_LOGIN_PATH}`,
-      CLAUDE_CODE_OAUTH_TOKEN: secret,
-      ...(await this.accountEnvOf(accountId)),
+      ...(await this.secretEnvOf(accountId, secret)),
       ...NONESSENTIAL_TRAFFIC_ENV,
       ...(threadId !== undefined ? { ANTHROPIC_CUSTOM_HEADERS: `${THREAD_ID_HEADER}: ${threadId}` } : {}),
     };
   }
 
   /**
-   * 契約の種類（秘密ではない）。コンテナの環境はいまその Project で上から順に選ばれるもの（起こすときに決まる——
-   * 中のセッションごとの固定はまだ無い）。ログインしていなければ入れない（中継に来たときに理由を返す）
+   * **合言葉を渡す変数と契約の種類**。起こすときに選ばれるアカウント（コンテナはその Project で上から順に選ばれるもの、
+   * 本体はそのセッションの固定先）で決める：
+   * - API キー：`ANTHROPIC_AUTH_TOKEN`（`Authorization: Bearer` で届く）。契約の種類は渡さない（§3）
+   * - サブスク：`CLAUDE_CODE_OAUTH_TOKEN` と契約の種類（秘密ではない。ログインしていなければ入れない——中継に来たときに理由を返す）
+   *
+   * 起こしたあとに中継が並びの別の種類のアカウントへ移しても通る（中継が上流へ出すときに見出しを揃える）
    */
-  private accountEnv(projectId: string): Promise<Record<string, string>> {
-    return this.accountEnvOf(this.accountFor(projectId));
+  private async secretEnvOf(accountId: string | undefined, secret: string): Promise<Record<string, string>> {
+    if (accountId !== undefined && this.deps.accounts.apiKeyAliasOf(accountId) !== undefined) return { ANTHROPIC_AUTH_TOKEN: secret };
+    return { CLAUDE_CODE_OAUTH_TOKEN: secret, ...(await this.accountEnvOf(accountId)) };
   }
 
   private async accountEnvOf(accountId: string | undefined): Promise<Record<string, string>> {
@@ -538,7 +554,8 @@ export class ClaudeLoginRelay {
     const store = this.deps.accounts;
     const failures: Array<{ accountId: string; reason: string }> = [];
     await Promise.all(
-      store.list().map(async ({ id }) => {
+      // API キーには 5時間・週の枠が無い（読む口も無い）。使用量は中継が応答から足すトークン
+      store.list().filter((a) => a.kind !== "api-key").map(async ({ id }) => {
         try {
           await this.readUsageOf(id);
         } catch (err) {
@@ -575,6 +592,7 @@ export class ClaudeLoginRelay {
     const now = this.now().getTime();
     const waits: Promise<void>[] = [];
     for (const id of candidates) {
+      if (this.deps.accounts.apiKeyAliasOf(id) !== undefined) continue;
       const running = this.usageReads.get(id);
       if (running) {
         waits.push(running);
@@ -713,6 +731,8 @@ export class ClaudeLoginRelay {
    * ならないように）。通ったら固定の寿命を延ばす（「上流へ送った」に数える）
    */
   private async sendWarm(req: WarmRequest): Promise<WarmOutcome> {
+    // API キーでは温め直しはお金になる（予算はサブスクの使用率で決めている）。余白（`warmMargin`）でも止めるが、ここでも送らない
+    if (this.deps.accounts.apiKeyAliasOf(req.accountId) !== undefined) return { kind: "failed", reason: "API キーのアカウントは温め直しません" };
     const fresh = await this.refresherFor(req.accountId).ensureFresh();
     if (!fresh.accessToken) return { kind: "failed", reason: fresh.kind === "failed" ? fresh.reason : "トークンがありません" };
     let res: Response;
@@ -749,6 +769,7 @@ export class ClaudeLoginRelay {
    * 断られていない。分からない窓（読んでいない・リセットを過ぎた）は余白がある扱い（`select.ts` と同じ——使えば見出しで分かる）
    */
   private warmMargin(accountId: string): MarginCheck {
+    if (this.deps.accounts.apiKeyAliasOf(accountId) !== undefined) return { ok: false, reason: "API キーのアカウントは温め直しません（お金になる）" };
     const u = this.deps.accounts.usageOf(accountId);
     const fresh = u ? freshUsage(u, this.now()) : undefined;
     const th = this.deps.accounts.thresholds();
@@ -888,10 +909,10 @@ export class ClaudeLoginRelay {
     if (pinned) pinned.pin.lastAt = startedAt;
     /** 送り直しの次の候補：使い方に従う（均すなら残りから余裕の比の小さい順） */
     const nextCandidate = (tried: ReadonlySet<string>) => (balance ? this.chooseBalanced(order, tried) : this.choose(projectId, tried));
-    const send = (bearer: string) =>
+    const send = (auth: UpstreamAuth) =>
       fetch(`${this.upstream}${path}`, {
         method: req.method ?? "POST",
-        headers: { ...forwardedHeaders(req), authorization: `Bearer ${bearer}` },
+        headers: upstreamHeaders(forwardedHeaders(req), auth),
         ...(hasBody
           ? body.buffered !== undefined
             ? { body: body.buffered }
@@ -981,16 +1002,25 @@ export class ClaudeLoginRelay {
             })
         : undefined;
     if (observe && (!upstreamRes.ok || !upstreamRes.body)) observe(undefined);
+    // **API キーのアカウントは使ったトークンを数える**（§3「使用量」）。推論の要求だけ（`count_tokens` はお金にならない）
+    const meterAccount = accountId;
+    const meter =
+      upstreamRes.ok && upstreamRes.body && MESSAGES_PATH.test(path) && this.deps.accounts.apiKeyAliasOf(meterAccount) !== undefined
+        ? new TokenMeter((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), (model, tokens) =>
+            this.deps.accounts.recordTokens(meterAccount, model, tokens),
+          )
+        : undefined;
     if (upstreamRes.body) {
       const piped = Readable.fromWeb(upstreamRes.body as import("node:stream/web").ReadableStream);
       // **`pipeline()` で流す**（改訂・2026-10-23、実測の不具合——クライアントが途中で接続を切ると `res` の
       // `close` → `abort.abort()` で `piped`（上流からの応答）側が AbortError を出し、`.pipe()` は送り先へエラーを
       // 伝播しないので、ソース側にリスナーが無いと未処理の 'error' イベントとして banto-host プロセス全体を落とす。
       // `pipeline()` はどの段がエラーでも中継全体を畳んで reject するので、ここで確実に受け切る）
-      const run =
-        observe && upstreamRes.ok
-          ? pipeline(piped, new UsageTap((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), observe), res)
-          : pipeline(piped, res);
+      const taps: Transform[] = [
+        ...(observe && upstreamRes.ok ? [new UsageTap((upstreamRes.headers.get("content-type") ?? "").includes("text/event-stream"), observe)] : []),
+        ...(meter ? [meter] : []),
+      ];
+      const run = pipeline([piped, ...taps, res]);
       run.catch(() => {
         // クライアントが途中で切った・上流が途中で切れた——もう誰も見ていないので、ここでは黙って終える
       });
@@ -1005,9 +1035,11 @@ export class ClaudeLoginRelay {
   private async sendAs(
     accountId: string,
     projectId: string,
-    send: (bearer: string) => Promise<Response>,
+    send: (auth: UpstreamAuth) => Promise<Response>,
     resendable: boolean,
   ): Promise<{ kind: "response"; res: Response } | { kind: "refused"; reason: string }> {
+    const keyAlias = this.deps.accounts.apiKeyAliasOf(accountId);
+    if (keyAlias !== undefined) return this.sendWithApiKey(accountId, keyAlias, projectId, send);
     const refresher = this.refresherFor(accountId);
     // 切れかけていれば取り直す（§2「中継も、切れかけたら取り直す」）。トークンも無い＝ログインしていない——理由を返す
     const first = await refresher.ensureFresh();
@@ -1015,14 +1047,14 @@ export class ClaudeLoginRelay {
     let token = first.accessToken!;
     /** 流せても人が直すことが残った（例：取り直したのに書き戻せなかった） */
     let trouble = troubleOf(first);
-    let upstreamRes = await send(token);
+    let upstreamRes = await send({ kind: "oauth", token });
     // 401：置き場を読み直し（替わっていなければ線を見ずに取り直して）、1回だけ送り直す
     if (upstreamRes.status === 401 && resendable) {
       const second = await refresher.ensureFresh({ force: true, seenAccessToken: token });
       if (second.accessToken && second.accessToken !== token) {
         await upstreamRes.body?.cancel().catch(() => {});
         token = second.accessToken;
-        upstreamRes = await send(token);
+        upstreamRes = await send({ kind: "oauth", token });
         trouble = troubleOf(second) ?? trouble;
         if (upstreamRes.status === 401) trouble ??= { reason: "取り直したトークンでも断られました（401）", closeWhen: "authorized" };
       } else if (second.kind === "failed" && second.needsHuman) {
@@ -1047,6 +1079,39 @@ export class ClaudeLoginRelay {
       // （手元の access token でたまたま通っただけ）
       const open = this.openTrouble.has(accountId) ? this.openTrouble.get(accountId) : { closeWhen: "authorized" as const };
       if (open && (open.closeWhen === "authorized" || (await refresher.currentRefreshToken()) !== open.refreshToken)) {
+        this.openTrouble.set(accountId, undefined);
+        this.deps.onUpstreamAuthorized?.(accountId);
+      }
+    }
+    return { kind: "response", res: upstreamRes };
+  }
+
+  /**
+   * **API キーのアカウントで1回送る**（§3）。キーは要求のたびに Vault から引く（引けなければ送らずに理由を返す——並びに
+   * 次があればそちらへ）。取り直しは無いので 401 は送り直さず、そのアカウントのカードを出す。通ればカードを閉じる
+   */
+  private async sendWithApiKey(
+    accountId: string,
+    keyAlias: string,
+    projectId: string,
+    send: (auth: UpstreamAuth) => Promise<Response>,
+  ): Promise<{ kind: "response"; res: Response } | { kind: "refused"; reason: string }> {
+    if (!this.deps.resolveApiKey) return { kind: "refused", reason: "この banto は API キーを Vault から引けません" };
+    let key: string;
+    try {
+      key = await this.deps.resolveApiKey(keyAlias);
+    } catch (err) {
+      return { kind: "refused", reason: `API キー（Vault の ${keyAlias}）を引けませんでした: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!key) return { kind: "refused", reason: `API キー（Vault の ${keyAlias}）が空です` };
+    const upstreamRes = await send({ kind: "api-key", key });
+    // 5時間・週の枠は無い（使用率は覚えない）。使ったトークンは返事を流しながら数える（`TokenMeter`）
+    if (upstreamRes.status === 401) {
+      this.openTrouble.set(accountId, { closeWhen: "authorized" });
+      this.deps.onUpstreamUnauthorized?.(projectId, "API キーが断られました（401）", accountId);
+    } else if (upstreamRes.ok) {
+      const open = this.openTrouble.has(accountId) ? this.openTrouble.get(accountId) : { closeWhen: "authorized" as const };
+      if (open) {
         this.openTrouble.set(accountId, undefined);
         this.deps.onUpstreamAuthorized?.(accountId);
       }
@@ -1252,6 +1317,29 @@ function forwardedHeaders(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
+/** 上流へ出す資格情報：サブスクのトークン（Bearer）か、API キー（`x-api-key`） */
+type UpstreamAuth = { kind: "oauth"; token: string } | { kind: "api-key"; key: string };
+
+/**
+ * **上流へ出す見出し**。合言葉の見出し（`authorization`・`x-api-key`）は `forwardedHeaders` が外してある。
+ * - API キー：`x-api-key` を差し込み、`anthropic-beta` から `oauth-…` を外す（CLI がサブスクのつもりで付けてきても）
+ * - サブスク：`Authorization: Bearer` を差し込み、`anthropic-beta` に `oauth-…` が無ければ足す（CLI が `ANTHROPIC_AUTH_TOKEN`
+ *   で起きていて、中継が並びのサブスクへ移したとき）
+ */
+export function upstreamHeaders(forwarded: Record<string, string>, auth: UpstreamAuth): Record<string, string> {
+  const { "anthropic-beta": beta, ...rest } = forwarded;
+  const betas = (beta ?? "")
+    .split(",")
+    .map((b) => b.trim())
+    .filter((b) => b !== "");
+  if (auth.kind === "api-key") {
+    const kept = betas.filter((b) => !b.startsWith("oauth-"));
+    return { ...rest, "x-api-key": auth.key, ...(kept.length > 0 ? { "anthropic-beta": kept.join(",") } : {}) };
+  }
+  const withOauth = betas.some((b) => b.startsWith("oauth-")) ? betas : [...betas, OAUTH_BETA];
+  return { ...rest, authorization: `Bearer ${auth.token}`, "anthropic-beta": withOauth.join(",") };
+}
+
 /** 台帳の使用率をログの1行に（率だけ。分からない窓は「?」） */
 function utilizationText(usage: AccountUsage | undefined, now: Date): string {
   const fresh = usage ? freshUsage(usage, now) : undefined;
@@ -1325,6 +1413,96 @@ class UsageTap extends Transform {
       this.report(usage);
     } catch (err) {
       console.warn("[claude-login] 温め直しの候補を覚えられませんでした:", err);
+    }
+  }
+}
+
+/**
+ * **流しながら応答の使ったトークンを数える**（API キーのアカウント、§3「使用量」。中身は変えずにそのまま通す）。stream なら
+ * `message_start` の `message.model`・`message.usage` と、`message_delta` の `usage`（累計。来たものだけ上書き）を読み、
+ * 終わりで1回だけ知らせる。stream でなければ全体の `model`・`usage`（見る量には上限）。読めなければ知らせない
+ */
+class TokenMeter extends Transform {
+  private line = "";
+  private body = "";
+  private overflow = false;
+  private model: string | undefined;
+  private usage: Record<string, unknown> = {};
+
+  constructor(
+    private readonly sse: boolean,
+    private readonly report: (model: string, tokens: TokenCount) => void,
+  ) {
+    super();
+  }
+
+  override _transform(chunk: Buffer, _enc: BufferEncoding, cb: TransformCallback): void {
+    const text = chunk.toString("utf8");
+    if (this.sse) {
+      this.line += text;
+      for (let nl = this.line.indexOf("\n"); nl !== -1; nl = this.line.indexOf("\n")) {
+        this.scanLine(this.line.slice(0, nl).trim());
+        this.line = this.line.slice(nl + 1);
+      }
+    } else if (!this.overflow) {
+      this.body += text;
+      if (this.body.length > USAGE_SNIFF_LIMIT) {
+        this.overflow = true;
+        this.body = "";
+      }
+    }
+    cb(null, chunk);
+  }
+
+  override _flush(cb: TransformCallback): void {
+    if (this.sse) {
+      if (this.line.trim()) this.scanLine(this.line.trim());
+    } else if (!this.overflow) {
+      try {
+        const parsed = JSON.parse(this.body) as { model?: unknown; usage?: unknown };
+        this.absorb(parsed.model, parsed.usage);
+      } catch {
+        // 読めない本文は数えない（下で知らせない）
+      }
+    }
+    this.finish();
+    cb();
+  }
+
+  private scanLine(line: string): void {
+    if (!line.startsWith("data:")) return;
+    let data: { type?: string; message?: { model?: unknown; usage?: unknown }; usage?: unknown };
+    try {
+      data = JSON.parse(line.slice("data:".length)) as typeof data;
+    } catch {
+      return;
+    }
+    if (data.type === "message_start") this.absorb(data.message?.model, data.message?.usage);
+    else if (data.type === "message_delta") this.absorb(undefined, data.usage);
+  }
+
+  private absorb(model: unknown, usage: unknown): void {
+    if (typeof model === "string" && model) this.model = model;
+    if (typeof usage !== "object" || usage === null) return;
+    for (const [k, v] of Object.entries(usage)) if (v !== null && v !== undefined) this.usage[k] = v;
+  }
+
+  private finish(): void {
+    if (!this.model) return;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+    const u = this.usage;
+    const creation = typeof u.cache_creation === "object" && u.cache_creation !== null ? (u.cache_creation as Record<string, unknown>) : {};
+    const tokens: TokenCount = {
+      inputTokens: n(u.input_tokens),
+      outputTokens: n(u.output_tokens),
+      cacheWriteTokens: n(u.cache_creation_input_tokens),
+      cacheWrite1hTokens: n(creation.ephemeral_1h_input_tokens),
+      cacheReadTokens: n(u.cache_read_input_tokens),
+    };
+    try {
+      this.report(this.model, tokens);
+    } catch (err) {
+      console.warn("[claude-login] API キーの使ったトークンを台帳に足せませんでした:", err);
     }
   }
 }

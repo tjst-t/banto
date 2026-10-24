@@ -107,12 +107,19 @@ const HOST_ENV_PREFIX = "BANTO_";
  * **Claude のログインの中継の変数**（core がコンテナの環境に入れる）。本体のログインを使うエージェントにだけ渡す
  * ——自分の資格情報を envSecrets で渡されたときは渡さない（住所が中継のままだと、その資格情報が中継で断られる）
  */
-const CLAUDE_LOGIN_ENV = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBSCRIPTION_TYPE", "CLAUDE_CODE_RATE_LIMIT_TIER"];
+const CLAUDE_LOGIN_ENV = [
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  // API キーのアカウントのときは合言葉がこちらで来る（キーそのものではない。v4-distribution.md §3）
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_SUBSCRIPTION_TYPE",
+  "CLAUDE_CODE_RATE_LIMIT_TIER",
+];
 
 /** 本体のログインを使えるか（値は返さない）。core が環境に入れていなければ、理由を返す */
 export type HostLoginStatus = { loggedIn: true; subscriptionType?: string } | { loggedIn: false; reason: string };
 export function hostLoginStatusOf(env: NodeJS.ProcessEnv): HostLoginStatus {
-  if (!env.ANTHROPIC_BASE_URL || !env.CLAUDE_CODE_OAUTH_TOKEN) {
+  if (!env.ANTHROPIC_BASE_URL || !(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN)) {
     return {
       loggedIn: false,
       reason:

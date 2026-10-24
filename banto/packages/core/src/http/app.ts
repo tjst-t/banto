@@ -195,7 +195,7 @@ import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { describeClaudeUsage } from "../claude-login/usage-view.js";
 import { CLAUDE_LOGIN_ENABLED_KEY, CLAUDE_LOGIN_PATH, type ClaudeLoginRelay } from "../claude-login/relay.js";
 import { ClaudeAccountLoginError, type ClaudeAccountLogin, type ClaudeLoginFailure } from "../claude-login/account-login.js";
-import { CLAUDE_ACCOUNT_MODES, freshUsage, type ClaudeAccountMode, type ClaudeAccountStore } from "../claude-login/accounts.js";
+import { CLAUDE_ACCOUNT_MODES, freshUsage, newApiKeyAccountId, type ClaudeAccountMode, type ClaudeAccountStore } from "../claude-login/accounts.js";
 import { StreamRefusal, type StreamRelay } from "./streams.js";
 import {
   CALL_ID_META_KEY,
@@ -348,6 +348,11 @@ export interface AppDeps {
      * 取り直せるなら無い
      */
     noRefreshReason?: string;
+    /**
+     * **API キーの置き場**（`docs/specs/v4-distribution.md` §3）。キーは Vault に置き、台帳には alias だけ。無ければ API キーは
+     * 足せない（501）
+     */
+    apiKeys?: { put(alias: string, key: string): Promise<void>; remove(alias: string): Promise<void> };
   };
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
@@ -5032,6 +5037,13 @@ export function createApp(deps: AppDeps) {
             const current = deps.claudeLogin?.currentAccounts() ?? [];
             const projectName = (id: string) => deps.projectThread.getProject(id)?.name ?? id;
             const usageReadAt = deps.claudeLogin?.lastUsageReadAt();
+            const hostLogin = deps.claudeLogin ? await deps.claudeLogin.hostLogin() : undefined;
+            // **使えるアカウントが既定の並びに1つも無い**（§3「初めて起こしたとき API キーが無ければ、キーを入れるところへ導く」）。
+            // このマシンのログインはログインしているときだけ数える。足したもの（サブスク・API キー）は並びにあれば数える
+            const usable = store.defaultOrder().some((id) => {
+              const a = store.get(id);
+              return a !== undefined && (a.kind !== "host" || hostLogin?.loggedIn === true);
+            });
             return {
               accounts: store.list().map((a) => ({
                 ...a,
@@ -5044,7 +5056,8 @@ export function createApp(deps: AppDeps) {
                 .filter(([projectId]) => deps.projectThread.getProject(projectId))
                 .map(([projectId, order]) => ({ projectId, name: projectName(projectId), order })),
               ...(usageReadAt ? { usageReadAt } : {}),
-              ...(deps.claudeLogin ? { hostLogin: await deps.claudeLogin.hostLogin() } : {}),
+              ...(hostLogin ? { hostLogin } : {}),
+              noUsableAccount: !usable,
               ...(deps.claudeAccounts?.noRefreshReason ? { noRefreshReason: deps.claudeAccounts.noRefreshReason } : {}),
             };
           };
@@ -5079,6 +5092,26 @@ export function createApp(deps: AppDeps) {
               return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
             }
             return json(res, 200, await view());
+          }
+          // **API キーのアカウントを足す**（§3）。キーは Vault に置き（alias は `claude-api-key-<id>`）、台帳には alias だけを
+          // 載せる。キーは返さない・記録に残さない
+          if (sub === "/api-key" && req.method === "POST") {
+            const apiKeys = deps.claudeAccounts.apiKeys;
+            if (!apiKeys) return json(res, 501, { error: "この banto は API キーを Vault に置けません" });
+            const body = (await readJsonBody(req)) as { label?: unknown; key?: unknown } | undefined;
+            const key = typeof body?.key === "string" ? body.key.trim() : "";
+            const label = typeof body?.label === "string" && body.label.trim() ? body.label.trim() : "API キー";
+            if (!key) return json(res, 400, { error: "key に API キーを渡してください" });
+            if (/\s/.test(key)) return json(res, 400, { error: "API キーに空白が入っています" });
+            const id = newApiKeyAccountId();
+            const keyAlias = `claude-api-key-${id}`;
+            try {
+              await apiKeys.put(keyAlias, key);
+            } catch (err) {
+              return json(res, 502, { error: `API キーを Vault に置けませんでした：${err instanceof Error ? err.message : String(err)}` });
+            }
+            const account = store.addApiKey({ id, label, keyAlias });
+            return json(res, 200, { ...(await view()), account });
           }
           if (sub === "/login" && req.method === "POST") return json(res, 200, login.start());
           const finishMatch = sub.match(/^\/login\/([^/]+)$/);
@@ -5115,6 +5148,19 @@ export function createApp(deps: AppDeps) {
               return json(res, 400, { error: "このマシンの Claude Code のログインは外せません（並びから抜くことはできます）" });
             }
             login.remove(id);
+            // API キーは Vault からも消す。消せなくても外したことは戻さない——残ったことを言う（規則2）
+            if (account.kind === "api-key" && account.keyAlias) {
+              const apiKeys = deps.claudeAccounts.apiKeys;
+              try {
+                if (!apiKeys) throw new Error("この banto は Vault の API キーを消せません");
+                await apiKeys.remove(account.keyAlias);
+              } catch (err) {
+                return json(res, 200, {
+                  ok: true,
+                  warning: `アカウントは外しましたが、Vault の API キー（${account.keyAlias}）を消せませんでした：${err instanceof Error ? err.message : String(err)}。Vault の管理画面で消してください`,
+                });
+              }
+            }
             return json(res, 200, { ok: true });
           }
           return json(res, 404, { error: "not found" });

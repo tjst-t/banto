@@ -8,7 +8,7 @@
 // 覚えている値（会話の返事の見出しから読んだもの）を出す
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Check, Pencil, Plus, RefreshCw, TriangleAlert } from "lucide-react";
+import { Check, KeyRound, Pencil, Plus, RefreshCw, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,7 +35,8 @@ import {
 import { describeFailure, reportFailure } from "@/lib/report-failure";
 import { navigateUrl } from "@/lib/url-nav";
 import { ClaudeAccountLoginDialog } from "@/components/banto/settings/claude-account-login-dialog";
-import { AccountOrderEditor, IconButton, MODE_CHOICES, UsageMeter, accountPlan, percent } from "@/components/banto/settings/claude-accounts-shared";
+import { ClaudeApiKeyDialog, CLAUDE_CONSOLE_KEYS_URL } from "@/components/banto/settings/claude-api-key-dialog";
+import { AccountOrderEditor, IconButton, MODE_CHOICES, TokenSpend, UsageMeter, accountPlan, percent } from "@/components/banto/settings/claude-accounts-shared";
 
 /** 閾値を動かしてから保存するまで（指を離すたびに保存しない） */
 const THRESHOLD_SAVE_DELAY_MS = 400;
@@ -67,6 +68,9 @@ export function ClaudeAccountsPanel() {
   // `?add=1`（受信箱の全部越えのカードの「アカウントを足す」、§6.46「受信箱」）は足すダイアログを開いて来る
   const [dialog, setDialog] = useState<{ target?: ClaudeAccountView } | null>(() => (searchParams.get("add") === "1" ? {} : null));
   const [removing, setRemoving] = useState<ClaudeAccountView | null>(null);
+  // `?addKey=1`（使えるアカウントが無いときの帯の「API キーを入れる」、v4-distribution.md §3）は API キーのダイアログを開いて来る
+  const [keyDialog, setKeyDialog] = useState(() => searchParams.get("addKey") === "1");
+  const [removeWarning, setRemoveWarning] = useState<string | null>(null);
   const now = useMinuteClock();
 
   const reload = useCallback(async () => {
@@ -156,8 +160,9 @@ export function ClaudeAccountsPanel() {
 
   async function remove(a: ClaudeAccountView) {
     try {
-      await removeClaudeAccount(a.id);
+      const { warning } = await removeClaudeAccount(a.id);
       setRemoving(null);
+      setRemoveWarning(warning ?? null);
       await reload();
     } catch (err) {
       reportFailure(`${a.label}を外せませんでした`, err);
@@ -200,13 +205,45 @@ export function ClaudeAccountsPanel() {
         </div>
       ) : null}
 
+      {state.noUsableAccount ? (
+        <div
+          data-testid="claude-accounts-no-usable"
+          className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-foreground"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" />
+          <span>
+            既定の並びに使える Claude のアカウントがありません。
+            <button type="button" className="underline underline-offset-2" onClick={() => setKeyDialog(true)}>
+              API キーを入れる
+            </button>
+            と、会話とコンテナの中の Claude が動きます（キーは{" "}
+            <a href={CLAUDE_CONSOLE_KEYS_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+              Claude Console
+            </a>{" "}
+            で作れます）。
+          </span>
+        </div>
+      ) : null}
+
+      {removeWarning ? (
+        <p data-testid="claude-accounts-remove-warning" className="text-xs text-stop">
+          {removeWarning}
+        </p>
+      ) : null}
+
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-foreground">アカウント</h2>
-          <Button data-testid="claude-accounts-add" size="sm" variant="outline" onClick={() => setDialog({})}>
-            <Plus className="size-3.5" />
-            アカウントを足す
-          </Button>
+          <div className="flex gap-2">
+            <Button data-testid="claude-accounts-add-api-key" size="sm" variant="outline" onClick={() => setKeyDialog(true)}>
+              <KeyRound className="size-3.5" />
+              API キーを足す
+            </Button>
+            <Button data-testid="claude-accounts-add" size="sm" variant="outline" onClick={() => setDialog({})}>
+              <Plus className="size-3.5" />
+              アカウントを足す
+            </Button>
+          </div>
         </div>
         <ul data-testid="claude-accounts-list" className="flex flex-col divide-y divide-border rounded-lg border border-border">
           {state.accounts.map((a) => (
@@ -284,7 +321,7 @@ export function ClaudeAccountsPanel() {
           accounts={state.accounts}
           disabled={saving}
           onChange={(next) => void saveOrder(next)}
-          renderDetail={(a) => (a.kind === "host" ? "~/.claude" : (a.email ?? ""))}
+          renderDetail={(a) => (a.kind === "host" ? "~/.claude" : a.kind === "api-key" ? "API キー" : (a.email ?? ""))}
         />
       </section>
 
@@ -315,14 +352,39 @@ export function ClaudeAccountsPanel() {
         />
       ) : null}
 
+      {keyDialog ? (
+        <ClaudeApiKeyDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            setKeyDialog(false);
+            if (searchParams.has("addKey")) {
+              const params = new URLSearchParams(searchParams.toString());
+              params.delete("addKey");
+              navigateUrl(router, `${pathname}?${params.toString()}`, { replace: true });
+            }
+          }}
+          onAdded={reload}
+        />
+      ) : null}
+
       <AlertDialog open={removing !== null} onOpenChange={(open) => !open && setRemoving(null)}>
         <AlertDialogContent data-testid="claude-accounts-remove-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>{removing?.label}を外しますか</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="flex flex-col gap-2 text-sm text-ink-2">
-                <p>banto に置いたこのアカウントのログインを消し、並びから外します。</p>
-                <p>claude.ai の設定からもこのログインを取り消してください。</p>
+                {removing?.kind === "api-key" ? (
+                  <>
+                    <p>banto の Vault に置いたこの API キーを消し、並びから外します。</p>
+                    <p>Claude Console からもこのキーを無効にしてください。</p>
+                  </>
+                ) : (
+                  <>
+                    <p>banto に置いたこのアカウントのログインを消し、並びから外します。</p>
+                    <p>claude.ai の設定からもこのログインを取り消してください。</p>
+                  </>
+                )}
                 {removingFrom.length > 0 ? (
                   <p data-testid="claude-accounts-remove-projects">
                     並びから消える Project：
@@ -427,7 +489,11 @@ function AccountRow({
           </span>
         )}
         <span data-testid="claude-account-identity" className="truncate text-xs text-ink-2">
-          {a.kind === "host" ? `~/.claude${plan ? `（${plan}）` : ""}` : `${a.email ?? ""}${plan ? `（${plan}）` : ""}`}
+          {a.kind === "host"
+            ? `~/.claude${plan ? `（${plan}）` : ""}`
+            : a.kind === "api-key"
+              ? `API キー（Vault の ${a.keyAlias ?? ""}）`
+              : `${a.email ?? ""}${plan ? `（${plan}）` : ""}`}
         </span>
         <span data-testid="claude-account-used-by" className="text-xs text-ink-3">
           {a.kind === "host" ? "人の claude コマンドと共有しています。" : ""}
@@ -443,20 +509,31 @@ function AccountRow({
           </span>
         ) : null}
       </div>
-      <UsageMeter
-        testId="claude-account-meter-5h"
-        label="5時間"
-        window={a.usage?.fiveHour}
-        threshold={state.thresholds.fiveHour}
-        now={now}
-      />
-      <UsageMeter testId="claude-account-meter-7d" label="週" window={a.usage?.sevenDay} threshold={state.thresholds.sevenDay} now={now} />
+      {a.kind === "api-key" ? (
+        // API キーには 5時間・週の枠が無い——2つの欄を1つにして、使ったトークンと金額の目安を出す（v4-distribution.md §3）
+        <div className="sm:col-span-2">
+          <TokenSpend testId="claude-account-spend" usage={a.tokenUsage} />
+        </div>
+      ) : (
+        <>
+          <UsageMeter
+            testId="claude-account-meter-5h"
+            label="5時間"
+            window={a.usage?.fiveHour}
+            threshold={state.thresholds.fiveHour}
+            now={now}
+          />
+          <UsageMeter testId="claude-account-meter-7d" label="週" window={a.usage?.sevenDay} threshold={state.thresholds.sevenDay} now={now} />
+        </>
+      )}
       <div className="flex gap-1 sm:flex-col sm:items-end">
         {a.kind === "host" ? null : (
           <>
-            <Button data-testid="claude-account-relogin" size="sm" variant="ghost" className="text-xs" onClick={onRelogin}>
-              ログインし直す
-            </Button>
+            {a.kind === "api-key" ? null : (
+              <Button data-testid="claude-account-relogin" size="sm" variant="ghost" className="text-xs" onClick={onRelogin}>
+                ログインし直す
+              </Button>
+            )}
             <Button data-testid="claude-account-remove" size="sm" variant="ghost" className="text-xs text-stop" onClick={onRemove}>
               外す
             </Button>

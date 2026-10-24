@@ -431,6 +431,9 @@ async function main(): Promise<void> {
     // 使用率を読む口（設定を開いたときの読み直し。E2E が偽物を指す）
     ...(process.env.BANTO_CLAUDE_USAGE_URL ? { usageUrl: process.env.BANTO_CLAUDE_USAGE_URL } : {}),
     secretsPath: join(bootstrap.dataDir, "claude-login-secrets.json"),
+    // **API キーのアカウントのキーは Vault から、要求のたびに引く**（`docs/specs/v4-distribution.md` §3）。banto 全体の印で
+    // 引く——キーはどの Project のものでもない。core の中だけで使い、コンテナ・Module の環境には入れない
+    resolveApiKey: (alias) => resolveSecretThroughVault(alias, { instance: true }),
     enabled: (projectId) => claudeLoginEnabled(runtimeConfig, projectId),
     // **空いた会話の温め直しは、送る前にまだ温めてよいかを host に聞く**（§3.1「止める」）。ターンが走っている・閉じた・
     // 眠った・スイッチを切った・モデル／effort／Module の集合／resume-point が変わったら、送らずにやめる
@@ -1734,6 +1737,7 @@ async function main(): Promise<void> {
     alias: string,
     value: string,
     caller: { project: string } | { instance: true },
+    note = "banto がログインのときに受け取ったもの",
   ): Promise<void> {
     const directory = await ensureVaultDirectory();
     if (!directory) throw new Error("Vault の窓口が繋がっていません");
@@ -1750,7 +1754,7 @@ async function main(): Promise<void> {
         arguments: {
           name: alias,
           value,
-          note: "banto がログインのときに受け取ったもの",
+          note,
           ...("project" in caller ? { forProject: caller.project } : {}),
         },
         _meta: { [CALLER_META_KEY]: caller },
@@ -1768,6 +1772,46 @@ async function main(): Promise<void> {
         identifiers: { name: alias },
       },
       { allowed: true, reason: "ログイン情報の保管", ok: true },
+    );
+  }
+
+  /**
+   * **金庫から消す**（追加・2026-10-24、Claude の API キーのアカウントを外したとき）。窓口で在りかを引き（読みと同じ刻印）、
+   * その金庫のその置き場の alias を消す。消すのは金庫が人の管理面にしか許さないので、金庫には直に人の印で聞く——呼ぶのは
+   * 人のセッションの「外す」だけ
+   */
+  async function deleteSecretThroughVault(alias: string, caller: { project: string } | { instance: true }): Promise<void> {
+    const directory = await ensureVaultDirectory();
+    if (!directory) throw new Error("Vault の窓口が繋がっていません");
+    const meta = { [CALLER_META_KEY]: caller };
+    const endCall = moduleCalls.begin("vault-directory", undefined, "host", "project" in caller ? caller.project : undefined, !("project" in caller));
+    try {
+      const looked = await directory.callTool({ name: "lookupAlias", arguments: { name: alias }, _meta: meta });
+      const lookedText = (looked.content as { text: string }[])[0]?.text ?? "";
+      if (looked.isError) throw new Error(lookedText || `"${alias}" の在りかを引けませんでした`);
+      const found = JSON.parse(lookedText) as { implementation?: string; name?: string; group?: string };
+      if (!found.implementation || !found.name) throw new Error(`"${alias}" の在りかが分かりません`);
+      const backend = connectedModules.get(found.implementation);
+      if (!backend) throw new Error(`${found.implementation} が繋がっていません`);
+      const deleted = await backend.callTool({
+        name: "deleteAlias",
+        arguments: { name: found.name, ...(found.group ? { group: found.group } : {}) },
+        _meta: { [CALLER_META_KEY]: { admin: true } },
+      });
+      if (deleted.isError) throw new Error((deleted.content as { text: string }[])[0]?.text || `"${alias}" を消せませんでした`);
+    } finally {
+      endCall();
+    }
+    await relayGrants.recordCall(
+      {
+        projectId: "project" in caller ? caller.project : undefined,
+        callerModule: "banto",
+        targetModule: "vault-directory",
+        kind: "tool",
+        name: "deleteAlias",
+        identifiers: { name: alias },
+      },
+      { allowed: true, reason: "Claude の API キーのアカウントを外した", ok: true },
     );
   }
 
@@ -3499,7 +3543,16 @@ async function main(): Promise<void> {
     },
     relayEndpoint,
     claudeLogin,
-    claudeAccounts: { store: claudeAccounts, login: claudeAccountLogin, ...(relayRefresh.enabled ? {} : { noRefreshReason: relayRefresh.why }) },
+    claudeAccounts: {
+      store: claudeAccounts,
+      login: claudeAccountLogin,
+      ...(relayRefresh.enabled ? {} : { noRefreshReason: relayRefresh.why }),
+      // API キーは Vault に置く（banto が置いたログインと同じ種別——起動の差し込みには入らない、#405）
+      apiKeys: {
+        put: (alias, key) => putSecretThroughVault(alias, key, { instance: true }, "Claude の API キー（banto の設定「Claude のアカウント」で足したもの）"),
+        remove: (alias) => deleteSecretThroughVault(alias, { instance: true }),
+      },
+    },
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
     auth: new AuthService({

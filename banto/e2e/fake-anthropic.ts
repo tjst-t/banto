@@ -22,6 +22,10 @@ import { createServer, type Server } from "node:http";
 export interface ApiRequest {
   /** 受けた Authorization（中継が差し替えたもの） */
   auth: string | null;
+  /** 受けた `x-api-key`（API キーのアカウントで中継が差し込んだもの、v4-distribution.md §3） */
+  apiKey: string | null;
+  /** 受けた `anthropic-beta` */
+  beta: string | null;
   /** 届いた Thread の印（中継が剥がすので、届いていれば漏れている） */
   threadHeader: string | null;
   /** セッションの印（`x-claude-code-session-id`——均すの固定の鍵。中継はそのまま流す） */
@@ -56,7 +60,7 @@ export interface FakeAnthropic {
    * `/v1/messages` に来た要求の、トークン（Bearer の後ろ）と返した状態（会話でない要求も・断ったものも）。`maxTokens`・`stream`・
    * `threadHeader` は本文と見出しのまま（温め直しは max_tokens 0・stream 無し・Thread の印無し）。`at` は受けた時刻（ミリ秒）
    */
-  replies: Array<{ token: string; status: number; path: string; session: string | null; maxTokens?: number; stream?: boolean; threadHeader: string | null; at: number; compact?: true }>;
+  replies: Array<{ token: string; apiKey: string | null; status: number; path: string; session: string | null; maxTokens?: number; stream?: boolean; threadHeader: string | null; at: number; compact?: true }>;
   /** そのトークンの使用率を決める（undefined で見出しを付けない） */
   setLimit: (token: string, limit: FakeLimit | undefined) => void;
   /** そのコードを交換すると、そのトークン・メールアドレスのアカウントになる */
@@ -113,6 +117,10 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
         return;
       }
       const auth = req.headers.authorization ?? null;
+      const apiKeyHeader = req.headers["x-api-key"];
+      const apiKey = typeof apiKeyHeader === "string" ? apiKeyHeader : null;
+      const betaHeader = req.headers["anthropic-beta"];
+      const beta = typeof betaHeader === "string" ? betaHeader : null;
       const sessionHeader = req.headers["x-claude-code-session-id"];
       const session = typeof sessionHeader === "string" ? sessionHeader : null;
       const token = (auth ?? "").replace(/^Bearer /, "");
@@ -139,6 +147,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       const threadHeaderRaw = req.headers["x-banto-thread-id"];
       const reply = (status: number) => ({
         token,
+        apiKey,
         status,
         path,
         session,
@@ -158,7 +167,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       const forced = req.headers["x-e2e-upstream-status"];
       if (path.startsWith("/v1/messages")) replies.push(reply(Number(forced ?? 200)));
       if (path.startsWith("/v1/messages") && (forced !== undefined || !Array.isArray(body.messages))) {
-        res.writeHead(Number(forced ?? 200), { "content-type": "application/json", ...rateHeaders }).end(JSON.stringify({ fakeUpstream: true, path, auth }));
+        res.writeHead(Number(forced ?? 200), { "content-type": "application/json", ...rateHeaders }).end(JSON.stringify({ fakeUpstream: true, path, auth, ...(apiKey ? { apiKey } : {}) }));
         return;
       }
       if (!path.startsWith("/v1/messages")) {
@@ -171,7 +180,7 @@ export async function startFakeAnthropic(): Promise<FakeAnthropic> {
       }
       const messages = (body.messages ?? []).map((m) => ({ role: m.role, text: textOf(m.content) }));
       const threadHeader = req.headers["x-banto-thread-id"];
-      requests.push({ path, messages, auth, threadHeader: typeof threadHeader === "string" ? threadHeader : null, session });
+      requests.push({ path, messages, auth, apiKey, beta, threadHeader: typeof threadHeader === "string" ? threadHeader : null, session });
       const n = ++seq;
       const lastUser = [...messages].reverse().find((m) => m.role === "user")?.text ?? "";
       const said = /合言葉は ([a-z]+-\d+)/.exec(lastUser)?.[1];

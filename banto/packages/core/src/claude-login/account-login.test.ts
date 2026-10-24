@@ -378,3 +378,91 @@ test("HTTP：人のセッションで足す・同じメールで置き換え・s
       await new Promise<void>((r) => server.close(() => r()));
     }
   }));
+
+test("HTTP：API キーを足すと Vault に置いて台帳には alias だけ。返事にキーは無い。外すと Vault からも消し、消せなければ言う", () =>
+  withLogin(async ({ dir, store, login, clock }) => {
+    const log = new EventLog(dir);
+    await log.init();
+    const projectThread = new ProjectThreadStore(dir, log);
+    await projectThread.load();
+    const globalMemory = new GlobalMemoryStore(dir, log);
+    await globalMemory.load();
+    const inbox = new InboxStore(dir, log);
+    await inbox.load();
+    const authStore = new AuthStore(dir, log, () => clock.now);
+    await authStore.load();
+    const vault = new Map<string, string>();
+    const vaultRemoveFails = { value: false };
+    const server = createApp({
+      projectThread,
+      globalMemory,
+      inbox,
+      pendingApprovals: new PendingApprovalRegistry(),
+      relayEndpoint: new HostRelayEndpoint({ registry: new RelayRegistry() }),
+      agentRelayEndpoint: new AgentRelayEndpoint(TOKEN),
+      authToken: TOKEN,
+      auth: new AuthService({ store: authStore, dataDir: dir, authToken: TOKEN, uiOrigin: UI, apiBaseUrl: "http://localhost:4737", now: () => clock.now }),
+      claudeAccounts: {
+        store,
+        login,
+        apiKeys: {
+          put: async (alias, key) => void vault.set(alias, key),
+          remove: async (alias) => {
+            if (vaultRemoveFails.value) throw new Error("Vault が繋がっていません");
+            vault.delete(alias);
+          },
+        },
+      },
+      resolveModulesForThread: async () => [],
+      dataDir: dir,
+      configDir: dir,
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const ui = (path: string, init: { method?: string; body?: unknown; cookie?: string } = {}) =>
+        fetch(`${base}${path}`, {
+          method: init.method ?? "GET",
+          headers: { "content-type": "application/json", "x-banto-client": "1", origin: UI, ...(init.cookie ? { cookie: init.cookie } : {}) },
+          ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+        });
+      const machine = (path: string, method = "GET") => fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${TOKEN}` } });
+      const { code } = await writeLoginLink(dir, clock.now);
+      const redeemed = await ui("/api/auth/redeem", { method: "POST", body: { code } });
+      const cookie = redeemed.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`))!.split(";")[0]!;
+
+      // 中継の無い（このマシンのログインが分からない）banto では、使えるアカウントが無い
+      const before = (await (await ui("/api/claude-accounts", { cookie })).json()) as { noUsableAccount: boolean };
+      assert.equal(before.noUsableAccount, true);
+
+      assert.equal((await machine("/api/claude-accounts/api-key", "POST")).status, 403);
+      assert.equal((await ui("/api/claude-accounts/api-key", { method: "POST", cookie, body: { label: "x", key: " " } })).status, 400);
+      const added = await ui("/api/claude-accounts/api-key", { method: "POST", cookie, body: { label: "仕事", key: " sk-ant-api-SECRET " } });
+      assert.equal(added.status, 200, await added.clone().text());
+      const text = await added.text();
+      assert.doesNotMatch(text, /sk-ant-api-SECRET/);
+      const body = JSON.parse(text) as { account: { id: string; kind: string; keyAlias: string }; noUsableAccount: boolean; defaultOrder: string[] };
+      assert.equal(body.account.kind, "api-key");
+      assert.equal(body.account.keyAlias, `claude-api-key-${body.account.id}`);
+      assert.equal(vault.get(body.account.keyAlias), "sk-ant-api-SECRET");
+      assert.equal(body.noUsableAccount, false);
+      assert.deepEqual(body.defaultOrder, [HOST_ACCOUNT_ID, body.account.id]);
+      assert.doesNotMatch(readFileSync(join(dir, "claude-accounts.json"), "utf8"), /sk-ant-api-SECRET/);
+
+      const removed = await ui(`/api/claude-accounts/${body.account.id}`, { method: "DELETE", cookie });
+      assert.deepEqual(await removed.json(), { ok: true });
+      assert.equal(vault.size, 0);
+      assert.equal(store.get(body.account.id), undefined);
+
+      // Vault から消せなくても外したことは戻さない——残ったことを言う
+      const again = (await (await ui("/api/claude-accounts/api-key", { method: "POST", cookie, body: { key: "sk-2" } })).json()) as { account: { id: string; label: string } };
+      assert.equal(again.account.label, "API キー");
+      vaultRemoveFails.value = true;
+      const warned = (await (await ui(`/api/claude-accounts/${again.account.id}`, { method: "DELETE", cookie })).json()) as { ok: boolean; warning?: string };
+      assert.equal(warned.ok, true);
+      assert.match(warned.warning ?? "", /Vault の API キー.*を消せませんでした/);
+      assert.equal(store.get(again.account.id), undefined);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  }));

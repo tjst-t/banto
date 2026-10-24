@@ -40,9 +40,22 @@ export function describeClaudeUsage(deps: ClaudeUsageViewDeps, projectId: string
     return [
       {
         name: a.kind === "host" ? "このマシンの Claude Code のログイン" : a.label,
-        ...(planOf(a.subscriptionType, a.rateLimitTier) ? { plan: planOf(a.subscriptionType, a.rateLimitTier) } : {}),
+        ...(a.kind === "api-key" ? { plan: "API キー（従量課金。5時間・週の枠は無い）" } : planOf(a.subscriptionType, a.rateLimitTier) ? { plan: planOf(a.subscriptionType, a.rateLimitTier) } : {}),
         fiveHour: w(a.usage?.fiveHour),
         sevenDay: w(a.usage?.sevenDay),
+        // API キーは枠の代わりに、足してから使ったトークンと金額の目安（米ドル）
+        ...(a.kind === "api-key" && a.tokenUsage
+          ? {
+              spent: {
+                inputTokens: a.tokenUsage.inputTokens,
+                outputTokens: a.tokenUsage.outputTokens,
+                cacheWriteTokens: a.tokenUsage.cacheWriteTokens,
+                cacheReadTokens: a.tokenUsage.cacheReadTokens,
+                estimatedUsd: Math.round(a.tokenUsage.costUsd * 100) / 100,
+                since: a.tokenUsage.since,
+              },
+            }
+          : {}),
         usable: !blocked,
         ...(blocked ? { why: blocked.kind === "rejected" ? "上限で断られています" : `${blocked.window === "5h" ? "5時間" : "週"}の使用率が閾値を越えています` } : {}),
         thisConversation: id === pinned,

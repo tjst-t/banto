@@ -32,6 +32,8 @@ import { outboxDir } from "./unit.js";
 export const INHERITED_ENV_NAMES = [
   "ANTHROPIC_BASE_URL",
   "CLAUDE_CODE_OAUTH_TOKEN",
+  // API キーのアカウントのときの合言葉（キーそのものではない。v4-distribution.md §3）
+  "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_SUBSCRIPTION_TYPE",
   "CLAUDE_CODE_RATE_LIMIT_TIER",
 ];
