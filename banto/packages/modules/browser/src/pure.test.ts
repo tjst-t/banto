@@ -15,6 +15,7 @@ import { MAX_VIDEO_PIXELS, encodeVideoMessages, ensureVideo, h264CodecString, vi
 import { decodeFrame } from "./view-stream.js";
 import { launchWithInstall, type Installer } from "./install.js";
 import { defaultRegion, ensureCjkFont, fontconfigXml } from "./fonts.js";
+import { ensurePasswordPolicy, PASSWORD_POLICY_JSON } from "./policy.js";
 import { DEFAULT_LIMITS, LIST_TEXT_MAX, LIST_URL_MAX, NetworkLog, formatDetail, formatLine, formatNetworkList, toHar, type NetworkRecord } from "./network-log.js";
 import { redactHeaders } from "./redact.js";
 import { StateFile } from "./state.js";
@@ -408,6 +409,9 @@ test("入れる：無ければブラウザを入れ、ライブラリが足り�
     async installAudio() {
       done.push("audio");
     },
+    async installPasswordPolicy() {
+      done.push("password-policy");
+    },
   };
   const failures = [new Error("Executable doesn't exist at /opt/google/chrome/chrome"), new Error("Host system is missing dependencies to run browsers（Xvfb がありません）")];
   const launched = await launchWithInstall(async () => {
@@ -618,6 +622,52 @@ test("字体：sudo しない箱では入れずに理由と入れ方を返す（
     else process.env.BANTO_NO_SUDO = before.noSudo;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("パスワードの企業向けポリシー：無ければ書く。sudo しない箱では書かずに理由（手の入れ方つき）。書けない・書いても揃っていないときも理由", async () => {
+  const before = process.env.BANTO_NO_SUDO;
+  let writes = 0;
+  const write = async () => {
+    writes++;
+  };
+  try {
+    assert.equal(await ensurePasswordPolicy(write, undefined, () => true), undefined, "あるのに書いた");
+    assert.equal(writes, 0);
+    process.env.BANTO_NO_SUDO = "1";
+    const remote = await ensurePasswordPolicy(write, undefined, () => false);
+    assert.equal(writes, 0, "sudo しない箱で書こうとした");
+    assert.match(remote ?? "", /sudo しないので、自動では書きません.*sudo mkdir -p \/etc\/opt\/chrome\/policies\/managed.*sudo tee \/etc\/opt\/chrome\/policies\/managed\/banto-password\.json/s);
+    delete process.env.BANTO_NO_SUDO;
+    // 書いたら揃う
+    let present = false;
+    const ok = await ensurePasswordPolicy(
+      async () => {
+        writes++;
+        present = true;
+      },
+      undefined,
+      () => present,
+    );
+    assert.equal(ok, undefined);
+    assert.equal(writes, 1);
+    const failed = await ensurePasswordPolicy(
+      async () => {
+        throw new Error("終了コード 100");
+      },
+      undefined,
+      () => false,
+    );
+    assert.match(failed ?? "", /書けませんでした（終了コード 100）.*吹き出しと漏洩検出の警告が出ます/);
+    const still = await ensurePasswordPolicy(write, undefined, () => false);
+    assert.match(still ?? "", /書きましたが、読み直しても内容が揃っていません/);
+  } finally {
+    if (before === undefined) delete process.env.BANTO_NO_SUDO;
+    else process.env.BANTO_NO_SUDO = before;
+  }
+});
+
+test("パスワードの企業向けポリシー：書く内容は保存の吹き出しと漏洩検出の警告の両方を止める（前者だけでは後者が残ると実機で確認済み）", () => {
+  assert.deepEqual(JSON.parse(PASSWORD_POLICY_JSON), { PasswordManagerEnabled: false, PasswordLeakDetectionEnabled: false });
 });
 
 test("動画：GStreamer が無ければ入れる。sudo しない箱では入れずに理由（JPEG で映す）。入れられない・入れても足りないときも理由", async () => {

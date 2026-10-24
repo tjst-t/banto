@@ -135,12 +135,13 @@ export async function createBrowserContextFromDataDir(
   const browsersPath = opts.browsersPath ?? paths.browsers;
   process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
   const { chromium } = await import("playwright-core");
-  const { browserExecutablePath, launchWithInstall, playwrightInstaller } = await import("./install.js");
+  const { BROWSER_NAME, browserExecutablePath, launchWithInstall, playwrightInstaller } = await import("./install.js");
   const { acceptLanguages, readBrowserVersion } = await import("./identity.js");
   const { startChrome } = await import("./chrome.js");
   const { ensureCjkFont } = await import("./fonts.js");
   const { ensureVideo } = await import("./video.js");
   const { ensureAudio } = await import("./audio.js");
+  const { ensurePasswordPolicy } = await import("./policy.js");
   const installer = playwrightInstaller(browsersPath);
   const log = new NetworkLog(paths.network);
   const state = new StateFile(paths.state);
@@ -160,6 +161,13 @@ export async function createBrowserContextFromDataDir(
           if (fontNotice) {
             console.error(`[browser] ${fontNotice}`);
             onProgress?.(fontNotice);
+          }
+          // パスワードを保存しますか、の吹き出しと漏洩検出の警告を止める企業向けポリシー。Google Chrome（x64）でだけ
+          // 確かめた——Playwright 同梱の Chromium（arm64）がこの仕組みを持つかは未確認なので chrome のときだけ（policy.ts）
+          const policyNotice = BROWSER_NAME === "chrome" ? await ensurePasswordPolicy((p) => installer.installPasswordPolicy(p), onProgress) : undefined;
+          if (policyNotice) {
+            console.error(`[browser] ${policyNotice}`);
+            onProgress?.(policyNotice);
           }
           // 人の画面を動画で流す GStreamer が無ければ入れる（入れられなくても起こす——人の画面は JPEG で映す。video.ts）
           const video = opts.video ?? (await ensureVideo((p) => installer.installVideo(p), onProgress));
@@ -194,7 +202,8 @@ export async function createBrowserContextFromDataDir(
             : "server" in chrome.audio
               ? { available: true, server: chrome.audio.server }
               : { available: false, reason: chrome.audio.reason };
-          return { ...chrome, version: readBrowserVersion(executable), scale, video, audio: route, ...(fontNotice ? { notice: fontNotice } : {}) };
+          const notice = [fontNotice, policyNotice].filter((n): n is string => Boolean(n)).join("\n");
+          return { ...chrome, version: readBrowserVersion(executable), scale, video, audio: route, ...(notice ? { notice } : {}) };
         },
         installer,
         onProgress,

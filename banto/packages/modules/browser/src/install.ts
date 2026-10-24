@@ -16,6 +16,7 @@ import { BrowserError } from "./args.js";
 import { CJK_FONT_PACKAGE } from "./fonts.js";
 import { VIDEO_PACKAGES } from "./video.js";
 import { AUDIO_PACKAGES } from "./audio.js";
+import { PASSWORD_POLICY_FILE, PASSWORD_POLICY_JSON } from "./policy.js";
 
 /** Playwright の呼び名（`chrome` は Google Chrome の安定版） */
 export const BROWSER_NAME = process.arch === "x64" ? "chrome" : "chromium";
@@ -108,6 +109,21 @@ export interface Installer {
   installVideo(onProgress?: (message: string) => void): Promise<void>;
   /** 音の行き先の PulseAudio を入れる（audio.ts の ensureAudio が、無いときだけ呼ぶ） */
   installAudio(onProgress?: (message: string) => void): Promise<void>;
+  /** パスワードの企業向けポリシーを書く（policy.ts の ensurePasswordPolicy が、無いときだけ呼ぶ） */
+  installPasswordPolicy(onProgress?: (message: string) => void): Promise<void>;
+}
+
+/** sudo でファイルを書く（企業向けポリシー。apt-get とは違う書き方なので aptInstall とは別に用意する）。失敗は理由つきで投げる */
+async function sudoWriteFile(file: string, content: string, env: NodeJS.ProcessEnv, what: string, onProgress?: (message: string) => void): Promise<void> {
+  const dir = dirname(file);
+  const script = `mkdir -p ${dir} && cat > ${file} <<'BANTO_EOF'\n${content}BANTO_EOF\n`;
+  let r: { code: number | null; tail: string };
+  try {
+    r = await runCommand("sudo", ["-n", "sh", "-c", script], `sudo でファイルを書く（${file}）`, env, what, onProgress);
+  } catch (err) {
+    throw new BrowserError((err as NodeJS.ErrnoException).code === "ENOENT" ? "sudo がありません" : (err as Error).message);
+  }
+  if (r.code !== 0) throw new BrowserError(`終了コード ${r.code}: ${r.tail.trim().slice(-500)}`);
 }
 
 /** sudo で apt-get install する。失敗は理由つきで投げる */
@@ -146,6 +162,9 @@ export function playwrightInstaller(browsersPath: string): Installer {
     },
     async installAudio(onProgress) {
       await aptInstall(AUDIO_PACKAGES, env, "人の画面に音を流す PulseAudio をコンテナに入れています（apt-get）", onProgress);
+    },
+    async installPasswordPolicy(onProgress) {
+      await sudoWriteFile(PASSWORD_POLICY_FILE, PASSWORD_POLICY_JSON, env, "パスワードの企業向けポリシーを書いています", onProgress);
     },
   };
 }
