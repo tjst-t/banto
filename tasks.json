@@ -13164,7 +13164,7 @@
       "number": 545,
       "kind": "task",
       "title": "core: Factory 連携(runFactory・answerFactory)に canAdvanceProject・delegateKinds 相当の判断を足す",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "core-instruct-thread-list-stalled-thread"
@@ -13174,12 +13174,12 @@
       "labels": [],
       "body": "番頭の factory.ts にあった「流した件かを確かめる」「任されている行いだけ答える」を、既存の runFactory・answerFactory tool に一般化して足す(新しい tool は作らない)。",
       "doneWhen": "canAdvanceProject な自動化が流した件だけに answerFactory で答えられ、continue/retry は fix-tests、accept は minor-design を任されているときだけである。単体試験あり",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の 97675db6f で実装。automation/advance-factory.ts(advanceGate)を新設、既存のrunFactory/answerFactoryへ渡す手前で照らす。進める自動化のFork以外は素通し(既存挙動を変えない)。単体試験通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:57:07.306Z",
+      "closedAt": "2026-10-24T15:57:07.306Z",
       "extra": {}
     },
     {
