@@ -13278,6 +13278,30 @@
       "updatedAt": "2026-10-24T14:16:35.113Z",
       "closedAt": null,
       "extra": {}
+    },
+    {
+      "id": "github-app",
+      "number": 550,
+      "kind": "task",
+      "title": "GitHub App の権限追加後、再ログインが要ることを画面で案内する",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "low",
+      "labels": [
+        "repositories",
+        "ui"
+      ],
+      "body": "## 経緯\ncomic-viewer Project から相談（2026-10-24）：GitHub App（ブラウザでログイン方式）に Actions の権限を追加したが、`listCiRuns`/`getCiRun` が 403 のまま変わらなかった。\n\n## 原因\nRepositories のブラウザでログインは、デバイスフローで得た GitHub App のユーザーアクセストークンを Vault に保存し、refresh token で更新する方式（`packages/modules/repositories/src/accounts.ts`）。GitHub App 側で Permissions を追加しても、refresh では新しいスコープは反映されない——改めてデバイスフローで認可し直す（画面の「もう一度ブラウザでログイン」）必要がある。これは GitHub Apps の仕様で、Banto のバグではない。\n\nただし、今は「権限を増やしたら再ログインが要る」ことを示す導線が無く、気づきにくい。\n\n## やること（案）\n- アカウント一覧の「確認する（verify）」で 403 系のエラーを見分けたとき、または `appInstallations` の permissions を見て、画面の案内文に「権限を増やした直後は『もう一度ブラウザでログイン』を」といった一言を足す\n- 具体案は実装者に委ねる（UI文言の調整程度の小さい変更の想定）\n\n## 確かめ方\nGitHub App の Permissions を変えた直後に、Banto の Repositories 設定画面で迷わず「再ログインすればよい」と分かる案内が出ること。\n",
+      "doneWhen": "",
+      "resolution": null,
+      "refs": [],
+      "threads": [],
+      "createdAt": "2026-10-24T14:18:19.739Z",
+      "updatedAt": "2026-10-24T14:18:19.739Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
