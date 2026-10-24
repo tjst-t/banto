@@ -13141,7 +13141,7 @@
       "number": 544,
       "kind": "task",
       "title": "core: instruct_thread・list_stalled_threads を canAdvanceProject の一般 tool に移す",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "core-delegatekinds-canadvanceproject"
@@ -13151,12 +13151,12 @@
       "labels": [],
       "body": "packages/core/src/supervisor/instruct.ts・guard.ts の実体を automation/advance.ts(他)に移し、届け先の自動化のいずれかが canAdvanceProject を持つ専用 Fork でだけ使えるガードに差し替える。判断役かどうかとは独立(見回りの時刻のきっかけでも使える)。旧 INSTRUCT_THREAD_TOOL_NAME・LIST_STALLED_THREADS_TOOL_NAME は名前を保つ。",
       "doneWhen": "canAdvanceProject が真の自動化の専用 Fork で instruct_thread・list_stalled_threads が使え、それ以外では使えない。単体試験あり",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の a8dad04b3 で実装。automation/advance.ts(ProjectAdvance)を新設、canAdvanceProjectな自動化の専用Forkだけがinstruct_thread・list_stalled_threadsを使える。番頭の実装はそのまま並存(削除は#549)。単体試験通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:56:58.339Z",
+      "closedAt": "2026-10-24T15:56:58.339Z",
       "extra": {}
     },
     {
