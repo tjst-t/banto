@@ -79,6 +79,14 @@ export interface BranchSyncDeps {
   projectGit?: ProjectGitAccess;
 }
 
+/** 何のために決めるか——送る・取ってくる（`sync`）か、読むだけの GitHub の tool（`read`）か。断りの文言と、使う段が変わる */
+export type RemotePurpose = "sync" | "read";
+
+/** 断りの文の結び */
+function refusing(purpose: RemotePurpose): string {
+  return purpose === "read" ? "Repositories は読みません" : "Repositories は送りも取ってきもしません";
+}
+
 /** 別のサーバの Project で、どのアカウントで送るか（決めた理由つき——返事の文言に出す）。`refused` は引き受けて断る */
 type RemoteAccount = { login: string; via: string } | { reason: string } | { refused: string };
 
@@ -100,13 +108,14 @@ export function accountForRemote(
   at: GithubLocation,
   entries: readonly LedgerEntry[],
   logins: readonly string[],
+  purpose: RemotePurpose = "sync",
 ): RemoteAccount {
   const cloned = project.clonedFrom;
   if (cloned) {
     const from = parseRemoteUrl(cloned.url);
     if (from.kind !== "github" || !sameGithubLocation(from, at)) {
       return {
-        refused: `この Project は ${from.kind === "github" ? repositoryLabel(from) : cloned.url} から clone しましたが、origin が ${repositoryLabel(at)} になっています——clone した場所でないリポジトリへは、Repositories は送りません`,
+        refused: `この Project は ${from.kind === "github" ? repositoryLabel(from) : cloned.url} から clone しましたが、origin が ${repositoryLabel(at)} になっています——clone した場所でないリポジトリ${purpose === "read" ? "は、Repositories は読みません" : "へは、Repositories は送りません"}`,
       };
     }
     if (cloned.account) return { login: cloned.account, via: "clone したときのアカウント" };
@@ -120,6 +129,11 @@ export function accountForRemote(
     return { login, via: "リポジトリの一覧のアカウント" };
   }
   const owner = logins.find((l) => l.toLowerCase() === at.owner.toLowerCase());
+  // **読むときは持ち主と同じ login の段を使わない**（レビュー H1、Backlog #540）——origin は中の AI が書けるので、この段は
+  // 「人の非公開リポジトリのどれでも」を AI に選ばせる。送るときは承認のカードで人が場所を見てから覚えるので使ってよい
+  if (owner && purpose === "read") {
+    return { reason: `${repositoryLabel(at)} はまだこの Project のリポジトリとして決まっていません（Backlog の送り先として一度承認するか、clone のタブで作るか、リポジトリの一覧に同じリポジトリを置くと読めます）` };
+  }
   if (owner) return { login: owner, via: "持ち主と同じアカウント" };
   return { reason: `${repositoryLabel(at)} を扱うアカウントが決まっていません（clone したときの記録・リポジトリの一覧・持ち主と同じ login のどれも無い）` };
 }
@@ -317,7 +331,7 @@ export class BranchSync {
    * **別のサーバの Project の送り先とアカウントを決める**（`branch_target` と、送る・取ってくるの両方が通る——決め方を2つ
    * 持たない）。向こうの origin の設定を読み、覚えた送り先があればそれと突き合わせ、無ければ `accountForRemote` で決める
    */
-  async remoteTarget(project: ProjectSummary, callId?: string): Promise<RemoteTargetDecision> {
+  async remoteTarget(project: ProjectSummary, callId?: string, purpose: RemotePurpose = "sync"): Promise<RemoteTargetDecision> {
     const git = this.deps.projectGit;
     if (!git) return { kind: "not-handled", reason: "この Repositories は別のサーバの Project の git に届く口を持っていません" };
     // **origin を読めない（向こうに繋がらない等）は引き受けて断る**——頼む側（Backlog）はその向こうで動き、中継も同じ接続の上を
@@ -326,7 +340,7 @@ export class BranchSync {
     try {
       origin = await git.origin(callId);
     } catch (err) {
-      return { kind: "refused", message: `この Project のリポジトリの origin を読めませんでした（${(err as Error).message}）——Repositories は送りも取ってきもしません` };
+      return { kind: "refused", message: `この Project のリポジトリの origin を読めませんでした（${(err as Error).message}）——${refusing(purpose)}` };
     }
     if (origin.kind === "not-repo") return { kind: "not-handled", reason: "この Project の根は git のリポジトリではありません" };
     if (origin.urls.length === 0) return { kind: "not-handled", reason: "origin がありません" };
@@ -335,10 +349,10 @@ export class BranchSync {
     if (origin.redirects.length > 0) {
       return {
         kind: "refused",
-        message: `リポジトリの設定に、送り先を変える設定があります（${origin.redirects.join("・")}）——どこへ送る・どこから取ってくるのが正しいか決められないので、Repositories は送りも取ってきもしません`,
+        message: `リポジトリの設定に、送り先を変える設定があります（${origin.redirects.join("・")}）——どこへ送る・どこから取ってくるのが正しいか決められないので、${refusing(purpose)}`,
       };
     }
-    if (origin.urls.length !== 1) return { kind: "refused", message: `origin の URL が1つではない（${origin.urls.join("・")}）ので、Repositories は送りも取ってきもしません` };
+    if (origin.urls.length !== 1) return { kind: "refused", message: `origin の URL が1つではない（${origin.urls.join("・")}）ので、${refusing(purpose)}` };
     const at = parseRemoteUrl(origin.urls[0]!);
     const pinned = (await this.deps.store.remoteTargets()).get(project.id);
     if (pinned) {
@@ -347,8 +361,8 @@ export class BranchSync {
         return {
           kind: "refused",
           message:
-            `この Project の Backlog の送り先は ${repositoryLabel(pinned.github)}（@${pinned.account}）に決めてあります（${pinned.at.slice(0, 10)}）が、` +
-            `origin が ${at.kind === "github" ? repositoryLabel(at) : origin.urls[0]} になっているので、Repositories は送りも取ってきもしません——origin を戻してください`,
+            `この Project の${purpose === "read" ? "リポジトリ" : " Backlog の送り先"}は ${repositoryLabel(pinned.github)}（@${pinned.account}）に決めてあります（${pinned.at.slice(0, 10)}）が、` +
+            `origin が ${at.kind === "github" ? repositoryLabel(at) : origin.urls[0]} になっているので、${refusing(purpose)}——origin を戻してください`,
         };
       }
     }
@@ -357,7 +371,7 @@ export class BranchSync {
     let chosen: { login: string; via: string };
     if (pinned) chosen = { login: pinned.account, via: pinned.via };
     else {
-      const decided = accountForRemote(project, at, await this.deps.store.entries(), registered.map((a) => a.login));
+      const decided = accountForRemote(project, at, await this.deps.store.entries(), registered.map((a) => a.login), purpose);
       if ("refused" in decided) return { kind: "refused", message: decided.refused };
       if ("reason" in decided) return { kind: "not-handled", reason: decided.reason };
       chosen = decided;
@@ -387,16 +401,14 @@ export class BranchSync {
   }
 
   /**
-   * **読むだけの GitHub の tool のための、別のサーバの Project のリポジトリ**（追加・2026-10-24、Backlog #540）。送る口と同じ
-   * 決め方（覚えた送り先 → clone の記録 → 台帳の同じ場所 → 持ち主と同じ login）で決め、まだ覚えていなければ**ここで覚える**
-   * ——以降は origin を書き換えても、覚えた場所と違えば読まない（送る口と同じ線）
+   * **読むだけの GitHub の tool のための、別のサーバの Project のリポジトリ**（追加・2026-10-24、Backlog #540）。覚えた送り先が
+   * あればそれだけ（origin が違えば読まない）。無ければ**人が決めたものだけ**——clone の記録・台帳の同じ場所——で決め、
+   * **ここでは覚えない**（覚えるのは、人が承認のカードで場所を見る送る口だけ。レビュー H1）。持ち主と同じ login の段は使わない
    */
   async remoteRepositoryForRead(project: ProjectSummary, callId?: string): Promise<{ at: GithubLocation; login: string } | { error: string }> {
-    const decided = await this.remoteTarget(project, callId);
+    const decided = await this.remoteTarget(project, callId, "read");
     if (decided.kind === "not-handled") return { error: decided.reason };
-    if (decided.kind === "refused") return { error: decided.message.replace(/送りも取ってきもしません/g, "読みません").replace(/の Backlog の送り先/g, "のリポジトリ") };
-    const pinned = await this.pin(project, decided);
-    if ("refused" in pinned) return { error: `${pinned.refused}——${repositoryLabel(decided.at)} は読みません` };
+    if (decided.kind === "refused") return { error: decided.message };
     return { at: decided.at, login: decided.login };
   }
 

@@ -116,6 +116,8 @@ test("6つの tool は AI に見せる読むだけの印を名乗り、引数は
       const meta = t._meta as Record<string, unknown>;
       assert.equal(meta[VISIBILITY_META_KEY], "agent", name);
       assert.equal(meta[EFFECT_META_KEY], "read", name);
+      // 別のサーバの Project の origin を読むため、Project の git の口に届くと名乗る（Backlog #540）
+      assert.equal(meta["dev.banto/projectGit"], true, name);
       const schema = t.inputSchema as { properties: Record<string, unknown>; additionalProperties?: unknown };
       assert.equal(schema.additionalProperties, false, name);
       for (const key of Object.keys(schema.properties)) assert.ok(["state", "limit", "number", "status", "runId"].includes(key), `${name} の ${key}`);
