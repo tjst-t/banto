@@ -359,6 +359,12 @@ function RuntimeRow({ runtime: r, onChanged }: { runtime: RealRemoteRuntime; onC
               </Button>
             )}
           </div>
+          {!used && (r.closedUsers?.length ?? 0) > 0 ? (
+            <p className="text-xs text-ink-3" data-testid="runtime-remove-closed-note">
+              閉じた Project（{r.closedUsers!.map((p) => `「${p.name}」`).join("")}）はこの実行場所を指したまま残ります。外したあと同じ名前「{r.name}」で
+              登録し直すと再開できます（動かし方は変えてもかまいません）。
+            </p>
+          ) : null}
           {r.unavailableReason && !used && !r.hostKeyMismatch ? (
             <p className="text-xs text-ink-3">新しい Project では選べません：{r.unavailableReason}</p>
           ) : null}

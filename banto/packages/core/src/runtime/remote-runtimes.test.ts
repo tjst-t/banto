@@ -103,12 +103,25 @@ test("選べない理由：ほかの Project が使っている → 鍵が違う
   });
 });
 
-test("使っている Project があれば外せない（閉じていても）。無ければ外せる", async () => {
+test("開いている Project が使っていれば外せない。閉じた Project だけなら外せ、再開は登録し直すまで断る（2026-10-23）", async () => {
   await withStores(async ({ store, projects, runtimes }) => {
     await store.register(INPUT, KEY, OK);
     const p = await projects.createProject("pve", "/home/banto/pve", { runtime: "remote:lab" });
-    await projects.closeProject(p.id);
     await assert.rejects(runtimes.remove("lab"), (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && /pve/.test(err.message));
+    await projects.closeProject(p.id);
+    assert.deepEqual(runtimes.get("lab")!.closedUsers.map((u) => u.name), ["pve"]);
+    await runtimes.remove("lab");
+    assert.equal(store.get("lab"), undefined);
+    // 外されたままでは再開できない（理由つき）。同じ名前で登録し直せば（動かし方を変えても）再開できる
+    let reopened = false;
+    await assert.rejects(
+      runtimes.reopenProjectOn("lab", p.id, async () => void (reopened = true)),
+      (err: unknown) => err instanceof RemoteRuntimeError && err.status === 409 && err.extra?.["code"] === "runtime-missing",
+    );
+    assert.equal(reopened, false);
+    await store.register(INPUT, KEY, OK);
+    await runtimes.reopenProjectOn("lab", p.id, async () => void (reopened = true));
+    assert.equal(reopened, true);
     await store.register({ ...INPUT, name: "spare" }, KEY, OK);
     await runtimes.remove("spare");
     assert.equal(store.get("spare"), undefined);
