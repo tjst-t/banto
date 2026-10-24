@@ -1825,8 +1825,8 @@ PDF の画面が分かれている」（ユーザー）。次の形に改める�
 
 | tool（`agent` 可視性） | 引数 | 内容 |
 |---|---|---|
-| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒。待つ形は省略時 120、待たない形は省略時は上限なし）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`runInBackground`（真偽、既定 false。下の「待たない形」） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23）。**待たない形はすぐ** `commandId`／`status: "running"`／`outputFile` を返し、終わったら結果を届ける |
-| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07）・人が画面で止めたものは `cancelledBy: "human"`（追加・2026-10-21） |
+| `runCommand` | `command`（文字列）／`cwd`（Project 根からの相対パス、省略時は根）／`timeout`（秒。待つ形は省略時 120、待たない形は省略時は上限なし）／`envSecrets`（`{ENV名: alias名}`、アーキ仕様 §2.5「alias 方式」で決定済みの形）／`secretFiles`（`{書き出し先パス: alias名}`、下記）／`sshIdentity`（`identity名`、下記）／`runInBackground`（真偽、既定 false。下の「待たない形」） | 返り値は `exitCode`／`timedOut`／`stdout`／`stderr`（**この順**——下記「長い出力」）。出力が長いときは `stdoutFile`／`stderrFile`（同）。閉じ込めで弾かれたらしいときは `confinementNote`（追加・2026-09-23）。後ろに回したプロセスが組に残っていたときは `leftover`（追加・2026-10-23、下の「待つ形のあとに残ったプロセス」）。**待たない形はすぐ** `commandId`／`status: "running"`／`outputFile` を返し、終わったら結果を届ける |
+| `listCommands` | — | 待たずに流したコマンドの一覧（**呼んだ Thread が流したものだけ**、新しい順。**動いているものは全部、終わったものは 20 件まで**）。`commandId`・`command`・`cwd`・`startedAt`・`status`（`running`／`exited`／`timedOut`／`cancelled`／`stopped`／`lost`）・`exitCode`・`endedAt`・`outputFile`（追加・2026-10-07）・人が画面で止めたものは `cancelledBy: "human"`（追加・2026-10-21）。待つ形のあとに残ったプロセスも `leftover: true` で出る（下の「待つ形のあとに残ったプロセス」、2026-10-23） |
 | `cancelCommand` | `commandId` | 待たずに流したコマンドを止める。**流した Thread からだけ**。止めたら頼んだ Thread に「止めました」を届けて終わる（追加・2026-10-07） |
 
 **コマンドの `HOME` は Shell 専用のホーム**（決定・2026-09-23、ユーザー）——Project ごとに
@@ -1856,7 +1856,21 @@ Claude Code・Gemini CLI・Goose と同じく、全体はファイルに残す�
 **任意のプロセスを識別子で参照する tool は作らない**（`listProcesses`/`killProcess` の類）。一覧と止める口は
 **待たない形で流したコマンドだけ**に持つ（`listCommands`・`cancelCommand`、下の「待たない形」）。止めるまで
 動き続けるものは Service 側で扱う（§4.2）。**`runCommand` の中で `&` で後ろに起動したプロセスに頼らない**——
-仮にコンテナの中で生き残っても、人の画面に出ず、ログの行き場も止め方も無い（長いものは待たない形で流す）。
+ログの行き場が無い（長いものは待たない形で、止めるまで動き続けるものは Service で流す）。
+
+**待つ形のあとに残ったプロセス**（決定・2026-10-23、Backlog #527）：待つ形はコマンドを仕事の組（scope、
+v4-security.md §1 段2a）に入れて起こし、起こした `sh` の終わりを待つ。`(setsid cmd &)`・`nohup cmd &` で後ろに回した
+ものは sh が終わっても**同じ組の中で動き続ける**（setsid はセッションを抜けても cgroup は抜けない）。以前はそれがどの
+一覧にも出ず止める口も無く、別の Project で wrangler が 7 組・約 3.5GB 残った。そこで、sh が終わったら組にまだプロセスが
+居るかを見る（`systemctl --user show -p ControlGroup` と `cgroup.events` の `populated`）：
+- **普通に終わったなら引き取る**——`listCommands` に `leftover: true` の件として出し（`outputFile` は無い。出力は待つ形の
+  返事で終わっている）、流した Thread（Module）から `cancelCommand` で**組ごと**止められる（SIGTERM、10 秒で SIGKILL）。
+  返事には `leftover: { commandId, stopped: false, note }` を添える。後ろに回したのはわざとかもしれない（開発サーバ等）ので
+  勝手には止めない。終わっても何も届けない（札を持たない）。自分で終わったものは `exited`（終了コードは分からない）
+- **時間切れ・取り消しなら組ごと止める**——止めると頼まれたのはコマンド全体（以前は `sh` だけが止まり、その下の
+  プロセスが残った）。返事は `leftover: { stopped: true, note }`
+- 待たない形を持たない Shell（一覧に出せない）では止める。止められなければ、そう返事に書く（黙って残さない）
+- 組を確かめられなければ、そう返事に書く。組に入れずに起こしたとき（コンテナの外・入れ子のコンテナ）は見ない
 
 （改訂・2026-10-07、ユーザー。以前は「tool はこれ1本だけ。バックグラウンド実行・後からの操作が要る用途は Service
 側で扱う」だった。数時間かかる E2E の繰り返しを流したいとき、待つ形はターンが止まり、Service は終わったことを

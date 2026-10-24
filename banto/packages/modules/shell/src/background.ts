@@ -27,6 +27,7 @@ import {
   type StartedRecord,
 } from "./background-files.js";
 import type { BackgroundLauncher } from "./background-launcher.js";
+import { SystemdScopes, type ScopeControl } from "./leftover-scope.js";
 
 /** 一覧に出す状態。`stopped` は cancelCommand 以外で止められた（人の `systemctl stop`・コンテナの停止）、`lost` は終わり方の記録が無い */
 export type CommandStatus = "running" | "exited" | "timedOut" | "cancelled" | "stopped" | "lost";
@@ -42,9 +43,12 @@ export interface CommandView {
   exitCode?: number | null;
   signal?: string | null;
   endedAt?: string;
-  outputFile: string;
+  /** 残ったプロセス（`leftover`）には無い——出力は待つ形の返事に返したところで終わっている */
+  outputFile?: string;
   /** 人が画面で止めた（`status` は `cancelled` のまま。追加・2026-10-21） */
   cancelledBy?: "human";
+  /** 待つ形の runCommand のあとに残ったプロセス（Backlog #527）。終わっても届かない。終わったら `exited`（終了コードは分からない） */
+  leftover?: true;
 }
 
 /** 人の画面に出す1件（`listBackgroundCommands`）。AI の一覧に足して、秘密の alias 名と時間の上限 */
@@ -78,6 +82,10 @@ export interface BackgroundCommandsDeps {
   keepFinished?: number;
   /** 届けられなかったとき、次の見張りで届け直す回数（既定 5） */
   deliverRetries?: number;
+  /** 残ったプロセスの組を見る・止める口。**試験で差し替えるための穴** */
+  scopes?: ScopeControl;
+  /** 組を止めるときの環境（ユーザーの systemd に繋ぐ変数）。既定は `/run/user/<uid>` */
+  scopeEnv?: NodeJS.ProcessEnv;
 }
 
 const DEFAULT_POLL_MS = 2_000;
@@ -112,6 +120,17 @@ export class BackgroundCommands {
   private timer?: NodeJS.Timeout;
 
   constructor(private readonly deps: BackgroundCommandsDeps) {}
+
+  private scopesMemo?: ScopeControl;
+  private get scopes(): ScopeControl {
+    return (this.scopesMemo ??= this.deps.scopes ?? new SystemdScopes());
+  }
+
+  private get scopeEnv(): NodeJS.ProcessEnv {
+    if (this.deps.scopeEnv) return this.deps.scopeEnv;
+    const runtime = `/run/user/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+    return { ...process.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${runtime}/bus` };
+  }
 
   /**
    * 流す。返ったら起動役が起きている（起きなければ投げる——AI に「流した」と言ってから黙って失敗させない）。
@@ -196,6 +215,39 @@ export class BackgroundCommands {
   }
 
   /**
+   * **待つ形の runCommand のあとに組に残ったプロセスを引き取る**（追加・2026-10-23、Backlog #527）。一覧に `leftover` として
+   * 出し、流した Thread（Module）から `cancelCommand` で組ごと止められるようにする。届ける約束は持たない
+   */
+  adoptLeftover(input: {
+    command: string;
+    cwd: string;
+    startedAt: string;
+    unit: string;
+    cgroup: string;
+    requestedBy?: { projectId: string; threadId: string };
+    requestedByModule?: { name: string; conn: string };
+  }): CommandView {
+    const id = newCommandId();
+    const dir = join(this.deps.dir, id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const record: JobRecord = {
+      id,
+      command: input.command,
+      cwd: input.cwd,
+      startedAt: input.startedAt,
+      // 札は無い（届けない）。起き直した host の問いとは決して合わない
+      replyToFingerprint: "",
+      ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+      ...(input.requestedByModule ? { requestedByModule: input.requestedByModule } : {}),
+      unit: input.unit,
+      leftover: { cgroup: input.cgroup },
+    };
+    writeJsonAtomic(join(dir, JOB_FILE), record);
+    this.prune();
+    return this.view(this.observe(id)!);
+  }
+
+  /**
    * 一覧（新しい順）。`owner` を渡せば、その Thread が流したものだけ。**動いているものは全部出し、終わったものだけ
    * `limit` 件で切る**（訂正・2026-10-07、Fable のレビュー——動いているものが件数の外に落ちると、止める口の id が分からない）
    */
@@ -253,6 +305,14 @@ export class BackgroundCommands {
       cancelRequestedAt: new Date().toISOString(),
       ...(by ? { cancelRequestedBy: by } : {}),
     });
+    if (found.record.leftover) {
+      try {
+        await this.scopes.stop(found.record.unit, found.record.leftover.cgroup, this.scopeEnv);
+      } catch (err) {
+        throw new BackgroundCommandError(err instanceof Error ? err.message : String(err));
+      }
+      return this.view(this.observe(id)!);
+    }
     await this.deps.launcher.stop({ unit: found.record.unit, ...(found.started ? { pid: found.started.pid } : {}) });
     // 起動役が終わり方を書くまで待つ（systemd の stop は単位が止まってから返るが、試験の起こし方は待たない）
     for (let waited = 0; waited < 15_000; waited += 100) {
@@ -273,7 +333,7 @@ export class BackgroundCommands {
     const records = this.observeAll();
     const answers = items.map((item): ResumeAnswer => {
       const no = (reason: string): ResumeAnswer => ({ replyTo: item.replyTo, resume: false, reason });
-      const found = records.find((o) => o.record.replyToFingerprint === replyToFingerprint(item.replyTo));
+      const found = records.find((o) => !o.record.leftover && o.record.replyToFingerprint === replyToFingerprint(item.replyTo));
       if (!found) return no("待たずに流したコマンドの記録がありません");
       const { record } = found;
       const mismatch = item.thread
@@ -439,7 +499,7 @@ export class BackgroundCommands {
       startedAt: o.record.startedAt,
       status: o.status,
       ...(o.exit ? { exitCode: o.exit.code, ...(o.exit.signal ? { signal: o.exit.signal } : {}), endedAt: o.exit.at } : {}),
-      outputFile: jobPath(this.deps.dir, o.record.id, OUTPUT_FILE),
+      ...(o.record.leftover ? { leftover: true as const } : { outputFile: jobPath(this.deps.dir, o.record.id, OUTPUT_FILE) }),
       ...(o.status === "cancelled" && o.record.cancelRequestedBy === "human" ? { cancelledBy: "human" as const } : {}),
     };
   }
@@ -453,6 +513,10 @@ export class BackgroundCommands {
     if (!/^[A-Za-z0-9-]+$/.test(id)) return undefined;
     const record = readJsonIfExists<JobRecord>(jobPath(this.deps.dir, id, JOB_FILE));
     if (!record) return undefined;
+    if (record.leftover) {
+      const status: CommandStatus = this.scopes.populated(record.leftover.cgroup) ? "running" : record.cancelRequestedAt ? "cancelled" : "exited";
+      return { record, status };
+    }
     const exit = readJsonIfExists<ExitRecord>(jobPath(this.deps.dir, id, EXIT_FILE));
     const started = readJsonIfExists<StartedRecord>(jobPath(this.deps.dir, id, STARTED_FILE));
     const status = statusOf(record, started, exit, () => (started ? wrapperAlive(started) : false));
@@ -527,7 +591,8 @@ export class BackgroundCommands {
     const now = Date.now();
     const finished = this.observeAll().filter((o) => {
       if (o.status === "running" || this.watched.has(o.record.id)) return false;
-      if (existsSync(jobPath(this.deps.dir, o.record.id, DELIVERED_FILE))) return true;
+      // 残ったプロセスの記録は届けるものが無い——終わったら消してよい
+      if (o.record.leftover || existsSync(jobPath(this.deps.dir, o.record.id, DELIVERED_FILE))) return true;
       const endedAt = Date.parse(o.exit?.at ?? o.started?.at ?? o.record.startedAt);
       return Number.isFinite(endedAt) && now - endedAt > UNDELIVERED_KEEP_MS;
     });
