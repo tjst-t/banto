@@ -12,7 +12,10 @@ export const REVIEW_SCHEMA = {
   type: "object",
   required: ["verdict", "items"],
   properties: {
-    verdict: { enum: ["pass", "changes"] },
+    // "blocked"：コードは直しようがなく、完了条件を満たすにはこの worktree の外の操作（release への push 等）か、
+    // まだ決まっていない設計判断を人に仰ぐ必要がある（追加・2026-10-24、Backlog #539 の後始末——コードは pass でも
+    // 完了条件が満たせない件を、黙って「pass」にして自動で done にしてしまっていた反省）
+    verdict: { enum: ["pass", "changes", "blocked"] },
     items: {
       type: "array",
       items: {
@@ -25,7 +28,7 @@ export const REVIEW_SCHEMA = {
 } as const;
 
 interface ReviewVerdict {
-  verdict: "pass" | "changes";
+  verdict: "pass" | "changes" | "blocked";
   items: Array<{ what: string; where?: string; why: string }>;
 }
 
@@ -63,8 +66,14 @@ export function reviewPrompt(ctx: ProcedureContext): string {
     "## 変更の見方",
     `\`git log --oneline ${target}..HEAD\` と \`git diff ${target}...HEAD\` で見られます。テストは別に通っています。`,
     "## 判定",
-    "verdict は pass（このまま取り込んでよい）か changes（直すことがある）。changes のときは items に直すこと" +
-      "（what：何を・where：どこ（ファイルや関数）・why：なぜ）を書く。好みの違いだけなら pass にする。",
+    "verdict は次の3つのどれか。\n" +
+      "- pass：このまま取り込んでよい\n" +
+      "- changes：この worktree の中のコード・文書を直せば完了条件を満たせる（items に直すこと：what・where・why を書く）\n" +
+      "- blocked：コードは直しようがなく、完了条件を満たすには **この worktree の外の操作**（例：release への push・" +
+      "権限の確認）か、**まだ決まっていない設計判断を人に仰ぐ**必要がある。このまま pass にすると、実際には終わって" +
+      "いないのに Backlog が done になってしまうので、該当するときは必ず blocked にする（items に「何が・なぜ blocked か」" +
+      "を書く。what に短い要約、why に理由）。\n" +
+      "好みの違いだけなら pass にする。",
   ].join("\n\n");
 }
 
@@ -123,8 +132,18 @@ export const deliverTask: Procedure = async (ctx) => {
     const r = await ctx.agent("reviewer", { prompt: reviewPrompt(ctx), schema: REVIEW_SCHEMA as unknown as Record<string, unknown> });
     const verdict = r.structured as ReviewVerdict;
     if (verdict.verdict === "pass") return;
-    reviews++;
     const list = verdict.items.map((i) => `- ${i.what}${i.where ? `（${i.where}）` : ""}：${i.why}`).join("\n");
+    if (verdict.verdict === "blocked") {
+      // コードの直しでは解決しない——必ず人に聞く（レビューの回数の上限は数えない。直しても減らないため）。
+      // 「続ける」に具体的な指示が無ければ、状況が変わったかどうかだけをもう一度レビューで確かめる
+      const { instruction, accept } = await ctx.ask(
+        `レビューが「ブロック」と判定しました——コードの直しでは解決しません。完了条件を満たすには worktree の外の操作か人の判断が要ります：\n${list}`,
+      );
+      if (accept) return; // 人が「このまま取り込む」と答えた
+      if (instruction) await followUp(`人からの指示：${instruction}`);
+      continue;
+    }
+    reviews++;
     if (reviews > limits.reviewRounds) {
       const { instruction, accept } = await ctx.ask(`レビューで ${reviews} 回続けて直すことを指摘されました：\n${list}`);
       reviews = 0;

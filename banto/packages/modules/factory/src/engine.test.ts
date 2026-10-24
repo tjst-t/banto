@@ -28,7 +28,7 @@ interface Fake {
  * 偽の Subagent：実装役は頼みの中の `<commit 名前>` のファイルをその worktree に書いてコミットする（続きの頼みでは
  * `fix` の名前で）。レビュー役は `verdicts` を順に返す
  */
-function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes">; implement?: (prompt: string, cwd: string, n: number) => void; /** n 回目の実装役の失敗（返せばその文で失敗を届ける） */ implementFails?: (n: number) => string | undefined; /** 最初の n 回の backlog への中継を投げて失敗させる（起き直した直後で Module が無い） */ backlogThrows?: number } = {}) {
+function setup(opts: { holdReplies?: boolean; notifyFails?: boolean; procedure?: Procedure; settings?: Partial<FactorySettings>; minuteMs?: number; verdicts?: Array<"pass" | "changes" | "blocked">; implement?: (prompt: string, cwd: string, n: number) => void; /** n 回目の実装役の失敗（返せばその文で失敗を届ける） */ implementFails?: (n: number) => string | undefined; /** 最初の n 回の backlog への中継を投げて失敗させる（起き直した直後で Module が無い） */ backlogThrows?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-"));
   const project = join(root, "project");
   const data = join(root, "data");
@@ -319,6 +319,36 @@ test("レビューで直すことがあれば実装役へ戻し、上限を越�
     s.factory.answer(run.id, "f", { action: "accept" });
     await until(() => s.fake.finished.length === 1, "取り込まない");
     assert.equal(run.items[0]!.status, "done");
+  } finally {
+    s.cleanup();
+  }
+});
+
+// Backlog #539 の後始末：レビューが「コードは直しようがない」と判定したら、黙って done にせず必ず人に聞く
+test("レビューが「ブロック」と判定したら、コードは直さず止めて人に聞く。「このまま取り込む」と答えると入る", async () => {
+  const s = setup({ verdicts: ["blocked"] });
+  try {
+    const run = s.factory.start({ tasks: [task("z", "<commit z.txt>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    assert.match(s.fake.stopped[0]!, /レビューが「ブロック」と判定しました/);
+    assert.equal(run.items[0]!.status, "stopped");
+    s.factory.answer(run.id, "z", { action: "accept" });
+    await until(() => s.fake.finished.length === 1, "取り込まない");
+    assert.equal(run.items[0]!.status, "done");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("「ブロック」判定で「やめる」と答えると、Backlog を ready に戻す", async () => {
+  const s = setup({ verdicts: ["blocked"] });
+  try {
+    const run = s.factory.start({ tasks: [task("z2", "<commit z2.txt>")], settings: s.settings });
+    await until(() => s.fake.stopped.length === 1, "止まらない");
+    s.factory.answer(run.id, "z2", { action: "drop", reason: "試験" });
+    await until(() => s.fake.finished.length === 1, "やめたのに終わらない");
+    assert.equal(run.items[0]!.status, "dropped");
+    assert.equal(s.fake.backlog.at(-1)?.status, "ready");
   } finally {
     s.cleanup();
   }
