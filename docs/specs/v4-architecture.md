@@ -646,6 +646,9 @@ Fork を出す場所が無い。人の口（`POST /api/threads/:id/fork`・発�
   開かせるのと同じ考え、v4-security.md の `dev.banto/open-new-project`）
 - 記録 `project.promoted { id, name }`：`kind` を外し、名前を替える。会話・Memory・試作のファイル・Fork はそのまま。
   グループは今の `project.group.assigned`
+- **Module の組を普通の Project に戻す**（2026-10-24、Backlog #551）：試作を始めていないチャットは、`project.promoted` の前に
+  `start_prototyping` と同じ手順（Project 層の差分を外し `project.prototyping.started` を積む）を通す。戻さないと Project にしても
+  Shell・FileSystem などが無いまま、人が設定の画面で入れ直すしかなかった。試作を始めていれば何もしない
 - **フォルダを置き場へ移す**：根を `<置き場>/<フォルダの名前>` に替える。同じ機械の中の移し替えで、会話の記録
   （`<CLI の置き場>/projects/<作業ディレクトリ>/…`）の写しは別の実行場所へ移すときの手順（v4-security.md「Claude の会話の記録」）を
   そのまま使う。ターンが走っている・裏の仕事があるときは移すときと同じく断る

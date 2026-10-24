@@ -3171,6 +3171,13 @@ export function createApp(deps: AppDeps) {
             target = t.root;
           }
           if (target) await deps.runtimeMove!.moveRootOnThisMachine(projectId, target);
+          // **試作を始めていなければ、Module の組を普通の Project と同じに戻す**（Backlog #551）——チャットは Project のコンテナで動く
+          // Module（Shell・FileSystem など）を外して始まり、戻すのは `start_prototyping` だけだった。戻さないと、Project にしても
+          // 道具が無いまま（人が設定の画面で1つずつ入れ直すしかない）。試作を始めていれば差分はもう外れている（何もしない）
+          if (startPrototyping) {
+            const started = await startPrototyping(projectId);
+            if (!started.ok) return json(res, 409, { error: started.error });
+          }
           let promoted = await deps.projectThread.promoteProject(projectId, name);
           if (groupId !== undefined) promoted = await deps.projectThread.assignProjectGroup(projectId, groupId);
           return json(res, 200, promoted);
