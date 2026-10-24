@@ -144,6 +144,39 @@ test("作る・一覧・直す・一時停止・再開・消す", async () => {
   });
 });
 
+test("判断役の一般化の欄（delegateKinds・canAdvanceProject）を画面の口から作る・直す・外す。任せられる種類の一覧は人に回す種類を含まない", async () => {
+  await withApp(async (call, { projectThread }) => {
+    const p = await projectThread.createProject("p", tmpdir());
+    const path = `/api/projects/${p.id}/automations`;
+    const judge = { name: "判断役", instruction: "決めて", source: { kind: "event", event: "banto.turn-decisions" } };
+    const created = await call(path, "POST", { ...judge, delegateKinds: ["minor-design", "continue"], canAdvanceProject: true });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.deepEqual(created.body.delegateKinds, ["continue", "minor-design"]);
+    assert.equal(created.body.canAdvanceProject, true);
+    const one = `${path}/${created.body.id}`;
+    const cleared = await call(one, "PATCH", { delegateKinds: null, canAdvanceProject: false });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.delegateKinds, undefined);
+    assert.equal(cleared.body.canAdvanceProject, false);
+    // 判断役でない自動化に delegateKinds は付けられない（400 で理由）
+    const bad = await call(path, "POST", { ...morning, delegateKinds: ["continue"] });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /判断役/);
+    // 欄の無い自動化は今までどおりの形
+    const plain = await call(path, "POST", morning);
+    assert.equal("delegateKinds" in plain.body, false);
+    assert.equal("canAdvanceProject" in plain.body, false);
+
+    const kinds = await call("/api/automation-delegate-kinds");
+    assert.equal(kinds.status, 200);
+    const names = kinds.body.kinds.map((k: { kind: string }) => k.kind);
+    assert.ok(names.includes("minor-design") && names.includes("release"));
+    assert.ok(!names.includes("spec") && !names.includes("money"), "人に回す種類は任せられない");
+    assert.equal(kinds.body.kinds.find((k: { kind: string }) => k.kind === "release").byDefault, false);
+    assert.equal(typeof kinds.body.kinds[0].short, "string");
+  });
+});
+
 test("待てる出来事の一覧：出どころごと、banto 自身が先頭。知らない Project は 404", async () => {
   await withApp(async (call, { projectThread, automations }) => {
     const p = await projectThread.createProject("p", tmpdir());

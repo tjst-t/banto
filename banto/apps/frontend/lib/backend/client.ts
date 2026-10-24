@@ -2927,6 +2927,23 @@ export interface RealAutomationFields {
   mode?: "patrol";
   /** 見回りの1日の気づきの上限 */
   dailyFindingLimit?: number;
+  /** 判断役が選んでよい問いの種類（判断役だけ。無ければ種類で絞らない。アーキ仕様 §4.3「判断役の一般化」） */
+  delegateKinds?: RealSupervisorAction[];
+  /** 止まった会話を進める権限（専用の Fork で instruct_thread・list_stalled_threads を使える。無ければ持たない） */
+  canAdvanceProject?: boolean;
+}
+
+/** 判断役に任せられる問いの種類1つ（人に回す種類は入らない）。`byDefault` は Project の方針の既定で任せるもの */
+export interface RealDelegateKind {
+  kind: RealSupervisorAction;
+  title: string;
+  short: string;
+  byDefault: boolean;
+}
+
+/** 判断役に任せられる問いの種類（題は core の表から） */
+export async function listRealDelegateKinds(): Promise<RealDelegateKind[]> {
+  return (await request<{ kinds: RealDelegateKind[] }>("/api/automation-delegate-kinds")).kinds;
 }
 
 /** 見回りの手帳の1行（`key` ごと。新しい順） */
@@ -2966,7 +2983,11 @@ export async function unmuteRealPatrolNote(projectId: string, id: string, key: s
 }
 
 /** 作る・直すときに渡す欄（Webhook の署名を切るときは `false`） */
-export type RealAutomationInput = Omit<RealAutomationFields, "source"> & { source: RealAutomationSourceInput };
+export type RealAutomationInput = Omit<RealAutomationFields, "source" | "delegateKinds"> & {
+  source: RealAutomationSourceInput;
+  /** 直すときの `null` は外す（種類で絞らないに戻す） */
+  delegateKinds?: RealSupervisorAction[] | null;
+};
 
 export async function listRealAutomations(projectId: string): Promise<RealAutomation[]> {
   const body = await request<{ automations: RealAutomation[] }>(`/api/projects/${encodeURIComponent(projectId)}/automations`);

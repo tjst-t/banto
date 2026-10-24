@@ -39,6 +39,7 @@ import { SupervisorInputError, type SupervisorControls, type SupervisorUndoExec 
 import {
   ACTION_SHORT_TITLES,
   ACTION_TITLES,
+  DEFAULT_DELEGATE,
   HUMAN_ONLY_KINDS,
   SUPERVISOR_ACTIONS,
   SUPERVISOR_KEYS,
@@ -4659,6 +4660,19 @@ export function createApp(deps: AppDeps) {
         const projectId = automationEventsMatch[1]!;
         if (!deps.automations || !deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
         return json(res, 200, { sources: deps.automations.eventSources(projectId) });
+      }
+
+      // **判断役に任せられる問いの種類**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」、画面の「答えてよい種類」）。人に回す種類は
+      // 任せられないので入れない。題は core の表から引く（画面に写しを持たない）。`byDefault` は Project の方針の既定で任せるもの
+      if (url.pathname === "/api/automation-delegate-kinds" && req.method === "GET") {
+        return json(res, 200, {
+          kinds: SUPERVISOR_ACTIONS.map((kind) => ({
+            kind,
+            title: ACTION_TITLES[kind],
+            short: ACTION_SHORT_TITLES[kind],
+            byDefault: DEFAULT_DELEGATE.includes(kind),
+          })),
+        });
       }
 
       // **自動化**（決定・2026-10-15、アーキ仕様 §4.3「人と AI の作り方」）。台帳は Event Store（`automation/store.ts`）、

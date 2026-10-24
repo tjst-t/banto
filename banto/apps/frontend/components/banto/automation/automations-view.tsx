@@ -62,6 +62,7 @@ import {
   unmutePatrolNote,
   updateAutomation,
   useAutomationEventSources,
+  useDelegateKinds,
   useAutomations,
 } from "@/lib/backend/automations";
 import {
@@ -76,6 +77,7 @@ import {
   type RealEventDeclaration,
   type RealEventField,
   type RealPatrolNote,
+  type RealSupervisorAction,
 } from "@/lib/backend/client";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -250,6 +252,9 @@ function AutomationRow({
   onEdit: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // 答えてよい種類の短い呼び名（core の表）。取れるまでは種類の名前のまま
+  const delegate = useDelegateKinds();
+  const delegateShort = (kind: RealSupervisorAction) => delegate.kinds?.find((k) => k.kind === kind)?.short ?? kind;
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [busy, setBusy] = useState(false);
   // 押した操作の結果（飛ばした理由・断られた理由）。次に押すまで残す
@@ -347,6 +352,22 @@ function AutomationRow({
                   ? "終わった回を出します。"
                   : "終わった回は出しません。あなたの答えを待つ回・決めることがある回・失敗した回だけ出します。"}
             </dd>
+            {a.delegateKinds ? (
+              <>
+                <dt className="text-ink-3">答えてよい種類</dt>
+                <dd className="text-ink-2" data-testid="automation-delegate-summary">
+                  {a.delegateKinds.length === 0 ? "なし（決めることは全部人に回します）" : a.delegateKinds.map((k) => delegateShort(k)).join("・")}
+                </dd>
+              </>
+            ) : null}
+            {a.canAdvanceProject ? (
+              <>
+                <dt className="text-ink-3">進める権限</dt>
+                <dd className="text-ink-2" data-testid="automation-advance-summary">
+                  止まった会話に決まった手順を頼めます（専用の Fork で）。
+                </dd>
+              </>
+            ) : null}
             <dt className="text-ink-3">作った人</dt>
             <dd className="text-ink-2">
               {a.createdBy.kind === "human" ? "あなた" : `AI（「${threadTitle(a.createdBy.threadId)}」で頼まれ、あなたが許可しました）`}
@@ -789,6 +810,13 @@ function AutomationForm({
   const [ignoreSelf, setIgnoreSelf] = useState(event0 ? !event0.allowSelfTriggered : true);
   const declared = findEventDeclaration(events.sources, eventName);
   const isJudge = !patrol && sourceKind === "event" && eventName === TURN_DECISIONS_EVENT;
+  // **判断役の一般化**（§4.3）：判断役が答えてよい種類（無ければ絞らない）と、止まった会話を進める権限
+  const delegate = useDelegateKinds();
+  const [limitKinds, setLimitKinds] = useState(automation?.delegateKinds !== undefined);
+  const [pickedKinds, setPickedKinds] = useState<ReadonlySet<RealSupervisorAction> | undefined>(
+    automation?.delegateKinds ? new Set(automation.delegateKinds) : undefined,
+  );
+  const [canAdvance, setCanAdvance] = useState(automation?.canAdvanceProject === true);
   const whereProblem = declared ? eventWhereInputProblem(declared, where) : undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -810,6 +838,20 @@ function AutomationForm({
     : targetKind === "dedicated" || isJudge
       ? { kind: "dedicated", mode }
       : { kind: "thread", threadId };
+  // 進める権限が効くのは専用の Fork だけ（見回りは読むだけの回なので持てない）
+  const advanceShown = !patrol && target.kind === "dedicated";
+  const advance = advanceShown && canAdvance;
+  /** 種類で絞るときの一覧（表の順）。まだ選んでいなければ Project の方針の既定 */
+  const kindsToSend = (delegate.kinds ?? [])
+    .filter((k) => (pickedKinds ? pickedKinds.has(k.kind) : k.byDefault))
+    .map((k) => k.kind);
+  function toggleKind(kind: RealSupervisorAction, on: boolean) {
+    const base = pickedKinds ?? new Set((delegate.kinds ?? []).filter((k) => k.byDefault).map((k) => k.kind));
+    const next = new Set(base);
+    if (on) next.add(kind);
+    else next.delete(kind);
+    setPickedKinds(next);
+  }
   const signatureFilled = !signed || (sigHeader.trim() !== "" && sigAlias.trim() !== "");
   const eventFilled = declared !== undefined && whereProblem === undefined;
   const filled =
@@ -853,6 +895,10 @@ function AutomationForm({
       target,
       reviewOnDone: patrol ? false : reviewOnDone,
       ...(patrol ? { mode: "patrol" as const, dailyFindingLimit } : {}),
+      // 判断役で絞るなら一覧、絞らないに戻したら外す（null）。判断役でなくなったときも外す
+      ...(isJudge && limitKinds ? { delegateKinds: kindsToSend } : automation?.delegateKinds !== undefined ? { delegateKinds: null } : {}),
+      // 持っていない自動化に false を書かない（作るとき・触っていないとき）
+      ...(advance || automation?.canAdvanceProject !== undefined ? { canAdvanceProject: advance } : {}),
     };
     setSaving(true);
     setError(null);
@@ -1235,6 +1281,62 @@ function AutomationForm({
         </div>
         <p className="pl-11 text-xs text-ink-3">切っても、あなたの答えを待つ回・決めることがある回・失敗した回は受信箱に出します。</p>
       </div>
+
+      {isJudge ? (
+        <div className="flex flex-col gap-1.5" data-testid="automation-delegate-kinds">
+          <div className="flex items-center gap-2">
+            <Switch id="automation-limit-kinds" checked={limitKinds} onCheckedChange={setLimitKinds} data-testid="automation-limit-kinds" />
+            <Label htmlFor="automation-limit-kinds">答えてよい種類で絞る</Label>
+          </div>
+          {limitKinds ? (
+            <>
+              {delegate.error ? (
+                <p role="alert" className="pl-11 text-xs text-stop">
+                  種類の一覧を読めませんでした：{delegate.error}
+                </p>
+              ) : null}
+              <ul className="grid gap-1.5 pl-9 sm:grid-cols-2">
+                {(delegate.kinds ?? []).map((k) => (
+                  <li key={k.kind}>
+                    <label className="flex items-start gap-2 rounded-md px-1.5 py-1 text-sm text-foreground hover:bg-surface-2/60">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={pickedKinds ? pickedKinds.has(k.kind) : k.byDefault}
+                        onChange={(e) => toggleKind(k.kind, e.target.checked)}
+                        data-testid={`automation-delegate-${k.kind}`}
+                      />
+                      <span className="flex min-w-0 flex-col">
+                        <span>{k.short}</span>
+                        {k.title !== k.short ? <span className="text-xs text-ink-3">{k.title}</span> : null}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <p className="pl-11 text-xs text-ink-3">
+                問いの種類（kind）がここにあるものだけ選べます。種類の書かれていない問いと、仕様・アーキテクチャの向き・外への公開・お金・消す操作の問いは、いつも人に回します。
+              </p>
+            </>
+          ) : (
+            <p className="pl-11 text-xs text-ink-3">切っていると種類では絞りません（指示に書いた方針だけで選びます）。</p>
+          )}
+        </div>
+      ) : null}
+
+      {advanceShown ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <Switch id="automation-advance" checked={canAdvance} onCheckedChange={setCanAdvance} data-testid="automation-advance" />
+            <Label htmlFor="automation-advance">止まった会話を進める権限</Label>
+          </div>
+          <p className="pl-11 text-xs text-ink-3">
+            オンにすると、この自動化の専用の Fork で、止まっている会話を探して決まった手順（やり直す・続ける など）を頼めます。Factory
+            に流す・止まった件に答えるときは、任された範囲だけを banto が通します。任された範囲は
+            {isJudge ? "「答えてよい種類」、絞っていなければ" : ""} Project の方針です。
+          </p>
+        </div>
+      ) : null}
       </>
       )}
 

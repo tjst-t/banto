@@ -15,6 +15,7 @@ import { onRealAppEvent, startRealAppEvents } from "./app-events";
 import {
   createRealAutomation,
   listRealAutomationEvents,
+  listRealDelegateKinds,
   listRealAutomations,
   removeRealAutomation,
   runRealAutomation,
@@ -26,6 +27,7 @@ import {
   type RealAutomationRepeat,
   type RealAutomationRun,
   type RealAutomationTarget,
+  type RealDelegateKind,
   type RealEventDeclaration,
 } from "./client";
 import { registerNewRealForks } from "@/lib/mock/projects";
@@ -177,6 +179,30 @@ export function useAutomationEventSources(
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, [projectId, reload]);
   return { sources, error };
+}
+
+// ---- 判断役に任せられる問いの種類（アーキ仕様 §4.3「判断役の一般化」）。core の表なので、一度取れば変わらない ----
+
+let delegateKinds: readonly RealDelegateKind[] | undefined;
+let delegateKindsLoading: Promise<void> | undefined;
+
+/** 判断役に任せられる問いの種類（作る・直すフォームの「答えてよい種類」）。取れるまでは undefined。読めなければ `error` */
+export function useDelegateKinds(): { kinds: readonly RealDelegateKind[] | undefined; error: string | null } {
+  const kinds = useSyncExternalStore(subscribe, () => delegateKinds, () => undefined);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (delegateKinds) return;
+    delegateKindsLoading ??= listRealDelegateKinds()
+      .then((list) => {
+        delegateKinds = list;
+        notify();
+      })
+      .finally(() => {
+        delegateKindsLoading = undefined;
+      });
+    delegateKindsLoading.then(() => setError(null)).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+  return { kinds, error };
 }
 
 /** 出来事の名乗りを引く（無ければ undefined——Module を外した等） */
