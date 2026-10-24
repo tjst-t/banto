@@ -107,6 +107,8 @@ export function chromeArgs(o: Pick<ChromeOptions, "profileDir" | "languages" | "
     // test-page.ts の /permissions、Chrome 155）：無いと押しても答えが来ない（吹き出しが居座る）。有ると requestPermission・
     // getCurrentPosition はすぐ denied を返す（permissions.query は求める前は prompt のまま、断ったあとは denied）
     "--deny-permission-prompts",
+    // パスワードを保存しますか、の吹き出しと漏洩検出の警告も同じ困りごと（キオスク形では閉じる手段が無い）だが、
+    // 起動の引数では止められない——企業向けポリシー（/etc 以下、install.ts が sudo で書く）で止める。policy.ts
     // **キオスク形**（タブの帯・アドレスバーの無い全画面の窓）——人の画面は Xvfb の (0,0) からページの大きさだけを取り込んで
     // 動画にする（video.ts）ので、窓の中身がページそのものでないといけない。ページの大きさは窓で決める（session.ts の
     // setViewport——v4-modules.md §4.1「動画で流す」(a)）。窓が Xvfb の左上に来るよう位置も決める

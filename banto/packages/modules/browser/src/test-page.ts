@@ -20,6 +20,10 @@
 // Notification.requestPermission()、「位置情報」は geolocation.getCurrentPosition を呼び（押すのは人の操作——吹き出しは人の
 // 操作のあとにだけ出せる）、答えを `#notify`・`#geo` に書く。吹き出しが出ると答えは人が押すまで来ない（「まだ」のまま）。
 // `#states` は navigator.permissions.query の notifications・geolocation の状態（押す前に読み、答えのあとにも読み直す）。
+// `/login` は**本物のログインフォーム**（v4-modules.md §4.1「形」——パスワードを保存しますか、の吹き出しと漏洩検出の警告は policy.ts で止める）。
+// ユーザー名とパスワードの input（type=password）を持つ <form method=post action=/do-login>。Chrome のパスワードマネージャーが
+// 本物の入力と見なすには fill() ではなく keyboard.type（または browserAct の type）で入力し、submit（ナビゲーションを伴う送信）することが
+// 必要（実測・2026-10-24）。送ったら `/do-login` が成功のページを返す。
 
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -101,6 +105,25 @@ document.getElementById('play').addEventListener('click', () => {
 document.getElementById('stop').addEventListener('click', () => { if (osc) { osc.stop(); osc = null; } });
 </script>
 </body></html>`;
+
+/** `/login` のユーザー名・パスワード（届いた値がこれと合っていれば `/do-login` が成功のページを返す） */
+export const LOGIN_USER = "tomsmith";
+export const LOGIN_PASS = "SuperSecretPassword!";
+
+const LOGIN = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ログイン</title></head>
+<body style="margin:0;background:#fff">
+<h1>ログイン</h1>
+<form method="post" action="/do-login">
+<label>ユーザー名 <input id="username" name="username" aria-label="ユーザー名"></label><br>
+<label>パスワード <input id="password" name="password" type="password" aria-label="パスワード"></label><br>
+<button id="login" type="submit">ログイン</button>
+</form>
+</body></html>`;
+
+function loginResult(ok: boolean): string {
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>${ok ? "Secure Area" : "ログイン失敗"}</title></head>
+<body style="margin:0;background:#fff"><h1 id="result">${ok ? "ログインしました" : "ユーザー名かパスワードが違います"}</h1></body></html>`;
+}
 
 const PERMISSIONS = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>許可を求めるページ</title></head>
 <body style="margin:0;background:#fff">
@@ -196,6 +219,21 @@ export function createTestPageServer(): Server {
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(PERMISSIONS);
         return;
+      case "/login":
+        res.setHeader("content-type", "text/html; charset=utf-8");
+        res.end(LOGIN);
+        return;
+      case "/do-login": {
+        let body = "";
+        req.on("data", (c: Buffer) => (body += c.toString()));
+        req.on("end", () => {
+          const params = new URLSearchParams(body);
+          const ok = params.get("username") === LOGIN_USER && params.get("password") === LOGIN_PASS;
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.end(loginResult(ok));
+        });
+        return;
+      }
       case "/popup":
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end(`<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ポップアップ</title></head><body style="margin:0;background:${CORNER_COLORS.popup}"></body></html>`);
