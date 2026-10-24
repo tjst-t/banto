@@ -679,9 +679,12 @@ export class ProjectMover {
 
   /**
    * **移し始める**。確かめて started を積むところまでを待ち、写すのは裏で進める（進み具合は `status`）。断るときは
-   * `RuntimeMoveError`（状態番号つき）
+   * `RuntimeMoveError`（状態番号つき）。
+   *
+   * `beforeStarted` は、断る確かめを全部通して移す先を押さえたあと・started を積む前に1回呼ぶ（チャットを Project にしてから
+   * 移す——promote だけ済んで移せない、を作らない。アーキ仕様 §2.2「Project にする」）。投げたら移す先を片づけて、そのまま投げる
    */
-  async start(projectId: string, target: MoveTarget): Promise<ProjectState> {
+  async start(projectId: string, target: MoveTarget, opts?: { beforeStarted?: () => Promise<void> }): Promise<ProjectState> {
     const project = this.mustGetProject(projectId);
     if (project.move) throw new RuntimeMoveError(409, "いま別の実行場所へ移しています");
     if (project.sleep) throw new RuntimeMoveError(409, SLEEPING_REASON);
@@ -698,6 +701,7 @@ export class ProjectMover {
       if (again) throw new RuntimeMoveError(409, again);
       const { to, created } = await this.prepareTarget(project, from, target);
       try {
+        await opts?.beforeStarted?.();
         return await this.deps.projectThread.startRuntimeMove(projectId, { from, to, created });
       } catch (err) {
         await this.cleanupTarget(project, to, created).catch((e: unknown) => this.log(`[host] 移す先を片づけられませんでした: ${String(e)}`));
