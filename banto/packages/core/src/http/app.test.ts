@@ -2632,6 +2632,32 @@ test("Project にする：kind が消えて名前が替わり、グループに�
   }
 });
 
+test("Project にする：試作を始めていないチャットは、Project のコンテナで動く Module（Shell・FileSystem など）が戻る（Backlog #551）", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread, runtimeConfig }) => {
+        const { loadModuleDeclarations, modulePlacement } = await import("../modules/declaration.js");
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string };
+        const all = loadModuleDeclarations(runtimeConfig, "").map((d) => d.name).sort();
+        const inContainer = loadModuleDeclarations(runtimeConfig, "").filter((d) => modulePlacement(d.meta, d.launch) === "project-container").map((d) => d.name);
+        assert.ok(inContainer.length > 0, "Project のコンテナで動く Module が既定に無い");
+        const before = loadModuleDeclarations(runtimeConfig, chat.id).map((d) => d.name);
+        for (const name of inContainer) assert.ok(!before.includes(name), `チャットに ${name} が入っている`);
+
+        const res = await fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "電力の見える化" }) });
+        assert.equal(res.status, 200, await res.clone().text());
+        assert.deepEqual(loadModuleDeclarations(runtimeConfig, chat.id).map((d) => d.name).sort(), all, "Project にしても Module が戻っていない");
+        assert.equal(projectThread.getProject(chat.id)?.kind, undefined);
+      },
+      { chatsDir: join(scratch, "chats") },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("チャットでは人の Fork の口を 409 chat-no-fork で断り（発言から分けるのも）、「Project にする」と通る（アーキ仕様 §2.2「チャット」）", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
   try {
