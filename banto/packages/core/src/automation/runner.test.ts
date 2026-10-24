@@ -35,6 +35,8 @@ interface Ctx {
   finishHung(outcome?: TurnOutcome): Promise<void>;
   /** 乗り換えで閉じたと画面に知らせたもの */
   announced: Array<{ threadId: string; projectId: string; reason: string }>;
+  /** 進める自動化の回を飛ばす理由（全体の上限。`undefined` なら飛ばさない） */
+  advanceSkip: { reason: string | undefined };
 }
 
 /** turn-runner の代わり：鍵を取り、届いたものを会話に積み、ターンの終わりを書いてから鍵を返す */
@@ -58,6 +60,7 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     const woke: string[] = [];
     const announced: Ctx["announced"] = [];
     const next: Ctx["next"] = { outcome: "completed" };
+    const advanceSkip: Ctx["advanceSkip"] = { reason: undefined };
     let hung: ((outcome: TurnOutcome) => Promise<void>) | undefined;
     deliveries.setTurnRunner(async (threadId, hop) => {
       const release = turns.tryAcquire(threadId, hop);
@@ -90,9 +93,11 @@ async function setup(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
       listJudgmentsForThread: (id) => judgments.get(id) ?? [],
       notify,
       announceClosed: (input) => void announced.push(input),
+      advanceSkipReason: () => advanceSkip.reason,
     });
     await fn({
       announced,
+      advanceSkip,
       store,
       automations,
       turns,
@@ -469,5 +474,19 @@ test("留めが解けないまま届け先が閉じられたら、留めた理�
     assert.match(run.reason!, /閉じられ/);
     assert.match(run.reason!, /回復中/, "留めた理由が残っていない");
     assert.deepEqual(ctx.woke, []);
+  });
+});
+
+test("進める自動化（canAdvanceProject）の回だけ、全体の1時間の回の上限で飛ばす。欄の無い自動化は今までどおり届ける", async () => {
+  await setup(async (ctx) => {
+    ctx.advanceSkip.reason = "全部の進める自動化で1時間に起きる回は 12 回までです（いま 12 回）";
+    const advance = await ctx.automations.create({ projectId: ctx.projectId, createdBy: { kind: "human" }, fields: { ...fields(), canAdvanceProject: true } });
+    const plain = await ctx.automations.create({ projectId: ctx.projectId, createdBy: { kind: "human" }, fields: fields() });
+    const skipped = await ctx.runner.run(advance, "manual");
+    assert.equal(skipped.result, "skipped");
+    assert.match(skipped.reason ?? "", /1時間に起きる回は 12 回まで/);
+    const ran = await ctx.runner.run(plain, "manual");
+    assert.equal(ran.result, "running");
+    await finished(ctx, plain.id, ran.runId);
   });
 });

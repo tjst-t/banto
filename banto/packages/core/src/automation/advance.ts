@@ -191,6 +191,31 @@ export function advanceInstructionLimitReason(
   return `全部の進める自動化で1時間に送れる指示は ${limit} 件までです（いま ${used} 件）。この時間は人に回してください`;
 }
 
+/** その自動化が進める自動化か（`canAdvanceProject` を持つ。番頭の自動化・見回りは除く） */
+export function isAdvanceAutomation(a: Pick<Automation, "canAdvanceProject" | "mode">): boolean {
+  return a.canAdvanceProject === true && a.mode !== "supervisor" && a.mode !== "patrol";
+}
+
+/**
+ * **進める自動化の回の全体の上限に届いていれば、飛ばす理由**（全部の進める自動化の合計、直近 1 時間。アーキ仕様 §4.3「判断役の一般化」の 4.）。
+ * 数えるのは届けた回だけ（飛ばした・断った回は数えない）。`AutomationRunner` が進める自動化の回を届ける手前で引く
+ */
+export function advanceRunLimitReason(
+  automations: Pick<AutomationStore, "listAll">,
+  limits: Pick<SupervisorPolicy["limits"], "runsPerHour">,
+  now: Date,
+): string | undefined {
+  const limit = Math.max(0, Math.floor(limits.runsPerHour));
+  const since = now.getTime() - HOUR_MS;
+  const used = automations
+    .listAll()
+    .filter(isAdvanceAutomation)
+    .flatMap((a) => a.runs)
+    .filter((r) => r.result !== "skipped" && r.result !== "rejected" && Date.parse(r.at) > since).length;
+  if (used < limit) return undefined;
+  return `全部の進める自動化で1時間に起きる回は ${limit} 回までです（いま ${used} 回）。この時間は人に回しています`;
+}
+
 /** そのタイムゾーンの日付（YYYY-MM-DD）。読めないタイムゾーンは UTC で数える */
 export function advanceDayKey(date: Date, timeZone: string): string {
   try {

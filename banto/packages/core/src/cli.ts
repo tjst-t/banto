@@ -40,6 +40,8 @@ import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
 import { ProjectAdvance } from "./automation/advance.js";
 import { AdvanceFactory } from "./automation/advance-factory.js";
+import { advancePolicy, migrateAdvanceLimitKeys } from "./automation/advance-policy.js";
+import { advanceRunLimitReason } from "./automation/advance.js";
 import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { SupervisorControls, supervisorSkipReason } from "./supervisor/guard.js";
@@ -257,6 +259,9 @@ async function main(): Promise<void> {
   await projectThread.load();
   const runtimeConfig = new RuntimeConfigStore(bootstrap.dataDir, eventLog);
   await runtimeConfig.load();
+  // **進める自動化の全体の上限の鍵**を supervisor.limits.* から automation.advance.limits.* へ、一度だけ読み替える（§4.3「判断役の一般化」の 4.）
+  const advanceLimitsCopied = await migrateAdvanceLimitKeys(runtimeConfig);
+  if (advanceLimitsCopied.length > 0) console.log(`[host] 進める自動化の上限を旧鍵から写しました: ${advanceLimitsCopied.join(", ")}`);
   // **自動化の台帳**（決定・2026-10-15、アーキ仕様 §4.3）。project-thread とは別の fold と snapshot
   const automations = new AutomationStore(bootstrap.dataDir, eventLog);
   await automations.load();
@@ -818,6 +823,8 @@ async function main(): Promise<void> {
     // 番頭の量（§4.5「量」、Backlog #510）：閾値・全体の1時間の回の上限で飛ばし、届いていた決めることは人に残す
     supervisorSkipReason: (projectId) => supervisorSkipReasonNow(projectId),
     supervisorSkipped: (automation, received, reason): Promise<void> => supervisorControls.skipped(automation, received, reason),
+    // 進める自動化の量（§4.3「判断役の一般化」の 4.）：全部の進める自動化の1時間の回の上限で飛ばす
+    advanceSkipReason: (projectId) => advanceRunLimitReason(automations, advancePolicy(runtimeConfig, projectId).limits, new Date()),
   });
   // **見回り**（アーキ仕様 §4.4）。見回りの Fork の `notify` と手帳
   const patrols = new Patrols({ automations, inbox, projectThread });
@@ -947,7 +954,7 @@ async function main(): Promise<void> {
     deliveries,
     turns: threadTurns,
     inbox,
-    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    policy: (projectId) => advancePolicy(runtimeConfig, projectId),
   });
   // **その Project の Factory の実行の今の様子**（同梱の Factory の listFactoryRuns）。番頭と進める自動化の全体の上限の数えが引く
   const factoryRunsOf = async (projectId: string) => {
@@ -974,7 +981,7 @@ async function main(): Promise<void> {
   const advanceFactory = new AdvanceFactory({
     projectThread,
     automations,
-    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    policy: (projectId) => advancePolicy(runtimeConfig, projectId),
     factoryRuns: factoryRunsOf,
   });
   // **番頭の守り**（アーキ仕様 §4.5「守り」、Backlog #510）：量で飛ばした回の記録・全部止める・記録・取り消し・1日のまとめ

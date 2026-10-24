@@ -29,6 +29,7 @@ import { previousRunUnfinished } from "./busy.js";
 import { patrolDeliveryText } from "./patrol.js";
 import { supervisorPolicy, type SupervisorPolicy } from "../supervisor/policy.js";
 import { SUPERVISOR_FORK_TITLE, supervisorActsOf, supervisorDeliveryText } from "../supervisor/supervisors.js";
+import { isAdvanceAutomation } from "./advance.js";
 
 export interface AutomationRunnerDeps {
   projectThread: ProjectThreadStore;
@@ -57,6 +58,11 @@ export interface AutomationRunnerDeps {
    * 無ければ飛ばさない
    */
   supervisorSkipReason?(projectId: string): string | undefined;
+  /**
+   * **進める自動化の回を飛ばす理由**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」の 4.——全部の進める自動化の1時間の回の上限）。
+   * `canAdvanceProject` を持つ自動化（番頭・見回りは除く）の回だけ引く。無ければ飛ばさない
+   */
+  advanceSkipReason?(projectId: string): string | undefined;
   /** 番頭の回を量で飛ばしたあと（記録と、届いていた決めることを人に残す）。届けなかった受けたものを渡す */
   supervisorSkipped?(automation: Automation, received: readonly AutomationReceived[], reason: string): Promise<void>;
   now?: () => Date;
@@ -246,6 +252,12 @@ export class AutomationRunner {
         .supervisorSkipped?.(automation, received, supervisorSkip)
         .catch((err: unknown) => console.warn(`[host] 番頭の回を飛ばしたことを残せませんでした（${automation.id}）:`, err));
       return skipped;
+    }
+
+    // **進める自動化の量**（§4.3「判断役の一般化」の 4.）：飛ばした回の受けたものは届けずに片づける——その間の決めることは人に残る
+    if (isAdvanceAutomation(automation)) {
+      const advanceSkip = this.deps.advanceSkipReason?.(automation.projectId);
+      if (advanceSkip !== undefined) return skip(advanceSkip);
     }
 
     // 作ったときに立てていなかった（立てる口を繋ぐ前に作ったもの）なら、ここで立てる
