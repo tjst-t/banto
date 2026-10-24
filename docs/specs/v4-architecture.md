@@ -4558,6 +4558,31 @@ host のモデルは「独立した自動化が複数ある」のまま——人
   `http/patrol-tools.ts`・`http/turn-summary.ts`・`relay/agent-proxy.ts`・`relay/read-only.ts` に配線が広がっている
   （調査・2026-10-24）ため、削除は一般化の実装と同じ作業の中で、参照を1つずつ一般化後のものに置き換える形で進める
 
+**実装で決めた細部**（実装・2026-10-24、Backlog #542〜#548。番頭の実コードは残したまま並存。経緯は
+docs/notes/2026-10-24-judge-generalization.md の「実装（2026-10-24）」）：
+
+- **台帳**（`automation/fold.ts`・`store.ts`）：`delegateKinds` は判断役だけが持て、人に回す種類・知らない種類は入力で断る（任せた
+  つもりにさせない）。空の一覧は「何も選ばせない」。直すときの `null` は外す。`canAdvanceProject` は**見回り（`mode: "patrol"`）には
+  持たせない**——見回りの回は読むだけ（§4.4）で、頼む・Factory に流すは読むだけではない。番頭の「見回り」に当たるのは、ふつうの時刻の
+  自動化に `canAdvanceProject` を付けたもの。AI の `create_automation`・`update_automation` の引数には足さない（人が画面で決める欄。
+  AI に返す一覧には出す）
+- **進める自動化の記録**：`canAdvanceProject` か `delegateKinds` を持つ自動化に `advanceActs`（`automation.advance_acted`、形と持つ件数は
+  番頭の記録と同じ）。指示・Factory の回数と全体の上限はここから数える。番頭の記録とは別に数える
+- **任された行い**（`instruct_thread`・Factory の絞り込み）：その Fork を専用にしている進める自動化に `delegateKinds` があればその和、
+  無ければ Project の方針（`supervisor.delegate` の全体＋Project の差分。鍵の付け替えはまだ——番頭と共有）
+- **`instruct_thread`・`list_stalled_threads`**（`automation/advance.ts`）：使えるのは `canAdvanceProject` を持つ自動化の専用の Fork
+  （読むだけ・番頭の印の無い会話）のターンだけ。そのターンにだけ見せ、聞かずに通す。断る決まり・回数は番頭と同じ。届けものの印は番頭の
+  指示と同じ `origin.supervisor`（`supervisorId` に自動化の id、書き手 `supervisor`）——始まる前に人が発言したら捨てる・自動化の回に
+  数えない扱いを受けるため。受信箱のカードの「頼んだ」は `by` を付けずに添える（画面は「自動化「…」が頼んだ手順」と出す）
+- **Factory**（`automation/advance-factory.ts`）：AI の代理が同梱の Factory の `runFactory`・`answerFactory` を Module へ渡す手前で照らす
+  （`advanceGate`）。照らすのは `canAdvanceProject` を持つ自動化の専用の Fork から呼んだときだけで、**ほかの会話の呼び出しは照らさずに
+  通す**（今までの挙動を変えない）。`answerFactory` が答えられるのは、その Project の進める自動化が流した実行だけ
+- **全体の上限**（`automation/advance-policy.ts`）：鍵は `automation.advance.limits.runsPerHour`・`instructionsPerHour`・
+  `factoryConcurrent`（全体の層だけ、既定は番頭と同じ 12・10・2）。起動のときに旧鍵 `supervisor.limits.*` から一度だけ写し、済んだ印
+  `automation.advance.limits.migratedFromSupervisor` を残す（旧鍵は番頭がまだ読むので消さない）。回の上限は届ける層が進める自動化の回を
+  届ける手前で飛ばす（理由つきの `skipped`）
+- **画面の口**：判断役に任せられる種類の題は `GET /api/automation-delegate-kinds`（人に回す種類は入らない、`byDefault` は方針の既定）
+
 #### 段2の未決
 
 - banto 自身の出来事の残り（コンテナが上限に当たった・更新した・別のサーバに繋がらない 等）と、外から繋いだ Module の出来事は、
