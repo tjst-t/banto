@@ -2342,7 +2342,14 @@ banto 全体の設定の Repositories の面にも同じものを出す（**bant
   （既定 open）、`status` は queued・in_progress・completed・success・failure・cancelled、`limit` は 1〜50（既定 20）
 - **リポジトリは呼んだ Project の根で決まる**（ブランチを送る口と同じ決め方——host に `relayCallerProject` で聞き、刻印と照らす）。
   台帳の行の GitHub の場所と、フォルダの origin が同じものだけ（コンテナの中から origin を書き換えて、別のリポジトリをこの
-  アカウントで読ませない——食い違えば「一覧を開くと直します」で断る）。台帳に無い・GitHub に無い・別のサーバの Project は断る
+  アカウントで読ませない——食い違えば「一覧を開くと直します」で断る）。台帳に無い・GitHub に無いものは断る
+- **別のサーバの Project**（決定・2026-10-24、ユーザー「ちゃんと別の実行場所でレポジトリが使えるようにして」、Backlog #540）：
+  根がこの機械に無いので、**ブランチを送る口（下の「別のサーバの Project」）と同じ決め方**で決める——覚えた送り先があればその
+  場所とアカウントだけ（向こうの origin がそれと違えば読まない）、無ければ clone の記録 → 台帳の同じ場所 → 持ち主と同じ login で
+  決め、**最初に読んだときにその Project の送り先として覚える**（Backlog の push と同じ `remote-targets.json`。以降は push も
+  読む tool も同じ場所に固定）。読むだけの tool では、送る口のように人がカードで場所を見てから固定するとは限らない——送る口で
+  「承認をすべて自動で許可する」がオンのときと同じ扱い。向こうの origin を読むため、この6つも `dev.banto/projectGit` を名乗る
+  （ハンドラは origin しか読まない）。決められないときは理由を添えて断る
 - **引数は決めた欄だけ**。欄の外（owner・repo・URL・検索語）が来たら、GitHub にも Vault にも行かずに断る（黙って捨てると、
   AI は別のリポジトリを読めたと思い込む）。宛先はそのリポジトリの API の決まった場所だけで、リダイレクトの先へは行かない
 - **読むのに使うのは台帳の行のアカウント**。アカウントの無い行は鍵なしで読む（公開のものだけ。非公開は「扱うアカウントを
@@ -2545,7 +2552,8 @@ Project の画面からも一覧からも開く。アカウント・名前・公
     選べない）。呼べるのは `repositories` 役割を名乗る、banto 本体で動く同梱の banto 全体の Module で、**しかも `_meta` に
     `dev.banto/projectGit` を名乗った tool を処理している呼び出しの中だけ**（host が中継でその tool を呼んだ呼び出しに印を付け、
     呼び出しの印（`dev.banto/callId`）が指す呼び出しに印があるときだけ受ける。印の無い問いは断る。信じるのは同梱の宛先の名乗り
-    だけ）。Repositories は `push_branch`・`fetch_branch`・`branch_target` に名乗る。値は Repositories にしか渡らず、Repositories は
+    だけ）。Repositories は `push_branch`・`fetch_branch`・`branch_target` と読むだけの GitHub の tool（AI が直に呼ぶ。AI の呼び出しの
+    中継（`agent-proxy.ts`）も、同梱の Module の名乗りにだけ印を付ける、2026-10-24・Backlog #540）に名乗る。値は Repositories にしか渡らず、Repositories は
     承認つきの口を処理している最中なので、ここでは承認を重ねない。この機械の Project・Module が起きていない（接続が無い）Project は
     理由つきで断る。待つ間は 10 秒ごとに進み具合を送る
   - **向こうの git は Project の中のユーザーで動かす**：machine は VM のユーザー（箱そのもの）、containers はコンテナの中の

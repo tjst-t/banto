@@ -6,7 +6,7 @@
 // 1. **環境を変えない**——GitHub へは GET だけ。ログインの取り直しと Vault への書き戻しは、この Module が自分の資格情報を
 //    使える形に保つ仕事で、環境を変えるものに数えない（§4.4 の「写しを追いつかせる」と同じ扱い）
 // 2. **宛先を AI が選べない**——リポジトリは呼んだ Project の根で決まる（host に聞く。台帳の行の GitHub の場所と、フォルダの
-//    origin が同じものだけ）。引数は状態・番号・件数だけで、決めた欄の外（owner・repo・URL・検索語）は受けずに断る。
+//    origin が同じものだけ。別のサーバの Project はブランチを送る口と同じく、覚えた送り先だけ——Backlog #540）。引数は状態・番号・件数だけで、決めた欄の外（owner・repo・URL・検索語）は受けずに断る。
 //    宛先はそのリポジトリの GitHub の API の決まった場所だけ
 // 3. **秘密を返さない**——トークンは GitHub への見出しにだけ使い、返事には入れない
 //
@@ -86,6 +86,11 @@ export interface GithubReadDeps {
   store: LedgerStore;
   accounts: GithubAccounts;
   github: GithubApi;
+  /**
+   * 別のサーバの Project のリポジトリとアカウント（ブランチを送る口が決め、覚える——`BranchSync.remoteRepositoryForRead`）。
+   * 無ければ別のサーバの Project は断る
+   */
+  remoteRepository?: (project: ProjectSummary, callId?: string) => Promise<{ at: GithubLocation; login: string } | { error: string }>;
 }
 
 type Raw = Record<string, unknown>;
@@ -205,9 +210,13 @@ export class GithubRead {
    * だけ**——コンテナの中から origin を書き換えて、別のリポジトリをこのアカウントで読ませることはできない（食い違えば断る）
    */
   private async target(project: ProjectSummary, callId?: string): Promise<{ where: GithubLocation; token?: string; account?: string }> {
-    // 別のサーバの Project の根は向こうのパスで、この機械の同じ文字列のフォルダは別物（ブランチを送る口と同じ線）
+    // 別のサーバの Project の根は向こうのパスで、この機械の同じ文字列のフォルダは別物。**ブランチを送る口と同じ決め方**で
+    // リポジトリとアカウントを決める（覚えた送り先があればそれだけ。無ければ決めて覚える。Backlog #540）
     if (project.runtime !== undefined && project.runtime !== "host-container") {
-      throw new Error("この Project は別のサーバで動いています（Repositories の一覧のリポジトリと結びつけられません）");
+      if (!this.deps.remoteRepository) throw new Error("この Project は別のサーバで動いています（この Repositories は別のサーバの Project のリポジトリを決められません）");
+      const decided = await this.deps.remoteRepository(project, callId);
+      if ("error" in decided) throw new Error(`この Project は別のサーバで動いています：${decided.error}`);
+      return this.withAccount(decided.at, decided.login, callId);
     }
     const entry = await ledgerEntryFor(this.deps.store, project);
     if ("reason" in entry) throw new Error(`${entry.reason}（GitHub を読めるのは、Repositories の一覧にあるリポジトリを根にした Project だけです）`);
@@ -221,15 +230,20 @@ export class GithubRead {
       );
     }
     if (!entry.account) return { where: entry.github };
-    const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === entry.account!.toLowerCase());
-    if (!account) throw new Error(`このリポジトリを扱うアカウント @${entry.account} は登録が外れています（Repositories の設定で登録し直してください）`);
+    return this.withAccount(entry.github, entry.account, callId);
+  }
+
+  /** そのアカウントのトークンを引いて添える */
+  private async withAccount(where: GithubLocation, login: string, callId?: string): Promise<{ where: GithubLocation; token?: string; account?: string }> {
+    const account = (await this.deps.accounts.list()).accounts.find((a) => a.login.toLowerCase() === login.toLowerCase());
+    if (!account) throw new Error(`このリポジトリを扱うアカウント @${login} は登録が外れています（Repositories の設定で登録し直してください）`);
     let token: string;
     try {
       token = await this.deps.accounts.tokenFor(account.login, callId);
     } catch (err) {
       throw new Error(`@${account.login} の GitHub の資格情報を使えませんでした：${(err as Error).message}`);
     }
-    return { where: entry.github, token, account: account.login };
+    return { where, token, account: account.login };
   }
 
   /** 読むだけの tool を1本処理する。返すのは決めた欄だけの JSON */

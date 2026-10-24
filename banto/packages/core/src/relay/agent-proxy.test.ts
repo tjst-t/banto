@@ -688,3 +688,37 @@ test("止め始めたら新しい tool 呼び出しは Module に届かず RESTA
   await runner.close();
   await moduleClient.close();
 });
+
+// **AI が直に呼ぶ tool でも、Project の git の口に届く印を付ける**（追加・2026-10-24、Backlog #540）。Repositories の読むだけの
+// GitHub の tool が、別のサーバの Project の origin を読むため。信じるのは同梱の Module の名乗り（`dev.banto/projectGit`）だけ
+test("AI の呼び出しの Project の git の印は、同梱の Module の tool が dev.banto/projectGit を名乗ったときだけ付く", async () => {
+  for (const [origin, named, expected] of [
+    ["bundled", true, true],
+    ["bundled", false, false],
+    ["external", true, false],
+  ] as const) {
+    let reach: boolean | undefined;
+    const moduleCalls = new ModuleCallTracker();
+    const server = new Server({ name: "fake", version: "0.0.0" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [{ name: "listIssues", inputSchema: { type: "object", properties: {} }, _meta: { "dev.banto/visibility": "agent", ...(named ? { "dev.banto/projectGit": true } : {}) } }],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (req) => {
+      const callId = (req.params._meta as Record<string, unknown> | undefined)?.["dev.banto/callId"];
+      reach = moduleCalls.mayReachProjectGit("repositories", typeof callId === "string" ? callId : undefined);
+      return { content: [{ type: "text", text: "ok" }] };
+    });
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const moduleClient = new Client({ name: "host", version: "0.0.0" });
+    await Promise.all([server.connect(s), moduleClient.connect(c)]);
+    const meta = { ...parseModuleMeta({ satisfies: ["repositories"], dependsOn: [], isolation: "subprocess" }, "fake"), origin };
+    const proxy = buildAgentProxy({ name: "repositories", client: moduleClient, meta }, { moduleCalls, threadId: "t1", projectId: "p" });
+    const [ps, pc] = InMemoryTransport.createLinkedPair();
+    const runner = new Client({ name: "runner", version: "0.0.0" });
+    await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+    await runner.callTool({ name: "listIssues", arguments: {} });
+    assert.equal(reach, expected, `${origin}・名乗り ${named}`);
+    await runner.close();
+    await moduleClient.close();
+  }
+});
