@@ -38,6 +38,7 @@ import { TurnDecisions, autoApproveAllFor, judgeAutomationOf } from "./automatio
 import { Patrols } from "./automation/patrol.js";
 import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
+import { ProjectAdvance } from "./automation/advance.js";
 import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { SupervisorControls, supervisorSkipReason } from "./supervisor/guard.js";
@@ -937,6 +938,16 @@ async function main(): Promise<void> {
     inbox,
     policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
   });
+  // **進める自動化の instruct_thread・list_stalled_threads**（アーキ仕様 §4.3「判断役の一般化」）。canAdvanceProject を持つ自動化の専用の
+  // Fork で使える。回数は進める自動化の記録から数える。番頭の会話は上の番頭の実装が受ける（並存）
+  const projectAdvance = new ProjectAdvance({
+    projectThread,
+    automations,
+    deliveries,
+    turns: threadTurns,
+    inbox,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+  });
   // **番頭が Factory に流す・止まった件に答える**（アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。AI の代理が Module へ渡す手前で
   // 引く。全体の上限は番頭の記録の実行を、その Project の Factory の今の様子と照らして数える
   const supervisorFactory = new SupervisorFactory({
@@ -1023,7 +1034,7 @@ async function main(): Promise<void> {
         if (plan.kind === "skip") return;
         const summary = turnEndSummary(thread);
         // 番頭の指示で起きたターンなら「番頭が〈手順〉を頼みました」を添える（頼んだときに開いているカードが無かったとき、§4.5「記録」）
-        const instructed = supervisorInstructions.judgeOfLastTurn(change.threadId);
+        const instructed = supervisorInstructions.judgeOfLastTurn(change.threadId) ?? projectAdvance.judgeOfLastTurn(change.threadId);
         const carried = instructed ? { carriedJudge: instructed } : {};
         await (missionPlan.kind === "mission"
           ? inbox.raiseReview({ threadId: change.threadId, summary, mission: missionPlan.mission, ...carried })
@@ -3473,6 +3484,7 @@ async function main(): Promise<void> {
     supervisors,
     supervisorControls,
     supervisorInstructions,
+    projectAdvance,
     missions: missionsService,
     patrols,
     automationWebhooks,

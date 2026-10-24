@@ -34,6 +34,7 @@ import type { Automation } from "../automation/fold.js";
 import { autoApproveAllFor, isJudgeAutomation, judgeAutomationOf, judgeNotices, type TurnDecisions } from "../automation/turn-decisions.js";
 import { SupervisorConflictError, SupervisorNotFoundError, type Supervisors } from "../supervisor/supervisors.js";
 import type { SupervisorInstructions } from "../supervisor/instruct.js";
+import type { ProjectAdvance } from "../automation/advance.js";
 import { SupervisorInputError, type SupervisorControls, type SupervisorUndoExec } from "../supervisor/guard.js";
 import {
   ACTION_SHORT_TITLES,
@@ -285,6 +286,11 @@ export interface AppDeps {
   supervisorControls?: SupervisorControls;
   /** **番頭の instruct_thread・list_stalled_threads**（アーキ仕様 §4.5）。番頭の回のターンに渡す。無ければ tool は無い */
   supervisorInstructions?: Pick<SupervisorInstructions, "instruct" | "listStalled" | "screen">;
+  /**
+   * **進める自動化の instruct_thread・list_stalled_threads**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」）。`canAdvanceProject`
+   * を持つ自動化の専用の Fork のターンに渡す。無ければ tool は無い
+   */
+  projectAdvance?: Pick<ProjectAdvance, "instruct" | "listStalled" | "screen" | "availableIn">;
   /**
    * **任務**（追加・2026-10-20、アーキ仕様 §4.4）。会話の tool の中身と `/api/threads/:id/mission`。無ければ tool は断り、口は 501
    */
@@ -2019,7 +2025,7 @@ export function createApp(deps: AppDeps) {
       console.warn("[host] モデルの一覧を取れないので、AI にモデルの名前を伝えません:", err);
     }
 
-    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(threadReading ? { threadReading } : {}), ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, metaPermissions, readOnlyModuleTools, supervisorModuleTools }, {
+    yield* runThreadTurn({ ...deps, settleForks, settleClose, ...(startPrototyping ? { startPrototyping } : {}), continueAfterPrototyping, messaging, ...(threadReading ? { threadReading } : {}), ...(claudeUsage ? { claudeUsage } : {}), ...(automationTools ? { automationTools } : {}), ...(deps.turnDecisions ? { turnDecisions: deps.turnDecisions } : {}), ...(deps.supervisorInstructions ? { supervisorInstructions: deps.supervisorInstructions } : {}), ...(deps.projectAdvance ? { projectAdvance: deps.projectAdvance } : {}), memoryAsk: askInThreadDeps, ...(deps.missions ? { missions: deps.missions } : {}), ...(deps.patrols ? { patrols: deps.patrols } : {}), autoApproveAll, turnSummaryEnabled, projectInstruction, metaPermissions, readOnlyModuleTools, supervisorModuleTools }, {
       threadId,
       ...(modelIdentity ? { modelIdentity } : {}),
       uiTools,

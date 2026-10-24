@@ -52,6 +52,7 @@ import type { RunnerSession } from "../claude-login/relay.js";
 import type { AutomationTools } from "../automation/tools.js";
 import { ANSWER_DECISION_TOOL_NAME, type TurnDecisions } from "../automation/turn-decisions.js";
 import { INSTRUCT_THREAD_TOOL_NAME, LIST_STALLED_THREADS_TOOL_NAME, type SupervisorInstructions } from "../supervisor/instruct.js";
+import type { ProjectAdvance } from "../automation/advance.js";
 import { MISSION_TOOL_NAMES, type Missions } from "../mission/missions.js";
 import { NOTIFY_TOOL_NAME, type PatrolTurnState, type Patrols } from "../automation/patrol.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
@@ -419,6 +420,11 @@ async function* runThreadTurnInner(
      */
     supervisorInstructions?: Pick<SupervisorInstructions, "instruct" | "listStalled" | "screen">;
     /**
+     * **進める自動化**（追加・2026-10-24、§4.3「判断役の一般化」）。`canAdvanceProject` を持つ自動化の専用の Fork のターンに
+     * `instruct_thread`・`list_stalled_threads` を見せ、ターンを始める前に届いた進める自動化の指示を見直す。渡されなければ tool は無く、見直さない
+     */
+    projectAdvance?: Pick<ProjectAdvance, "instruct" | "listStalled" | "screen" | "availableIn">;
+    /**
      * **その Project で「ターンの終わりのまとめ」がオンか**（追加・2026-10-06、§2.2）。ターンを始めるときに1回引く——オンなら
      * `report_turn`・システムプロンプトの節・Stop hook を渡す。渡されなければオフ
      */
@@ -532,7 +538,10 @@ async function* runThreadTurnInner(
   // 画像だけの発言もある（文を書かずにスクリーンショットだけ貼る）。画面から添えたものだけの発言も
   const hasHumanMessage = input.prompt !== "" || images.length > 0 || quotes.length > 0;
   // **番頭の指示を見直す**（§4.5）：始まる前に人が発言した・宛先のターンが決めることを人に聞いて終わった、なら積まずに捨てる（記録に残す）
-  const delivered = deps.supervisorInstructions && queued.length > 0 ? await deps.supervisorInstructions.screen(input.threadId, queued, hasHumanMessage) : queued;
+  // 進める自動化の指示（§4.3「判断役の一般化」）も同じ決まりで見直す——番頭の指示は番頭の実装が見るので、先に進める自動化の分を見る
+  const screened = deps.projectAdvance && queued.length > 0 ? await deps.projectAdvance.screen(input.threadId, queued, hasHumanMessage) : queued;
+  const delivered =
+    deps.supervisorInstructions && screened.length > 0 ? await deps.supervisorInstructions.screen(input.threadId, screened, hasHumanMessage) : screened;
   if (!idle && delivered.length === 0 && !hasHumanMessage && queued.length > 0) {
     // 届いたものが番頭の指示だけで、全部捨てた——ターンは始めない（鍵を返すと、ターンの終わりの扱いがもう一度走り、
     // 留まっていた受信箱のカードと決めることの出来事が出る）
@@ -693,6 +702,8 @@ async function* runThreadTurnInner(
       : undefined;
   // **管理対象 Project の Thread を読む**（§4.6）。読める Project が決まっている Thread だけ（読むだけの回・番頭の回には出さない）
   const readThreadShown = !restricted && deps.threadReading?.scopeOf(input.threadId) !== undefined;
+  // **進める自動化の専用の Fork なら instruct_thread・list_stalled_threads**（§4.3「判断役の一般化」）。読むだけの回・番頭の回には出さない
+  const advanceShown = !restricted && deps.projectAdvance?.availableIn(input.threadId) === true;
   mcpServers["banto-thread"] = createForkMcpServer(
     deps.projectThread,
     input.threadId,
@@ -713,6 +724,7 @@ async function* runThreadTurnInner(
     supervisor ? deps.supervisorInstructions : undefined,
     prototypingTool,
     readThreadShown ? deps.threadReading : undefined,
+    advanceShown ? deps.projectAdvance : undefined,
   );
 
   // system promptに入れるのは確定した分、ターンに添えるのはそれ以降の分
@@ -861,6 +873,10 @@ async function* runThreadTurnInner(
             // 管理対象 Project の Thread を読むのは聞かずに通す——読めるかは host が決めて tool を見せたかどうかで済んでいる。
             // 読むだけで、承認にも Vault にも触れない（§4.6「読む」）
             ...(readThreadShown ? [`mcp__banto-thread__${READ_THREAD_TOOL_NAME}`] : []),
+            // 進める自動化の2つも聞かずに通す——任された行いの決まった手順を頼むのはその会話の仕事で、断るのは host（§4.3「判断役の一般化」）
+            ...(advanceShown
+              ? [`mcp__banto-thread__${LIST_STALLED_THREADS_TOOL_NAME}`, `mcp__banto-thread__${INSTRUCT_THREAD_TOOL_NAME}`]
+              : []),
           ],
       // **読むだけの回の守りの 1. と 4.**（§4.4）。組み込みは資源の3つだけにし、くぐってきたものは PreToolUse で断る。
       // Elicitation も聞かずに断る

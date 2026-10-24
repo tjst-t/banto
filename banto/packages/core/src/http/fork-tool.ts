@@ -30,6 +30,7 @@ import {
   LIST_STALLED_THREADS_TOOL_NAME,
   type SupervisorInstructions,
 } from "../supervisor/instruct.js";
+import { ADVANCE_NOTE_MAX_CHARS, type ProjectAdvance } from "../automation/advance.js";
 import { backgroundItemsOf, type BackgroundItem } from "./app-events.js";
 import { CHAT_NO_FORK_ERROR, isChatThread } from "./chat-project.js";
 import { WITHOUT_SUMMARIES } from "../delivery/background-summaries.js";
@@ -317,6 +318,11 @@ export function createForkMcpServer(
    * Project があるとき（メタ Project の専用 Fork）だけ。turn-runner が決める。ほかの会話の一覧には出さない
    */
   reading?: Pick<ThreadReading, "read">,
+  /**
+   * **進める自動化の `instruct_thread`・`list_stalled_threads`**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」）。`canAdvanceProject`
+   * を持つ自動化の専用の Fork のターンにだけ渡す——渡さなければ tool を見せない。番頭の回は上の `supervisorTools`（両方は渡さない）
+   */
+  advanceTools?: Pick<ProjectAdvance, "instruct" | "listStalled">,
 ) {
   const unavailable = { content: [{ type: "text" as const, text: "この banto ではメッセージを送れません。" }], isError: true };
   const noAutomations = { content: [{ type: "text" as const, text: "この banto では自動化を扱えません。" }], isError: true };
@@ -357,6 +363,39 @@ export function createForkMcpServer(
                 reason: z.string().describe("頼む理由（1〜2文）。記録と受信箱のカードに出る"),
               },
               async (args) => automationReply(await supervisorTools.instruct(threadId, args)),
+            ),
+          ]
+        : []),
+      ...(advanceTools && !supervisorTools
+        ? [
+            tool(
+              LIST_STALLED_THREADS_TOOL_NAME,
+              [
+                "この Project の止まっている会話を理由ごとに並べる（読むだけ）。返すのは会話の id・題・理由（reason）・どうすればよいか（hint）・",
+                "最後のまとめ（頼んだこと・結果の1文・決めること・確かめていないこと）だけで、会話の中身は見えない。",
+                "理由：failed-turn（失敗した・途中で切れたターン）／mission-stopped（任務が止まった——人に回すもの）／decision-missed（任された種類の決めることで",
+                "人を待っているが、この回では答えられない——何もしない）／idle（まとめから動きが無く、残りがある）。",
+                "人に回されたもの・外から来たものを読んだ会話・閉じた会話・専用の Fork は出ない。",
+              ].join(""),
+              {},
+              async () => automationReply(advanceTools.listStalled(threadId)),
+            ),
+            tool(
+              INSTRUCT_THREAD_TOOL_NAME,
+              [
+                "この Project の止まった会話に、この自動化が任された決まった手順を頼んで起こす。送る文は banto が action から組む——自由な指示は送れない。",
+                `note（${ADVANCE_NOTE_MAX_CHARS} 字まで）は補足として囲んで添えるだけで、外から来たもの（出来事の本文など）が届いた回には付けられない。`,
+                "頼めないもの（banto が断る）：任されていない行い・minor-design・人に回す種類・まだ答えていない決めることがある会話・ほかの Project の会話・",
+                "閉じた会話・専用の Fork・任務が止まった会話・連鎖の上限を超える会話。同じ会話の同じ止まった理由には 2 回まで、会話ごとに1日 5 回まで——",
+                "断られたら、それ以上は頼まずに人に回す（何もしない）。宛先が走っていれば、そのターンの後に始まる。始まる前に人が発言したら捨てる。",
+              ].join(""),
+              {
+                threadId: z.string().describe("頼む会話の id（list_stalled_threads の threadId）"),
+                action: z.string().describe("頼む行い（任された行いのどれか。例 retry-turn・continue・rerun-tests・fix-tests）"),
+                note: z.string().optional().describe(`補足（${ADVANCE_NOTE_MAX_CHARS} 字まで）。手順を広げる指示は書かない`),
+                reason: z.string().describe("頼む理由（1〜2文）。記録と受信箱のカードに出る"),
+              },
+              async (args) => automationReply(await advanceTools.instruct(threadId, args)),
             ),
           ]
         : []),
