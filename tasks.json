@@ -13062,6 +13062,35 @@
       "updatedAt": "2026-10-24T14:10:10.345Z",
       "closedAt": "2026-10-24T14:10:10.345Z",
       "extra": {}
+    },
+    {
+      "id": "item-4",
+      "number": 541,
+      "kind": "story",
+      "title": "判断役の一般化:番頭の機能を自動化へ統合し、番頭の実コードを削除する",
+      "status": "backlog",
+      "parent": null,
+      "dependsOn": [],
+      "milestone": null,
+      "priority": "normal",
+      "labels": [
+        "spec",
+        "automation",
+        "judge-generalization"
+      ],
+      "body": "番頭(Backlog #505、2026-10-24にユーザー決定で廃止)が持っていた機能を、既存の判断役(v4-architecture.md §4.3、`banto.turn-decisions` を待つ自動化)へのオプション拡張として一般化する。設計は v4-architecture.md §4.3「判断役の一般化」(ブランチ fork/judge-generalization、レビュー前)と docs/notes/2026-10-24-judge-generalization.md に書いた。\n\n引き継ぐ4点:\n1. kind で答えてよい問いの種類を絞る方針(`supervisorMayAnswer` 相当)→ 判断役の自動化の任意の `delegateKinds`(値が無ければ制限なし=非破壊)\n2. `instruct_thread`・`list_stalled_threads` → 自動化の `canAdvanceProject`(既定 false)が真の専用 Fork でだけ使える\n3. Factory への流し・止まった件への回答 → 既存の `runFactory`・`answerFactory` に `canAdvanceProject`・`delegateKinds` 相当の判断を足す\n4. 全体の上限 → `canAdvanceProject` な自動化すべてで合算、鍵は `supervisor.*` → `automation.advance.*`\n\n番頭の「4つの自動化をセットで管理する」専用画面は無くし、画面に「Project の進行を自動化に任せる」テンプレートボタンを足す(内部でまとめて複数の自動化を作る)。\n\n番頭の実コード(`packages/core/src/supervisor/` 等、11ファイル。`automation/*`・`http/*`・`mission/missions.ts`・`delivery/thread-deliveries.ts`・`inbox/automation-review.ts`・`project-thread/*`・`relay/*`・`cli.ts`・frontend の `components/banto/supervisor/*` 等に配線が広がっている、docs/notes/2026-10-24-judge-generalization.md「番頭の実コードが配線されている場所」参照)は、一般化の実装が揃ってから、参照を1つずつ置き換えながら削除する。main のみで進める(release 反映は別判断、Memory #58965)。",
+      "doneWhen": "判断役の自動化に delegateKinds・canAdvanceProject が持て、既存の判断役の挙動が変わらないこと(回帰試験)。instruct_thread・list_stalled_threads が canAdvanceProject の自動化の専用 Fork で使え、それ以外では使えないこと。Factory 連携・全体の上限が一般化後の仕組みで動くこと。画面に進行役テンプレートがあること。番頭の実コード(packages/core/src/supervisor/ 等)が main から削除され、関係する試験が通ること。v4-frontend.md 旧§6.54 が整理されていること。",
+      "resolution": null,
+      "refs": [
+        "docs/specs/v4-architecture.md §4.3「判断役の一般化」",
+        "docs/notes/2026-10-24-judge-generalization.md",
+        "docs/notes/2026-10-24-supervisor-retirement.md"
+      ],
+      "threads": [],
+      "createdAt": "2026-10-24T14:14:45.626Z",
+      "updatedAt": "2026-10-24T14:14:45.626Z",
+      "closedAt": null,
+      "extra": {}
     }
   ],
   "extra": {
