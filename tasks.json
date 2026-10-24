@@ -13187,7 +13187,7 @@
       "number": 546,
       "kind": "task",
       "title": "core: 全体の上限を supervisor.* から automation.advance.* へ付け替え",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "core-instruct-thread-list-stalled-thread",
@@ -13198,12 +13198,12 @@
       "labels": [],
       "body": "SUPERVISOR_KEYS・SUPERVISOR_DEFAULTS(runsPerHour・instructionsPerHour・factoryConcurrent)を一般化し、canAdvanceProject な自動化すべてで合算して数える。旧鍵からの読み替えを一度行う。",
       "doneWhen": "一般化後の鍵で上限が数えられ、複数の canAdvanceProject 自動化で合算されることが試験で確かめられる",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の e3c087d39 で実装。鍵を automation.advance.limits.* へ付け替え、旧 supervisor.limits.* から起動時に一度だけ読み替え(済んだ印つき)。進める自動化すべてで合算。単体試験通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:57:16.098Z",
+      "closedAt": "2026-10-24T15:57:16.098Z",
       "extra": {}
     },
     {
