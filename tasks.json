@@ -12549,19 +12549,17 @@
       "title": "本人の host を非公開のリポジトリから取る形にする（deploy key と読むだけのトークン）",
       "status": "backlog",
       "parent": "closed-distribution",
-      "dependsOn": [
-        "self-hosted-prebuilt-runner"
-      ],
+      "dependsOn": [],
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "仕様 §7「self の更新が組み立て済みを取ってくる道」・§9 の 4.。git の fetch は読むだけの deploy key、prebuilt.mjs の GitHub の API と Release の読み出しは読むだけの fine-grained トークン（/etc/banto、install.sh が聞く）。host での入れ替えは人。",
+      "body": "仕様 §7「自分用の版——非公開のリポジトリから取る」・§8 の 3.。git の fetch は読むだけの deploy key、組み立て済みと GET /api/admin/update は読むだけの fine-grained トークンで GitHub の API の asset の口から取る（/etc/banto に root 0600、install.sh が聞く）。期限の14日前から受信箱に知らせ、切れたら理由を出して止まる。自分用の版の install.sh の入口（非公開のリポジトリにだけ置く）。公開のうちに切り替えておく。host での入れ替えは人。",
       "doneWhen": "リポジトリを非公開にした状態（または非公開の写し）で、host の画面の更新が release の最新を取り、組み立て済みを使って入れ替わる。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:39:32.731Z",
+      "updatedAt": "2026-10-24T15:19:59.938Z",
       "closedAt": null,
       "extra": {}
     },
