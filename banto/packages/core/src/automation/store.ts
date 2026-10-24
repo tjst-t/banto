@@ -8,6 +8,8 @@ import { SnapshotProjection } from "../event-store/snapshot.js";
 import {
   automationFold,
   type Automation,
+  type AdvanceAct,
+  type AutomationChanges,
   type AutomationCreatedBy,
   type AutomationFields,
   type AutomationReadModel,
@@ -22,6 +24,7 @@ import {
 } from "./fold.js";
 import { cronExpressionProblem } from "./schedule.js";
 import { BANTO_EVENTS, bantoEventDeclaration, isJudgeAutomation, TURN_DECISIONS_EVENT } from "./turn-decisions.js";
+import { DECISION_KINDS, HUMAN_ONLY_KINDS, isDecisionKind, type DecisionKind } from "../supervisor/policy.js";
 
 /** 見回りが1日に出せる気づきの既定と上限（アーキ仕様 §4.4「知らせる tool」） */
 export const PATROL_DAILY_LIMIT_DEFAULT = 10;
@@ -277,6 +280,18 @@ export class AutomationStore {
     await this.append("automation.supervisor_acted", { id, ...act });
   }
 
+  /**
+   * **進める自動化の記録に書く**（アーキ仕様 §4.3「判断役の一般化」）。host が書く——人・AI の入力からは書けない。`canAdvanceProject` か
+   * `delegateKinds` を持つ自動化だけ（ほかの自動化の台帳の形を変えない）
+   */
+  async recordAdvanceAct(id: string, act: AdvanceAct): Promise<void> {
+    const current = this.mustGet(id);
+    if (current.mode === "supervisor" || (current.canAdvanceProject !== true && current.delegateKinds === undefined)) {
+      throw new Error(`自動化 ${id} は進める自動化ではありません`);
+    }
+    await this.append("automation.advance_acted", { id, ...act });
+  }
+
   /** Webhook で受けたものを残す（届けるまで溜める。届けた回の `automation.fired` の `receivedIds` で外れる） */
   async recordReceived(id: string, received: AutomationReceived): Promise<void> {
     this.mustGet(id);
@@ -504,6 +519,41 @@ function parseMode(v: unknown): "patrol" | undefined {
   throw new AutomationInputError("mode は normal（ふつう）か patrol（見回り）です");
 }
 
+/**
+ * **判断役が選んでよい問いの種類**（`delegateKinds`）。決めることの種類の配列で、人に回す種類は入れられない（入れても選べない
+ * ——任せたつもりにさせない）。表の順に並べ直し、重なりは1つに
+ */
+function parseDelegateKinds(v: unknown): DecisionKind[] {
+  if (!Array.isArray(v)) throw new AutomationInputError(`delegateKinds（選んでよい問いの種類）は種類の配列で渡してください（${DECISION_KINDS.join("・")}）`);
+  for (const k of v) {
+    if (!isDecisionKind(k)) throw new AutomationInputError(`delegateKinds の「${String(k)}」は知らない種類です（${DECISION_KINDS.join("・")}）`);
+    if ((HUMAN_ONLY_KINDS as readonly string[]).includes(k)) {
+      throw new AutomationInputError(`delegateKinds の「${k}」は人が決める種類なので任せられません（${HUMAN_ONLY_KINDS.join("・")}）`);
+    }
+  }
+  return DECISION_KINDS.filter((k) => v.includes(k));
+}
+
+function parseCanAdvanceProject(v: unknown): boolean {
+  if (typeof v !== "boolean") throw new AutomationInputError("canAdvanceProject は true か false で渡してください");
+  return v;
+}
+
+const JUDGE_ONLY_DELEGATE_KINDS = `delegateKinds は ${TURN_DECISIONS_EVENT} を待つ自動化（判断役）だけの欄です`;
+/** 見回りの回は読むだけ——止まった会話に頼む・Factory に流すは読むだけではない（アーキ仕様 §4.4「読むだけの回」） */
+const PATROL_CANNOT_ADVANCE = "見回り（mode: patrol）は読むだけの回なので、canAdvanceProject（止まった会話を進める権限）を持てません";
+
+/** 判断役の一般化の2つの欄（作るとき）。無ければ何も足さない——今までの自動化と同じ形 */
+function parseAdvanceFields(raw: Record<string, unknown>, source: AutomationSource): Pick<AutomationFields, "delegateKinds" | "canAdvanceProject"> {
+  const out: Pick<AutomationFields, "delegateKinds" | "canAdvanceProject"> = {};
+  if (raw.delegateKinds !== undefined && raw.delegateKinds !== null) {
+    if (!isJudgeAutomation({ source })) throw new AutomationInputError(JUDGE_ONLY_DELEGATE_KINDS);
+    out.delegateKinds = parseDelegateKinds(raw.delegateKinds);
+  }
+  if (raw.canAdvanceProject !== undefined && parseCanAdvanceProject(raw.canAdvanceProject)) out.canAdvanceProject = true;
+  return out;
+}
+
 function parseDailyFindingLimit(v: unknown): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > PATROL_DAILY_LIMIT_MAX) {
     throw new AutomationInputError(`dailyFindingLimit（1日の気づきの上限）は 1〜${PATROL_DAILY_LIMIT_MAX} の整数で渡してください`);
@@ -524,6 +574,8 @@ export function parseAutomationFields(raw: unknown): AutomationFields {
       }
     }
     if (raw.reviewOnDone === true) throw new AutomationInputError("見回りは完了した回を受信箱に出しません（気づきは notify で出します）");
+    if (raw.canAdvanceProject === true) throw new AutomationInputError(PATROL_CANNOT_ADVANCE);
+    if (raw.delegateKinds !== undefined && raw.delegateKinds !== null) throw new AutomationInputError(JUDGE_ONLY_DELEGATE_KINDS);
     return {
       name: parseName(raw.name),
       instruction: parseInstruction(raw.instruction),
@@ -535,18 +587,20 @@ export function parseAutomationFields(raw: unknown): AutomationFields {
     };
   }
   if (raw.dailyFindingLimit !== undefined) throw new AutomationInputError("dailyFindingLimit は見回り（mode: patrol）だけの欄です");
+  const source = parseSource(raw.source);
   return {
     name: parseName(raw.name),
     instruction: parseInstruction(raw.instruction),
-    source: parseSource(raw.source),
+    source,
     target: parseTarget(raw.target ?? { kind: "dedicated", mode: "fresh" }),
     reviewOnDone: raw.reviewOnDone === undefined ? true : parseReviewOnDone(raw.reviewOnDone),
+    ...parseAdvanceFields(raw, source),
   };
 }
 
-export function parseAutomationChanges(raw: unknown, current: Automation): Partial<AutomationFields> {
+export function parseAutomationChanges(raw: unknown, current: Automation): AutomationChanges {
   if (!isRecord(raw)) throw new AutomationInputError("直す中身はオブジェクトで渡してください");
-  const changes: Partial<AutomationFields> = {};
+  const changes: AutomationChanges = {};
   if (raw.name !== undefined) changes.name = parseName(raw.name);
   if (raw.instruction !== undefined) changes.instruction = parseInstruction(raw.instruction);
   if (raw.source !== undefined) {
@@ -575,8 +629,25 @@ export function parseAutomationChanges(raw: unknown, current: Automation): Parti
     if (!patrol) throw new AutomationInputError("dailyFindingLimit は見回り（mode: patrol）だけの欄です");
     changes.dailyFindingLimit = parseDailyFindingLimit(raw.dailyFindingLimit);
   }
+  // **判断役の一般化の2つの欄**。`delegateKinds: null` は外す
+  if (raw.delegateKinds === null) changes.delegateKinds = null;
+  else if (raw.delegateKinds !== undefined) {
+    if (patrol) throw new AutomationInputError(JUDGE_ONLY_DELEGATE_KINDS);
+    changes.delegateKinds = parseDelegateKinds(raw.delegateKinds);
+  }
+  // きっかけを判断役でないものに変えるなら、残る delegateKinds は持てない（外してから変える）
+  const kindsAfter = changes.delegateKinds === null ? undefined : (changes.delegateKinds ?? current.delegateKinds);
+  if (kindsAfter !== undefined && !isJudgeAutomation({ source: changes.source ?? current.source })) {
+    throw new AutomationInputError(`${JUDGE_ONLY_DELEGATE_KINDS}（外すなら delegateKinds: null）`);
+  }
+  if (raw.canAdvanceProject !== undefined) {
+    changes.canAdvanceProject = parseCanAdvanceProject(raw.canAdvanceProject);
+    if (changes.canAdvanceProject && patrol) throw new AutomationInputError(PATROL_CANNOT_ADVANCE);
+  }
   if (Object.keys(changes).length === 0) {
-    throw new AutomationInputError("直す欄がありません（name・instruction・source・target・reviewOnDone・dailyFindingLimit）");
+    throw new AutomationInputError(
+      "直す欄がありません（name・instruction・source・target・reviewOnDone・dailyFindingLimit・delegateKinds・canAdvanceProject）",
+    );
   }
   return changes;
 }

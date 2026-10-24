@@ -206,3 +206,90 @@ test("台帳が変わるたびに、どの Project のどの自動化かを知�
     assert.deepEqual(seen, Array(4).fill({ projectId: "p1", id: a.id }));
   });
 });
+
+const judge = {
+  name: "判断役",
+  instruction: "決めることに答えて",
+  source: { kind: "event", event: "banto.turn-decisions" },
+};
+
+test("判断役の一般化の欄（delegateKinds・canAdvanceProject）：欄の無い自動化は今までと同じ形のまま", async () => {
+  await withDir(async (dir) => {
+    const { store } = await open(dir);
+    const plain = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: morning });
+    const plainJudge = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: judge });
+    for (const a of [plain, plainJudge]) {
+      assert.equal("delegateKinds" in a, false, "渡さなければ欄を持たない");
+      assert.equal("canAdvanceProject" in a, false);
+      assert.equal("advanceActs" in a, false);
+    }
+    // 名前だけ直しても欄は増えない
+    const renamed = await store.update(plainJudge.id, { name: "判断役2" });
+    assert.equal("delegateKinds" in renamed, false);
+    assert.equal("canAdvanceProject" in renamed, false);
+    // 進める自動化でないものには記録を書けない（台帳の形を変えない）
+    await assert.rejects(store.recordAdvanceAct(plain.id, { at: new Date().toISOString(), kind: "answered", threadId: "t", reason: "x" }));
+  });
+});
+
+test("delegateKinds は判断役だけ・種類の一覧から・人に回す種類は入れられない。表の順に並べ直す", async () => {
+  await withDir(async (dir) => {
+    const { store } = await open(dir);
+    const a = await store.create({
+      projectId: "p1",
+      createdBy: { kind: "human" },
+      fields: { ...judge, delegateKinds: ["merge", "continue", "merge"], canAdvanceProject: true },
+    });
+    assert.deepEqual(a.delegateKinds, ["continue", "merge"]);
+    assert.equal(a.canAdvanceProject, true);
+    // 空の一覧は「何も選ばせない」として持つ
+    const none = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: { ...judge, delegateKinds: [] } });
+    assert.deepEqual(none.delegateKinds, []);
+    // canAdvanceProject: false は持たない（既定と同じ）
+    const notAdvance = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: { ...morning, canAdvanceProject: false } });
+    assert.equal("canAdvanceProject" in notAdvance, false);
+    // 時刻の自動化も canAdvanceProject は持てる（判断役かどうかとは独立）
+    const timed = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: { ...morning, canAdvanceProject: true } });
+    assert.equal(timed.canAdvanceProject, true);
+
+    const bad = (fields: Record<string, unknown>, pattern: RegExp) =>
+      assert.rejects(store.create({ projectId: "p1", createdBy: { kind: "human" }, fields }), (e: unknown) => e instanceof AutomationInputError && pattern.test(e.message));
+    await bad({ ...morning, delegateKinds: ["continue"] }, /判断役/);
+    await bad({ ...judge, delegateKinds: ["spec"] }, /人が決める/);
+    await bad({ ...judge, delegateKinds: ["nope"] }, /知らない種類/);
+    await bad({ ...judge, delegateKinds: "continue" }, /配列/);
+    await bad({ ...judge, canAdvanceProject: "yes" }, /true か false/);
+    await bad({ ...morning, mode: "patrol", canAdvanceProject: true }, /見回り/);
+  });
+});
+
+test("delegateKinds・canAdvanceProject を直す：null で外す・判断役でなくなるなら断る・起こし直しても残る", async () => {
+  await withDir(async (dir) => {
+    const { store } = await open(dir);
+    const a = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: judge });
+    const set = await store.update(a.id, { delegateKinds: ["fix-tests", "continue"], canAdvanceProject: true });
+    assert.deepEqual(set.delegateKinds, ["continue", "fix-tests"]);
+    assert.equal(set.canAdvanceProject, true);
+    // ほかのきっかけ（判断役でない出来事）に変えるなら、delegateKinds を外してから
+    await assert.rejects(store.update(a.id, { source: { kind: "event", event: "banto.nothing" } }), /判断役/);
+    const cleared = await store.update(a.id, { delegateKinds: null, canAdvanceProject: false });
+    assert.equal("delegateKinds" in cleared, false);
+    assert.equal(cleared.canAdvanceProject, false);
+    const again = await store.update(a.id, { delegateKinds: ["merge"] });
+    assert.deepEqual(again.delegateKinds, ["merge"]);
+
+    // 記録は進める自動化に書ける
+    await store.recordAdvanceAct(a.id, { at: "2099-01-01T00:00:00.000Z", kind: "instructed", threadId: "t1", action: "continue", reason: "止まっていた" });
+    for (const s of [(await open(dir)).store, await (async () => { await store.save(); return (await open(dir)).store; })()]) {
+      const got = s.get(a.id)!;
+      assert.deepEqual(got.delegateKinds, ["merge"]);
+      assert.equal(got.canAdvanceProject, false);
+      assert.equal(got.advanceActs?.length, 1);
+      assert.match(got.advanceActs![0]!.actId!, /^act-/);
+    }
+    // 見回りは持てない
+    const patrol = await store.create({ projectId: "p1", createdBy: { kind: "human" }, fields: { ...morning, mode: "patrol" } });
+    await assert.rejects(store.update(patrol.id, { canAdvanceProject: true }), /見回り/);
+    await assert.rejects(store.update(patrol.id, { delegateKinds: ["continue"] }), /判断役/);
+  });
+});

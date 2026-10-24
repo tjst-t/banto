@@ -119,6 +119,9 @@ export function automationForAi(a: Automation, now: Date = new Date()): Record<s
     target: a.target,
     reviewOnDone: a.reviewOnDone,
     ...(a.mode === "patrol" ? { mode: a.mode, dailyFindingLimit: a.dailyFindingLimit } : {}),
+    // 判断役の一般化の2つの欄（アーキ仕様 §4.3）。持っているものだけ——人が画面で決める欄なので、AI の tool からは変えられない
+    ...(a.delegateKinds ? { delegateKinds: a.delegateKinds } : {}),
+    ...(a.canAdvanceProject ? { canAdvanceProject: true } : {}),
     paused: a.paused,
     ...(a.pausedReason ? { pausedReason: a.pausedReason } : {}),
     createdBy: a.createdBy.kind,

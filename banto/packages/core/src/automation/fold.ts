@@ -7,6 +7,7 @@
 import type { EventFieldValue, EventWhere } from "@banto/module-contract";
 import type { StoredEvent } from "../event-store/log.js";
 import type { Fold } from "../event-store/snapshot.js";
+import type { DecisionKind } from "../supervisor/policy.js";
 
 /** 直近の回は1件の自動化につき、これだけ fold に持つ。古いものは events.jsonl にだけ残る */
 export const AUTOMATION_RUNS_KEPT = 50;
@@ -158,7 +159,24 @@ export interface AutomationFields {
   supervisorId?: string;
   /** 見回りが1日に出せる気づきの上限（見回りだけ。既定 `PATROL_DAILY_LIMIT_DEFAULT`、1日は自動化のタイムゾーンで数える） */
   dailyFindingLimit?: number;
+  /**
+   * **判断役が選んでよい問いの種類**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」）。判断役（`banto.turn-decisions` を待つ
+   * 自動化）だけが持てる。無ければ今までどおり種類で絞らない。あれば `answer_decision` が、人に回す種類とこの一覧に無い種類の選択を
+   * 断る（defer はいつでもできる）。空の一覧は「何も選ばせない」
+   */
+  delegateKinds?: DecisionKind[];
+  /**
+   * **止まった会話を進める権限**（追加・2026-10-24、同）。真なら、この自動化の専用の Fork の回で `instruct_thread`・
+   * `list_stalled_threads` を使え、Factory の `runFactory`・`answerFactory` に host の絞り込みが効く。無ければ偽。判断役かどうかとは独立
+   */
+  canAdvanceProject?: boolean;
 }
+
+/**
+ * **直す欄**（`automation.updated` の `changes`）。`delegateKinds` の `null` は「外す」——欄が無い・`undefined` は「直さない」と
+ * 見分けがつかない（出来事の JSON に `undefined` は残らない）
+ */
+export type AutomationChanges = Omit<Partial<AutomationFields>, "delegateKinds"> & { delegateKinds?: DecisionKind[] | null };
 
 /** 見回りの手帳の1行の状態。`notified`＝知らせた・`muted`＝今後知らせない・`dismissed`＝片づけた */
 export type PatrolNoteStatus = "notified" | "muted" | "dismissed";
@@ -280,7 +298,15 @@ export interface Automation extends AutomationFields {
   notebook?: PatrolNote[];
   /** 番頭の記録（番頭の自動化だけ。新しい順、最大 `SUPERVISOR_ACTS_KEPT` 件） */
   supervisorActs?: SupervisorAct[];
+  /**
+   * **進める自動化の記録**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」）。`canAdvanceProject` か `delegateKinds` を持つ自動化
+   * だけ。形と持つ件数は番頭の記録と同じ（新しい順）。指示・Factory の回数と全体の上限はここから数える（規則3）
+   */
+  advanceActs?: AdvanceAct[];
 }
+
+/** 進める自動化の記録の1行（形は番頭の記録と同じ——番頭の実コードを消すときに、こちらを正にする） */
+export type AdvanceAct = SupervisorAct;
 
 export interface AutomationReadModel {
   automations: Map<string, Automation>;
@@ -291,13 +317,14 @@ export type AutomationEvent =
       type: "automation.created";
       payload: AutomationFields & { id: string; projectId: string; createdBy: AutomationCreatedBy; webhookTokenHash?: string };
     }
-  | { type: "automation.updated"; payload: { id: string; changes: Partial<AutomationFields> } }
+  | { type: "automation.updated"; payload: { id: string; changes: AutomationChanges } }
   | { type: "automation.paused"; payload: { id: string; reason?: string; scope?: "stop-all" } }
   | { type: "automation.resumed"; payload: { id: string } }
   | { type: "automation.removed"; payload: { id: string } }
   | { type: "automation.received"; payload: { id: string } & AutomationReceived }
   | { type: "automation.patrol_noted"; payload: { id: string; key: string; change: PatrolNoteChange; title?: string } }
   | { type: "automation.supervisor_acted"; payload: { id: string } & SupervisorAct }
+  | { type: "automation.advance_acted"; payload: { id: string } & AdvanceAct }
   | {
       type: "automation.fired";
       payload: { id: string } & AutomationRun & {
@@ -334,7 +361,10 @@ export const automationFold: Fold<AutomationReadModel> = {
       }
       case "automation.updated": {
         if (!current) return state;
-        const next = { ...current, ...event.payload.changes, updatedAt: raw.ts };
+        const { delegateKinds, ...changes } = event.payload.changes;
+        const next: Automation = { ...current, ...changes, updatedAt: raw.ts };
+        if (delegateKinds === null) delete next.delegateKinds;
+        else if (delegateKinds !== undefined) next.delegateKinds = delegateKinds;
         if (event.payload.changes.source) next.clockFrom = raw.ts;
         if (next.target.threadId !== current.target.threadId) next.threadRuns = 0;
         automations.set(current.id, next);
@@ -378,10 +408,14 @@ export const automationFold: Fold<AutomationReadModel> = {
         const act: SupervisorAct = { ...written, actId: written.actId ?? `act-${raw.seq}` };
         const acts = [act, ...(current.supervisorActs ?? [])];
         const kept = acts.slice(0, SUPERVISOR_ACTS_KEPT);
-        const olderStarts = acts.slice(SUPERVISOR_ACTS_KEPT).filter((a) => a.kind === "factory-started");
-        const startsInKept = kept.filter((a) => a.kind === "factory-started").length;
-        const extra = olderStarts.slice(0, Math.max(0, SUPERVISOR_FACTORY_STARTS_KEPT - startsInKept));
-        automations.set(current.id, { ...current, supervisorActs: [...kept, ...extra] });
+        automations.set(current.id, { ...current, supervisorActs: keepActs(acts) });
+        break;
+      }
+      case "automation.advance_acted": {
+        if (!current) return state;
+        const { id: _id, ...written } = event.payload;
+        const act: AdvanceAct = { ...written, actId: written.actId ?? `act-${raw.seq}` };
+        automations.set(current.id, { ...current, advanceActs: keepActs([act, ...(current.advanceActs ?? [])]) });
         break;
       }
       case "automation.fired": {
@@ -419,6 +453,15 @@ export const automationFold: Fold<AutomationReadModel> = {
     return { automations };
   },
 };
+
+/** 記録を持つ件数に切る。Factory に流した記録は、件数を越えても新しいものから `SUPERVISOR_FACTORY_STARTS_KEPT` 件まで残す */
+function keepActs(acts: readonly SupervisorAct[]): SupervisorAct[] {
+  const kept = acts.slice(0, SUPERVISOR_ACTS_KEPT);
+  const olderStarts = acts.slice(SUPERVISOR_ACTS_KEPT).filter((a) => a.kind === "factory-started");
+  const startsInKept = kept.filter((a) => a.kind === "factory-started").length;
+  const extra = olderStarts.slice(0, Math.max(0, SUPERVISOR_FACTORY_STARTS_KEPT - startsInKept));
+  return [...kept, ...extra];
+}
 
 /** 手帳に1つ書く。新しい順に並べ直し、上限を超えたら「知らせない」以外の古いものから捨てる */
 function notePatrol(
