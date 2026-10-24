@@ -656,11 +656,23 @@ Fork を出す場所が無い。人の口（`POST /api/threads/:id/fork`・発�
   （`folder-provider`）と同じ仕組みで、**今あるフォルダをリポジトリにする**画面を Module が名乗る（`_meta["dev.banto/canvas"] =
   "folder-adopter"`、Repositories は `git init`・台帳に足す・GitHub に公開）。「Project にする」の画面はそれを枠の中に出す。
   Repositories が無ければ「リポジトリ」の欄を出さない
+- **どこで動かすかを選べる**（決定・2026-10-24、ユーザー要望「チャットから Project に移行するときに、実行場所を選べるようにして」）：
+  既定はこの機械のコンテナ（今のまま）。登録してある別のサーバ（`machine`・`containers`）を選ぶと、Project にしてから**今の
+  「Project を別の実行場所へ移す」（v4-security.md §1）でそこへ写して切り替える**——移し方を別に作らない（写して切り替える・元は
+  残す・進み具合・失敗の扱いはそのまま）。移す先の根は人が選ぶ（向こうの「まだ無いか空のフォルダ」。根の決まりは移す口の確かめ
+  のまま）。「置き場へ移す」とは一緒に選べない
+  - **口は1つ**：`POST /api/projects/:id/promote { name, groupId?, runtime, root }`。移す口（`ProjectMover.start`）の断る確かめ
+    （ターン・裏の仕事・Service 等が動いている・眠っている・選べない実行場所・根が空でない・重なる）を全部通して移す先を押さえた
+    **あとで** `project.promoted`・グループを書き、`project.runtime_move_started` を積む。断られたら何も書かない（Project にだけ
+    なって移せない、を作らない）。受け付けたら 202 で、写すのは裏で進む。**写している途中で失敗したときは、Project にはなった
+    まま元の場所に残る**（移す口の失敗の扱いのまま）
+  - **リポジトリは作らない**：Repositories は banto 本体の機械のフォルダしか扱えない。別のサーバを選んだら「リポジトリ」の欄は
+    出さず、移したあと AI に頼む
 - 普通の Project をチャットに戻すことはしない
 
 **記録と口のまとめ**：`project.created` に `kind?: "chat"`、名前は今の `project.renamed`、新しく `project.promoted`・
 `project.prototyping.started`。`GET /api/projects` の各 Project に `kind`・`prototyping`（試作を始めたか）。read model の形が
-変わるので SnapshotProjection の版を上げる。`POST /api/projects/:id/promote { name, groupId?, folder? }`。
+変わるので SnapshotProjection の版を上げる。`POST /api/projects/:id/promote { name, groupId?, folder? }`（別の実行場所へ移すなら `folder` の代わりに `runtime`・`root`）。
 
 **決めたこと**（ユーザー・2026-10-21）：チャットの置き場は `~/banto/chats` に固定（設定で変えない）。別のサーバではチャットを
 始めない（この機械のコンテナだけ）。`start_prototyping` は**人の承認の対象にしない**（コンテナを作って道具を戻すだけで、書く・走らせるのは
