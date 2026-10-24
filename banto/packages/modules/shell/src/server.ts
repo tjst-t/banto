@@ -30,7 +30,7 @@ import {
   replyToOf,
   threadOf,
 } from "@banto/module-contract";
-import { runCommand, runCommandInBackground } from "./run-command.js";
+import { runCommand, runCommandInBackground, sweepLeftoverCommandScopes } from "./run-command.js";
 import { HostRelayClient } from "./host-relay-client.js";
 import { BackgroundCommandError, BackgroundCommands, LABEL_MAX } from "./background.js";
 import { SystemdLauncher } from "./background-launcher.js";
@@ -573,6 +573,15 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
           deliver: (input) => relayClient.deliverToThread(input),
         })
       : undefined;
+  // **前の走行が残した待つ形の組を片づける**（`sweepLeftoverCommandScopes`）。待たない——片づけで起動を遅らせない。
+  // 止められなかった組はログに残す
+  void sweepLeftoverCommandScopes(background).then(
+    ({ stopped, failed }) => {
+      if (stopped.length > 0) console.error(`[shell] 前の走行が残したコマンドの組を ${stopped.length} 個止めました: ${stopped.join(", ")}`);
+      for (const f of failed) console.error(`[shell] 前の走行が残したコマンドの組 ${f.unit} を止められませんでした: ${f.error}`);
+    },
+    (err: unknown) => console.error("[shell] 前の走行が残したコマンドの組を片づけられませんでした:", err),
+  );
   const server = createShellServer({
     projectRoot,
     relayClient,

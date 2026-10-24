@@ -50,10 +50,10 @@ export interface RunningRecord {
   /** 実行中の tool（呼んで、まだ終わりが来ていないもの。古い順） */
   toolsInFlight: Array<{ id?: string; title: string }>;
   /**
-   * いま走らせているエージェント（pid＝自分のプロセスグループの id と、開始時刻）。起こし直したあと続ける前・続けないと
-   * 決めたとき、残っていればグループごと止める（`process-group.ts`）
+   * いま走らせているエージェント（pid＝自分のプロセスグループの id と、開始時刻と、仕事の組の単位の名前）。起こし直したあと
+   * 続ける前・続けないと決めたとき、残っていればグループごと・組ごと止める（`process-group.ts`）
    */
-  agentProcess?: { pid: number; startTicks?: number };
+  agentProcess?: { pid: number; startTicks?: number; unit?: string };
   /** 起こし直しのあと続けた回数 */
   resumes: number;
   /**

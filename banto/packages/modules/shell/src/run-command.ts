@@ -9,7 +9,7 @@ import { NoBatchToolError, type AliasPlace, type HostRelayClient } from "./host-
 import { OUTPUT_LIMITS, OutputCapture, outputDirFor, type OutputLimits } from "./output-capture.js";
 import type { BackgroundCommands } from "./background.js";
 import { SystemdScopes, type ScopeControl } from "./leftover-scope.js";
-import { inWorkScope, type WorkScopeLaunch } from "@banto/module-contract";
+import { inWorkScope, sweepWorkScopes, type WorkScopeLaunch } from "@banto/module-contract";
 
 export interface RunCommandInput {
   command: string;
@@ -317,6 +317,30 @@ async function removeSecretFiles(paths: string[]): Promise<void> {
   }
 }
 
+/**
+ * この Shell（このプロセス）の待つ形で、いま走っているコマンドの組。起きたときの片づけ（`server.ts`）が、片づけている間に
+ * 流したコマンドの組を止めないように（Backlog #294）
+ */
+const liveUnits = new Set<string>();
+
+/**
+ * **起きたときに、前の走行が残した待つ形の組を片づける**（追加・2026-10-23、Backlog #294）。Shell が止まると（banto の
+ * 起こし直し）、待っていたコマンドの組（banto-shell-*.scope）は答えを返す相手も止める人も居ないまま残る。残すのは、引き取った
+ * 残り（leftover——一覧から cancelCommand で止める）と、このプロセスがいま走らせているもの。**組の名前の頭が同じものは、この
+ * Shell のもの**——1つの Project のコンテナに Shell Module は1つ
+ */
+export function sweepLeftoverCommandScopes(
+  leftovers: { leftoverUnits(): Set<string> } | undefined,
+  opts: { kind?: string; available?: () => boolean; graceMs?: number } = {},
+): ReturnType<typeof sweepWorkScopes> {
+  return sweepWorkScopes(opts.kind ?? "shell", {
+    // 1つずつ読み直す——一覧を読んでから止めるまでの間に引き取られたもの（走っていた間は liveUnits にある）も残す
+    keep: (unit) => liveUnits.has(unit) || (leftovers?.leftoverUnits().has(unit) ?? false),
+    ...(opts.available ? { available: opts.available } : {}),
+    ...(opts.graceMs !== undefined ? { graceMs: opts.graceMs } : {}),
+  });
+}
+
 export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<RunCommandResult> {
   const { env, cwd, writtenSecretFiles } = await prepareCommand(input, deps);
   try {
@@ -330,6 +354,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
         env,
         ...(deps.workScopeAvailable ? { available: deps.workScopeAvailable } : {}),
       });
+      if (launch.unit) liveUnits.add(launch.unit);
       const child = spawn(launch.command, launch.args, {
         cwd,
         env: launch.env,
@@ -369,6 +394,7 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
       input.signal?.addEventListener("abort", onAbort, { once: true });
 
       const settle = (fn: () => void) => {
+        if (launch.unit) liveUnits.delete(launch.unit);
         clearInterval(heartbeat);
         input.signal?.removeEventListener("abort", onAbort);
         fn();
@@ -408,7 +434,12 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
               ...(leftover ? { leftover } : {}),
             }),
           );
-        }, (err: unknown) => settle(() => reject(err)));
+        }, (err: unknown) =>
+          // 出力を受け取れなかったときも、組に残したまま返さない（Backlog #294）
+          void settleLeftover(launch, { command: input.command, cwd, startedAt: new Date(startedAt).toISOString(), stopAll: true, deps }).finally(() =>
+            settle(() => reject(err)),
+          ),
+        );
       });
     });
   } finally {

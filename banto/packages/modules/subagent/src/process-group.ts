@@ -9,6 +9,7 @@
 // まだ使われている途中なので、別のプロセスに渡っていない——止める。
 
 import { readFileSync } from "node:fs";
+import { stopWorkScope } from "@banto/module-contract";
 
 /** プロセスの開始時刻（起動からの clock tick）。読めなければ undefined（もう居ない・/proc が無い） */
 export function startTicksOf(pid: number): number | undefined {
@@ -62,4 +63,20 @@ export async function stopOwnedGroup(agent: { pid: number; startTicks?: number }
   if (await waitGone(graceMs)) return true;
   send("SIGKILL");
   return waitGone(5000);
+}
+
+/**
+ * **前の走行のエージェントを止める**：グループを止め、仕事の組に入れていたなら組ごと止める（追加・2026-10-23、Backlog #294
+ * ——グループを抜けた子は組に残る）。止まったら true。組の名前は起こすたびに乱数なので、使い回しの心配は無い
+ */
+export async function stopAgentProcess(agent: { pid: number; startTicks?: number; unit?: string }, graceMs = 5000): Promise<boolean> {
+  const groupStopped = await stopOwnedGroup(agent, graceMs);
+  if (!agent.unit) return groupStopped;
+  try {
+    await stopWorkScope(agent.unit, { graceMs });
+  } catch (err) {
+    console.error(`[subagent] 前の走行のエージェントの仕事の組 ${agent.unit} を止められませんでした:`, err);
+    return false;
+  }
+  return groupStopped;
 }

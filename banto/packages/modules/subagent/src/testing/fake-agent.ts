@@ -166,6 +166,14 @@ async function prompt(sessionId: string, text: string, cx: AgentContext) {
         stdio: "ignore",
       }).unref();
     }
+    // **自分のプロセスグループを抜ける子**（setsid。ssh-agent -D・E2E が後ろに回したものと同じ）——グループで止めても残る
+    const escape = reviewer ? null : /\[escape (\d+)\]/.exec(text);
+    if (escape) {
+      spawn(process.execPath, ["-e", `setTimeout(() => {}, ${Number(escape[1]) * 1000})`, "fake-agent-escape", sessionId], {
+        stdio: "ignore",
+        detached: true,
+      }).unref();
+    }
     if (text.includes("[done-tool]")) {
       const toolCallId = randomUUID();
       await cx.notify(methods.client.session.update, {

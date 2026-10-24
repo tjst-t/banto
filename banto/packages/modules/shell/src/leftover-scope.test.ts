@@ -6,13 +6,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { inWorkScope, workScopeEnv } from "@banto/module-contract";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BackgroundCommands } from "./background.js";
 import type { BackgroundLauncher } from "./background-launcher.js";
 import { SystemdScopes, type ScopeControl } from "./leftover-scope.js";
-import { runCommand } from "./run-command.js";
+import { runCommand, sweepLeftoverCommandScopes } from "./run-command.js";
 import { fakeRelayClient } from "./testing/fake-relay-client.js";
 
 const OWNER = { projectId: "p1", threadId: "t1" };
@@ -173,5 +175,42 @@ test(
     assert.equal(r.stdout, "hi\n");
     assert.equal(r.leftover, undefined);
     assert.deepEqual(bg.list(), []);
+  }),
+);
+
+test(
+  "本物の systemd：起きたときの片づけ——前の走行が待っていたコマンドの組は止め、引き取った残りは残す（Backlog #294）",
+  { skip: realSystemd ? false : "ユーザーの systemd で scope を作れない" },
+  withRegistry(undefined, async (bg, project) => {
+    // 本物の banto-shell-*.scope（この機械で走っているコマンド）に触らないよう、試験だけの頭を使う
+    const kind = `shell-sweeptest-${randomBytes(3).toString("hex")}`;
+    const env = workScopeEnv();
+    const start = (marker: string) => {
+      // 待つ形の E2E の `grep | tail` が、答えを返す相手（止まった Shell）を失って待ち続けている形
+      const launch = inWorkScope("/bin/sh", ["-c", `sleep 300 | tail -n 1 # ${marker}`], { kind, env, available: () => true });
+      assert.ok(launch.unit);
+      spawn(launch.command, launch.args, { env: launch.env, stdio: "ignore", detached: true }).unref();
+      return launch.unit;
+    };
+    const stray = start("stray");
+    const adopted = start("adopted");
+    const scopes = new SystemdScopes();
+    try {
+      let cgroup: string | undefined;
+      for (let i = 0; i < 100; i++) {
+        cgroup = await scopes.leftover(adopted, env);
+        if (cgroup && (await scopes.leftover(stray, env))) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(cgroup, "組が起きない（試験の前提）");
+      bg.adoptLeftover({ command: "sleep 300 | tail -n 1", cwd: project, startedAt: new Date().toISOString(), unit: adopted, cgroup, requestedBy: OWNER });
+
+      const r = await sweepLeftoverCommandScopes(bg, { kind, available: () => true });
+      assert.deepEqual(r, { stopped: [stray], failed: [] });
+      assert.equal(await scopes.leftover(stray, env), undefined, `${stray} が残っている`);
+      assert.ok(await scopes.leftover(adopted, env), "引き取った残りまで止めた（cancelCommand で止めるもの）");
+    } finally {
+      spawnSync("systemctl", ["--user", "stop", stray, adopted], { env });
+    }
   }),
 );

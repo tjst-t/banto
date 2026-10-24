@@ -12,7 +12,7 @@
 // コンテナ）なら、組に入れずにそのまま起こす。
 
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 
 export const WORK_JOBS_SLICE = "banto-work-jobs.slice";
@@ -132,4 +132,94 @@ export function inWorkScope(command: string, args: readonly string[], opts: Work
     scoped: true,
     unit: `${unit}.scope`,
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// **仕事の組を止める・片づける**（追加・2026-10-23、Backlog #294）。
+//
+// 組（scope）は中のプロセスが全部居なくなるまで残る。起こした本人（`systemd-run` が exec したもの）が終わっても、自分の
+// プロセスグループを抜けた子（`setsid`・`ssh-agent -D`・E2E が後ろに回したもの）は組に残る——グループで止めても届かない
+// （実測・2026-10-23：Project のコンテナに banto-subagent-*.scope が40、残っていたのは ssh-agent・tail -F・E2E の子）。
+// 止めるのは組ごと（`systemctl --user kill`）。memory.oom.group はメモリを食い尽くしたときにしか効かない。
+
+/** 組を止めるときの環境（ユーザーの systemd に繋ぐ変数） */
+export function workScopeEnv(base: NodeJS.ProcessEnv = process.env, uid: number = defaultUid()): NodeJS.ProcessEnv {
+  const runtime = `/run/user/${uid}`;
+  return { ...base, XDG_RUNTIME_DIR: base.XDG_RUNTIME_DIR ?? runtime, DBUS_SESSION_BUS_ADDRESS: base.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=${runtime}/bus` };
+}
+
+function systemctlUser(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile("systemctl", ["--user", ...args], { env, timeout: 30_000 }, (err, stdout, stderr) => {
+      const code = err ? (typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : 1) : 0;
+      resolve({ code, stdout: String(stdout), stderr: String(stderr) || (err ? err.message : "") });
+    });
+  });
+}
+
+/** 組がまだ居るか（中にプロセスが残っている）。`--collect` で起こしたので、空になれば片づいて読み込まれていない */
+async function scopeAlive(unit: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  const r = await systemctlUser(["show", "--property=ActiveState", "--value", unit], env);
+  if (r.code !== 0) throw new Error(`仕事の組 ${unit} を確かめられませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+  const state = r.stdout.trim();
+  return state === "active" || state === "activating" || state === "deactivating" || state === "reloading";
+}
+
+/**
+ * **組を丸ごと止める**：中の全プロセスに SIGTERM → `graceMs` 待って残れば SIGKILL → 居なくなるまで待つ。返ったら止まって
+ * いる（もう無い組は何もしない）。止められなければ投げる。`systemctl stop` は単位の既定（90 秒）まで待つので、自分で送る
+ */
+export async function stopWorkScope(unit: string, opts: { env?: NodeJS.ProcessEnv; graceMs?: number } = {}): Promise<void> {
+  const env = opts.env ?? workScopeEnv();
+  const waits = { SIGTERM: opts.graceMs ?? 10_000, SIGKILL: 5_000 };
+  for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+    if (!(await scopeAlive(unit, env))) return;
+    const r = await systemctlUser(["kill", `--signal=${signal}`, unit], env);
+    if (r.code !== 0 && !/not loaded|not found|not active/i.test(r.stderr)) {
+      throw new Error(`仕事の組 ${unit} を止められませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+    }
+    for (let waited = 0; waited < waits[signal]; waited += 100) {
+      if (!(await scopeAlive(unit, env))) return;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+  }
+  if (await scopeAlive(unit, env)) throw new Error(`仕事の組 ${unit} に SIGKILL を送っても、プロセスが残っています`);
+}
+
+/** いまある組のうち、`banto-<kind>-` で始まるもの（単位の名前） */
+export async function listWorkScopes(kind: string, opts: { env?: NodeJS.ProcessEnv } = {}): Promise<string[]> {
+  const env = opts.env ?? workScopeEnv();
+  const r = await systemctlUser(["list-units", "--type=scope", "--all", "--plain", "--no-legend", "--full", `banto-${kind}-*.scope`], env);
+  if (r.code !== 0) throw new Error(`仕事の組の一覧を読めませんでした: ${r.stderr.trim() || `終了コード ${r.code}`}`);
+  return r.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/)[0] ?? "")
+    .filter((unit) => unit.startsWith(`banto-${kind}-`) && unit.endsWith(".scope"));
+}
+
+/**
+ * **起きたときに、前の走行が残した組を片づける**（Backlog #294）。Module が止まると（banto の起こし直し）、走らせていた
+ * 仕事の組は誰も止めずに残る。`keep` が true を返す組（記録にあって、ほかの道で始末するもの）は残す。組に入れられない
+ * 所（コンテナの外・入れ子）では何もしない。止められなかった組は理由ごと返す（呼ぶ側がログに出す）
+ */
+export async function sweepWorkScopes(
+  kind: string,
+  opts: { keep?: (unit: string) => boolean; env?: NodeJS.ProcessEnv; available?: () => boolean; graceMs?: number } = {},
+): Promise<{ stopped: string[]; failed: Array<{ unit: string; error: string }> }> {
+  if (!(opts.available ? opts.available() : workScopeAvailable())) return { stopped: [], failed: [] };
+  const env = opts.env ?? workScopeEnv();
+  const targets = (await listWorkScopes(kind, { env })).filter((unit) => !opts.keep?.(unit));
+  const stopped: string[] = [];
+  const failed: Array<{ unit: string; error: string }> = [];
+  await Promise.all(
+    targets.map(async (unit) => {
+      try {
+        await stopWorkScope(unit, { env, ...(opts.graceMs !== undefined ? { graceMs: opts.graceMs } : {}) });
+        stopped.push(unit);
+      } catch (err) {
+        failed.push({ unit, error: err instanceof Error ? err.message : String(err) });
+      }
+    }),
+  );
+  return { stopped, failed };
 }

@@ -247,6 +247,11 @@ export class BackgroundCommands {
     return this.view(this.observe(id)!);
   }
 
+  /** 引き取った残り（leftover）の組の単位の名前。起きたときの片づけで残す——cancelCommand で止める（Backlog #294） */
+  leftoverUnits(): Set<string> {
+    return new Set(this.observeAll().flatMap((o) => (o.record.leftover ? [o.record.unit] : [])));
+  }
+
   /**
    * 一覧（新しい順）。`owner` を渡せば、その Thread が流したものだけ。**動いているものは全部出し、終わったものだけ
    * `limit` 件で切る**（訂正・2026-10-07、Fable のレビュー——動いているものが件数の外に落ちると、止める口の id が分からない）
