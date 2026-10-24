@@ -769,7 +769,8 @@ export async function createRealChat(): Promise<RealProject> {
  */
 export async function promoteRealChat(
   projectId: string,
-  input: { name: string; groupId?: string | null; folder?: string },
+  /** `runtime`・`root` を渡すと、Project にしてからそこへ移し始める（`folder` とは一緒に渡さない。返るのは移し始めた記録） */
+  input: { name: string; groupId?: string | null; folder?: string; runtime?: string; root?: string },
 ): Promise<RealProject> {
   return request<RealProject>(`/api/projects/${projectId}/promote`, { method: "POST", body: JSON.stringify(input) });
 }

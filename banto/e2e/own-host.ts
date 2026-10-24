@@ -89,6 +89,8 @@ export interface OwnHostOptions {
    * `CLAUDECODE`・`ANTHROPIC_BASE_URL` などを CLI に持ち込まないため
    */
   unsetEnv?: string[];
+  /** チャットを作る試験：チャットの置き場をこの host の置き場の下にする（config.json の `testOnlyChatsDir`。人の ~/banto/chats に作らない） */
+  chats?: boolean;
 }
 
 export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> {
@@ -119,6 +121,7 @@ export async function startOwnHost(opts: OwnHostOptions = {}): Promise<OwnHost> 
       sandboxPublicUrl: `http://127.0.0.1:${sandboxPort}`,
       allowedEmbedderOrigins: [FRONTEND_BASE_URL],
       uiOrigin: FRONTEND_BASE_URL,
+      ...(opts.chats ? { testOnlyChatsDir: join(dir, "chats") } : {}),
     }),
   );
   // 片づけ役：この worker が居なくなったら host のグループを止め、コンテナと置き場を消す。置き場が消えたら（ふつうに
