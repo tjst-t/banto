@@ -12444,11 +12444,11 @@
       "labels": [],
       "body": "仕様 v4-distribution.md §3（main 7bb261567）。Claude のアカウントの台帳に種類 api-key を足す（キーは Vault、台帳は alias だけ。台帳にも Event Store にもキーを書かない）。Runner とコンテナには合言葉を ANTHROPIC_AUTH_TOKEN で渡す（ANTHROPIC_API_KEY だと中継が x-api-key を外して 401）。中継は上流へ出すとき Authorization を外して x-api-key を差し込み、anthropic-beta: oauth-… を付けない。CLAUDE_CODE_SUBSCRIPTION_TYPE・RATE_LIMIT_TIER は渡さない。キーはコンテナに入らない。メーターは使ったトークン（入力・出力・キャッシュの書き・読み）と金額の目安。初めて起こしたとき API キーが無ければ入れる画面へ。自分用の版でも使える（サブスクと並べたときの優先は §10 の未決——当面は台帳の並び順に従う）。公開版で抜く仕組み（§2）はここでは作らない（#516）。",
       "doneWhen": "API キーだけの banto で、本体の会話・コンテナの中のサブエージェント・Factory が動き、コンテナの環境にキーが無い。単体と関係する spec が通る。",
-      "resolution": "Factory が取り込みました（factory/claude-api-key-account）",
+      "resolution": "origin/main に入った（eba158aea、Factory の取り込みを origin/main の上に載せ直して push）。core の claude-login の単体 125 件・subagent の単体 86 件・画面の型チェック・claude-api-key-account.spec（偽の API で、API キーだけの banto の会話・コンテナの Shell・サブエージェントが中継でキーを使い、コンテナにキーが無い）が通った。Factory を API キーで流すことと、本物の API キーでの会話は確かめていない。release には未。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-24T15:56:14.616Z",
+      "updatedAt": "2026-10-24T15:59:30.375Z",
       "closedAt": "2026-10-24T15:56:14.616Z",
       "extra": {}
     },
