@@ -12482,17 +12482,19 @@
       "title": "banto-dev-vm に自分のランナーを置き、prebuilt.yml を移す",
       "status": "backlog",
       "parent": "closed-distribution",
-      "dependsOn": [],
+      "dependsOn": [
+        "go-private-switch"
+      ],
       "milestone": null,
       "priority": "normal",
       "labels": [],
-      "body": "仕様 §7。専用のユーザーでランナーを入れ、ラベル banto-prebuilt だけを受ける。prebuilt.yml の runs-on を [self-hosted, banto-prebuilt] に。他の workflow は使わない。",
+      "body": "仕様 v4-distribution.md §8 の 8.。**リポジトリを非公開にした後**（公開のリポジトリに自分のランナーを繋ぐと外の人の PR の workflow がその機械で走りうる）。banto-dev-vm に専用のユーザーで、1回ごとに使い捨て（--ephemeral）のランナーを入れ、ラベル banto-prebuilt だけを受ける。専用のユーザーから /etc/banto・Claude の資格情報・SSH の鍵・データ置き場を読めないことを確かめる。prebuilt.yml の runs-on を [self-hosted, banto-prebuilt] に。登録用トークンは値を会話に出さずに取る。",
       "doneWhen": "release への push で prebuilt が自分のランナーで走り、Release build-<頭12> ができ、host の更新がそれを使う。GitHub のランナーの分が増えない。",
       "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-21T23:38:34.293Z",
-      "updatedAt": "2026-10-21T23:39:04.860Z",
+      "updatedAt": "2026-10-24T15:20:32.595Z",
       "closedAt": null,
       "extra": {}
     },
