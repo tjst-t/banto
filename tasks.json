@@ -13118,7 +13118,7 @@
       "number": 543,
       "kind": "task",
       "title": "core: answer_decision に delegateKinds の強制を足す",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "core-delegatekinds-canadvanceproject"
@@ -13128,12 +13128,12 @@
       "labels": [],
       "body": "automation/turn-decisions.ts の answer_decision が、届いた判断役の自動化に delegateKinds があれば、HUMAN_ONLY_KINDS とリストに無い kind の choice を断る(defer はいつでも可)。値が無ければ今までどおり制限無し。",
       "doneWhen": "delegateKinds がある判断役が、リストに無い kind を choice で答えようとすると断られる。無い自動化は今までどおり。単体試験あり",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の d0cec84a5 で実装。answer_decision が delegateKinds を強制(無ければ制限なし)。単体試験通過。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:56:48.427Z",
+      "closedAt": "2026-10-24T15:56:48.427Z",
       "extra": {}
     },
     {
