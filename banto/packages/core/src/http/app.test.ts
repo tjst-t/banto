@@ -2655,7 +2655,15 @@ test("チャットの最初のターンは、Claude の WebSearch と banto 全�
 /** 試験の ProjectMover（この機械のコンテナだけ。別のサーバ・Service は使わない） */
 function chatMover(
   store: () => ProjectThreadStore,
-  opts: { claudeConfigDir: string; dataDir: string; busy?: () => RunningItem[]; released?: string[]; releasing?: () => Promise<void> },
+  opts: {
+    claudeConfigDir: string;
+    dataDir: string;
+    busy?: () => RunningItem[];
+    released?: string[];
+    releasing?: () => Promise<void>;
+    /** 別のサーバの台帳（渡さなければ使わない） */
+    remoteRuntimes?: unknown;
+  },
 ) {
   let mover: ProjectMover | undefined;
   const get = () =>
@@ -2664,7 +2672,7 @@ function chatMover(
       monorepoRoot: "/nonexistent-banto-monorepo",
       claudeConfigDir: opts.claudeConfigDir,
       projectThread: store(),
-      remoteRuntimes: {} as never,
+      remoteRuntimes: (opts.remoteRuntimes ?? {}) as never,
       hostContainers: { runInside: async () => undefined, stopProjectContainer: async () => undefined },
       hostActivity: () => opts.busy?.() ?? [],
       disableServices: async () => [],
@@ -2678,8 +2686,130 @@ function chatMover(
       notify: async () => undefined,
       log: () => undefined,
     }));
-  return { moveRootOnThisMachine: (id: string, root: string) => get().moveRootOnThisMachine(id, root) } as unknown as NonNullable<Parameters<typeof createApp>[0]["runtimeMove"]>;
+  return {
+    moveRootOnThisMachine: (id: string, root: string) => get().moveRootOnThisMachine(id, root),
+    start: (...args: Parameters<ProjectMover["start"]>) => get().start(...args),
+  } as unknown as NonNullable<Parameters<typeof createApp>[0]["runtimeMove"]>;
 }
+
+// **実行場所を選んで Project にする**（決定・2026-10-24、ユーザー要望。アーキ仕様 §2.2「Project にする」）
+test("Project にする：実行場所を渡すと、移す口の確かめを通したあとに promote・グループを書き、そのまま移し始める（202）", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  let store: ProjectThreadStore | undefined;
+  const starts: Array<{ projectId: string; target: unknown; kindBeforeHook?: string; kindAfterHook?: string }> = [];
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        store = projectThread;
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        const group = await projectThread.createProjectGroup({ name: "仕事" });
+        const res = await fetch(`${base}/api/projects/${chat.id}/promote`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name: "電力の見える化", groupId: group.id, runtime: "remote:box", root: " ~/power " }),
+        });
+        assert.equal(res.status, 202, await res.clone().text());
+        const p = (await res.json()) as { name: string; kind?: string; groupId?: string };
+        assert.equal(p.name, "電力の見える化");
+        assert.equal(p.kind, undefined);
+        assert.equal(p.groupId, group.id);
+        // 移す口に、選んだ実行場所と根がそのまま渡り、promote は移す口の中（確かめのあと）で書かれた
+        assert.equal(starts.length, 1);
+        assert.deepEqual(starts[0], { projectId: chat.id, target: { runtime: "remote:box", root: "~/power" }, kindBeforeHook: "chat" });
+        assert.equal(projectThread.getProject(chat.id)?.kind, undefined);
+        assert.equal(projectThread.getProject(chat.id)?.groupId, group.id);
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: {
+          start: async (projectId: string, target: unknown, opts?: { beforeStarted?: () => Promise<void> }) => {
+            const entry: (typeof starts)[number] = { projectId, target };
+            const kind = store!.getProject(projectId)?.kind;
+            if (kind) entry.kindBeforeHook = kind;
+            await opts?.beforeStarted?.();
+            const after = store!.getProject(projectId)?.kind;
+            if (after) entry.kindAfterHook = after;
+            starts.push(entry);
+            return store!.getProject(projectId)!;
+          },
+        } as unknown as NonNullable<Parameters<typeof createApp>[0]["runtimeMove"]>,
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Project にする：実行場所を渡したとき、移せない（動いているもの・選べない実行場所）・形がおかしいなら、promote もしない", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));
+  let store: ProjectThreadStore | undefined;
+  const released: string[] = [];
+  let busy = false;
+  try {
+    await withApp(
+      async (base, token, _dir, { projectThread }) => {
+        store = projectThread;
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const chat = (await (await fetch(`${base}/api/projects`, { method: "POST", headers, body: JSON.stringify({ kind: "chat" }) })).json()) as { id: string; root: string };
+        const group = await projectThread.createProjectGroup({ name: "仕事" });
+        const promote = (body: Record<string, unknown>) =>
+          fetch(`${base}/api/projects/${chat.id}/promote`, { method: "POST", headers, body: JSON.stringify({ name: "x", groupId: group.id, ...body }) });
+
+        // 形がおかしい（400）
+        for (const body of [
+          { runtime: "remote:box" },
+          { runtime: "remote:box", root: "  " },
+          { runtime: "remote:box", root: "~/x", folder: "x" },
+          { runtime: 3, root: "~/x" },
+          { root: "~/x" },
+        ]) {
+          assert.equal((await promote(body)).status, 400, JSON.stringify(body));
+        }
+        // 移す口が断る（409）：ターンが走っている・無い実行場所・選べない実行場所
+        busy = true;
+        const running = await promote({ runtime: "remote:box", root: "~/x" });
+        assert.equal(running.status, 409);
+        assert.match(((await running.json()) as { error: string }).error, /動いているものがあるので移せません/);
+        busy = false;
+        const missing = await promote({ runtime: "remote:nope", root: "~/x" });
+        assert.equal(missing.status, 409);
+        assert.match(((await missing.json()) as { error: string }).error, /「nope」はありません/);
+        const taken = await promote({ runtime: "remote:taken", root: "~/x" });
+        assert.equal(taken.status, 409);
+        assert.match(((await taken.json()) as { error: string }).error, /ほかの Project が使っています/);
+
+        const p = projectThread.getProject(chat.id)!;
+        assert.equal(p.kind, "chat");
+        assert.equal(p.name, "新しいチャット");
+        assert.equal(p.groupId, undefined);
+        assert.equal(p.root, chat.root);
+        assert.equal(p.runtime, undefined);
+        assert.equal(p.move, undefined);
+        assert.deepEqual(released, [], "断るのに Module を畳んだ");
+      },
+      {
+        chatsDir: join(scratch, "chats"),
+        runtimeMove: chatMover(() => store!, {
+          claudeConfigDir: join(scratch, "claude"),
+          dataDir: scratch,
+          released,
+          busy: () => (busy ? [{ kind: "turn", label: "ターンが走っています（会話）" }] : []),
+          remoteRuntimes: {
+            get: (name: string) =>
+              name === "box"
+                ? { name, mode: "machine", usedBy: [] }
+                : name === "taken"
+                  ? { name, mode: "machine", usedBy: [{ id: "other", name: "other" }], unavailableReason: "ほかの Project が使っています（other）" }
+                  : undefined,
+          },
+        }),
+      },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test("Project にする：kind が消えて名前が替わり、グループに入る。フォルダを渡さなければ根はそのまま", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "banto-chats-"));

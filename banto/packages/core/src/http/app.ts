@@ -3145,13 +3145,16 @@ export function createApp(deps: AppDeps) {
       }
 
       // **チャットを Project にする**（決定・2026-10-21、アーキ仕様 §2.2「チャット」）。**人が押したときだけ**（AI は画面を
-      // 開かせるだけ）。確かめを全部済ませてから、フォルダを移す（断られうる）→ `project.promoted` → グループの順に書く
+      // 開かせるだけ）。確かめを全部済ませてから、フォルダを移す（断られうる）→ `project.promoted` → グループの順に書く。
+      // **実行場所を渡せば、Project にしてから移す**（決定・2026-10-24、ユーザー要望）：今の移す口（`ProjectMover.start`）の確かめを
+      // 全部通して移す先を押さえたあとに `project.promoted`・グループを書き、移し始める（写すのは裏で。202、進み具合は今の移す口と
+      // 同じ帯・設定の欄）。断られたら何も書かない。フォルダを置き場へ移す（`folder`）とは一緒に渡せない
       const promoteMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/promote$/);
       if (promoteMatch && req.method === "POST") {
         const projectId = promoteMatch[1]!;
         try {
           if (deps.auth) deps.auth.requireHuman(principal, { stepUp: false });
-          const body = (await readJsonBody(req)) as { name?: unknown; groupId?: unknown; folder?: unknown };
+          const body = (await readJsonBody(req)) as { name?: unknown; groupId?: unknown; folder?: unknown; runtime?: unknown; root?: unknown };
           const project = deps.projectThread.getProject(projectId);
           if (!project) return json(res, 404, { error: "not found" });
           if (project.kind !== "chat") return json(res, 409, { error: "この Project はチャットではありません" });
@@ -3163,6 +3166,25 @@ export function createApp(deps: AppDeps) {
           }
           const groupId = body.groupId as string | null | undefined;
           if (typeof groupId === "string" && !deps.projectThread.getProjectGroup(groupId)) return json(res, 400, { error: `グループ ${groupId} はありません` });
+          let elsewhere: { runtime: string; root: string } | undefined;
+          if (body.runtime !== undefined && body.runtime !== "host-container") {
+            if (typeof body.runtime !== "string") return json(res, 400, { error: "runtime は文字列で渡してください" });
+            if (body.folder !== undefined) return json(res, 400, { error: "別の実行場所へ移すときは folder を渡せません（移す先は root で渡します）" });
+            if (typeof body.root !== "string" || !body.root.trim()) return json(res, 400, { error: "別の実行場所へ移すときは root（移す先のフォルダ）が要ります" });
+            if (!deps.runtimeMove) return json(res, 501, { error: "この banto は別の実行場所へ移せません" });
+            elsewhere = { runtime: body.runtime, root: body.root.trim() };
+          } else if (body.root !== undefined) {
+            return json(res, 400, { error: "root は別の実行場所（runtime）と一緒に渡してください" });
+          }
+          if (elsewhere) {
+            await deps.runtimeMove!.start(projectId, elsewhere, {
+              beforeStarted: async () => {
+                await deps.projectThread.promoteProject(projectId, name);
+                if (groupId !== undefined) await deps.projectThread.assignProjectGroup(projectId, groupId);
+              },
+            });
+            return json(res, 202, deps.projectThread.getProject(projectId));
+          }
           let target: string | undefined;
           if (body.folder !== undefined) {
             const t = promotedRootOf(deps.chatsDir ?? CHATS_DIR, body.folder);
@@ -3186,6 +3208,7 @@ export function createApp(deps: AppDeps) {
           if (err instanceof RemoteRuntimeError) return json(res, err.status, { error: err.message, ...(err.extra ?? {}) });
           if (err instanceof NotChatProjectError) return json(res, 409, { error: err.message });
           if (err instanceof RuntimeMoveConflictError) return json(res, 409, { error: err.message });
+          if (err instanceof SshCommandError) return json(res, 502, { error: err.message });
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
           throw err;
         }
