@@ -81,6 +81,7 @@ import {
 } from "@/lib/backend/client";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
+import { AdvanceTemplate } from "./advance-template";
 
 export function AutomationsView({ projectId }: { projectId: string }) {
   // 届け先の会話の名前はサイドバーと同じ写しから引く
@@ -149,6 +150,9 @@ export function AutomationsView({ projectId }: { projectId: string }) {
             自動化を足す
           </Button>
         )}
+
+        {/* 決めること・Factory・止まった会話の見回りをまとめて作るテンプレート（§4.3「判断役の一般化」）。作るのは独立した自動化 */}
+        {editing === null ? <AdvanceTemplate projectId={projectId} sources={events.sources} /> : null}
 
         <HowItRuns />
       </div>

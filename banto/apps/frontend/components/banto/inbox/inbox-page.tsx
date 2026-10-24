@@ -40,6 +40,7 @@ import {
   Loader2,
   MessageSquareReply,
   Package,
+  UserCheck,
   Wrench,
   X,
 } from "lucide-react";
@@ -1172,6 +1173,15 @@ function JudgeNote({
           </span>
         </p>
       ) : null}
+      {/* 止まった会話を進める自動化（canAdvanceProject）が頼んだ手順（§4.3「判断役の一般化」）。番頭の頼みは番頭の言い方で別に出す */}
+      {carried?.kind === "instructed" ? (
+        <p data-testid="inbox-judge-carried" data-kind="instructed" className="flex items-start gap-1.5 text-ink-2">
+          <UserCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+          <span>
+            このターンは、自動化「{carried.automation.name}」が頼んだ手順（{carried.instruction?.title ?? carried.instruction?.action ?? ""}）で始まりました：{carried.reason}
+          </span>
+        </p>
+      ) : null}
       {watching && !judge ? (
         <p data-testid="inbox-judge-watching" className="flex items-center gap-1.5 text-ink-2">
           <Loader2 className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
@@ -1198,6 +1208,13 @@ function JudgeNote({
           <Hand className="mt-0.5 size-4 shrink-0 text-turn" />
           <span>
             判断役（自動化「{judge.automation.name}」）は人に任せました：{judge.reason}
+          </span>
+        </p>
+      ) : judge?.kind === "instructed" ? (
+        <p data-testid="inbox-judge" data-kind={judge.kind} className="flex items-start gap-1.5 text-ink-2">
+          <UserCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+          <span>
+            自動化「{judge.automation.name}」がこの会話に手順を頼みました（{judge.instruction?.title ?? judge.instruction?.action ?? ""}）：{judge.reason}
           </span>
         </p>
       ) : judge?.kind === "incomplete" ? (
