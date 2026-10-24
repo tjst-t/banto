@@ -12996,7 +12996,7 @@
       ],
       "body": "banto/scripts/install-test/run.sh で install.sh を入れ子のコンテナに流すと、step_incus の「置き場 banto を作る（btrfs のループファイル 50GiB）」で `losetup: cannot find an unused loop device: No such file or directory` になり、1回目が rc=1 で止まる。2026-10-23 02:41 と 11:48 の回で同じ。install.sh ではなく試験の場（入れ子のコンテナに loop デバイスが見えない）の問題とみる。直すのは run.sh の「3段目の手当て」の側（install.sh には入れない）。\n\n見つけたきっかけ：#529（入口の Caddy の encode）の install の試験。",
       "doneWhen": "run.sh --first-only が 1回目を通り、a〜e・g の確かめが通る（#529 で足した encode の確かめを含む）。",
-      "resolution": "原因は、試験の場が「入れ子のコンテナの / が btrfs」を前提にしているのに、この機械の Incus の既定の置き場が dir（ext4）だったこと。run.sh が btrfs の置き場に試験の場を立てるようにした（main 2d2b3df79）。直したあと install の試験は最後まで走り 50 件通過（#529 の encode の確かめを含む）。残る3件の失敗は別のバグ #531（uid が 1000 でないとコンテナの中に自分のユーザーが無く Shell が落ちる）。",
+      "resolution": "main 2d2b3df79、release d00c2e24d(origin/release 0610cfe2b..d00c2e24d)。原因は、試験の場が「入れ子のコンテナの / が btrfs」を前提にしているのに、この機械の Incus の既定の置き場が dir（ext4）だったこと。run.sh が btrfs の置き場に試験の場を立てるようにした。直したあと install の試験は最後まで走り通過（#529 の encode の確かめを含む）。",
       "refs": [],
       "threads": [
         {
@@ -13005,7 +13005,7 @@
         }
       ],
       "createdAt": "2026-10-23T12:37:08.515Z",
-      "updatedAt": "2026-10-23T12:53:17.829Z",
+      "updatedAt": "2026-10-24T15:26:13.875Z",
       "closedAt": "2026-10-23T12:53:17.829Z",
       "extra": {}
     },
