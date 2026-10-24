@@ -66,9 +66,34 @@ await this.step("backlog:done", async () => {
 だけが実際に origin に無いことを確認済み。全件の監査は行っていない——他にも同様の「文言未更新」はありうるが、
 今回の事故の型(release への反映を含む doneWhen + 設計判断待ち)に当てはまるのは #539 系だけだった。
 
-## 残っていること
+## なぜ「育ち続ける」ままだったか——`.worktrees/localmain` は誰も押し戻していなかった
+
+`.worktrees/localmain`(ブランチ `main`)の HEAD は `cc3548125`「test(core): #539 管理対象のターンの知らせの
+試験を…」で、直前の2コミットは `b8f2d62bd`・`7166fc07b`——まさに #539 の「ブロックです」という docs/notes を
+書いたコミットそのものだった。Factory がこの Project のタスクを運ぶとき、`fastForward()` は「branch `main` を
+checkout している worktree」を探してそこへ `merge --ff-only` する。この Project ではそれが常に
+`.worktrees/localmain` であり、ここへ着地したコミットを origin/main の上に載せ直して push するのは
+(Memory #58971 のとおり)**人か別セッションが手で行う別工程**。
+
+  #268・#411 のようにこの載せ直しがちゃんと行われた項目がある一方、#539 は「blocked のまま done にされた」ために
+  誰も「ここ、まだ origin に無い」と気づく機会が無く、載せ直されないまま `.worktrees/localmain` に残り続けた。
+  それに加えて、ほかの作業はこの Project でも軒並み `.worktrees/<名前>` → origin/main の直接 push(今回の修正も
+  この経路)で届けられており、`.worktrees/localmain` を能動的に origin へ押し戻す役目を持つ人・仕組みが無かった
+  ため、2週間、押し戻されないまま積み上がった。**今回の本質的な原因は #539 の blocked 判定の欠落だが、
+  `.worktrees/localmain` が「育っても誰も気づかない」構造になっていたことが、分岐が2週間も放置された
+  土台になっている。**
+
+## 残っていること(人と相談して決めること)
 
 - メタ Project(#532〜#539)のローカル専用コミットを origin へ復旧・push するかどうかは、この修正の範囲外
   (人と相談のうえで判断)。
+- `.worktrees/localmain` の今後の扱い:このまま Factory の着地点として使い続けるなら、定期的に
+  origin/main の上に rebase して push する運用(か、乖離が一定件数を超えたら気づける仕組み)が要る。
+  使わないなら、たまっている分を一度精算して役目を終わらせる手もある——どちらにするかは人の判断。
 - 今回の修正(`verdict: "blocked"`)は、今後 Factory に新しく流すタスクにのみ効く。過去の「pass にされてしまった
   ブロック」を遡って拾い直す仕組みは作っていない。
+
+## 直した版
+
+`fork/factory-blocked-verdict`(origin/main の `ec921e335` の上に1コミット)を、Factory module の単体テスト
+(43件、既存41+新規2:blocked で accept/drop)を通したあと origin/main(`00a9525a3`)へ fast-forward 済み。
