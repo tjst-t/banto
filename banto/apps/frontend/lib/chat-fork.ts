@@ -3,6 +3,6 @@
 // host も同じ口を 409 `chat-no-fork` で断る——画面は押せるものを出さないだけ。「Project にする」で印が外れたら出る
 
 /** この Project の会話に Fork を作る操作を出すか（チャットなら出さない） */
-export function forkActionsAllowed(project: { kind?: "chat" }): boolean {
+export function forkActionsAllowed(project: { kind?: "chat" | "meta" }): boolean {
   return project.kind !== "chat";
 }
