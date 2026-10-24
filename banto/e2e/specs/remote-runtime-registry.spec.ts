@@ -176,6 +176,8 @@ test("別のサーバを登録し、host 鍵を確かめて覚え、鍵が変わ
       // ---- 2. 登録の順 ---------------------------------------------------------------------------
       await panel.getByTestId("runtime-add").click();
       const form = panel.getByTestId("runtime-add-form");
+      // 既定は containers——この相手（Incus の無い SSH の相手）はサーバ丸ごとで登録する
+      await form.getByTestId("runtime-mode-machine").click();
       await form.getByLabel("名前").fill(name);
       await form.getByLabel("ホスト").fill(host.address);
       await form.getByLabel("ユーザー").fill(host.user);
