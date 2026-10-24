@@ -12219,7 +12219,7 @@
       "number": 505,
       "kind": "story",
       "title": "番頭：方針に沿って細かい判断をし、Project の仕事を人の代わりに進める",
-      "status": "in-progress",
+      "status": "dropped",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -12229,7 +12229,7 @@
       ],
       "body": "決定・2026-10-21、ユーザー（案C）。方針と番頭の画面は banto 全体で1つ、番頭は Project ごと。任せる＝決まった手順と今の仕様に収まる小さな設計判断、人へ＝仕様の向き・公開・お金・消す操作。出来事と数時間おきの見回りで起き、止まった会話に手順を頼み、ready のタスクを Factory に流す。自動許可は絞らない・呼び名「番頭」は規則11 の例外（決定・2026-10-21）。\n\n仕様：v4-architecture.md §4.5、v4-frontend.md §6.54。経緯：docs/notes/2026-10-21-banto-supervisor.md。\n\n実装：#506〜#511 は main に入った。release には 2026-10-21 に入った（7b2d0e66c まで。v4-frontend.md は release の版のまま＝§6.54 は release に無い）。release＋番頭のフル E2E は 351 通過・5 落ち——4件は単独で流し直すと通った。Repositories「期限の来たログインを取り直し」は番頭とは関係なく、repositories-github-read が残した中継の許可で落ちる試験の作りの問題（バグ #513。以前ここに書いた「番頭を載せる前の release でも落ちる」は試験を単独で流した結果で、確かめ方が誤っていた）。\n\n番頭が動き始めたら Memory #58965 を「banto開発では番頭が release まで進めてよい（載せ方と試験は今どおり）」に改める。\n\n残り：host で反映 → banto開発に番頭を置いて本物のモデルで1日動かし、完了条件を確かめる。",
       "doneWhen": "banto開発に番頭を置き、本物のモデルで1日動かして：(1) 手順・小さな設計の決めることに番頭が答えて会話が進む (2) spec・publish・money・destructive と外の文を読んだターンの問いは人に回る (3) 止まった会話に手順を頼んで進む (4) ready のタスクを Factory に流し、番頭の画面の記録に出る（受信箱には出さない、§4.5） (5) 「全部止める」で止まり、取り消しが元の会話に届く——を確かめる",
-      "resolution": null,
+      "resolution": "番頭を廃止(ユーザー決定・2026-10-24)。メタ Project(#526)との役割整理の中で、番頭という専用の実体は持たず、既存の判断役(§4.3)を土台に自動化の一般機能として一般化する方向へ進めることにした。実装(#506〜#511)はmain・release両方に入ったまま残っており、削除と一般化の実装は別のBacklogで行う(着手は「main乖離の再発防止」完了後)。v4-architecture.md §4.5を廃止通知に書き換え済み(main: ec921e335、release: 6265afbf2)。経緯はdocs/notes/2026-10-24-supervisor-retirement.md。",
       "refs": [],
       "threads": [
         {
@@ -12238,8 +12238,8 @@
         }
       ],
       "createdAt": "2026-10-21T07:35:20.174Z",
-      "updatedAt": "2026-10-21T14:37:06.284Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T12:35:58.780Z",
+      "closedAt": "2026-10-24T12:35:58.780Z",
       "extra": {}
     },
     {
