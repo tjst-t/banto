@@ -13038,7 +13038,7 @@
       "number": 540,
       "kind": "task",
       "title": "別のサーバの Project でも Repositories の読むだけの GitHub の tool を使えるようにする",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -13048,7 +13048,7 @@
       ],
       "body": "2026-10-24、deeparchive-sim（チャットから Project にしたあと baremetal へ移した）から相談。読む tool が「別のサーバで動いています」で断られていた。\n\n## 決定（2026-10-24、ユーザーが任せた）\n覚えた送り先（Backlog の push で人が承認したもの）があればそれだけを読む。無ければ clone の記録か台帳の同じ場所で決めて読むが、覚えない。持ち主と同じ login の段は使わない（レビュー H1：origin は中の AI が書けるので、人の非公開リポジトリを選ばせない）。仕様 v4-modules.md の Repositories「読むだけの GitHub の tool」。\n\n## 実装\n- main：a4353a5ba・a680d1bb4。release：d13b01552・ea7459d93（仕様の文書は release 側とぶつかったので載せていない、main にだけある）。\n- branch-sync.ts：remoteTarget に目的（sync・read）を足し、読むときは持ち主の段を使わず、断りの文言も目的で組み立てる。remoteRepositoryForRead。\n- github-read.ts：別のサーバの Project は上を使う。読む6つの tool が dev.banto/projectGit を名乗る。\n- core の agent-proxy.ts：AI が直に呼ぶ tool でも、同梱の Module が dev.banto/projectGit を名乗れば Project の git の口に届く印を付ける。\n- 単体試験：main 版は repositories 136/136・core 1388 通過・失敗 0。release 版は組み立てが通り、repositories 136/136・core 1387 通過・失敗 0。\n\n## 残り\n- host での反映のあと、別のサーバの実機（deeparchive-sim など）で確かめる。\n- 覚えた送り先を外す・選び直す口は #468。",
       "doneWhen": "別のサーバ（machine と containers）の Project で、覚えた送り先（または clone の記録・台帳の同じ場所）のリポジトリについて listIssues・getPullRequest・listCiRuns が結果を返す。決まっていない・origin が覚えた場所と違うときは断り、読む口では覚えない（単体試験と、別のサーバの実機1件で確かめる）。",
-      "resolution": null,
+      "resolution": "main（a4353a5ba・a680d1bb4）と release（d13b01552・ea7459d93、仕様の文書は main だけ）に入った。2026-10-24 14:10 UTC、host に反映したあと、deeparchive-sim（別のサーバ baremetal、origin oicteam/deeparchive-sim、Backlog は未 push）で listIssues・listPullRequests（all）・listCiRuns が成功（どれも0件）。通ったのは「台帳の同じ場所」の段の見込み。覚えた送り先の段・断る場面と、machine の実機は確かめていない（単体試験だけ）。",
       "refs": [
         "fork/remote-github-read"
       ],
@@ -13059,8 +13059,8 @@
         }
       ],
       "createdAt": "2026-10-24T10:30:43.691Z",
-      "updatedAt": "2026-10-24T12:05:18.393Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T14:10:10.345Z",
+      "closedAt": "2026-10-24T14:10:10.345Z",
       "extra": {}
     }
   ],
