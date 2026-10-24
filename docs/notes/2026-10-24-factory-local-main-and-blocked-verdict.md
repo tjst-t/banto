@@ -16,7 +16,9 @@
 `packages/modules/factory/src/engine.ts` の `fastForward()` を読むと、Factory の「main へ取り込み」は
 **ローカルの `refs/heads/<targetBranch>`(ふつう `main`)を worktree の HEAD まで fast-forward するだけ**で、
 `git push` は一切行わない。これは Memory #58971 にも「Factory の土台はローカルの main の branch に入れる」と
-明記されている、**既知の仕様**である。origin へ反映するのは別工程(誰かが worktree を作って origin/main の上に
+明記されている、**既知の仕様**であり、`docs/specs/v4-modules.md` §4.5 にも「取り込む先が checkout されている
+作業ツリーで `merge --ff-only`、どこにも無ければ `update-ref`」としか書かれていない——**仕様自体が origin への
+push にまったく触れていない**。origin へ反映するのは別工程(誰かが worktree を作って origin/main の上に
 載せ直し、push する)で、これは実際、確認した範囲のほとんどの Backlog 項目(#294・#411・#477/#478・#527 等)で
 ちゃんと行われていた(resolution にコミットハッシュが上書きされている)。
 
@@ -83,17 +85,20 @@ checkout している worktree」を探してそこへ `merge --ff-only` する�
   `.worktrees/localmain` が「育っても誰も気づかない」構造になっていたことが、分岐が2週間も放置された
   土台になっている。**
 
-## 残っていること(人と相談して決めること)
+## 追記(2026-10-24、ユーザー指摘):そもそも Factory が origin へ push しない設計自体が見直すべき仕様
 
-- メタ Project(#532〜#539)のローカル専用コミットを origin へ復旧・push するかどうかは、この修正の範囲外
-  (人と相談のうえで判断)。
-- `.worktrees/localmain` の今後の扱い:このまま Factory の着地点として使い続けるなら、定期的に
-  origin/main の上に rebase して push する運用(か、乖離が一定件数を超えたら気づける仕組み)が要る。
-  使わないなら、たまっている分を一度精算して役目を終わらせる手もある——どちらにするかは人の判断。
-- 今回の修正(`verdict: "blocked"`)は、今後 Factory に新しく流すタスクにのみ効く。過去の「pass にされてしまった
-  ブロック」を遡って拾い直す仕組みは作っていない。
+ここまでの調査・修正は「#539 が blocked のまま done にされた」という個別の事故を直した。しかしユーザーから
+「Factory が完了したら、必要なブランチ(feature branch なり main なり)に直接マージされると思っていた。
+`.worktrees/localmain` のような場所に置かれるだけで止まるのはおかしい。人がコードを直接いじらない運用なら
+なおさら」という、より根本の指摘があった。
 
-## 直した版
+調べ直すと、これは **banto で開発するどの Project でも同じ**——Factory は共有の Module(`@banto/module-factory`)
+であり、`docs/specs/v4-modules.md` §4.5 の仕様自体、`git push` にまったく触れていない。「ローカルの
+`refs/heads/<targetBranch>` を fast-forward するだけ」という設計は、banto-dev プロジェクトに限った話では
+なく、Factory を使うすべての Project に共通する挙動。banto-dev では偶然「ほかの作業者が worktree を作って
+origin へ直接 push する」という並行の習慣があったために大半の項目が救われていたが、それ自体 Factory の
+仕組みの一部ではなく、個々のセッションの善意に頼っていただけだった。
 
-`fork/factory-blocked-verdict`(origin/main の `ec921e335` の上に1コミット)を、Factory module の単体テスト
-(43件、既存41+新規2:blocked で accept/drop)を通したあと origin/main(`00a9525a3`)へ fast-forward 済み。
+この「origin(リモート)へ push するところまでを Factory 自身が持つべきか」は、資格情報(どの remote に・
+どの鍵で push するか)の設計まで踏み込む仕様の向きの判断になるため、このノートでは直さず、人と相談して
+決めることとした(続きは報告を参照)。
