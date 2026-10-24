@@ -4500,6 +4500,64 @@ Memory と仕様に沿って、おすすめに異論が無ければそれを選�
   無いプロンプトでだけ読む——`reply` に `[[fake-runner]]` を書くと、選択肢を引数に持つ前のターンの指示と判断役のプロンプトの最後の印に
   なって乗っ取る
 
+#### 判断役の一般化——番頭から引き継ぐ機能（決定・2026-10-24、ユーザー。番頭(§4.5、廃止)との役割整理を受けて設計。経緯は
+docs/notes/2026-10-24-supervisor-retirement.md・docs/notes/2026-10-24-judge-generalization.md）
+
+番頭（Project ごとに置く専用の実体、4つの自動化のセット＋専用画面）は廃止し、ここで持っていた機能を**既存の判断役（上の
+`banto.turn-decisions` を待つ自動化）へのオプションの拡張**として引き継ぐ。新しい専用の複合オブジェクトは作らない——
+ユーザー方針「banto のコアは実現したいことに対して最小限の機能セットにしたい」に沿って、自動化という1つの器を拡張するだけに留める。
+
+**引き継ぐ4点と、それぞれの一般化のしかた：**
+
+1. **kind で答えてよい問いの種類を絞る**（番頭の `supervisorMayAnswer`）→ 判断役の自動化に任意の `delegateKinds?: DecisionKind[]`
+   を持たせられるようにする。**値が無ければ今までどおり制限なし**（prompt に書いた方針だけで判断、host は咎めない）。値があれば
+   `answer_decision` が host 側で強制し、`HUMAN_ONLY_KINDS`（spec・publish・money・destructive）と、リストに無い kind の choice を
+   断る（defer はいつでもできる）。既存の判断役の動きを変えない（非破壊な追加）。
+2. **止まった会話に手順を頼む・止まっている会話を探す**（番頭の `instruct_thread`・`list_stalled_threads`）→ 判断役固有の tool
+   ではなく、自動化の台帳に持たせる新しい真偽値 `canAdvanceProject`（既定 false）を軸にする。この値が真の自動化の専用 Fork の
+   会話でだけ、この2つの tool を使える（届け先の自動化が複数ある会話では、どれか1つでも真なら使える）。**判断役かどうかとは独立**
+   （見回り（時刻のきっかけ）やその他の出来事のきっかけでも、`canAdvanceProject` が真なら使える——番頭の「見回り」のきっかけが
+   これに当たる）。
+3. **Factory への流し・止まった件への回答**（番頭の `factory.ts`）→ 同じく `canAdvanceProject` を軸にする。`runFactory`・
+   `answerFactory` は今も会話の tool として存在する（Factory Module 本体の口）ので、**新しい tool は作らない**。番頭だけが持って
+   いた「流した件かどうかを番頭の記録から確かめる」「continue/retry は fix-tests、accept は minor-design を任されているときだけ」
+   という絞り込みは、2.の `delegateKinds` と同じ判断（元のまとめの `decisions[].kind` 相当）を answerFactory 側でも見る形に一般化
+   する（詳細は実装時に詰める。Backlog のタスクで設計）。
+4. **全体の上限**（番頭の `runsPerHour`・`instructionsPerHour`・`factoryConcurrent`）→ `canAdvanceProject` な自動化すべてで
+   合算して数える。Project 設定の鍵は `supervisor.*` から一般名 `automation.advance.*` に付け替える（移行は実装時に
+   旧鍵からの読み替えを一度だけ行う）。
+
+**番頭の「4つの自動化をセットで管理する」専用画面は無くす**。コアには複合オブジェクトを増やさない代わりに、**画面（Canvas の
+「自動化」）に「Project の進行を自動化に任せる」ボタンを足し、押すと内部で複数の自動化（決めること・Factory の止まった件・
+Factory の終わった実行・見回り）を、人が最後に確かめてからまとめて作る**。これは画面だけの便宜機能（テンプレート）で、
+host のモデルは「独立した自動化が複数ある」のまま——人が1つずつ消す・直す・一時停止することもできる（番頭のときのような
+「4つ一緒でしか扱えない」制約は無くなる）。
+
+**release 既定の違いの決着**：番頭は release の既定が「人」、メタ Project（§4.6）は既定「任せる」——対立するようだったが、
+一般化後は**どちらも同じ `delegateKinds`（または Project の `supervisor.delegate` 相当・一般名に付け替え）に `release` を
+含めるか否かという1つの軸**に収まる。コア側の既定値は安全側の「人」に統一し（`DEFAULT_DELEGATE` は今どおり `release` を除く）、
+メタ Project のように既定を「任せる」にしたい Project は、Project 層の設定（#537 で実装済みの「Project ごとの release 既定」の
+仕組み）でそのまま `release` を足せばよい。番頭とメタ Project、どちらも同じ `delegate` の差分の仕組み（§4.5 旧 `policy.ts` の
+全体＋Project 差分）をそのまま一般化で引き継ぐ（小さな設計判断としてこの場で決定——widely 影響する向きの変更ではなく、
+既存のどの自動化の挙動も変えない追加のため）。
+
+**実装の範囲と進め方**（Backlog のストーリー・タスクは実装時に作る）：
+- `automation/turn-decisions.ts`・`automation/fold.ts`・`automation/store.ts` に `delegateKinds`・`canAdvanceProject` を追加
+  （台帳の欄を増やすだけ。既存の自動化は両方とも未設定＝今までどおり）
+- `instruct_thread`・`list_stalled_threads` の実体（番頭の `instruct.ts`・`guard.ts` にある）を `automation/advance.ts`（仮）に
+  移し、`canAdvanceProject` を見るガードに差し替える
+- `answer_decision`（`automation/turn-decisions.ts`）に `delegateKinds` のチェックを足す
+- 画面：自動化の作成・編集フォームに「答えてよい種類」（判断役のきっかけのときだけ）・「止まった会話を進める権限」
+  （`canAdvanceProject`）のチェックボックスを足す。「Project の進行を自動化に任せる」のテンプレートボタンを足す
+  （v4-frontend.md に節を追加——旧 §6.54「番頭の画面」はこのテンプレートの説明に置き換える）
+- 番頭の実コード（`packages/core/src/supervisor/` と frontend の `components/banto/supervisor/`・`lib/supervisor-label.ts`・
+  `lib/backend/supervisors.ts`・e2e の `supervisor*.spec.ts`）は、上記の一般化が実装されてから消す（先に消すと §4.5 が引き継ぐと
+  書いた機能が一時的に無くなるため）。実コードは `app.ts`・`turn-runner.ts`・`cli.ts`・`automation/fold.ts`・`automation/store.ts`・
+  `automation/runner.ts`・`automation/busy.ts`・`automation/tools.ts`・`mission/missions.ts`・`delivery/thread-deliveries.ts`・
+  `inbox/automation-review.ts`・`project-thread/fold.ts`・`project-thread/store.ts`・`project-thread/types.ts`・
+  `http/patrol-tools.ts`・`http/turn-summary.ts`・`relay/agent-proxy.ts`・`relay/read-only.ts` に配線が広がっている
+  （調査・2026-10-24）ため、削除は一般化の実装と同じ作業の中で、参照を1つずつ一般化後のものに置き換える形で進める
+
 #### 段2の未決
 
 - banto 自身の出来事の残り（コンテナが上限に当たった・更新した・別のサーバに繋がらない 等）と、外から繋いだ Module の出来事は、
@@ -4788,15 +4846,15 @@ GitHub の tool は #424。コードは `packages/core/src/automation/patrol.ts`
 - 一般化にあたっては、自動化の仕組みに「ターン終了時の通知」と「決めることへの回答の動作」を簡単に設定できる画面を足す
   ことを検討する(ユーザー要望・2026-10-24)。
 
-一般化で引き継ぐ方向にある機能(詳細はこれから設計する):
-- `kind` で答えてよい問いの種類を絞る方針(番頭だけが持っていた `supervisorMayAnswer` 相当)
-- `instruct_thread`・`list_stalled_threads`(止まった会話に手順を頼む・見つける)
-- Factory への流し・止まった件への回答・全体の上限
-- 番頭の方針表にあった `release`(反映は人が選んだものだけ、番頭だけ既定「人」)と、メタ Project §4.6 の release 設定
-  (Project ごとに選べ既定「任せる」)の違いは、どちらかに揃えるか・自動化ごとに選べる形にするかを一般化の設計時に決める
-  (まだ決めていない)
+一般化で引き継ぐ方向にある機能――設計は §4.3「判断役の一般化」に書いた(2026-10-24):
+- `kind` で答えてよい問いの種類を絞る方針(番頭だけが持っていた `supervisorMayAnswer` 相当)→ 判断役の自動化の任意の
+  `delegateKinds`
+- `instruct_thread`・`list_stalled_threads`(止まった会話に手順を頼む・見つける)→ 自動化の `canAdvanceProject`
+- Factory への流し・止まった件への回答・全体の上限 → 同じく `canAdvanceProject`、鍵は `automation.advance.*`
+- `release` の既定の違い(番頭=人、メタ Project=任せる)→ どちらも同じ `delegate` の差分の仕組みに収め、コア既定は
+  「人」のまま、Project ごとに `release` を足せる(決定、§4.3「判断役の一般化」)
 
-経緯・決定の詳細は `docs/notes/2026-10-24-supervisor-retirement.md`。
+経緯・決定の詳細は `docs/notes/2026-10-24-supervisor-retirement.md`・`docs/notes/2026-10-24-judge-generalization.md`。
 
 **この節が指していた実装は、まだ main・release の両方に残っている**――`packages/core/src/supervisor/`・
 `apps/frontend/components/banto/supervisor/`・`e2e/specs/supervisor.spec.ts`・`supervisor-ui.spec.ts` ほか(judge・inbox・
