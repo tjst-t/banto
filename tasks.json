@@ -13038,7 +13038,7 @@
       "number": 540,
       "kind": "task",
       "title": "別のサーバの Project でも Repositories の読むだけの GitHub の tool を使えるようにする",
-      "status": "backlog",
+      "status": "in-progress",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -13049,10 +13049,17 @@
       "body": "2026-10-24、deeparchive-sim（チャットから Project にしたあと baremetal へ移した）から相談。listIssues・listPullRequests・listCiRuns・getPullRequest などが「この Project は別のサーバで動いています（Repositories の一覧のリポジトリと結びつけられません）」で断られる。\n\n## 今の作り\n- 仕様 v4-modules.md の Repositories「読むだけの GitHub の tool」に「別のサーバの Project は断る」と明記。コードは github-read.ts の target()。\n- リポジトリは「台帳の行（この機械のフォルダ）と、そのフォルダの origin が同じもの」で決める。別のサーバの根はこの機械に無いので決められない。\n\n## 直し方の見込み（未決、仕様の変更が要る）\n- ブランチを送る口（#466、branch-sync.ts の remoteTarget）が、別のサーバの Project ごとに GitHub の場所とアカウントを覚えている（pinRemoteTarget）。読む tool もこれを使えば、フォルダに頼らずに決められる。\n- 気をつけること：コンテナの中の AI は origin を書き換えられる。覚えた場所が無いときに origin から決めると、人のアカウントで別の非公開リポジトリを読ませられる。案：覚えた場所があるときだけ読む／最初に読むときに覚える（送る口と同じ扱い。承認のカードに場所とアカウントを出す）。#468（覚えた送り先を外す・選び直す口）と関係する。\n\n当座の逃げ道：Shell の runCommand に envSecrets で GitHub トークンを渡し、gh か curl で読む。",
       "doneWhen": "別のサーバ（machine と containers）の Project で、Backlog の送り先として覚えたリポジトリについて listIssues・getPullRequest・listCiRuns が結果を返す。覚えていない・origin が覚えた場所と違うときは断る（単体試験と、別のサーバの実機1件で確かめる）。",
       "resolution": null,
-      "refs": [],
-      "threads": [],
+      "refs": [
+        "fork/remote-github-read"
+      ],
+      "threads": [
+        {
+          "projectId": "2ced47c4-d4dc-40f3-a6fe-7d2d86a07b89",
+          "threadId": "4d1c13b7-4501-4052-8a89-bc134aad5bbd"
+        }
+      ],
       "createdAt": "2026-10-24T10:30:43.691Z",
-      "updatedAt": "2026-10-24T10:30:43.691Z",
+      "updatedAt": "2026-10-24T11:23:14.056Z",
       "closedAt": null,
       "extra": {}
     }
