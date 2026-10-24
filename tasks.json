@@ -13211,7 +13211,7 @@
       "number": 547,
       "kind": "task",
       "title": "frontend: 自動化の作成・編集画面に delegateKinds・canAdvanceProject を足す",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "core-delegatekinds-canadvanceproject"
@@ -13221,12 +13221,12 @@
       "labels": [],
       "body": "自動化の作成・編集フォーム(v4-frontend.md §6.42)に、判断役のきっかけのときだけ「答えてよい種類」(delegateKinds)のチェックリストと、「止まった会話を進める権限」(canAdvanceProject)のチェックボックスを足す。",
       "doneWhen": "画面から delegateKinds・canAdvanceProject を設定でき、E2E で確かめられる",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の 952c4127b で実装。作成・編集フォームに答えてよい種類(判断役のみ)・進める権限のチェックを追加。GET /api/automation-delegate-kinds を新設。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:57:24.927Z",
+      "closedAt": "2026-10-24T15:57:24.927Z",
       "extra": {}
     },
     {
