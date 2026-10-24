@@ -13234,7 +13234,7 @@
       "number": 548,
       "kind": "task",
       "title": "frontend: 「Project の進行を自動化に任せる」テンプレートボタンを足す",
-      "status": "ready",
+      "status": "done",
       "parent": "item-4",
       "dependsOn": [
         "frontend-delegatekinds-canadvanceproject"
@@ -13244,12 +13244,12 @@
       "labels": [],
       "body": "押すと内部で複数の自動化(決めること・Factory の止まった件・Factory の終わった実行・見回り)を、人が最後に確かめてから作る。v4-frontend.md 旧§6.54「番頭の画面」をこのテンプレートの説明に書き換える。",
       "doneWhen": "テンプレートボタンから複数の自動化がまとめて作れ、人が後から個別に消す・直す・一時停止できる。E2E で確かめられる",
-      "resolution": null,
+      "resolution": "fork/judge-generalization の b2ba45e05 で実装。「Project の進行を自動化に任せる」テンプレートボタンと、受信箱カードの「自動化が頼んだ手順」表示を追加。E2E automation-advance-ui.spec.ts 2本・関連E2E 365/370通過(無関係の2件失敗)。",
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-24T14:16:35.113Z",
-      "updatedAt": "2026-10-24T14:16:35.113Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T15:57:34.075Z",
+      "closedAt": "2026-10-24T15:57:34.075Z",
       "extra": {}
     },
     {
