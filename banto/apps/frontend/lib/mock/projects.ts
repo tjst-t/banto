@@ -605,6 +605,8 @@ export interface PromoteChatInput {
   name: string;
   groupId: string | null;
   folder?: string;
+  /** 別の実行場所へ移す（`remote:<名前>`）と、その上の根。渡すと Project にしてから移し始める（写すのは裏で） */
+  elsewhere?: { runtime: string; root: string };
 }
 
 /**
@@ -616,6 +618,7 @@ export async function promoteChat(projectId: string, input: PromoteChatInput): P
     name: input.name,
     groupId: input.groupId,
     ...(input.folder ? { folder: input.folder } : {}),
+    ...(input.elsewhere ? { runtime: input.elsewhere.runtime, root: input.elsewhere.root } : {}),
   });
   projects = projects.map((p) => {
     if (p.id !== projectId) return p;

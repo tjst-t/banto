@@ -704,39 +704,59 @@ export function NewProjectDialog({
   );
 }
 
+/** 新しい Project の「どこで動かすか」の説明（選んだ実行場所ごと） */
+function newProjectRuntimeNote(remote: RealRemoteRuntime | undefined): string {
+  return remote?.mode === "containers"
+    ? `${remote.name} の中に、この Project 専用の Incus のコンテナを立てて動かします（同じサーバに Project を複数置けます）。` +
+        "コンテナから banto への道（中継・SSH 鍵・公開）はまだ作っていないので、それを使う機能は繋がりません。根は home の下で、ほかの Project と重ならない場所にしてください。作ったあとで変えられません。"
+    : remote
+      ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
+      : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。";
+}
+
 /**
  * どこで動かすか（決定・2026-10-08、ユーザー。モックの `RuntimeStep`）。既定はこの機械のコンテナ。登録した別のサーバの
- * うち、選べないもの（ほかの Project が使っている・host 鍵が変わった・前提が足りない）は host が言う理由を添えて出す
+ * うち、選べないもの（ほかの Project が使っている・host 鍵が変わった・前提が足りない）は host が言う理由を添えて出す。
+ * チャットを Project にする画面（`promote-dialog.tsx`）も使う——`testId`（id と data-testid の頭）と説明だけ替える
  */
-function RuntimeStep({
+export function RuntimeStep({
   runtimes,
   error,
   value,
   onChange,
   onAdd,
+  testId = "new-project-runtime",
+  noteFor = newProjectRuntimeNote,
+  disabled,
 }: {
   runtimes: RealRemoteRuntime[] | null;
   error: string | null;
   value: string;
   onChange: (next: string) => void;
-  onAdd: () => void;
+  /** 「別のサーバを登録する」（無ければ出さない） */
+  onAdd?: () => void;
+  testId?: string;
+  noteFor?: (remote: RealRemoteRuntime | undefined) => string;
+  disabled?: boolean;
 }) {
   const remote = runtimes?.find((r) => r.runtime === value);
   return (
-    <div className="flex flex-col gap-1.5" data-testid="new-project-runtime">
+    <div className="flex flex-col gap-1.5" data-testid={testId}>
       <div className="flex items-baseline justify-between gap-2">
-        <Label htmlFor="new-project-runtime">どこで動かすか</Label>
-        <button
-          type="button"
-          onClick={onAdd}
-          data-testid="new-project-runtime-add"
-          className="text-xs text-ink-3 underline-offset-2 hover:text-foreground hover:underline"
-        >
-          別のサーバを登録する
-        </button>
+        <Label htmlFor={testId}>どこで動かすか</Label>
+        {onAdd ? (
+          <button
+            type="button"
+            onClick={onAdd}
+            data-testid={`${testId}-add`}
+            className="text-xs text-ink-3 underline-offset-2 hover:text-foreground hover:underline"
+          >
+            別のサーバを登録する
+          </button>
+        ) : null}
       </div>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger id="new-project-runtime" className="h-9 w-full" data-testid="new-project-runtime-select">
+      <Select value={value} onValueChange={onChange} disabled={disabled}>
+        <SelectTrigger id={testId} className="h-9 w-full" data-testid={`${testId}-select`}>
           <SelectValue />
         </SelectTrigger>
         {/* 引き金の下に出す（「別の実行場所へ移す」の移す先と同じ。Backlog #291） */}
@@ -752,7 +772,7 @@ function RuntimeStep({
               key={r.name}
               value={r.runtime}
               disabled={!!r.unavailableReason}
-              data-testid="new-project-runtime-option"
+              data-testid={`${testId}-option`}
               data-runtime={r.name}
             >
               <span className="flex min-w-0 flex-col items-start">
@@ -763,7 +783,7 @@ function RuntimeStep({
                   {r.mode === "containers" ? <span className="text-xs text-ink-3">Project ごとのコンテナ</span> : null}
                 </span>
                 {r.unavailableReason ? (
-                  <span className="pl-5.5 text-xs text-ink-3" data-testid="new-project-runtime-reason">
+                  <span className="pl-5.5 text-xs text-ink-3" data-testid={`${testId}-reason`}>
                     {r.unavailableReason}
                   </span>
                 ) : null}
@@ -773,13 +793,8 @@ function RuntimeStep({
         </SelectContent>
       </Select>
       {error ? <p className="text-xs text-stop">別のサーバの一覧を読めませんでした（この機械のコンテナは選べます）：{error}</p> : null}
-      <p className="text-xs text-ink-3" data-testid="new-project-runtime-note">
-        {remote?.mode === "containers"
-          ? `${remote.name} の中に、この Project 専用の Incus のコンテナを立てて動かします（同じサーバに Project を複数置けます）。` +
-            "コンテナから banto への道（中継・SSH 鍵・公開）はまだ作っていないので、それを使う機能は繋がりません。根は home の下で、ほかの Project と重ならない場所にしてください。作ったあとで変えられません。"
-          : remote
-          ? `${remote.name} のサーバ丸ごとが、この Project の箱になります。AI はそこで ${remote.user} ができることを全部できます。作ったあとで変えられません。`
-          : "banto と同じ機械の、この Project 専用のコンテナで動かします。作ったあとで変えられません。"}
+      <p className="text-xs text-ink-3" data-testid={`${testId}-note`}>
+        {noteFor(remote)}
       </p>
     </div>
   );
