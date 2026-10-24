@@ -13308,7 +13308,7 @@
       "number": 551,
       "kind": "bug",
       "title": "チャットを Project にしても、コンテナで動く Module（Shell・Filesystem など）が戻らない",
-      "status": "in-progress",
+      "status": "done",
       "parent": null,
       "dependsOn": [],
       "milestone": null,
@@ -13318,7 +13318,7 @@
       ],
       "body": "2026-10-24、deeparchive-sim で見つかった。チャットは Project のコンテナで動く Module を Project 層の差分（enabled: false）で外して始まり、戻すのは start_prototyping だけだった。「Project にする」（POST /api/projects/:id/promote）は kind を外して名前を替えるだけで差分を残すので、試作を始めずに Project にすると Shell・Filesystem などが無いまま。人が設定の画面で入れ直すしかなかった。\n\n## 直し方\npromote の口で、project.promoted の前に startChatPrototyping（差分を外し project.prototyping.started を積む）を通す。試作を始めていれば何もしない。仕様 v4-architecture.md §2.2「チャット」の「Project にする」に1項を足す。\n\n## 気をつけること\nすでに Project にしたチャット（試作を始めずに）は差分が残ったまま。直す対象は今後の「Project にする」だけで、既存の Project は人が設定の画面で入れ直す（deeparchive-sim は入れ直し済み）。",
       "doneWhen": "試作を始めていないチャットを「Project にする」と、Project のコンテナで動く Module が普通の Project と同じ組に戻る（core の単体試験と E2E の chat.spec が通る）。",
-      "resolution": null,
+      "resolution": "main（560bccc81）に入った。core の単体試験 1420 通過・失敗 0（この不具合の試験を1件足した）、E2E chat.spec 6/6 通過。release には入れていない（人が決める）。既に Project にしたチャットは自動では直らない。",
       "refs": [
         "fork/promote-modules"
       ],
@@ -13329,8 +13329,8 @@
         }
       ],
       "createdAt": "2026-10-24T14:58:01.973Z",
-      "updatedAt": "2026-10-24T14:58:01.973Z",
-      "closedAt": null,
+      "updatedAt": "2026-10-24T14:58:59.361Z",
+      "closedAt": "2026-10-24T14:58:59.361Z",
       "extra": {}
     }
   ],
