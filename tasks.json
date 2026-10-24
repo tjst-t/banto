@@ -12876,7 +12876,7 @@
       "number": 539,
       "kind": "task",
       "title": "メタ Project:結合試験・E2E を通し、release に反映",
-      "status": "done",
+      "status": "ready",
       "parent": "project-2",
       "dependsOn": [
         "project-3"
@@ -12886,12 +12886,12 @@
       "labels": [],
       "body": "メタ Project の一連の機能(作成・専用 Fork・読む口・通知・報告の振り分け・Backlog Gist・権限・設定画面)を結合試験・関係する E2E で確認する。Memory #58968 に従い、共通の道を変えたので該当する E2E を一式流す。通ったら Memory #58965 の手順(origin/release の上にこの件だけを載せ、その版で組み立てと関係する試験を流してから push)で release に入れる。",
       "doneWhen": "結合試験・E2E が通り、release に反映されている",
-      "resolution": "Factory が取り込みました（factory/project-e2e-release）",
+      "resolution": null,
       "refs": [],
       "threads": [],
       "createdAt": "2026-10-23T15:06:15.343Z",
-      "updatedAt": "2026-10-23T16:35:38.419Z",
-      "closedAt": "2026-10-23T16:35:38.419Z",
+      "updatedAt": "2026-10-24T13:58:03.295Z",
+      "closedAt": null,
       "extra": {}
     },
     {
