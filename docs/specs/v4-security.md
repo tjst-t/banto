@@ -958,7 +958,9 @@ VM の上の転送役で道を張る（Fable の指摘 S3・S4・G1——アド�
   `containers` の前提の確かめ：Incus の版（6.0.6 以降）・SSH ユーザーが自分の区画でコンテナを作れる・`sudo -n`（上の準備に）・
   linger（**`containers` では注意でなく断る**——VM の再起動で中の Service と道を戻すため）。Docker・tmux は VM には要らない
   （コンテナの中の話）
-  - **実装済み（2026-10-18、Backlog #367）**：登録の画面で動かし方を選ぶ（記録の `mode`。前の記録は `machine`）。同じ host 鍵＋
+  - **実装済み（2026-10-18、Backlog #367）**：登録の画面で動かし方を選ぶ（記録の `mode`。前の記録は `machine`。**画面の既定は
+    `containers` で先に並べる**——改訂・2026-10-23、ユーザー「既定がサーバ丸ごとだと間違える」。HTTP で `mode` を省いたときは
+    今どおり `machine`）。同じ host 鍵＋
     ユーザーに違う動かし方を並べようとすると、確かめ（`check`）・登録の両方で名指しして断る（409・`code: "mixed-modes"`）。
     `containers` の前提は共通の項目（CPU の種類・ログインの静けさ・道具は tar だけ・置き場・sshd の転送）に、Incus の版・区画
     `user-<uid>` に繋がる・proxy・idmap・置き場 `banto`・区画のネットワークのブリッジが VM にある（#427）・linger・`sudo -n` を足す（`runtime/containers-host.ts`）。確かめ（登録の

@@ -81,8 +81,11 @@ test("containers を選んで登録する画面：machine と同じ宛先・sudo
 
       await panel.getByTestId("runtime-add").click();
       const form = panel.getByTestId("runtime-add-form");
+      // 既定は containers（2026-10-23、ユーザー「既定がサーバ丸ごとだと間違える」）。machine を選ぶと machine の注意に替わる
+      await expect(form.getByTestId("runtime-mode-containers")).toHaveAttribute("aria-checked", "true");
+      await expect(form.getByTestId("runtime-mode-machine")).toHaveAttribute("aria-checked", "false");
+      await form.getByTestId("runtime-mode-machine").click();
       await expect(form.getByTestId("runtime-mode-machine")).toHaveAttribute("aria-checked", "true");
-      await expect(form.getByTestId("runtime-mode-containers")).toHaveAttribute("aria-checked", "false");
       await expect(form.getByTestId("runtime-cautions")).toContainText("1つのサーバで動かせる Project は1つです");
       await expect(form.getByTestId("runtime-cautions-containers")).toHaveCount(0);
       await form.getByTestId("runtime-mode-containers").click();

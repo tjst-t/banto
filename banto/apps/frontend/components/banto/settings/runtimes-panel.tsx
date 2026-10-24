@@ -65,16 +65,17 @@ export function sshTarget(r: Pick<RealRuntimeInput, "user" | "host" | "port">): 
   return `${r.user}@${r.host}${r.port === 22 ? "" : `:${r.port}`}`;
 }
 
+// **既定は containers で、先に並べる**（改訂・2026-10-23、ユーザー「既定がサーバ丸ごとだと間違える」）
 const MODE_OPTIONS: ReadonlyArray<{ value: RealRuntimeMode; label: string; hint: string }> = [
-  {
-    value: "machine",
-    label: "サーバ丸ごと（machine）",
-    hint: "SSH のユーザーで直に動かします。サーバ丸ごとが1つの Project の箱で、そのサーバの Project は1つです。",
-  },
   {
     value: "containers",
     label: "Project ごとのコンテナ（containers）",
     hint: "サーバの Incus に Project ごとのコンテナを立てます。1台に Project を複数置けます。登録のときに banto が sudo -n で準備します。",
+  },
+  {
+    value: "machine",
+    label: "サーバ丸ごと（machine）",
+    hint: "SSH のユーザーで直に動かします。サーバ丸ごとが1つの Project の箱で、そのサーバの Project は1つです。",
   },
 ];
 
@@ -502,7 +503,7 @@ function AddRuntimeForm({ taken, onDone }: { taken: readonly string[]; onDone: (
   const [port, setPort] = useState("22");
   const [identity, setIdentity] = useState<string>("");
   const [dataRoot, setDataRoot] = useState(DEFAULT_DATA_ROOT);
-  const [mode, setMode] = useState<RealRuntimeMode>("machine");
+  const [mode, setMode] = useState<RealRuntimeMode>("containers");
   const [step, setStep] = useState<Step>({ kind: "form" });
   // 登録するときに banto が sudo -n で整えるものがある（v4-security.md §1「足りないものは banto が入れる」）
   const willPrepare = step.kind === "checks" && step.checks.some((c) => c.autoFix && c.status !== "ok");
