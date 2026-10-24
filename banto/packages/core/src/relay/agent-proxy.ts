@@ -88,6 +88,7 @@ import {
   mayReadResourcesInReadOnly,
   mayReadResourcesInSupervisor,
   supervisorToolRole,
+  advanceFactoryToolRole,
   type RestrictionFor,
 } from "./read-only.js";
 import { APPROVAL_PROGRESS_INTERVAL_MS } from "./host-relay-endpoint.js";
@@ -157,6 +158,12 @@ export interface AgentProxyOptions {
    * （札も出さない）。通すなら、結果を `after` に渡し（記録を書く）、終わったら `release`（数えの仮押さえを外す）を呼ぶ
    */
   supervisorGate?(input: SupervisorGateInput): Promise<SupervisorGateDecision>;
+  /**
+   * **進める自動化の回の Factory の tool を、中継の手前で host が照らす**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」の 3.）。
+   * 制限の無い回で `runFactory`・`answerFactory` を呼ぶたびに引く。進める自動化の回でなければ、引いた側が照らさずに通す（`{}`）。
+   * 形と扱いは `supervisorGate` と同じ
+   */
+  advanceGate?(input: SupervisorGateInput): Promise<SupervisorGateDecision>;
   /**
    * **AI のターンから Module の tool を呼ぶ直前**（追加・2026-10-16、アーキ仕様 §4.3「段2」の「始まりの印を持ち越す」）。
    * 呼び出しの印（`dev.banto/callId`）と、どの Thread のターンかを渡す——host は出来事を名乗る Module への呼び出しだけを
@@ -332,7 +339,25 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // **番頭の回の Factory・Backlog の tool は、host が中継の手前で照らす**（§4.5）——全体の上限・方針・番頭が流した件か。断ったら
     // Module へ渡さない（札も出さない）
     const gateRole = restricted() && !readOnly() && opts.supervisorGate ? supervisorToolRole(roles, request.params.name) : undefined;
+    // **進める自動化の回の Factory の tool も同じく照らす**（§4.3「判断役の一般化」）——制限の無い回だけ。どの会話か分からない呼び出しは
+    // 進める自動化の回ではないので照らさない
+    const advanceRole =
+      !restricted() && opts.advanceGate && opts.threadId && opts.projectId ? advanceFactoryToolRole(roles, request.params.name) : undefined;
     let gate: Exclude<SupervisorGateDecision, { refuse: string }> | undefined;
+    if (advanceRole !== undefined) {
+      const decided = await opts.advanceGate!({
+        threadId: opts.threadId!,
+        projectId: opts.projectId!,
+        role: advanceRole,
+        tool: request.params.name,
+        args: (request.params.arguments ?? {}) as Record<string, unknown>,
+      });
+      if ("refuse" in decided) {
+        opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });
+        return { isError: true, content: [{ type: "text" as const, text: decided.refuse }] };
+      }
+      gate = decided;
+    }
     if (gateRole !== undefined) {
       if (!opts.threadId || !opts.projectId) {
         opts.onRelay?.({ direction: "call", name: request.params.name, allowed: false });

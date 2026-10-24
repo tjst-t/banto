@@ -158,6 +158,17 @@ export function supervisorToolRole(roles: readonly string[], toolName: string): 
   return roles.find((role) => SUPERVISOR_MODULE_TOOLS[role]?.includes(toolName) === true);
 }
 
+/**
+ * **進める自動化の回で、中継の手前で host が照らす Factory の tool**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」の 3.）。
+ * 進める自動化の会話は制限の無い回なので、見せる・通すは変えない——照らすだけ（`automation/advance-factory.ts`）
+ */
+export const ADVANCE_FACTORY_TOOLS: readonly string[] = ["runFactory", "answerFactory"];
+
+/** その tool が進める自動化の回で照らす Factory の tool なら、その役割（`factory`）。でなければ undefined */
+export function advanceFactoryToolRole(roles: readonly string[], toolName: string): string | undefined {
+  return roles.includes("factory") && ADVANCE_FACTORY_TOOLS.includes(toolName) ? "factory" : undefined;
+}
+
 /** **番頭の回でその Module の資源を読んでよいか**。同梱の Module だけ（資源の組み込みの3つは残す） */
 export function mayReadResourcesInSupervisor(input: { bundled: boolean }): boolean {
   return input.bundled;

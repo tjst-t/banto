@@ -39,6 +39,7 @@ import { Patrols } from "./automation/patrol.js";
 import { supervisorPolicy } from "./supervisor/policy.js";
 import { SupervisorInstructions } from "./supervisor/instruct.js";
 import { ProjectAdvance } from "./automation/advance.js";
+import { AdvanceFactory } from "./automation/advance-factory.js";
 import { SupervisorFactory, parseFactoryRuns } from "./supervisor/factory.js";
 import { Supervisors } from "./supervisor/supervisors.js";
 import { SupervisorControls, supervisorSkipReason } from "./supervisor/guard.js";
@@ -948,23 +949,33 @@ async function main(): Promise<void> {
     inbox,
     policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
   });
+  // **その Project の Factory の実行の今の様子**（同梱の Factory の listFactoryRuns）。番頭と進める自動化の全体の上限の数えが引く
+  const factoryRunsOf = async (projectId: string) => {
+    const factory = (await resolveModuleClientsForProject(projectId)).find((m) => m.bundled && m.roles.includes("factory"));
+    if (!factory) return undefined;
+    const r = (await factory.client.callTool({ name: "listFactoryRuns", arguments: {} }, undefined, { timeout: 30_000 })) as {
+      content?: Array<{ type: string; text?: string }>;
+      isError?: boolean;
+    };
+    const text = (r.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
+    if (r.isError) throw new Error(text.slice(0, 300));
+    return parseFactoryRuns(text);
+  };
   // **番頭が Factory に流す・止まった件に答える**（アーキ仕様 §4.5「番頭の tool」の Factory、Backlog #509）。AI の代理が Module へ渡す手前で
   // 引く。全体の上限は番頭の記録の実行を、その Project の Factory の今の様子と照らして数える
   const supervisorFactory = new SupervisorFactory({
     projectThread,
     automations,
     policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
-    factoryRuns: async (projectId) => {
-      const factory = (await resolveModuleClientsForProject(projectId)).find((m) => m.bundled && m.roles.includes("factory"));
-      if (!factory) return undefined;
-      const r = (await factory.client.callTool({ name: "listFactoryRuns", arguments: {} }, undefined, { timeout: 30_000 })) as {
-        content?: Array<{ type: string; text?: string }>;
-        isError?: boolean;
-      };
-      const text = (r.content ?? []).map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
-      if (r.isError) throw new Error(text.slice(0, 300));
-      return parseFactoryRuns(text);
-    },
+    factoryRuns: factoryRunsOf,
+  });
+  // **進める自動化が Factory に流す・止まった件に答える**（アーキ仕様 §4.3「判断役の一般化」の 3.）。canAdvanceProject を持つ自動化の専用の
+  // Fork から呼んだ runFactory・answerFactory だけを、AI の代理が Module へ渡す手前で照らす。ほかの会話の呼び出しはそのまま通す
+  const advanceFactory = new AdvanceFactory({
+    projectThread,
+    automations,
+    policy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
+    factoryRuns: factoryRunsOf,
   });
   // **番頭の守り**（アーキ仕様 §4.5「守り」、Backlog #510）：量で飛ばした回の記録・全部止める・記録・取り消し・1日のまとめ
   const supervisorControls = new SupervisorControls({
@@ -1233,6 +1244,8 @@ async function main(): Promise<void> {
     patrolAllowedTools: patrolAllowed,
     // 番頭の回の Factory の tool は、中継の手前で全体の上限・方針・番頭が流した件かを照らす（§4.5）
     supervisorGate: (input) => supervisorFactory.gate(input),
+    // 進める自動化の回の Factory の tool も、同じ手前で照らす（§4.3「判断役の一般化」）
+    advanceGate: (input) => advanceFactory.gate(input),
     moduleCalls,
     elicitations,
     // **始まりの印を持ち越す**（§4.3「段2」の「輪を止める」）。出来事を名乗る Module への呼び出しだけ、Thread・ターン・ホップ・

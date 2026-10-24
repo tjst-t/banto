@@ -25,6 +25,7 @@ import {
   READ_ONLY_REFUSAL,
   SUPERVISOR_MODULE_TOOLS,
   SUPERVISOR_REFUSAL,
+  advanceFactoryToolRole,
   mayCallInReadOnly,
   mayCallInSupervisor,
   mayReadResourcesInReadOnly,
@@ -334,4 +335,63 @@ test("代理（番頭の回）：照らし合わせが断ったら Module を呼
   assert.deepEqual((await thirdParty.runner.listTools()).tools, []);
   assert.equal((await thirdParty.runner.callTool({ name: "runFactory", arguments: {} })).isError, true);
   assert.equal(thirdParty.called.length, 0);
+});
+
+// **進める自動化の回の Factory**（追加・2026-10-24、アーキ仕様 §4.3「判断役の一般化」の 3.）。制限の無い回なので見せる・通すは変えず、
+// runFactory・answerFactory だけを Module へ渡す手前で `advanceGate` に照らす。照らした側が通すと言えば（`{}`）今までどおり
+test("代理（制限の無い回）：runFactory・answerFactory だけ advanceGate に照らす。断ったら Module を呼ばない・通せば今までどおり", async () => {
+  assert.equal(advanceFactoryToolRole(["factory"], "runFactory"), "factory");
+  assert.equal(advanceFactoryToolRole(["factory"], "listFactoryRuns"), undefined);
+  assert.equal(advanceFactoryToolRole(["shell"], "runFactory"), undefined);
+
+  const called: string[] = [];
+  const server = new Server({ name: "factory", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const names = ["runFactory", "listFactoryRuns", "answerFactory", "cancelFactory"];
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: names.map((name) => ({ name, inputSchema: { type: "object" as const, properties: {} }, _meta: plain })),
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    called.push(req.params.name);
+    return { content: [{ type: "text", text: JSON.stringify({ runId: "run-9", started: [{ item: "t1" }] }) }] };
+  });
+  const [st, ct] = InMemoryTransport.createLinkedPair();
+  const moduleClient = new Client({ name: "host", version: "0.0.0" });
+  await Promise.all([server.connect(st), moduleClient.connect(ct)]);
+  const meta = markBundled(parseModuleMeta({ satisfies: ["factory"], dependsOn: [], isolation: "subprocess" }, "factory"), "factory");
+  const gated: string[] = [];
+  const after: string[] = [];
+  let refuseNext = false;
+  const proxy = buildAgentProxy(
+    { name: "factory-x-p1", declaredName: "factory-x", client: moduleClient, meta },
+    {
+      projectId: "p1",
+      threadId: "t1",
+      restrictionFor: () => undefined,
+      supervisorGate: async () => ({ refuse: "番頭の照らし合わせは制限の無い回では引かない" }),
+      advanceGate: async (input) => {
+        gated.push(input.tool);
+        if (refuseNext) return { refuse: "流せません：上限" };
+        return { after: async (r) => void after.push(r.text), release: () => void after.push("release") };
+      },
+    },
+  );
+  const [ps, pc] = InMemoryTransport.createLinkedPair();
+  const runner = new Client({ name: "runner", version: "0.0.0" });
+  await Promise.all([proxy.server.connect(ps), runner.connect(pc)]);
+  // 見せるものは変えない（制限の無い回）
+  assert.deepEqual((await runner.listTools()).tools.map((t) => t.name).sort(), [...names].sort());
+  // 照らさない tool はそのまま
+  await runner.callTool({ name: "listFactoryRuns", arguments: {} });
+  await runner.callTool({ name: "cancelFactory", arguments: { runId: "r" } });
+  assert.deepEqual(gated, []);
+  // 通したものは after・release まで
+  await runner.callTool({ name: "runFactory", arguments: { items: ["t1"] } });
+  assert.deepEqual(gated, ["runFactory"]);
+  assert.equal(after.length, 2);
+  // 断ったものは Module に届かない
+  refuseNext = true;
+  const r = await runner.callTool({ name: "answerFactory", arguments: { runId: "run-9", item: "t1", action: "drop" } });
+  assert.equal(r.isError, true);
+  assert.equal(textOf(r), "流せません：上限");
+  assert.deepEqual(called, ["listFactoryRuns", "cancelFactory", "runFactory"]);
 });
