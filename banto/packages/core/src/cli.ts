@@ -925,6 +925,8 @@ async function main(): Promise<void> {
     // 番頭の answer_decision は種類で絞り、したことを記録に残す（§4.5）
     supervisorPolicy: (projectId) => supervisorPolicy(runtimeConfig, projectId),
     recordSupervisorAct: (automationId, act) => automations.recordSupervisorAct(automationId, act),
+    // delegateKinds・canAdvanceProject を持つ判断役の答え・断りは、進める自動化の記録に残す（§4.3「判断役の一般化」）
+    recordAdvanceAct: (automationId, act) => automations.recordAdvanceAct(automationId, act),
   });
   // **番頭の instruct_thread・list_stalled_threads**（アーキ仕様 §4.5「番頭の tool」）。回数は番頭の記録から数える
   const supervisorInstructions = new SupervisorInstructions({

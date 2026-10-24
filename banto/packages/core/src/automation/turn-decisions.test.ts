@@ -104,6 +104,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       turns: { isRunning: (id) => turns.running.has(id), queued: (id) => turns.queued.get(id) ?? 0 },
       inbox,
       turnSummaryEnabled: () => summaryOn.value,
+      recordAdvanceAct: (id, act) => automations.recordAdvanceAct(id, act),
       log: () => {},
     });
     await fn({
@@ -389,4 +390,63 @@ test("書き手 decision の前置きは従ってよく、後の人の答えを�
   assert.match(prompt, /人の答えと同じに扱い/);
   assert.match(prompt, /この後に人の答えがあれば、人の答えを優先/);
   assert.doesNotMatch(prompt, /従わないでください/);
+});
+
+/** 問いに種類を付けたまとめ */
+const kindedSummary = (kinds: Array<string | undefined>) => ({
+  ...SUMMARY,
+  decisions: SUMMARY.decisions.map((d, i) => (kinds[i] ? { ...d, kind: kinds[i] } : d)),
+});
+
+test("delegateKinds の無い判断役は今までどおり種類で絞らない（人に回す種類でも選べる）。記録も書かない", async () => {
+  await withHarness(async (h) => {
+    const turnId = await decidedTurn(h, kindedSummary(["spec", undefined]));
+    h.decisions.beginTurn(h.judgeThreadId, [judgeDelivery(h, turnId)]);
+    assert.equal((await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 1, choice: 1, reason: "a" })).ok, true);
+    assert.equal((await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 2, choice: 2, reason: "b" })).ok, true);
+    assert.equal(h.delivered.length, 1);
+    assert.equal(h.automations.get(h.judgeId)!.advanceActs, undefined);
+  });
+});
+
+test("delegateKinds のある判断役：人に回す種類・一覧に無い種類・種類の無い問いは選べない（defer はできる）。断ったことを記録に残す", async () => {
+  await withHarness(async (h) => {
+    await h.automations.update(h.judgeId, { delegateKinds: ["minor-design", "continue"] });
+    const turnId = await decidedTurn(h, kindedSummary(["minor-design", "spec"]));
+    h.decisions.beginTurn(h.judgeThreadId, [judgeDelivery(h, turnId)]);
+    const ok = await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 1, choice: 1, reason: "小さな判断" });
+    assert.equal(ok.ok, true);
+    const human = await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 2, choice: 1, reason: "決めたい" });
+    assert.equal(human.ok, false);
+    assert.match(human.text, /この判断役はこの問いを選べません：仕様・アーキテクチャの向きに当たる問いは人が決めます/);
+    assert.equal(h.delivered.length, 0, "何も届けていない");
+    const acts = h.automations.get(h.judgeId)!.advanceActs ?? [];
+    assert.equal(acts[0]?.kind, "refused");
+    assert.equal(acts[0]?.decisionKind, "spec");
+    assert.equal(acts[0]?.question, 2);
+    // defer はいつでもできる
+    const deferred = await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 2, defer: true, reason: "人が決める" });
+    assert.equal(deferred.ok, true);
+    assert.equal(h.automations.get(h.judgeId)!.advanceActs?.[0]?.kind, "deferred");
+  });
+});
+
+test("delegateKinds：一覧に無い種類・種類の無い問いは断る。ターンの途中で人が狭めたら次の答えから効く", async () => {
+  await withHarness(async (h) => {
+    await h.automations.update(h.judgeId, { delegateKinds: ["continue", "merge"] });
+    const turnId = await decidedTurn(h, kindedSummary(["merge", undefined]));
+    h.decisions.beginTurn(h.judgeThreadId, [judgeDelivery(h, turnId)]);
+    const noKind = await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 2, choice: 1, reason: "x" });
+    assert.match(noKind.text, /種類（kind）が書かれていない問い/);
+    // 人が merge を外した
+    await h.automations.update(h.judgeId, { delegateKinds: ["continue"] });
+    const narrowed = await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 1, choice: 1, reason: "x" });
+    assert.equal(narrowed.ok, false);
+    assert.match(narrowed.text, /この判断役には「作業ブランチを Project の決まりどおり main に取り込む」を任されていません/);
+    // 外す（null）と今までどおり
+    await h.automations.update(h.judgeId, { delegateKinds: null });
+    assert.equal((await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 1, choice: 1, reason: "x" })).ok, true);
+    assert.equal((await h.decisions.answer(h.judgeThreadId, { thread: h.baseId, turnId, question: 2, choice: 1, reason: "x" })).ok, true);
+    assert.equal(h.delivered.length, 1);
+  });
 });

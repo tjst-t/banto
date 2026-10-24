@@ -11,7 +11,15 @@
 //
 // 選択肢の中身は出来事の `text` からではなく、元の会話の記録（まとめ）から引く——真実は1箇所（規則3）
 
-import { isDecisionKind, supervisorMayAnswer, supervisorPolicy, type DecisionKind, type SupervisorPolicy } from "../supervisor/policy.js";
+import {
+  ACTION_TITLES,
+  HUMAN_ONLY_KINDS,
+  isDecisionKind,
+  supervisorMayAnswer,
+  supervisorPolicy,
+  type DecisionKind,
+  type SupervisorPolicy,
+} from "../supervisor/policy.js";
 import type { EventDeclaration } from "@banto/module-contract";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { MessageEntry, PendingDelivery, ThreadState } from "../project-thread/types.js";
@@ -21,7 +29,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { ReviewJudge } from "../inbox/types.js";
 import { reviewDueAfterTurn } from "../inbox/review-turn.js";
 import { automationRunOfLastTurn } from "../inbox/automation-review.js";
-import type { Automation, SupervisorAct } from "./fold.js";
+import type { AdvanceAct, Automation, SupervisorAct } from "./fold.js";
 import type { AutomationStore } from "./store.js";
 import type { AutomationEvents } from "./events.js";
 
@@ -49,6 +57,19 @@ export const BANTO_EVENTS: readonly EventDeclaration[] = [
 
 export function bantoEventDeclaration(name: string): EventDeclaration | undefined {
   return BANTO_EVENTS.find((e) => e.name === name);
+}
+
+/**
+ * **判断役がその種類の問いを選んでよいか**（`delegateKinds`、アーキ仕様 §4.3「判断役の一般化」）。一覧が無ければ今までどおり絞らない。
+ * あれば、種類が無い・知らない・人に回す種類・一覧に無い種類は選べない（defer だけ）。選べないときは理由の文を返す
+ */
+export function judgeMayAnswer(kind: unknown, delegateKinds: readonly DecisionKind[] | undefined): { ok: true } | { ok: false; reason: string } {
+  if (delegateKinds === undefined) return { ok: true };
+  if (kind === undefined) return { ok: false, reason: "種類（kind）が書かれていない問いです" };
+  if (!isDecisionKind(kind)) return { ok: false, reason: `知らない種類「${String(kind)}」の問いです` };
+  if ((HUMAN_ONLY_KINDS as readonly string[]).includes(kind)) return { ok: false, reason: `${ACTION_TITLES[kind]}に当たる問いは人が決めます` };
+  if (!delegateKinds.includes(kind)) return { ok: false, reason: `この判断役には「${ACTION_TITLES[kind]}」を任されていません` };
+  return { ok: true };
 }
 
 /** 判断役か（`banto.turn-decisions` を待つ自動化） */
@@ -242,6 +263,10 @@ interface JudgeTarget {
 
 interface JudgeSession {
   automation: { id: string; name: string };
+  /** ターンを始めたときの判断役の `delegateKinds`（答えるときは台帳の今の値を引く。判断役が消えていたらこれ） */
+  delegateKinds?: DecisionKind[];
+  /** 進める自動化の記録に書くか（`delegateKinds` か `canAdvanceProject` を持つ判断役） */
+  recordsAdvance?: boolean;
   /** 番頭の回なら、その Project（種類による断りが効く——判断役には効かない、アーキ仕様 §4.5） */
   supervisor?: { projectId: string };
   targets: Map<string, JudgeTarget>;
@@ -268,6 +293,8 @@ export interface TurnDecisionsDeps {
   supervisorPolicy?(projectId: string): Pick<SupervisorPolicy, "delegate">;
   /** **番頭の記録に書く**（`automation.supervisor_acted`）。無ければ書き残すだけ */
   recordSupervisorAct?(automationId: string, act: SupervisorAct): Promise<void>;
+  /** **進める自動化の記録に書く**（`automation.advance_acted`、アーキ仕様 §4.3「判断役の一般化」）。無ければ書かない */
+  recordAdvanceAct?(automationId: string, act: AdvanceAct): Promise<void>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -312,6 +339,7 @@ export class TurnDecisions {
     this.sessions.delete(threadId);
     let automation: JudgeSession["automation"] | undefined;
     let supervisor: JudgeSession["supervisor"];
+    let advance: Pick<JudgeSession, "delegateKinds" | "recordsAdvance"> = {};
     const targets = new Map<string, JudgeTarget>();
     for (const d of delivered) {
       if (d.kind !== "automation" || !d.automation) continue;
@@ -323,6 +351,12 @@ export class TurnDecisions {
         if (typeof f.thread !== "string" || typeof f.turnId !== "string" || typeof f.count !== "number") continue;
         automation = { id: a.id, name: a.name };
         if (a.mode === "supervisor") supervisor = { projectId: a.projectId };
+        else {
+          advance = {
+            ...(a.delegateKinds ? { delegateKinds: [...a.delegateKinds] } : {}),
+            ...(a.delegateKinds !== undefined || a.canAdvanceProject === true ? { recordsAdvance: true } : {}),
+          };
+        }
         targets.set(targetKey(f.thread, f.turnId), {
           thread: f.thread,
           turnId: f.turnId,
@@ -335,7 +369,7 @@ export class TurnDecisions {
         });
       }
     }
-    if (automation && targets.size > 0) this.sessions.set(threadId, { automation, ...(supervisor ? { supervisor } : {}), targets });
+    if (automation && targets.size > 0) this.sessions.set(threadId, { automation, ...(supervisor ? { supervisor } : advance), targets });
   }
 
   /** 判断役が見ている会話なら、その判断役（受信箱の「判断役が見ています」） */
@@ -414,6 +448,22 @@ export class TurnDecisions {
           ...kindOf(decision),
         });
         return refuse(`番頭はこの問いを選べません：${may.reason}。defer: true で人に回してください（何も届けていません）。`);
+      }
+    } else {
+      // **判断役は delegateKinds で絞る**（アーキ仕様 §4.3「判断役の一般化」）。一覧が無ければ今までどおり絞らない。台帳の今の値を引く
+      // ——人がターンの途中で狭めたら、次の答えから効く
+      const live = this.deps.automations.get(session.automation.id);
+      const may = judgeMayAnswer(decision.kind, live ? live.delegateKinds : session.delegateKinds);
+      if (!may.ok) {
+        await this.recordAct(session, {
+          kind: "refused",
+          threadId: target.thread,
+          turnId: target.turnId,
+          question: input.question,
+          reason: may.reason,
+          ...kindOf(decision),
+        });
+        return refuse(`この判断役はこの問いを選べません：${may.reason}。defer: true で人に回してください（何も届けていません）。`);
       }
     }
     target.answers.set(input.question, choice);
@@ -511,13 +561,18 @@ export class TurnDecisions {
     return this.deps.supervisorPolicy?.(projectId) ?? supervisorPolicy(undefined, projectId);
   }
 
-  /** **番頭の記録に書く**（番頭の回だけ）。書けなくても答えは止めない——書き残す */
+  /**
+   * **番頭の記録・進める自動化の記録に書く**（番頭の回と、`delegateKinds` か `canAdvanceProject` を持つ判断役の回だけ）。書けなくても
+   * 答えは止めない——書き残す
+   */
   private async recordAct(session: JudgeSession, act: Omit<SupervisorAct, "at">): Promise<void> {
-    if (!session.supervisor) return;
+    const write = session.supervisor ? this.deps.recordSupervisorAct : session.recordsAdvance ? this.deps.recordAdvanceAct : undefined;
+    if (!write) return;
     try {
-      await this.deps.recordSupervisorAct?.(session.automation.id, { at: this.now().toISOString(), ...act });
+      await write(session.automation.id, { at: this.now().toISOString(), ...act });
     } catch (err) {
-      this.log(`[host] 番頭の記録を書けませんでした（${act.kind}）: ${err instanceof Error ? err.message : String(err)}`);
+      const what = session.supervisor ? "番頭の記録" : "進める自動化の記録";
+      this.log(`[host] ${what}を書けませんでした（${act.kind}）: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
