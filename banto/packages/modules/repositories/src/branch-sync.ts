@@ -368,6 +368,39 @@ export class BranchSync {
   }
 
   /**
+   * 決まった送り先を、まだ覚えていなければこの Project のものとして覚える。同時に別の呼び出しが先に違うものを覚えていたら断る
+   * （`refused` の文は「いま何に決まったか」まで。頼む側が続きを足す）
+   */
+  private async pin(project: ProjectSummary, decided: Extract<RemoteTargetDecision, { kind: "target" }>): Promise<{ via: string } | { refused: string }> {
+    if (decided.pinned) return { via: decided.via };
+    const { at } = decided;
+    const kept = await this.deps.store.pinRemoteTarget(project.id, {
+      github: { owner: at.owner, name: at.name },
+      account: decided.login,
+      via: decided.via,
+      at: new Date().toISOString(),
+    });
+    if (!sameGithubLocation(kept.github, at) || kept.account.toLowerCase() !== decided.login.toLowerCase()) {
+      return { refused: `この Project の送り先は、いま ${repositoryLabel(kept.github)}（@${kept.account}）に決まりました` };
+    }
+    return { via: `${decided.via}。この Project の送り先として覚えました` };
+  }
+
+  /**
+   * **読むだけの GitHub の tool のための、別のサーバの Project のリポジトリ**（追加・2026-10-24、Backlog #540）。送る口と同じ
+   * 決め方（覚えた送り先 → clone の記録 → 台帳の同じ場所 → 持ち主と同じ login）で決め、まだ覚えていなければ**ここで覚える**
+   * ——以降は origin を書き換えても、覚えた場所と違えば読まない（送る口と同じ線）
+   */
+  async remoteRepositoryForRead(project: ProjectSummary, callId?: string): Promise<{ at: GithubLocation; login: string } | { error: string }> {
+    const decided = await this.remoteTarget(project, callId);
+    if (decided.kind === "not-handled") return { error: decided.reason };
+    if (decided.kind === "refused") return { error: decided.message.replace(/送りも取ってきもしません/g, "読みません").replace(/の Backlog の送り先/g, "のリポジトリ") };
+    const pinned = await this.pin(project, decided);
+    if ("refused" in pinned) return { error: `${pinned.refused}——${repositoryLabel(decided.at)} は読みません` };
+    return { at: decided.at, login: decided.login };
+  }
+
+  /**
    * **別のサーバの Project**（v4-modules.md §2.4「別のサーバの Project」）。送り先とアカウントを決め、頼む側の名乗り
    * （`repository`・`account`——承認のカードに出たもの）と同じときだけ、使い捨ての bare リポジトリを通して運ぶ。最初に引き受けた
    * ときに送り先を覚える
@@ -395,20 +428,9 @@ export class BranchSync {
         message: `名乗った送り先（${claimed.repository}・@${claimed.account}）が、いま決まる送り先（${where}・@${decided.login}）と違うので、Repositories は ${direction} しません`,
       };
     }
-    let via = decided.via;
-    if (!decided.pinned) {
-      const kept = await this.deps.store.pinRemoteTarget(project.id, {
-        github: { owner: at.owner, name: at.name },
-        account: decided.login,
-        via: decided.via,
-        at: new Date().toISOString(),
-      });
-      // 同時に別の呼び出しが先に覚えていた——そちらと違えば断る
-      if (!sameGithubLocation(kept.github, at) || kept.account.toLowerCase() !== decided.login.toLowerCase()) {
-        return { handled: true, ok: false, message: `この Project の送り先は、いま ${repositoryLabel(kept.github)}（@${kept.account}）に決まりました——${where}・@${decided.login} へは送りません` };
-      }
-      via = `${decided.via}。この Project の送り先として覚えました`;
-    }
+    const pinned = await this.pin(project, decided);
+    if ("refused" in pinned) return { handled: true, ok: false, message: `${pinned.refused}——${where}・@${decided.login} へは送りません` };
+    const via = pinned.via;
     const git = this.deps.projectGit!;
     const account = { login: decided.login, ssh: decided.ssh };
     // 送り先は host で組む（方式はアカウントに合わせる——向こうの URL の方式は見ない。トークンは GitHub の host にしか渡らない）

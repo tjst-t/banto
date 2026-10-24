@@ -16,6 +16,7 @@ import { GithubAccounts } from "./accounts.js";
 import { BranchSync, accountForRemote, repositoryLabel, watchDirSize, type ProjectGitAccess } from "./branch-sync.js";
 import { PROJECT_GIT_BUNDLE_MAX_BYTES, isSafeBranchName, type ProjectGitOrigin } from "@banto/module-contract";
 import { GIT_ENV } from "./git.js";
+import { GithubRead } from "./github-read.js";
 import { httpGithub } from "./github.js";
 import { LedgerStore } from "./ledger.js";
 import { registerGithubHost } from "./remote.js";
@@ -642,6 +643,48 @@ test("別のサーバの Project：最初に引き受けた送り先とアカウ
     assert.match((refused as { message: string }).message, /github\.com\/alice\/notes から clone しましたが、origin が github\.com\/bob\/secrets/);
     assert.equal((await w.store.remoteTargets()).has("p10"), false);
     assert.equal(toBob(), 0);
+  });
+});
+
+test("別のサーバの Project：読むだけの GitHub の tool は送る口と同じ決め方でリポジトリを決め、覚える。origin を書き換えても覚えた場所しか読まない（Backlog #540）", async () => {
+  await withWorld(async (w) => {
+    await addAccount(w, "alice", TOKEN);
+    await addAccount(w, "bob", "ghp_bob_secret_token_44");
+    w.gh.addRepo("bob", "secrets", { private: true, readers: ["bob"], writers: ["bob"] });
+    const { far, sync, project } = await farClone(w);
+    w.gh.addContent({ repo: "alice/notes", issues: [{ number: 7, title: "向こうの Issue" }] });
+    w.gh.addContent({ repo: "bob/secrets", issues: [{ number: 1, title: "見えてはいけない" }] });
+    const github = httpGithub(w.gh.endpoints);
+    const reader = new GithubRead({ store: w.store, accounts: w.accounts, github, remoteRepository: (p, c) => sync.remoteRepositoryForRead(p, c) });
+
+    // まだ覚えていない——送る口と同じ決め方（ここでは持ち主と同じアカウント）で決め、読んで、覚える
+    const issues = await reader.call("listIssues", {}, project, "c");
+    assert.deepEqual((issues.issues as Array<{ number: number }>).map((i) => i.number), [7]);
+    assert.ok(!JSON.stringify(issues).includes(TOKEN), "トークンが返事に出た");
+    const pinned = (await w.store.remoteTargets()).get("p9");
+    assert.deepEqual({ ...pinned, at: undefined }, { github: { owner: "alice", name: "notes" }, account: "alice", via: "持ち主と同じアカウント", at: undefined });
+
+    // origin を bob/secrets に書き換えても、覚えた場所と違えば読まない（bob のアカウントは選ばれない）
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/bob/secrets.git`);
+    await assert.rejects(reader.call("listIssues", {}, project, "c"), /別のサーバで動いています：この Project のリポジトリは github\.com\/alice\/notes（@alice）に決めてあります.*読みません/);
+    assert.equal(w.gh.apiReads.filter((r) => r.path.includes("/bob/secrets")).length, 0, "書き換えた先を読んだ");
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/alice/notes.git`);
+    assert.equal(((await reader.call("getIssue", { number: 7 }, project, "c")) as { issue: { title?: string } }).issue.title, "向こうの Issue");
+
+    // 覚えた送り先は Backlog の push と同じもの——読んだあとの push もそのまま通る
+    commitOnBranch(far.dir, "backlog", "{}\n");
+    const pushed = await asBacklog(sync, "push", "backlog", project);
+    assert.equal(pushed.handled && pushed.ok, true, JSON.stringify(pushed));
+
+    // 決められない（アカウントが無い）ものは理由を添えて断り、覚えない
+    git(far.dir, "remote", "set-url", "origin", `${w.gh.endpoints.web}/carol/x.git`);
+    const other = { ...project, id: "p11" };
+    await assert.rejects(reader.call("listIssues", {}, other, "c"), /別のサーバで動いています：github\.com\/carol\/x を扱うアカウントが決まっていません/);
+    assert.equal((await w.store.remoteTargets()).has("p11"), false);
+
+    // 別のサーバに届く口が無い Repositories は、今までどおり断る
+    const plain = new GithubRead({ store: w.store, accounts: w.accounts, github });
+    await assert.rejects(plain.call("listIssues", {}, project, "c"), /別のサーバで動いています/);
   });
 });
 

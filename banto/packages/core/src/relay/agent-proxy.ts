@@ -47,6 +47,7 @@ import {
   type BackgroundView,
   type BantoModuleMeta,
   type WaitingOn,
+  PROJECT_GIT_META_KEY,
 } from "@banto/module-contract";
 import type { BackgroundWork } from "../delivery/reply-handles.js";
 
@@ -375,7 +376,18 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
       // 承認が要る中継は `threadFor` が `none` を返すので、今までどおり
       // fail closed のまま。Runner の tool_use の id も置く——中の中継の承認・質問を、会話のどの呼び出しの中のものかに
       // 結びつける（追加・2026-10-05）
-      opts.moduleCalls?.beginCall(conn.name, opts.threadId, "turn", opts.projectId, false, toolUseId || undefined);
+      opts.moduleCalls?.beginCall(
+        conn.name,
+        opts.threadId,
+        "turn",
+        opts.projectId,
+        false,
+        toolUseId || undefined,
+        undefined,
+        // **Project の git の口に届く印**（追加・2026-10-24、Backlog #540）——AI が直に呼ぶ tool でも、同梱の Module の名乗り
+        // （`dev.banto/projectGit`）だけを信じる。Repositories の読むだけの GitHub の tool が、別のサーバの Project の origin を読む
+        bundled && target._meta?.[PROJECT_GIT_META_KEY] === true ? { projectGit: true } : undefined,
+      );
     // **終わったら届ける tool には、呼び出し元の Thread に結びついた札を渡す**（追加・2026-09-25）。
     // Thread が分からない接続では出さない——Module は「届ける先が無い」と断る（規則2）
     const replyTo =

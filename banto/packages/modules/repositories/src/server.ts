@@ -139,7 +139,7 @@ const githubReadTools = GITHUB_READ_TOOLS.map((t) => ({
   name: t.name,
   description: t.description,
   inputSchema: { type: "object", properties: t.properties, required: [...t.required], additionalProperties: false },
-  _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read" },
+  _meta: { [VISIBILITY_META_KEY]: "agent", [EFFECT_META_KEY]: "read", [PROJECT_GIT_META_KEY]: true },
 }));
 
 function json(value: unknown) {
@@ -230,7 +230,7 @@ export function createRepositoriesServer(deps: RepositoriesServerDeps) {
     endpoints: deps.githubEndpoints ?? GITHUB_COM,
     ...(deps.projectGit ? { projectGit: deps.projectGit } : {}),
   });
-  const githubRead = new GithubRead({ store, accounts, github: deps.github });
+  const githubRead = new GithubRead({ store, accounts, github: deps.github, remoteRepository: (project, callId) => branchSync.remoteRepositoryForRead(project, callId) });
   /**
    * **呼び出し元の Project**（ブランチを送る口・読むだけの GitHub の tool）。Project のための呼び出しだけ（AI のターンでも
    * 人の画面でも）。どの Project かは host に聞き、刻印と照らす
