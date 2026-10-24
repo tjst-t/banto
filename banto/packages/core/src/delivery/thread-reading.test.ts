@@ -294,12 +294,12 @@ test("read_thread は渡されたときだけ見え、専用 Fork から呼ぶ�
     assert.equal(registeredTools(createForkMcpServer(ctx.store, ctx.meta.base, []))[READ_THREAD_TOOL_NAME], undefined);
     // 読むだけの回にも出さない
     const readOnlyTools = registeredTools(
-      createForkMcpServer(ctx.store, ctx.meta.appFork, [], undefined, undefined, {}, undefined, undefined, true, undefined, undefined, undefined, {}, undefined, undefined, ctx.reading),
+      createForkMcpServer(ctx.store, ctx.meta.appFork, [], undefined, undefined, {}, undefined, undefined, undefined, true, undefined, undefined, {}, undefined, undefined, ctx.reading),
     );
     assert.equal(readOnlyTools[READ_THREAD_TOOL_NAME], undefined);
 
     const tools = registeredTools(
-      createForkMcpServer(ctx.store, ctx.meta.appFork, [], undefined, undefined, {}, undefined, undefined, false, undefined, undefined, undefined, {}, undefined, undefined, ctx.reading),
+      createForkMcpServer(ctx.store, ctx.meta.appFork, [], undefined, undefined, {}, undefined, undefined, undefined, false, undefined, undefined, {}, undefined, undefined, ctx.reading),
     );
     const res = await tools[READ_THREAD_TOOL_NAME]!.handler({ threadId: ctx.app.base }, {});
     assert.equal(res.isError, undefined);
